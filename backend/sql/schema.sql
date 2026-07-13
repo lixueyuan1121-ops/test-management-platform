@@ -1,0 +1,178 @@
+-- ============================================================
+-- 测试管理平台 · MySQL 建表脚本 (schema.sql)
+-- 适用 MySQL 8.0+
+-- 字符集 utf8mb4。与后端 SQLAlchemy 模型一一对应。
+-- ============================================================
+
+CREATE DATABASE IF NOT EXISTS test_platform
+  DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE test_platform;
+
+-- ---------- 用户 ----------
+CREATE TABLE `user` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `username` VARCHAR(64) NOT NULL,
+  `password_hash` VARCHAR(255) NOT NULL,
+  `name` VARCHAR(64) NOT NULL,
+  `email` VARCHAR(128) DEFAULT NULL,
+  `is_platform_admin` TINYINT(1) NOT NULL DEFAULT 0,
+  `status` ENUM('active','disabled') NOT NULL DEFAULT 'active',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 项目 / 团队 / 成员 ----------
+CREATE TABLE `project` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(128) NOT NULL,
+  `code` VARCHAR(64) NOT NULL,
+  `description` VARCHAR(512) DEFAULT NULL,
+  `status` ENUM('active','archived') NOT NULL DEFAULT 'active',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_code` (`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `team` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `name` VARCHAR(64) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_team_project` (`project_id`),
+  CONSTRAINT `fk_team_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `project_member` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT NOT NULL,
+  `project_id` BIGINT NOT NULL,
+  `team_id` BIGINT DEFAULT NULL,
+  `role` ENUM('admin','member','guest') NOT NULL DEFAULT 'member',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_project` (`user_id`,`project_id`),
+  KEY `idx_pm_user` (`user_id`),
+  KEY `idx_pm_project` (`project_id`),
+  CONSTRAINT `fk_pm_user` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_pm_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_pm_team` FOREIGN KEY (`team_id`) REFERENCES `team`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 每日任务分配 ----------
+CREATE TABLE `task` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `team_id` BIGINT DEFAULT NULL,
+  `assigned_by` BIGINT NOT NULL,
+  `assigned_to` BIGINT NOT NULL,
+  `title` VARCHAR(255) NOT NULL,
+  `description` TEXT,
+  `module` VARCHAR(128) DEFAULT NULL,
+  `priority` ENUM('p0','p1','p2','p3') NOT NULL DEFAULT 'p2',
+  `assigned_date` DATE NOT NULL,
+  `status` ENUM('pending','doing','done','closed') NOT NULL DEFAULT 'pending',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_project_date` (`project_id`,`assigned_date`),
+  KEY `idx_assignee` (`assigned_to`,`assigned_date`),
+  CONSTRAINT `fk_task_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_task_team` FOREIGN KEY (`team_id`) REFERENCES `team`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_task_by` FOREIGN KEY (`assigned_by`) REFERENCES `user`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_task_to` FOREIGN KEY (`assigned_to`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 日报反馈 ----------
+CREATE TABLE `daily_report` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `task_id` BIGINT NOT NULL,
+  `user_id` BIGINT NOT NULL,
+  `project_id` BIGINT NOT NULL,
+  `report_date` DATE NOT NULL,
+  `progress_pct` TINYINT NOT NULL DEFAULT 0,
+  `is_online` TINYINT(1) NOT NULL DEFAULT 0,
+  `online_time` DATETIME DEFAULT NULL,
+  `workload_hours` DECIMAL(5,1) NOT NULL DEFAULT 0.0,
+  `summary` TEXT,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_task_date` (`task_id`,`report_date`),
+  KEY `idx_report_project_date` (`project_id`,`report_date`),
+  CONSTRAINT `fk_report_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_report_user` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_report_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 遗留问题 ----------
+CREATE TABLE `remaining_issue` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `report_id` BIGINT NOT NULL,
+  `project_id` BIGINT NOT NULL,
+  `title` VARCHAR(255) NOT NULL,
+  `description` TEXT,
+  `severity` ENUM('blocker','major','minor') NOT NULL DEFAULT 'minor',
+  `status` ENUM('open','resolved') NOT NULL DEFAULT 'open',
+  `owner` BIGINT DEFAULT NULL,
+  `external_ref` VARCHAR(128) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `resolved_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_issue_project_status` (`project_id`,`status`),
+  CONSTRAINT `fk_issue_report` FOREIGN KEY (`report_id`) REFERENCES `daily_report`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_issue_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_issue_owner` FOREIGN KEY (`owner`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 集成层（扩展位，P3 使用） ----------
+CREATE TABLE `integration` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT DEFAULT NULL,
+  `type` VARCHAR(32) NOT NULL,
+  `config_json` JSON DEFAULT NULL,
+  `credential_ref` VARCHAR(255) DEFAULT NULL,
+  `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_integration_project` (`project_id`),
+  KEY `idx_integration_type` (`type`),
+  CONSTRAINT `fk_integration_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `api_token` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT NOT NULL,
+  `name` VARCHAR(64) NOT NULL,
+  `token_hash` VARCHAR(255) NOT NULL,
+  `scopes` JSON DEFAULT NULL,
+  `expires_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_token_user` (`user_id`),
+  CONSTRAINT `fk_token_user` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `integration_event` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `integration_id` BIGINT DEFAULT NULL,
+  `source` VARCHAR(32) NOT NULL,
+  `payload_json` JSON DEFAULT NULL,
+  `received_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `status` ENUM('received','processed','failed') NOT NULL DEFAULT 'received',
+  `error` TEXT,
+  PRIMARY KEY (`id`),
+  KEY `idx_event_source` (`source`),
+  CONSTRAINT `fk_event_integration` FOREIGN KEY (`integration_id`) REFERENCES `integration`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
+-- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。
+-- bcrypt 哈希需由后端生成；这里建议首次启动后端自动种入，而非手写哈希。
+-- 若需手动种入，可执行后端：python -c "from app.core.security import hash_password; print(hash_password('admin123'))"
+-- ============================================================

@@ -1,0 +1,53 @@
+# ===== 测试管理平台 · docker-compose（内网自部署） =====
+# 启动：docker compose up -d
+# 首次启动 backend 会自动建表并种入管理员 admin / admin123（见 .env）
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: tp-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: test_platform
+      MYSQL_USER: tp
+      MYSQL_PASSWORD: tp123
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - tp_mysql_data:/var/lib/mysql
+      - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ptp123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: tp-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://tp:tp123@mysql:3306/test_platform?charset=utf8mb4
+      JWT_SECRET: please-change-this-secret-in-production
+      CORS_ORIGINS: http://localhost,http://localhost:8080
+      SEED_ADMIN_USERNAME: admin
+      SEED_ADMIN_PASSWORD: admin123
+      SEED_ADMIN_NAME: 平台管理员
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: tp-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  tp_mysql_data:
