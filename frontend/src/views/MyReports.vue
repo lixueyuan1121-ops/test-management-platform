@@ -40,7 +40,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialog.visible" :title="`填报日报 · ${form.title || ''}`" width="620px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="`填报日报 · ${form.title || ''}`" width="620px">
       <el-form :model="form" label-width="90px">
         <el-form-item label="测试进度">
           <el-slider v-model="form.progress_pct" :max="100" show-input style="padding-right:8px" />
@@ -135,9 +135,8 @@ async function submit() {
       issues: form.issues.filter((i) => i.title),
     })
     ElMessage.success('日报已提交')
-    dialog.visible = false
-    await load()
-  } finally { dialog.saving = false }
+        await load()
+  } finally { dialog.saving = false; dialog.visible = false }
 }
 </script>
 

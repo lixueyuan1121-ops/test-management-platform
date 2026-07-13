@@ -27,7 +27,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialog.visible" :title="dialog.mode === 'add' ? '添加成员' : '修改角色'" width="440px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.mode === 'add' ? '添加成员' : '修改角色'" width="440px">
       <el-form :model="form" label-width="80px">
         <el-form-item v-if="dialog.mode === 'add'" label="用户">
           <el-select
@@ -117,9 +117,8 @@ async function submit() {
       await updateMember(pid.value, form.user_id, { role: form.role })
     }
     ElMessage.success('保存成功')
-    dialog.visible = false
-    await load()
-  } finally { dialog.saving = false }
+        await load()
+  } finally { dialog.saving = false; dialog.visible = false }
 }
 async function onRemove(row) {
   await ElMessageBox.confirm(`确定将 ${row.name} 移出项目？`, '确认', { type: 'warning' })

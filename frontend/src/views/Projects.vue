@@ -21,7 +21,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑项目' : '新建项目'" width="460px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑项目' : '新建项目'" width="460px">
       <el-form :model="form" label-width="80px">
         <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="编码"><el-input v-model="form.code" :disabled="!!dialog.id" /></el-form-item>
@@ -77,9 +77,8 @@ async function submit() {
       await createProject({ name: form.name, code: form.code, description: form.description })
     }
     ElMessage.success('保存成功')
-    dialog.visible = false
-    await load()
-  } finally { dialog.saving = false }
+        await load()
+  } finally { dialog.saving = false; dialog.visible = false }
 }
 </script>
 

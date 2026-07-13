@@ -40,7 +40,7 @@
     </el-card>
 
     <!-- 新建/编辑 -->
-    <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑用户' : '新建用户'" width="460px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑用户' : '新建用户'" width="460px">
       <el-form :model="form" label-width="100px">
         <el-form-item v-if="!dialog.id" label="用户名">
           <el-input v-model="form.username" placeholder="字母/数字/_.-" />
@@ -65,7 +65,7 @@
     </el-dialog>
 
     <!-- 重置密码 -->
-    <el-dialog v-model="pwd.visible" title="重置密码" width="420px">
+    <el-dialog v-if="pwd.visible" v-model="pwd.visible" title="重置密码" width="420px">
       <el-form label-width="80px">
         <el-form-item label="用户">
           <el-input :model-value="pwd.username" disabled />
@@ -136,9 +136,8 @@ async function submit() {
       })
     }
     ElMessage.success('保存成功')
-    dialog.visible = false
-    await load()
-  } finally { dialog.saving = false }
+        await load()
+  } finally { dialog.saving = false; dialog.visible = false }
 }
 
 function openPwd(row) {

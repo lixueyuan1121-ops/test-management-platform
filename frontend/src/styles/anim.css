@@ -71,7 +71,10 @@
    注意：只禁 .el-loading-mask，不禁 .el-overlay-dialog / .el-dialog
    （对话框需要过渡动画，且 dialog 的过渡中断问题已通过不在
    setInterval 里巡检来避免）。
+   注意：只禁 .el-loading-mask 和 .el-overlay-dialog，
+   不禁 .el-dialog（对话框内容本身的缩放动画保留，只禁遮罩淡入淡出）。
    ============================================================ */
-.el-loading-mask {
+.el-loading-mask,
+.el-overlay-dialog {
   transition: none !important;
 }

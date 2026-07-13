@@ -49,7 +49,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialog.visible" title="关联外部缺陷" width="440px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" title="关联外部缺陷" width="440px">
       <el-form label-width="90px">
         <el-form-item label="问题">{{ dialog.title }}</el-form-item>
         <el-form-item label="缺陷链接"><el-input v-model="dialog.external_ref" placeholder="http://jira/BUG-123" /></el-form-item>

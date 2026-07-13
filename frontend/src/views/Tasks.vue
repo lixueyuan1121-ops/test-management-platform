@@ -36,7 +36,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="560px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="560px">
       <el-form :model="form" label-width="90px">
         <el-form-item label="任务名称" required><el-input v-model="form.title" /></el-form-item>
         <el-form-item label="需求地址"><el-input v-model="form.requirement_url" placeholder="http://..." /></el-form-item>
@@ -123,9 +123,8 @@ async function submit() {
     if (dialog.id) await updateTask(dialog.id, payload)
     else await createTask(payload)
     ElMessage.success('保存成功')
-    dialog.visible = false
-    await load()
-  } finally { dialog.saving = false }
+        await load()
+  } finally { dialog.saving = false; dialog.visible = false }
 }
 async function onDel(row) {
   await ElMessageBox.confirm(`删除任务「${row.title}」？`, '确认', { type: 'warning' })
