@@ -78,3 +78,31 @@
 .el-overlay-dialog {
   transition: none !important;
 }
+
+/* ============================================================
+   修复输入控件 hover 态背景变透明
+   Element Plus 2.9+ 用 CSS 变量 --el-fill-color-blank 控制
+   输入框背景；该变量在某些环境下继承为 transparent。
+   同时覆盖变量和直接属性，确保在所有状态下为白色。
+   ============================================================ */
+:root {
+  --el-fill-color-blank: #fff;
+}
+.el-input__wrapper {
+  background-color: var(--el-fill-color-blank, #fff) !important;
+  --el-input-bg-color: #fff;
+}
+.el-textarea__inner {
+  background-color: #fff !important;
+}
+.el-input__wrapper:hover,
+.el-input__wrapper:focus-within,
+.el-textarea__inner:hover,
+.el-textarea__inner:focus {
+  background-color: #fff !important;
+}
+/* 对话框内的输入框也覆盖 */
+.el-dialog .el-input__wrapper,
+.el-dialog .el-textarea__inner {
+  background-color: #fff !important;
+}

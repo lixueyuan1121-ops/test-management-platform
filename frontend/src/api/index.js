@@ -35,3 +35,24 @@ export const dailyStats = (project_id, date) => http.get('/stats/daily', { param
 export const workloadStats = (project_id, from, to) => http.get('/stats/workload', { params: { project_id, from, to } })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
 export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
+
+// ===== 测试工具广场 =====
+export const listCategories = (include_inactive) => {
+  const params = {}
+  if (include_inactive) params.include_inactive = 'true'
+  return http.get('/tools/categories', { params })
+}
+export const createCategory = (data) => http.post('/tools/categories', data)
+export const updateCategory = (id, data) => http.patch(`/tools/categories/${id}`, data)
+export const deleteCategory = (id) => http.delete(`/tools/categories/${id}`)
+export const listTools = (params = {}) => {
+  const p = {}
+  if (params.category_id) p.category_id = params.category_id
+  if (params.online_only) p.online_only = 'true'
+  if (params.include_inactive) p.include_inactive = 'true'
+  return http.get('/tools', { params: p })
+}
+export const createTool = (data) => http.post('/tools', data)
+export const updateTool = (id, data) => http.patch(`/tools/${id}`, data)
+export const deleteTool = (id) => http.delete(`/tools/${id}`)
+export const toggleTool = (id) => http.patch(`/tools/${id}/toggle`)

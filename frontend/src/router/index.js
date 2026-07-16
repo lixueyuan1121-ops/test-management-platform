@@ -18,6 +18,8 @@ const routes = [
       { path: 'stats', name: 'stats', component: () => import('@/views/DailyStats.vue') },
       { path: 'workload', name: 'workload', component: () => import('@/views/WorkloadStats.vue') },
       { path: 'issues', name: 'issues', component: () => import('@/views/Issues.vue') },
+      { path: 'tool-plaza', name: 'tool-plaza', component: () => import('@/views/ToolPlaza.vue') },
+      { path: 'tool-admin', name: 'tool-admin', component: () => import('@/views/ToolAdmin.vue'), meta: { platformAdmin: true } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

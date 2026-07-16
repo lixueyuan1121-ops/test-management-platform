@@ -40,6 +40,13 @@
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
           <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
         </el-sub-menu>
+
+        <!-- 测试工具广场 -->
+        <el-sub-menu index="tools">
+          <template #title><el-icon><Grid /></el-icon><span>测试工具广场</span></template>
+          <el-menu-item index="/tool-plaza"><el-icon><Histogram /></el-icon><span>工具广场</span></el-menu-item>
+          <el-menu-item v-if="auth.isPlatformAdmin" index="/tool-admin"><el-icon><Setting /></el-icon><span>工具配置</span></el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
@@ -76,7 +83,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
-  OfficeBuilding, Checked, DataAnalysis, CaretBottom,
+  OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
 } from '@element-plus/icons-vue'
 import Logo from '@/components/Logo.vue'
 
@@ -85,7 +92,7 @@ const route = useRoute()
 const router = useRouter()
 
 const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
-const openSubs = ['org', 'exec', 'stats']
+const openSubs = ['org', 'exec', 'stats', 'tools']
 
 const avatarText = computed(() => {
   const n = auth.user?.name || auth.user?.username || '?'

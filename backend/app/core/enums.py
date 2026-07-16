@@ -53,6 +53,11 @@ class IntegrationEventStatus(str, enum.Enum):
     failed = "failed"
 
 
+class ToolStatus(str, enum.Enum):
+    online = "online"
+    offline = "offline"
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写
