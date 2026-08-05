@@ -1,7 +1,10 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -58,7 +61,41 @@ def create_app() -> FastAPI:
     def _startup():
         init_db()
 
+    _mount_frontend(app)
     return app
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """托管前端构建产物（frontend/dist）。
+
+    前端在开发机用 `npm run build` 生成 dist 并提交入库；服务器无需 Node，
+    uvicorn 单进程即可同源服务页面(`/`)与接口(`/api`)。dist 不存在时静默跳过
+    （纯本地后端开发仍可用 vite dev + 代理）。
+    """
+    # app/main.py -> app -> backend -> 仓库根 -> frontend/dist
+    dist_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "frontend", "dist",
+    )
+    index_file = os.path.join(dist_dir, "index.html")
+    if not os.path.isfile(index_file):
+        logger.warning("未找到前端产物 %s，跳过静态托管（请在开发机 npm run build）", index_file)
+        return
+
+    # /assets 等带哈希的静态资源交给 StaticFiles
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_dir, "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def _index():
+        return FileResponse(index_file)
+
+    # SPA 回退：非 /api、非已知静态文件的路径都返回 index.html，交给前端路由
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def _spa(full_path: str):
+        candidate = os.path.join(dist_dir, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(index_file)
 
 
 app = create_app()

@@ -3,13 +3,9 @@ import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import router from '@/router'
 
-// dev 走 vite 代理 /api；生产(打包预览)直连后端(后端已开 CORS)
-// 局域网访问：生产模式用当前页面所在 host + :8000，这样访客浏览器能连到服务所在机器
-function prodBaseURL() {
-  const host = window.location.hostname // 访客访问页面用的主机名（IP 或域名）
-  return `http://${host}:8000/api`
-}
-const baseURL = import.meta.env.DEV ? '/api' : prodBaseURL()
+// dev 走 vite 代理 /api；生产由后端(uvicorn)同源托管前端页面与 /api，
+// 所以生产也用相对路径 /api，无需拼 host/端口，天然无 CORS 问题。
+const baseURL = '/api'
 
 const http = axios.create({
   baseURL,

@@ -2,7 +2,7 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
-frontend/dist/
+# frontend/dist/ 需入库：服务器无 Node，前端产物在开发机构建后提交，供后端同源托管
 .env
 backend/.env
 *.db

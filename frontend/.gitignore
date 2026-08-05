@@ -1,4 +1,4 @@
 node_modules
-dist
+# dist 需入库：服务器无 Node，前端产物在开发机构建后提交，供后端同源托管
 .DS_Store
 *.log
