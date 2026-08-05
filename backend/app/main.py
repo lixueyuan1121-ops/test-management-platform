@@ -89,11 +89,19 @@ def _mount_frontend(app: FastAPI) -> None:
     def _index():
         return FileResponse(index_file)
 
-    # SPA 回退：非 /api、非已知静态文件的路径都返回 index.html，交给前端路由
+    # SPA 回退：非 /api、非已知静态文件的路径都返回 index.html，交给前端路由。
+    # 防目录穿越：先 realpath 解析（含符号链接），再确认仍在 dist 内，
+    # 否则 ../ 或软链可越权读任意文件（如 .env、/etc/passwd）。
+    dist_real = os.path.realpath(dist_dir)
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa(full_path: str):
-        candidate = os.path.join(dist_dir, full_path)
-        if full_path and os.path.isfile(candidate):
+        candidate = os.path.realpath(os.path.join(dist_real, full_path))
+        if (
+            full_path
+            and (candidate == dist_real or candidate.startswith(dist_real + os.sep))
+            and os.path.isfile(candidate)
+        ):
             return FileResponse(candidate)
         return FileResponse(index_file)
 
