@@ -55,6 +55,31 @@ if [ -f "$PIDFILE" ]; then
   rm -f "$PIDFILE"
 fi
 
+# ---- 3.5 端口兜底：杀掉仍占用 $PORT 的任何进程（孤儿进程 / 手动起的 / pid 对不上）----
+free_port() {
+  local pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -ti:"$PORT" 2>/dev/null || true)"
+  elif command -v fuser >/dev/null 2>&1; then
+    pids="$(fuser "$PORT"/tcp 2>/dev/null || true)"
+  else
+    echo "   （无 lsof/fuser，跳过端口占用检查）"
+    return 0
+  fi
+  if [ -n "$pids" ]; then
+    echo "==> 端口 $PORT 被占用 (PID: $pids)，正在清理"
+    kill $pids 2>/dev/null || true
+    sleep 2
+    # 复查仍在的强杀
+    local still=""
+    if command -v lsof >/dev/null 2>&1; then
+      still="$(lsof -ti:"$PORT" 2>/dev/null || true)"
+    fi
+    [ -n "$still" ] && { echo "   仍占用，强杀 (PID: $still)"; kill -9 $still 2>/dev/null || true; }
+  fi
+}
+free_port
+
 # ---- 4. 后台重启 ----
 echo "==> 后台启动 uvicorn (端口 $PORT)"
 cd "$BACKEND"
