@@ -20,6 +20,27 @@ http.interceptors.request.use((config) => {
   return config
 })
 
+// 用裸 axios 调刷新接口，绕过下方响应拦截器，避免 401 递归。
+let refreshingPromise = null
+function tryRefresh() {
+  const auth = useAuthStore()
+  if (!auth.refreshToken) return Promise.resolve(false)
+  if (refreshingPromise) return refreshingPromise
+  refreshingPromise = axios
+    .post(`${baseURL}/auth/refresh`, { refresh_token: auth.refreshToken })
+    .then((resp) => {
+      const body = resp.data
+      if (body && body.code === 0 && body.data?.access_token) {
+        auth.setToken(body.data.access_token)
+        return true
+      }
+      return false
+    })
+    .catch(() => false)
+    .finally(() => { refreshingPromise = null })
+  return refreshingPromise
+}
+
 http.interceptors.response.use(
   (resp) => {
     const body = resp.data
@@ -30,15 +51,31 @@ http.interceptors.response.use(
     }
     return body
   },
-  (error) => {
+  async (error) => {
     const status = error.response?.status
-    const msg = error.response?.data?.msg || error.message
-    if (status === 401) {
+    const original = error.config
+    // login 401=凭据错、refresh 401=refresh 已死，这两种不触发自动刷新；其余（如 /auth/me）过期则刷新
+    const url = original?.url || ''
+    const skipRefresh = url.endsWith('/auth/login') || url.endsWith('/auth/refresh')
+    // access token 过期：尝试用 refresh token 换新 token 后重放原请求（仅重试一次）
+    if (status === 401 && original && !original._retried && !skipRefresh) {
+      const refreshed = await tryRefresh()
+      if (refreshed) {
+        original._retried = true
+        return http(original)
+      }
       const auth = useAuthStore()
       auth.logout()
       ElMessage.error('登录已失效，请重新登录')
       router.push('/login')
+      return Promise.reject(error)
+    }
+    if (status === 401) {
+      const auth = useAuthStore()
+      auth.logout()
+      router.push('/login')
     } else {
+      const msg = error.response?.data?.msg || error.message
       ElMessage.error(msg || '网络错误')
     }
     return Promise.reject(error)

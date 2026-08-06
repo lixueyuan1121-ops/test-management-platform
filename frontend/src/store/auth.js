@@ -4,6 +4,7 @@ import { login as apiLogin, getMe } from '@/api'
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     token: localStorage.getItem('tp_token') || '',
+    refreshToken: localStorage.getItem('tp_refresh') || '',
     user: null,
     memberships: [],
   }),
@@ -22,8 +23,14 @@ export const useAuthStore = defineStore('auth', {
     async login(username, password) {
       const data = await apiLogin(username, password)
       this.token = data.access_token
+      this.refreshToken = data.refresh_token
       localStorage.setItem('tp_token', this.token)
+      localStorage.setItem('tp_refresh', this.refreshToken)
       await this.fetchMe()
+    },
+    setToken(token) {
+      this.token = token
+      localStorage.setItem('tp_token', token)
     },
     async fetchMe() {
       const data = await getMe()
@@ -34,9 +41,11 @@ export const useAuthStore = defineStore('auth', {
     },
     logout() {
       this.token = ''
+      this.refreshToken = ''
       this.user = null
       this.memberships = []
       localStorage.removeItem('tp_token')
+      localStorage.removeItem('tp_refresh')
     },
   },
 })

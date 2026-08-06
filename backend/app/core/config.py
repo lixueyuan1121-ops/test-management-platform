@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "please-change-this-secret-in-production"
     JWT_ALG: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:8080"
 
