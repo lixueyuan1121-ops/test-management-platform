@@ -31,6 +31,9 @@ export const upsertReport = (data) => http.post('/daily-reports', data)
 
 export const dailyStats = (project_id, date) => http.get('/stats/daily', { params: { project_id, date } })
 
+// 首页跨项目汇总：今日 KPI + 近 7 天趋势（平台管理员看全部/成员看参与项目）
+export const overviewStats = (date) => http.get('/stats/overview', { params: { date } })
+
 // ===== P2: 工作量统计 + 遗留问题 =====
 export const workloadStats = (project_id, from, to) => http.get('/stats/workload', { params: { project_id, from, to } })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
