@@ -1,18 +1,20 @@
 <template>
   <el-container class="layout">
-    <el-aside width="226px" class="aside">
-      <div class="logo">
-        <Logo :size="34" :animated="false" />
-        <span class="logo-text">测试管理平台</span>
+    <el-aside :width="collapsed ? '64px' : '226px'" class="aside">
+      <div class="logo" :class="{ 'logo-collapsed': collapsed }">
+        <TargetMark :size="32" :animated="false" class="brand-mark" />
+        <span v-show="!collapsed" class="logo-text">测试管理平台</span>
       </div>
       <el-menu
         :default-active="activeMenu"
         :default-openeds="openSubs"
+        :collapse="collapsed"
+        :collapse-transition="false"
         router
         class="menu"
         background-color="#1f2d3d"
         text-color="#bfcbd9"
-        active-text-color="#409eff"
+        active-text-color="#00e5a0"
       >
         <!-- 概览 -->
         <el-menu-item index="/dashboard">
@@ -53,6 +55,9 @@
     <el-container>
       <el-header class="header">
         <div class="header-left">
+          <el-icon class="collapse-btn" :title="collapsed ? '展开侧栏' : '收起侧栏'" @click="toggleCollapse">
+            <component :is="collapsed ? Expand : Fold" />
+          </el-icon>
           <span class="role-tag">{{ roleLabel }}</span>
         </div>
         <div class="header-right">
@@ -78,18 +83,26 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
+  Fold, Expand,
 } from '@element-plus/icons-vue'
-import Logo from '@/components/Logo.vue'
+import TargetMark from '@/components/TargetMark.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
+
+// 侧栏折叠：状态持久化，刷新保持
+const collapsed = ref(localStorage.getItem('tp_sidebar_collapsed') === '1')
+function toggleCollapse() {
+  collapsed.value = !collapsed.value
+  localStorage.setItem('tp_sidebar_collapsed', collapsed.value ? '1' : '0')
+}
 
 const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
 const openSubs = ['org', 'exec', 'stats', 'tools']
@@ -119,30 +132,58 @@ function onCommand(cmd) {
 
 <style scoped>
 .layout { height: 100vh; }
-.aside { background: #1f2d3d; box-shadow: 2px 0 8px rgba(0,0,0,0.08); }
+.aside {
+  background: #1f2d3d; box-shadow: 2px 0 8px rgba(0,0,0,0.08);
+  transition: width 0.25s ease;
+  overflow: hidden;
+}
 .logo {
   height: 60px; display: flex; align-items: center; gap: 8px;
-  padding: 0 14px; color: #fff;
+  padding: 0 14px; color: #fff; white-space: nowrap;
   animation: fadeInUp 0.5s ease-out both;
 }
+.logo-collapsed { padding: 0; justify-content: center; }
 .logo-text { font-size: 15px; font-weight: 600; letter-spacing: 0.5px; }
+/* 靶心图标：深色侧栏上提亮 + 上色，保证清晰 */
+.brand-mark {
+  --tm-line: #4fd8c4;     /* 外靶环/取景框：亮青 */
+  --tm-dim: #3b9ad9;      /* 内环/准星：亮蓝 */
+  --tm-signal: #00e5a0;   /* 扫描环 + 对勾：信号青绿 */
+  filter: drop-shadow(0 0 5px rgba(0, 229, 160, 0.35));
+}
 .menu { border-right: none; }
+/* 折叠态菜单宽度对齐 aside(64px)，消除默认 200px 造成的横向溢出 */
+.menu:not(.el-menu--collapse) { width: 226px; }
+.menu.el-menu--collapse { width: 64px; }
 .menu :deep(.el-sub-menu__title:hover),
 .menu :deep(.el-menu-item:hover) { background-color: #263445 !important; }
-.menu :deep(.el-menu-item.is-active) { background-color: #263445 !important; }
+.menu :deep(.el-menu-item.is-active) {
+  background-color: #263445 !important;
+  border-left: 3px solid #00e5a0;
+}
+/* 激活态图标也染青绿 */
+.menu :deep(.el-menu-item.is-active .el-icon) { color: #00e5a0; }
 
 .header {
   display: flex; align-items: center; justify-content: space-between;
   background: #fff; border-bottom: 1px solid #ebeef5;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
+.header-left { display: flex; align-items: center; gap: 14px; }
+.collapse-btn {
+  font-size: 20px; color: #606266; cursor: pointer;
+  padding: 6px; border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.collapse-btn:hover { color: #00b386; background: rgba(0,179,134,.08); }
 .role-tag {
-  font-size: 13px; color: #606266;
-  padding: 3px 12px; border: 1px solid #dcdfe6; border-radius: 12px;
-  background: #f4f4f5;
+  font-size: 12px; color: #00926e; letter-spacing: .5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  padding: 3px 12px; border: 1px solid rgba(0,179,134,.3); border-radius: 4px;
+  background: rgba(0,179,134,.06);
 }
 .user { cursor: pointer; color: #303133; display: flex; align-items: center; gap: 8px; }
-.avatar { background: #409eff; color: #fff; font-size: 13px; font-weight: 600; }
+.avatar { background: #00b386; color: #fff; font-size: 13px; font-weight: 600; }
 .uname { font-size: 14px; }
 .main { background: #f0f2f5; padding: 20px; }
 </style>

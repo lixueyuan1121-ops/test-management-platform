@@ -1,0 +1,97 @@
+/* ============================================================
+   全局「亮色科技风」主题
+   - 定义设计 token（供各页面 var() 引用）
+   - 覆盖 ElementPlus CSS 变量，让标准组件(按钮/表格/标签/链接)
+     一次性统一到科技风，子页面无需逐个改样式。
+   登录页(深色工业风)不受影响：它用自己 scoped 的局部变量。
+   ============================================================ */
+
+:root {
+  /* ---- 科技风设计 token ---- */
+  --tech-bg: #f4f6f9;
+  --tech-panel: #ffffff;
+  --tech-panel-2: #f7f9fc;
+  --tech-line: #e3e8ef;
+  --tech-line-strong: #d0d7e2;
+  --tech-fg: #1a1d21;
+  --tech-muted: #6b7280;
+  --tech-dim: #9aa3b2;
+  --tech-signal: #00b386;
+  --tech-signal-weak: rgba(0, 179, 134, 0.10);
+  --tech-signal-line: rgba(0, 179, 134, 0.35);
+  --tech-warn: #e6a23c;
+  --tech-info: #3b82c4;
+  --tech-danger: #e05561;
+
+  --tech-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, 'Menlo', monospace;
+
+  /* ---- 覆盖 ElementPlus 主色（影响全站按钮/链接/tag/开关等）---- */
+  --el-color-primary: #00b386;
+  --el-color-primary-light-3: #33c2a0;
+  --el-color-primary-light-5: #66d1b8;
+  --el-color-primary-light-7: #99e0cf;
+  --el-color-primary-light-8: #b3e8db;
+  --el-color-primary-light-9: #e6f7f2;
+  --el-color-primary-dark-2: #009973;
+
+  --el-bg-color-page: var(--tech-bg);
+  --el-text-color-primary: var(--tech-fg);
+  --el-text-color-regular: #414651;
+  --el-border-color: var(--tech-line);
+  --el-border-color-light: var(--tech-line);
+  --el-border-color-lighter: var(--tech-line);
+
+  --el-border-radius-base: 6px;
+}
+
+/* 卡片：细描边 + 极轻阴影 */
+.el-card {
+  border: 1px solid var(--tech-line) !important;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+}
+.el-card__header {
+  border-bottom: 1px solid var(--tech-line);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+/* 表格：冷灰表头，行 hover 青绿微染 */
+.el-table thead th {
+  background: var(--tech-panel-2) !important;
+  color: var(--tech-muted) !important;
+  font-weight: 500;
+}
+.el-table__row:hover > td,
+.el-table__body tr.hover-row > td {
+  background: var(--tech-signal-weak) !important;
+}
+
+/* 主按钮：青绿实心 + hover 轻发光 */
+.el-button--primary {
+  --el-button-bg-color: var(--tech-signal);
+  --el-button-border-color: var(--tech-signal);
+  --el-button-hover-bg-color: #00a17a;
+  --el-button-hover-border-color: #00a17a;
+  --el-button-active-bg-color: #009973;
+}
+.el-button--primary:not(.is-link):hover {
+  box-shadow: 0 0 12px rgba(0, 179, 134, 0.28);
+}
+
+/* 输入聚焦：青绿描边 + 柔光圈 */
+.el-input__wrapper.is-focus,
+.el-input__wrapper:focus-within,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--tech-signal) inset,
+              0 0 0 3px var(--tech-signal-weak) !important;
+}
+
+/* 科技风工具类 */
+.tech-eyebrow {
+  font-family: var(--tech-mono);
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--tech-signal);
+  text-transform: uppercase;
+}
+.tech-mono { font-family: var(--tech-mono); }

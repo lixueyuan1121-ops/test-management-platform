@@ -21,15 +21,15 @@
     </div>
 
     <!-- ② KPI 指标墙 -->
-    <div class="kpi-wall" v-loading="ovLoading" element-loading-background="rgba(13,15,18,0.6)">
+    <div v-if="!isEmpty" class="kpi-wall" v-loading="ovLoading" element-loading-background="rgba(255,255,255,0.6)">
       <div class="kpi ring">
         <div class="ring-wrap">
           <svg width="72" height="72" viewBox="0 0 100 100">
-            <circle cx="50" cy="50" r="42" fill="none" stroke="#2a2f37" stroke-width="9" />
-            <circle cx="50" cy="50" r="42" fill="none" stroke="#00e5a0" stroke-width="9"
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#e3e8ef" stroke-width="9" />
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#00b386" stroke-width="9"
                     stroke-linecap="round" :stroke-dasharray="RING_C" :stroke-dashoffset="ringOffset"
                     transform="rotate(-90 50 50)" class="ring-arc" />
-            <text x="50" y="56" text-anchor="middle" fill="#e6e8ea" font-size="24"
+            <text x="50" y="56" text-anchor="middle" fill="#1a1d21" font-size="24"
                   font-family="'JetBrains Mono',monospace" font-weight="700">{{ Math.round(t.submit_rate) }}</text>
           </svg>
         </div>
@@ -64,18 +64,18 @@
       </div>
     </div>
 
-    <!-- ③ 近 7 天趋势 -->
-    <div class="panel trend">
+    <!-- ③ 近 7 天趋势（有数据时） -->
+    <div v-if="!isEmpty" class="panel trend">
       <div class="trend-head">
         <div class="trend-title">近 7 天投入趋势</div>
         <div class="trend-legend">
-          <span class="lg"><i style="background:#00e5a0"></i>人时</span>
+          <span class="lg"><i style="background:#00b386"></i>人时</span>
           <span class="lg"><i style="background:#5b9bd5"></i>提交人次</span>
         </div>
       </div>
       <svg viewBox="0 0 700 180" preserveAspectRatio="none" class="trend-svg">
         <!-- 网格 -->
-        <g stroke="#2a2f37" stroke-width="1">
+        <g stroke="#e8ecf2" stroke-width="1">
           <line x1="40" y1="30" x2="660" y2="30" />
           <line x1="40" y1="70" x2="660" y2="70" />
           <line x1="40" y1="110" x2="660" y2="110" />
@@ -83,28 +83,48 @@
         </g>
         <defs>
           <linearGradient id="dashArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#00e5a0" stop-opacity="0.28" />
-            <stop offset="100%" stop-color="#00e5a0" stop-opacity="0" />
+            <stop offset="0%" stop-color="#00b386" stop-opacity="0.22" />
+            <stop offset="100%" stop-color="#00b386" stop-opacity="0" />
           </linearGradient>
         </defs>
         <!-- 面积 + 折线 -->
         <path :d="areaPath" fill="url(#dashArea)" />
-        <path :d="linePath" fill="none" stroke="#00e5a0" stroke-width="2.5" stroke-linejoin="round" class="line-glow" />
+        <path :d="linePath" fill="none" stroke="#00b386" stroke-width="2.5" stroke-linejoin="round" class="line-glow" />
         <!-- 提交人次次要柱 -->
-        <g fill="#5b9bd5" opacity="0.55">
+        <g fill="#3b82c4" opacity="0.5">
           <rect v-for="(p, i) in points" :key="'b' + i" :x="p.x - 4" :y="p.by" width="8" :height="150 - p.by" rx="1" />
         </g>
         <!-- 数据点 -->
-        <g fill="#0d0f12" stroke="#00e5a0" stroke-width="2">
+        <g fill="#ffffff" stroke="#00b386" stroke-width="2">
           <circle v-for="(p, i) in points" :key="'p' + i" :cx="p.x" :cy="p.y"
                   :r="i === points.length - 1 ? 4.5 : 3.5"
-                  :fill="i === points.length - 1 ? '#00e5a0' : '#0d0f12'" />
+                  :fill="i === points.length - 1 ? '#00b386' : '#ffffff'" />
         </g>
         <!-- x 轴标签 -->
-        <g fill="#7d858f" font-size="11" font-family="'JetBrains Mono',monospace" text-anchor="middle">
+        <g fill="#6b7280" font-size="11" font-family="'JetBrains Mono',monospace" text-anchor="middle">
           <text v-for="(p, i) in points" :key="'x' + i" :x="p.x" y="172">{{ p.label }}</text>
         </g>
       </svg>
+    </div>
+
+    <!-- ②③ 空数据态：整块科技风引导卡（替代 KPI 墙 + 趋势图） -->
+    <div v-if="isEmpty" class="empty-state panel">
+      <div class="grid-bg"></div>
+      <div class="es-inner">
+        <TargetMark :size="96" :animated="true" class="es-mark" />
+        <div class="es-eyebrow">// NO SIGNAL · 暂无运营数据</div>
+        <div class="es-title">今日尚未产生数据</div>
+        <div class="es-desc">{{ emptyCta.hint }}</div>
+        <el-button type="primary" class="es-btn" @click="$router.push(emptyCta.path)">
+          {{ emptyCta.label }} →
+        </el-button>
+        <div class="es-metrics">
+          <span>SUBMIT // --</span><i></i>
+          <span>ONLINE // --</span><i></i>
+          <span>HOURS // --</span><i></i>
+          <span>ISSUES // --</span>
+        </div>
+      </div>
     </div>
 
     <!-- ④ 快捷入口 -->
@@ -157,6 +177,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/store/auth'
 import { listProjects, overviewStats } from '@/api'
 import { Files, List, DataLine, TrendCharts } from '@element-plus/icons-vue'
+import TargetMark from '@/components/TargetMark.vue'
 
 const auth = useAuthStore()
 const projects = ref([])
@@ -191,6 +212,20 @@ const t = computed(() => overview.value?.today ?? {
   online_cnt: 0, avg_progress: 0, workload_hours: 0,
 })
 const ringOffset = computed(() => RING_C * (1 - (t.value.submit_rate || 0) / 100))
+
+// ---- 空数据态判定：今日无应交/无人时/无遗留，且近 7 天零投入 ----
+const isEmpty = computed(() => {
+  const today = t.value
+  const noToday = (today.should_submit || 0) === 0 && (today.workload_hours || 0) === 0
+  const noIssues = (overview.value?.open_issues ?? 0) === 0
+  const trend = overview.value?.trend ?? []
+  const noTrend = trend.every((d) => (d.hours || 0) === 0 && (d.submitted || 0) === 0)
+  return !ovLoading.value && noToday && noIssues && noTrend
+})
+// 空态引导入口：管理员先去派任务，成员先去填日报
+const emptyCta = computed(() => auth.isPlatformAdmin
+  ? { path: '/tasks', label: '去分配今日任务', hint: '为项目成员指派测试任务，开启今日运营' }
+  : { path: '/my-reports', label: '去填写今日日报', hint: '提交你的测试进度，点亮今日数据' })
 
 // ---- 7 天趋势 SVG 坐标 ----
 const points = computed(() => {
@@ -266,24 +301,24 @@ function roleClass(pid) {
 </script>
 
 <style scoped>
-/* 工业风 token（复用登录页体系），仅作用于本页 */
+/* 亮色科技风 token（与全局 theme.css 呼应），仅作用于本页 */
 .dashboard {
-  --ink: #0d0f12;
-  --panel: #14171c;
-  --panel-2: #171b21;
-  --line: #2a2f37;
-  --dim: #4a525c;
-  --fg: #e6e8ea;
-  --muted: #7d858f;
-  --signal: #00e5a0;
+  --ink: #f4f6f9;
+  --panel: #ffffff;
+  --panel-2: #f7f9fc;
+  --line: #e3e8ef;
+  --dim: #9aa3b2;
+  --fg: #1a1d21;
+  --muted: #6b7280;
+  --signal: #00b386;
   --warn: #e6a23c;
-  --info: #5b9bd5;
+  --info: #3b82c4;
   --mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, monospace;
 
   display: flex;
   flex-direction: column;
   gap: 16px;
-  /* 让首页内容区铺满深色底：抵消 el-main 的 20px padding */
+  /* 铺满内容区底色：抵消 el-main 的 20px padding */
   margin: -20px;
   padding: 20px;
   min-height: calc(100vh - 60px);
@@ -291,13 +326,13 @@ function roleClass(pid) {
   color: var(--fg);
 }
 
-.panel { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.panel { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
 .grid-bg {
   position: absolute; inset: 0;
   background-image:
     linear-gradient(var(--line) 1px, transparent 1px),
     linear-gradient(90deg, var(--line) 1px, transparent 1px);
-  background-size: 40px 40px; opacity: 0.18;
+  background-size: 40px 40px; opacity: 0.6;
   mask-image: radial-gradient(120% 120% at 15% 0%, #000 30%, transparent 80%);
   -webkit-mask-image: radial-gradient(120% 120% at 15% 0%, #000 30%, transparent 80%);
   pointer-events: none;
@@ -313,9 +348,38 @@ function roleClass(pid) {
 .clock { font-size: 30px; font-weight: 700; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
 .clock .date { font-size: 12px; color: var(--muted); letter-spacing: 2px; font-weight: 400; }
 .status-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; font-size: 11px; letter-spacing: 1.5px; color: var(--fg); }
-.dot { width: 7px; height: 7px; background: var(--signal); box-shadow: 0 0 8px var(--signal); animation: pulse 1.8s ease-in-out infinite; }
+.dot { width: 7px; height: 7px; background: var(--signal); box-shadow: 0 0 6px rgba(0,179,134,.6); animation: pulse 1.8s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 .proj-cnt { margin-top: 6px; font-size: 11px; letter-spacing: 1.5px; color: var(--dim); }
+
+/* ②③ 空数据态引导卡 */
+.empty-state {
+  min-height: 340px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 40px 24px;
+}
+.es-inner {
+  position: relative; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+}
+.es-mark {
+  --tm-line: #cbd5e1; --tm-dim: #94a3b8; --tm-signal: var(--signal);
+  filter: drop-shadow(0 0 10px rgba(0,179,134,.25));
+  margin-bottom: 22px;
+}
+.es-eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 3px; color: var(--signal); }
+.es-title { font-size: 22px; font-weight: 700; letter-spacing: .5px; margin-top: 12px; color: var(--fg); }
+.es-desc { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: 420px; line-height: 1.6; }
+.es-btn {
+  margin-top: 24px; font-family: var(--mono); letter-spacing: .5px;
+  --el-button-bg-color: var(--signal); --el-button-border-color: var(--signal);
+  --el-button-hover-bg-color: #00c896; --el-button-hover-border-color: #00c896;
+}
+.es-metrics {
+  display: flex; align-items: center; gap: 14px; margin-top: 30px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 1.5px; color: var(--dim);
+}
+.es-metrics i { width: 1px; height: 12px; background: var(--line); display: inline-block; }
 
 /* ② KPI 指标墙 */
 .kpi-wall { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
@@ -324,7 +388,7 @@ function roleClass(pid) {
   border-radius: 8px; padding: 18px; overflow: hidden;
   transition: border-color .18s ease, box-shadow .2s ease, transform .18s ease;
 }
-.kpi:hover { border-color: var(--signal); box-shadow: 0 0 20px rgba(0,229,160,.14); transform: translateY(-2px); }
+.kpi:hover { border-color: var(--signal); box-shadow: 0 0 16px rgba(0,179,134,.18); transform: translateY(-2px); }
 .kpi-lbl { font-family: var(--mono); font-size: 10px; letter-spacing: 1.5px; color: var(--muted); text-transform: uppercase; }
 .kpi-num { font-family: var(--mono); font-size: 34px; font-weight: 700; line-height: 1.1; margin-top: 10px; color: var(--signal); font-variant-numeric: tabular-nums; }
 .kpi-num small { font-size: 15px; color: var(--dim); margin-left: 3px; }
@@ -335,7 +399,7 @@ function roleClass(pid) {
 .ring-wrap { flex: 0 0 auto; }
 .ring-text { flex: 1; }
 .ring-text .kpi-foot { margin-top: 10px; }
-.ring-arc { filter: drop-shadow(0 0 4px rgba(0,229,160,.5)); transition: stroke-dashoffset .6s ease; }
+.ring-arc { filter: drop-shadow(0 0 3px rgba(0,179,134,.4)); transition: stroke-dashoffset .6s ease; }
 
 /* ③ 趋势条 */
 .trend { padding: 20px 24px; }
@@ -345,7 +409,7 @@ function roleClass(pid) {
 .lg { display: inline-flex; align-items: center; gap: 6px; }
 .lg i { width: 10px; height: 2px; display: inline-block; }
 .trend-svg { width: 100%; height: auto; display: block; }
-.line-glow { filter: drop-shadow(0 0 3px rgba(0,229,160,.4)); }
+.line-glow { filter: drop-shadow(0 0 2px rgba(0,179,134,.3)); }
 
 /* ④ 快捷入口 */
 .quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
@@ -354,7 +418,7 @@ function roleClass(pid) {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   cursor: pointer; transition: border-color .18s ease, box-shadow .2s ease, transform .18s ease;
 }
-.qcard:hover { border-color: var(--signal); box-shadow: 0 0 18px rgba(0,229,160,.12); transform: translateY(-2px); }
+.qcard:hover { border-color: var(--signal); box-shadow: 0 0 14px rgba(0,179,134,.16); transform: translateY(-2px); }
 .qicon { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--signal); font-size: 20px; flex: 0 0 auto; }
 .qtitle { font-size: 15px; font-weight: 600; }
 .qdesc { font-size: 12px; color: var(--muted); margin-top: 3px; }
@@ -367,10 +431,10 @@ function roleClass(pid) {
 
 /* 深色标签 */
 .dtag { display: inline-block; font-size: 11px; font-family: var(--mono); padding: 2px 9px; border-radius: 3px; border: 1px solid; letter-spacing: .5px; }
-.dtag.admin { color: #ff6b81; border-color: rgba(255,107,129,.4); background: rgba(255,107,129,.08); }
-.dtag.member { color: var(--signal); border-color: rgba(0,229,160,.4); background: rgba(0,229,160,.08); }
+.dtag.admin { color: #e05561; border-color: rgba(224,85,97,.35); background: rgba(224,85,97,.07); }
+.dtag.member { color: var(--signal); border-color: rgba(0,179,134,.4); background: rgba(0,179,134,.08); }
 .dtag.guest { color: var(--muted); border-color: var(--line); background: transparent; }
-.dtag.active { color: var(--signal); border-color: rgba(0,229,160,.4); background: rgba(0,229,160,.08); }
+.dtag.active { color: var(--signal); border-color: rgba(0,179,134,.4); background: rgba(0,179,134,.08); }
 
 /* 深色皮 el-table（仅作用于本页表格） */
 .dark-table { background: transparent; --el-table-border-color: var(--line); }

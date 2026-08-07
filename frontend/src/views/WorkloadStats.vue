@@ -85,7 +85,7 @@ function render() {
     xAxis: { type: 'category', data: members.map((m) => m.name), axisLabel: { interval: 0 } },
     yAxis: [{ type: 'value', name: '人时' }],
     series: [
-      { name: '工作量(人时)', type: 'bar', data: members.map((m) => m.hours), itemStyle: { color: '#409eff' }, barMaxWidth: 40 },
+      { name: '工作量(人时)', type: 'bar', data: members.map((m) => m.hours), itemStyle: { color: '#00b386' }, barMaxWidth: 40 },
       { name: '上线数', type: 'bar', data: members.map((m) => m.online_cnt), itemStyle: { color: '#67c23a' }, barMaxWidth: 40 },
     ],
   })
@@ -97,7 +97,7 @@ function render() {
     xAxis: { type: 'category', data: daily.map((d) => d.date), boundaryGap: false },
     yAxis: [{ type: 'value', name: '人时' }, { type: 'value', name: '上线数' }],
     series: [
-      { name: '工作量(人时)', type: 'line', smooth: true, data: daily.map((d) => d.hours), areaStyle: { opacity: 0.15 }, itemStyle: { color: '#409eff' } },
+      { name: '工作量(人时)', type: 'line', smooth: true, data: daily.map((d) => d.hours), areaStyle: { opacity: 0.15 }, itemStyle: { color: '#00b386' } },
       { name: '当日上线', type: 'line', yAxisIndex: 1, data: daily.map((d) => d.online_cnt), itemStyle: { color: '#67c23a' } },
     ],
   })

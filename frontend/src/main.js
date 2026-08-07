@@ -4,6 +4,7 @@ import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import '@/styles/anim.css'
+import '@/styles/theme.css'   // 亮色科技风：须在 element-plus 样式之后，才能覆盖其 CSS 变量
 
 import App from './App.vue'
 import router from './router'
