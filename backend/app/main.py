@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.db.migrate import ensure_task_columns
+from app.db.migrate import ensure_task_columns, migrate_task_status
 from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
@@ -22,6 +22,7 @@ def init_db() -> None:
     """建表 + 种子平台管理员。P0 用 create_all；生产建议用 alembic 迁移。"""
     Base.metadata.create_all(bind=engine)
     ensure_task_columns()
+    migrate_task_status()
     db = SessionLocal()
     try:
         admin = db.query(User).filter_by(username=settings.SEED_ADMIN_USERNAME).first()

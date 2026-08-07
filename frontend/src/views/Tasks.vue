@@ -26,7 +26,22 @@
         </el-table-column>
         <el-table-column prop="priority" label="优先级" width="80" />
         <el-table-column prop="assigned_to_name" label="指派给" width="100" />
-        <el-table-column prop="status" label="状态" width="90" />
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }">
+            <el-dropdown trigger="click" @command="(s) => changeStatus(row, s)">
+              <el-tag :type="STATUS_META[row.status]?.type || 'info'" effect="light" size="small" class="status-trigger">
+                {{ STATUS_META[row.status]?.label || row.status }}<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-tag>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="(m, k) in STATUS_META" :key="k" :command="k" :disabled="k === row.status">
+                    {{ m.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="140">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -56,6 +71,11 @@
         <el-form-item label="分配日期" required>
           <el-date-picker v-model="form.assigned_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
         </el-form-item>
+        <el-form-item v-if="dialog.id" label="状态">
+          <el-select v-model="form.status" style="width:100%">
+            <el-option v-for="(m, k) in STATUS_META" :key="k" :label="m.label" :value="k" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="说明"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
@@ -71,6 +91,15 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday } from '@/api'
+import { ArrowDown } from '@element-plus/icons-vue'
+
+// 任务状态四态：待测 → 测试中 →(阻塞)→ 已上线；标签配色与首页 KPI 一致
+const STATUS_META = {
+  pending: { label: '待测', type: 'info' },
+  testing: { label: '测试中', type: 'warning' },
+  blocked: { label: '阻塞', type: 'danger' },
+  online: { label: '已上线', type: 'success' },
+}
 
 const auth = useAuthStore()
 const projects = ref([])
@@ -80,7 +109,7 @@ const tasks = ref([])
 const members = ref([])
 const loading = ref(false)
 const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: '', description: '' })
+const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: '', description: '', status: 'pending' })
 
 onMounted(async () => {
   projects.value = await listProjects()
@@ -103,7 +132,7 @@ async function load() {
 
 function openCreate() {
   dialog.id = null
-  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: date.value, description: '' })
+  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: date.value, description: '', status: 'pending' })
   dialog.visible = true
 }
 function openEdit(row) {
@@ -111,7 +140,7 @@ function openEdit(row) {
   Object.assign(form, {
     title: row.title, requirement_url: row.requirement_url || '', developer: row.developer || '',
     module: row.module || '', priority: row.priority, assigned_to: row.assigned_to,
-    assigned_date: row.assigned_date, description: row.description || '',
+    assigned_date: row.assigned_date, description: row.description || '', status: row.status,
   })
   dialog.visible = true
 }
@@ -125,6 +154,12 @@ async function submit() {
     ElMessage.success('保存成功')
         await load()
   } finally { dialog.saving = false; dialog.visible = false }
+}
+async function changeStatus(row, s) {
+  if (s === row.status) return
+  await updateTask(row.id, { status: s })
+  row.status = s
+  ElMessage.success(`状态已更新为「${STATUS_META[s].label}」`)
 }
 async function onDel(row) {
   await ElMessageBox.confirm(`删除任务「${row.title}」？`, '确认', { type: 'warning' })
@@ -143,4 +178,5 @@ async function onCopy() {
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
+.status-trigger { cursor: pointer; }
 </style>

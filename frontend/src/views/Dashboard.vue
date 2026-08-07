@@ -20,7 +20,7 @@
       </div>
     </div>
 
-    <!-- ② KPI 指标墙 -->
+    <!-- ② KPI 指标墙：今日派单流转状态维度 -->
     <div v-if="!isEmpty" class="kpi-wall" v-loading="ovLoading" element-loading-background="rgba(255,255,255,0.6)">
       <div class="kpi ring">
         <div class="ring-wrap">
@@ -30,31 +30,37 @@
                     stroke-linecap="round" :stroke-dasharray="RING_C" :stroke-dashoffset="ringOffset"
                     transform="rotate(-90 50 50)" class="ring-arc" />
             <text x="50" y="56" text-anchor="middle" fill="#1a1d21" font-size="24"
-                  font-family="'JetBrains Mono',monospace" font-weight="700">{{ Math.round(t.submit_rate) }}</text>
+                  font-family="'JetBrains Mono',monospace" font-weight="700">{{ Math.round(t.done_rate) }}</text>
           </svg>
         </div>
         <div class="ring-text">
-          <div class="kpi-lbl">今日提交率</div>
-          <div class="kpi-foot">{{ t.submitted }} / {{ t.should_submit }} 已提交</div>
+          <div class="kpi-lbl">今日完成率</div>
+          <div class="kpi-foot">{{ t.online }} / {{ t.total }} 已上线</div>
         </div>
       </div>
 
       <div class="kpi">
-        <div class="kpi-lbl">今日上线</div>
-        <div class="kpi-num">{{ t.online_cnt }}</div>
-        <div class="kpi-foot">已上线任务</div>
+        <div class="kpi-lbl">今日任务</div>
+        <div class="kpi-num">{{ t.total }}</div>
+        <div class="kpi-foot">待测 {{ t.pending }}</div>
       </div>
 
       <div class="kpi info">
-        <div class="kpi-lbl">平均进度</div>
-        <div class="kpi-num">{{ t.avg_progress }}<small>%</small></div>
-        <div class="kpi-foot">全员当日均值</div>
+        <div class="kpi-lbl">测试中</div>
+        <div class="kpi-num">{{ t.testing }}</div>
+        <div class="kpi-foot">正在执行</div>
+      </div>
+
+      <div class="kpi danger">
+        <div class="kpi-lbl">阻塞</div>
+        <div class="kpi-num">{{ t.blocked }}</div>
+        <div class="kpi-foot">需处理</div>
       </div>
 
       <div class="kpi">
-        <div class="kpi-lbl">今日总人时</div>
-        <div class="kpi-num">{{ t.workload_hours }}<small>h</small></div>
-        <div class="kpi-foot">累计投入</div>
+        <div class="kpi-lbl">已上线</div>
+        <div class="kpi-num">{{ t.online }}</div>
+        <div class="kpi-foot">今日完成</div>
       </div>
 
       <div class="kpi warn">
@@ -67,10 +73,10 @@
     <!-- ③ 近 7 天趋势（有数据时） -->
     <div v-if="!isEmpty" class="panel trend">
       <div class="trend-head">
-        <div class="trend-title">近 7 天投入趋势</div>
+        <div class="trend-title">近 7 天派单趋势</div>
         <div class="trend-legend">
-          <span class="lg"><i style="background:#00b386"></i>人时</span>
-          <span class="lg"><i style="background:#5b9bd5"></i>提交人次</span>
+          <span class="lg"><i style="background:#00b386"></i>任务量</span>
+          <span class="lg"><i style="background:#5b9bd5"></i>上线量</span>
         </div>
       </div>
       <svg viewBox="0 0 700 180" preserveAspectRatio="none" class="trend-svg">
@@ -119,9 +125,9 @@
           {{ emptyCta.label }} →
         </el-button>
         <div class="es-metrics">
-          <span>SUBMIT // --</span><i></i>
+          <span>TASK // --</span><i></i>
+          <span>TESTING // --</span><i></i>
           <span>ONLINE // --</span><i></i>
-          <span>HOURS // --</span><i></i>
           <span>ISSUES // --</span>
         </div>
       </div>
@@ -208,37 +214,36 @@ async function loadOverview() {
 
 // ---- 今日 KPI（带默认值，overview 未到时显示 0）----
 const t = computed(() => overview.value?.today ?? {
-  should_submit: 0, submitted: 0, not_submitted: 0, submit_rate: 0,
-  online_cnt: 0, avg_progress: 0, workload_hours: 0,
+  total: 0, pending: 0, testing: 0, blocked: 0, online: 0, done_rate: 0,
 })
-const ringOffset = computed(() => RING_C * (1 - (t.value.submit_rate || 0) / 100))
+const ringOffset = computed(() => RING_C * (1 - (t.value.done_rate || 0) / 100))
 
-// ---- 空数据态判定：今日无应交/无人时/无遗留，且近 7 天零投入 ----
+// ---- 空数据态判定：今日无任务、无遗留，且近 7 天零派单/零上线 ----
 const isEmpty = computed(() => {
   const today = t.value
-  const noToday = (today.should_submit || 0) === 0 && (today.workload_hours || 0) === 0
+  const noToday = (today.total || 0) === 0
   const noIssues = (overview.value?.open_issues ?? 0) === 0
   const trend = overview.value?.trend ?? []
-  const noTrend = trend.every((d) => (d.hours || 0) === 0 && (d.submitted || 0) === 0)
+  const noTrend = trend.every((d) => (d.total || 0) === 0 && (d.online || 0) === 0)
   return !ovLoading.value && noToday && noIssues && noTrend
 })
-// 空态引导入口：管理员先去派任务，成员先去填日报
+// 空态引导入口：管理员先去派任务，成员则今日暂无指派
 const emptyCta = computed(() => auth.isPlatformAdmin
-  ? { path: '/tasks', label: '去分配今日任务', hint: '为项目成员指派测试任务，开启今日运营' }
-  : { path: '/my-reports', label: '去填写今日日报', hint: '提交你的测试进度，点亮今日数据' })
+  ? { path: '/tasks', label: '去分配今日任务', hint: '为项目成员指派测试任务，开启今日流转' }
+  : { path: '/my-reports', label: '查看我的日报', hint: '今日暂无指派给你的测试任务' })
 
-// ---- 7 天趋势 SVG 坐标 ----
+// ---- 7 天趋势 SVG 坐标（折线=任务量，次要柱=上线量）----
 const points = computed(() => {
   const data = overview.value?.trend ?? []
   if (!data.length) return []
   const x0 = 40, x1 = 660, yTop = 40, yBot = 150
-  const maxH = Math.max(1, ...data.map((d) => d.hours))
-  const maxS = Math.max(1, ...data.map((d) => d.submitted))
+  const maxT = Math.max(1, ...data.map((d) => d.total))
+  const maxO = Math.max(1, ...data.map((d) => d.online))
   const step = data.length > 1 ? (x1 - x0) / (data.length - 1) : 0
   return data.map((d, i) => {
     const x = x0 + step * i
-    const y = yBot - (d.hours / maxH) * (yBot - yTop)          // 人时折线 y
-    const bh = (d.submitted / maxS) * 18                        // 柱高（0-18）
+    const y = yBot - (d.total / maxT) * (yBot - yTop)          // 任务量折线 y
+    const bh = (d.online / maxO) * 18                           // 柱高（0-18）
     const by = yBot - bh                                        // 柱顶 y
     const label = i === data.length - 1 ? '今日' : d.date.slice(5)
     return { x, y, by, label }
@@ -382,7 +387,7 @@ function roleClass(pid) {
 .es-metrics i { width: 1px; height: 12px; background: var(--line); display: inline-block; }
 
 /* ② KPI 指标墙 */
-.kpi-wall { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+.kpi-wall { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
 .kpi {
   position: relative; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 18px; overflow: hidden;
@@ -395,6 +400,7 @@ function roleClass(pid) {
 .kpi-foot { font-size: 11px; color: var(--muted); margin-top: 8px; font-family: var(--mono); }
 .kpi.warn .kpi-num { color: var(--warn); }
 .kpi.info .kpi-num { color: var(--info); }
+.kpi.danger .kpi-num { color: #e05561; }
 .kpi.ring { display: flex; align-items: center; gap: 14px; }
 .ring-wrap { flex: 0 0 auto; }
 .ring-text { flex: 1; }
@@ -461,6 +467,9 @@ function roleClass(pid) {
 @keyframes dashUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
 
 /* 响应式 */
+@media (max-width: 1300px) {
+  .kpi-wall { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 980px) {
   .kpi-wall { grid-template-columns: repeat(2, 1fr); }
   .quick { grid-template-columns: repeat(2, 1fr); }
