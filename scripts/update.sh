@@ -28,7 +28,28 @@ fi
 # ---- 1. 拉取最新代码，顺带看 requirements 是否变化 ----
 echo "==> git pull"
 REQ_HASH_BEFORE="$(shasum "$BACKEND/requirements.txt" 2>/dev/null | awk '{print $1}' || true)"
-git pull
+
+# 拉取封装：应对到 GitHub 的偶发 TLS 握手中断
+#   (gnutls_handshake() failed / TLS connection was non-properly terminated)
+# 策略：正常重试 3 次；仍失败则临时降 HTTP/1.1 再试 2 次（HTTP/2 握手不稳时有效）。
+robust_git_pull() {
+  local i
+  for i in 1 2 3; do
+    if git pull; then return 0; fi
+    echo "   git pull 第 $i 次失败，3 秒后重试…" >&2
+    sleep 3
+  done
+  echo "   多次失败，改用 HTTP/1.1 重试（应对 HTTP/2 握手中断）…" >&2
+  for i in 1 2; do
+    if git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 pull; then return 0; fi
+    echo "   HTTP/1.1 第 $i 次失败，3 秒后重试…" >&2
+    sleep 3
+  done
+  echo "!! git pull 反复失败。多为服务器到 GitHub 的网络问题，可稍后重试，" >&2
+  echo "   或改用 SSH 远程：git remote set-url origin git@github.com:lixueyuan1121-ops/test-management-platform.git" >&2
+  return 1
+}
+robust_git_pull
 REQ_HASH_AFTER="$(shasum "$BACKEND/requirements.txt" 2>/dev/null | awk '{print $1}' || true)"
 
 # ---- 2. 依赖变化才重装 ----
