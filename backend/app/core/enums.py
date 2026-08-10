@@ -58,6 +58,20 @@ class ToolStatus(str, enum.Enum):
     offline = "offline"
 
 
+class AiTaskStatus(str, enum.Enum):
+    """一次 AI 生成任务的生命周期。"""
+    running = "running"    # 生成中（subprocess 执行 claude）
+    done = "done"          # 完成并落库
+    failed = "failed"      # 失败（超时/CLI 错误/无输出）
+
+
+class AiInputType(str, enum.Enum):
+    """AI 生成的输入来源。"""
+    text = "text"    # 手动粘贴需求文本
+    url = "url"      # 任务需求地址
+    file = "file"    # 上传需求文档
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写

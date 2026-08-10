@@ -9,3 +9,6 @@ pydantic==2.10.4
 pydantic-settings==2.7.1
 python-multipart==0.0.20
 alembic==1.14.0
+python-docx==1.2.0
+pypdf==6.15.0
+requests==2.34.2

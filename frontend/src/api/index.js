@@ -59,3 +59,68 @@ export const createTool = (data) => http.post('/tools', data)
 export const updateTool = (id, data) => http.patch(`/tools/${id}`, data)
 export const deleteTool = (id) => http.delete(`/tools/${id}`)
 export const toggleTool = (id) => http.patch(`/tools/${id}/toggle`)
+
+// ===== QA Copilot：AI 生成测试点 =====
+export const aiStatus = () => http.get('/ai/status')
+export const listAiTasks = (project_id, limit = 20) => http.get('/ai/tasks', { params: { project_id, limit } })
+export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
+export const adoptCase = (id, adopted) => http.patch(`/ai/testcases/${id}`, { adopted })
+export const extractUrl = (url) => http.post('/ai/extract-url', { url })
+export const extractFile = (file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return http.post('/ai/extract-file', fd)
+}
+
+// SSE 流式生成：axios 不支持流式读取，改用原生 fetch 读 text/event-stream。
+// token 直接取 localStorage（与 auth store 同源键 tp_token），避免与 store 循环依赖。
+// 回调：onDelta(增量文本) / onDone(落库结果 {cases,meta,status}) / onError(msg)。
+export async function streamTestcases(payload, { onDelta, onDone, onError, signal } = {}) {
+  let resp
+  try {
+    resp = await fetch('/api/ai/testcases', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('tp_token') || ''}`,
+      },
+      body: JSON.stringify(payload),
+      signal,
+    })
+  } catch (e) {
+    onError?.(e.name === 'AbortError' ? '已取消' : '网络错误，无法连接生成服务')
+    return
+  }
+  if (!resp.ok || !resp.body) {
+    let msg = `生成请求失败（${resp.status}）`
+    try { const j = await resp.json(); if (j?.msg) msg = j.msg } catch { /* 非 JSON 忽略 */ }
+    onError?.(msg)
+    return
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'))
+        if (!dataLine) continue
+        const jsonStr = dataLine.slice(5).trim()
+        if (!jsonStr) continue
+        let evt
+        try { evt = JSON.parse(jsonStr) } catch { continue }
+        if (evt.type === 'delta') onDelta?.(evt.text)
+        else if (evt.type === 'done') onDone?.(evt)
+        else if (evt.type === 'error') onError?.(evt.msg)
+      }
+    }
+  } catch (e) {
+    onError?.(e.name === 'AbortError' ? '已取消' : '读取流失败')
+  }
+}

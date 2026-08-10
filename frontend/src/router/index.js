@@ -10,6 +10,7 @@ const routes = [
     children: [
       { path: '', redirect: '/dashboard' },
       { path: 'dashboard', name: 'dashboard', component: () => import('@/views/Dashboard.vue') },
+      { path: 'ai-testgen', name: 'ai-testgen', component: () => import('@/views/AITestGen.vue') },
       { path: 'projects', name: 'projects', component: () => import('@/views/Projects.vue'), meta: { platformAdmin: true } },
       { path: 'users', name: 'users', component: () => import('@/views/Users.vue'), meta: { platformAdmin: true } },
       { path: 'projects/:id/members', name: 'project-members', component: () => import('@/views/Members.vue') },

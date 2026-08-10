@@ -6,6 +6,7 @@ from app.models.report import DailyReport
 from app.models.issue import RemainingIssue
 from app.models.integration import Integration, ApiToken, IntegrationEvent
 from app.models.tool import ToolCategory, TestTool
+from app.models.ai import AiTask, TestCase
 
 __all__ = [
     "User",
@@ -20,4 +21,6 @@ __all__ = [
     "IntegrationEvent",
     "ToolCategory",
     "TestTool",
+    "AiTask",
+    "TestCase",
 ]

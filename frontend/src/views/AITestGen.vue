@@ -1,0 +1,421 @@
+<template>
+  <div class="ai-testgen">
+    <!-- 输入区 -->
+    <el-card class="input-card">
+      <template #header>
+        <div class="card-head">
+          <div class="title-wrap">
+            <el-icon class="title-icon"><MagicStick /></el-icon>
+            <div>
+              <div class="title">AI 测试助手 · QA Copilot</div>
+              <div class="subtitle">粘贴需求，Claude 秒级拆解出结构化、可执行的测试点清单</div>
+            </div>
+          </div>
+          <el-tag v-if="!aiAvailable" type="danger" effect="light">AI 服务不可用</el-tag>
+          <el-tag v-else type="success" effect="light" class="mono">claude · ready</el-tag>
+        </div>
+      </template>
+
+      <div class="form-row">
+        <el-select v-model="pid" placeholder="选择项目" style="width:200px" @change="onProjectChange">
+          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+        </el-select>
+        <el-select v-model="taskId" placeholder="关联任务（可选）" clearable filterable style="width:240px">
+          <el-option v-for="t in tasks" :key="t.id" :label="t.title" :value="t.id" />
+        </el-select>
+      </div>
+
+      <div class="mode-row">
+        <el-button
+          v-for="m in MODES"
+          :key="m.k"
+          :type="inputType === m.k ? 'primary' : 'default'"
+          size="small"
+          :disabled="running || extracting"
+          @click="inputType = m.k"
+        >{{ m.label }}</el-button>
+      </div>
+
+      <div v-if="inputType === 'url'" class="extract-row-wrap">
+        <div class="extract-row">
+          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="extracting" @keyup.enter="doExtractUrl">
+            <template #prepend>URL</template>
+          </el-input>
+          <el-button type="primary" :loading="extracting" :disabled="!urlInput.trim()" @click="doExtractUrl">抓取正文</el-button>
+        </div>
+        <div class="extract-tip">支持普通网页与飞书文档（飞书需管理员配置应用凭据并把文档共享给应用）</div>
+      </div>
+
+      <el-upload
+        v-else-if="inputType === 'file'"
+        :auto-upload="false"
+        :show-file-list="false"
+        :on-change="onFilePick"
+        accept=".txt,.md,.markdown,.docx,.pdf"
+        drag
+        class="upload-row"
+      >
+        <el-icon class="up-icon"><UploadFilled /></el-icon>
+        <div class="up-text">拖拽或点击上传需求文档<br><span>支持 txt / md / docx / pdf，≤ 5MB</span></div>
+      </el-upload>
+
+      <div v-else class="text-tools">
+        <el-button text type="primary" @click="fillDemo" :disabled="running">填充示例需求</el-button>
+      </div>
+
+      <div v-if="sourceInfo" class="source-info">
+        <el-icon><Document /></el-icon>
+        <span>来源：{{ sourceInfo.label }} · 提取 {{ sourceInfo.chars }} 字（可在下方编辑后再生成）</span>
+      </div>
+
+      <el-input
+        v-model="requirement"
+        type="textarea"
+        :autosize="{ minRows: 6, maxRows: 14 }"
+        :placeholder="reqPlaceholder"
+        :disabled="running"
+        class="req-input"
+        v-loading="extracting"
+      />
+
+      <div class="actions">
+        <el-button
+          type="primary"
+          size="large"
+          :loading="running"
+          :disabled="!aiAvailable || !pid || !requirement.trim()"
+          @click="generate"
+        >
+          <el-icon v-if="!running" class="btn-icon"><MagicStick /></el-icon>
+          {{ running ? '生成中…' : '生成测试点' }}
+        </el-button>
+        <el-button v-if="running" size="large" @click="cancel">取消</el-button>
+      </div>
+    </el-card>
+
+    <!-- 生成过程反馈 -->
+    <el-card v-if="running" class="stream-card">
+      <div class="running-head">
+        <span class="pulse-dot" />
+        <span class="running-text">{{ phaseText }}</span>
+        <span class="elapsed mono">{{ (elapsed / 1000).toFixed(1) }}s</span>
+      </div>
+      <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" color="#00b386" />
+      <pre v-if="rawStream" class="raw-stream">{{ rawStream }}</pre>
+      <div v-else class="raw-hint">Claude 正在阅读需求并设计测试点，通常需要 30–60 秒，请稍候…</div>
+    </el-card>
+
+    <!-- 结果区 -->
+    <el-card v-if="cases.length || viewingId" class="result-card">
+      <template #header>
+        <div class="card-head">
+          <span class="result-title">测试点清单<template v-if="cases.length"> · {{ cases.length }} 条</template></span>
+          <div class="result-tools">
+            <el-select
+              v-model="viewingId"
+              placeholder="查看历史生成"
+              clearable
+              size="small"
+              style="width:260px"
+              @change="onViewHistory"
+            >
+              <el-option
+                v-for="h in history"
+                :key="h.id"
+                :label="`#${h.id} · ${fmtTime(h.created_at)} · ${h.case_count}条 · ${h.status}`"
+                :value="h.id"
+              />
+            </el-select>
+          </div>
+        </div>
+      </template>
+
+      <!-- 战绩统计条 -->
+      <div v-if="meta" class="stat-strip">
+        <div class="stat"><div class="stat-num">{{ meta.case_count ?? cases.length }}</div><div class="stat-label">测试点</div></div>
+        <div class="stat"><div class="stat-num">{{ meta.duration_ms ? (meta.duration_ms / 1000).toFixed(1) + 's' : '—' }}</div><div class="stat-label">生成耗时</div></div>
+        <div class="stat"><div class="stat-num">{{ meta.output_tokens ?? '—' }}</div><div class="stat-label">输出 tokens</div></div>
+        <div class="stat"><div class="stat-num">{{ meta.cost_usd != null ? '$' + meta.cost_usd.toFixed(3) : '—' }}</div><div class="stat-label">成本</div></div>
+        <div class="stat adopted"><div class="stat-num">{{ adoptedCount }}</div><div class="stat-label">已采纳</div></div>
+      </div>
+
+      <el-table :data="cases" size="small" border stripe class="case-table">
+        <el-table-column label="维度" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag :type="CAT_TYPE[row.category] || 'info'" effect="plain" size="small">{{ row.category || '—' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="优先级" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="title" label="测试点" min-width="200" />
+        <el-table-column label="步骤" min-width="220">
+          <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column label="预期结果" min-width="200">
+          <template #default="{ row }"><span class="multiline">{{ row.expected || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column label="采纳" width="80" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-switch v-model="row.adopted" @change="(v) => toggleAdopt(row, v)" />
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { MagicStick, UploadFilled, Document } from '@element-plus/icons-vue'
+import {
+  listProjects, listTasks, aiStatus, listAiTasks, listAiCases, adoptCase, streamTestcases,
+  extractUrl, extractFile,
+} from '@/api'
+
+// 维度 / 优先级 → el-tag 配色
+const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
+const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
+const PHASES = ['正在拆解需求要点…', '覆盖功能主流程…', '补充边界与异常场景…', '评估优先级并成稿…']
+const MODES = [
+  { k: 'text', label: '粘贴文本' },
+  { k: 'url', label: '需求链接' },
+  { k: 'file', label: '上传文档' },
+]
+const PLACEHOLDERS = {
+  text: '粘贴需求描述、PRD 片段或验收标准……越具体，生成的测试点越贴合。',
+  url: '点上方「抓取正文」后，提取的网页/飞书文档正文会填到这里，可编辑后再生成。',
+  file: '上传文档后，解析出的文本会填到这里，可编辑后再生成。',
+}
+const DEMO = `用户登录功能：
+1. 支持"账号 + 密码"登录；账号可为用户名或邮箱。
+2. 密码错误时给出明确提示，不暴露账号是否存在。
+3. 连续 5 次密码错误锁定账号 15 分钟，锁定期内拒绝登录。
+4. 勾选"记住我"后登录态保持 30 天，否则关闭浏览器即失效。
+5. 登录成功跳转到工作台首页。`
+
+const projects = ref([])
+const pid = ref(null)
+const tasks = ref([])
+const taskId = ref(null)
+const requirement = ref('')
+const aiAvailable = ref(true)
+
+const inputType = ref('text')
+const urlInput = ref('')
+const extracting = ref(false)
+const sourceInfo = ref(null)   // { label, chars }
+
+const running = ref(false)
+const rawStream = ref('')
+const elapsed = ref(0)          // 毫秒
+const phaseIdx = ref(0)
+const cases = ref([])
+const meta = ref(null)
+const history = ref([])
+const viewingId = ref(null)
+
+let timer = null
+let ctrl = null
+
+const adoptedCount = computed(() => cases.value.filter((c) => c.adopted).length)
+const phaseText = computed(() => PHASES[Math.min(phaseIdx.value, PHASES.length - 1)])
+const reqPlaceholder = computed(() => PLACEHOLDERS[inputType.value] || PLACEHOLDERS.text)
+
+onMounted(async () => {
+  try {
+    const s = await aiStatus()
+    aiAvailable.value = !!s?.available
+  } catch { aiAvailable.value = false }
+  projects.value = await listProjects()
+  if (projects.value.length) {
+    pid.value = projects.value[0].id
+    await onProjectChange()
+  }
+})
+
+async function onProjectChange() {
+  taskId.value = null
+  cases.value = []
+  meta.value = null
+  viewingId.value = null
+  if (!pid.value) { tasks.value = []; history.value = []; return }
+  ;[tasks.value, history.value] = await Promise.all([
+    listTasks({ project_id: pid.value }),
+    listAiTasks(pid.value, 20),
+  ])
+}
+
+function fillDemo() { requirement.value = DEMO; sourceInfo.value = null }
+
+async function doExtractUrl() {
+  if (!urlInput.value.trim()) return
+  extracting.value = true
+  try {
+    const r = await extractUrl(urlInput.value.trim())
+    requirement.value = r.text
+    sourceInfo.value = { label: r.title || urlInput.value.trim(), chars: r.chars }
+    ElMessage.success(`已提取 ${r.chars} 字`)
+  } finally {
+    extracting.value = false
+  }
+}
+
+async function onFilePick(uploadFile) {
+  const raw = uploadFile?.raw
+  if (!raw) return
+  if (raw.size > 5 * 1024 * 1024) { ElMessage.warning('文件过大（>5MB）'); return }
+  extracting.value = true
+  try {
+    const r = await extractFile(raw)
+    requirement.value = r.text
+    sourceInfo.value = { label: r.filename, chars: r.chars }
+    ElMessage.success(`已解析 ${r.chars} 字`)
+  } finally {
+    extracting.value = false
+  }
+}
+
+function generate() {
+  if (!pid.value || !requirement.value.trim()) return
+  cases.value = []
+  meta.value = null
+  viewingId.value = null
+  rawStream.value = ''
+  elapsed.value = 0
+  phaseIdx.value = 0
+  running.value = true
+
+  const startedAt = Date.now()
+  timer = setInterval(() => {
+    elapsed.value = Date.now() - startedAt
+    phaseIdx.value = Math.floor(elapsed.value / 12000)  // 每 ~12s 推进一档文案
+  }, 100)
+
+  ctrl = new AbortController()
+  streamTestcases(
+    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, requirement: requirement.value },
+    {
+      signal: ctrl.signal,
+      onDelta: (t) => { rawStream.value += t },
+      onDone: (evt) => {
+        cases.value = evt.cases || []
+        meta.value = evt.meta || null
+        if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效测试点')
+        else ElMessage.success(`已生成 ${cases.value.length} 条测试点`)
+        stop()
+      },
+      onError: (msg) => { ElMessage.error(msg || '生成失败'); stop() },
+    },
+  )
+}
+
+function stop() {
+  running.value = false
+  if (timer) { clearInterval(timer); timer = null }
+  ctrl = null
+  if (pid.value) listAiTasks(pid.value, 20).then((h) => { history.value = h })
+}
+
+function cancel() { ctrl?.abort() }
+
+async function onViewHistory(id) {
+  if (!id) { cases.value = []; meta.value = null; return }
+  const h = history.value.find((x) => x.id === id)
+  cases.value = await listAiCases(id)
+  meta.value = h
+    ? { case_count: h.case_count, duration_ms: h.duration_ms, cost_usd: h.cost_usd, output_tokens: h.output_tokens }
+    : null
+  rawStream.value = ''
+}
+
+async function toggleAdopt(row, val) {
+  try {
+    await adoptCase(row.id, val)
+  } catch {
+    row.adopted = !val  // 回滚 UI
+  }
+}
+
+function fmtTime(s) {
+  if (!s) return ''
+  return String(s).replace('T', ' ').slice(5, 16)
+}
+</script>
+
+<style scoped>
+.ai-testgen { display: flex; flex-direction: column; gap: 16px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; }
+.title-wrap { display: flex; align-items: center; gap: 12px; }
+.title-icon {
+  font-size: 26px; color: #00b386;
+  filter: drop-shadow(0 0 6px rgba(0, 179, 134, 0.35));
+}
+.title { font-size: 16px; font-weight: 600; color: #1f2d3d; }
+.subtitle { font-size: 12px; color: #8a94a6; margin-top: 2px; }
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+.mode-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.extract-row-wrap { margin-bottom: 12px; }
+.extract-row { display: flex; gap: 10px; }
+.extract-tip { font-size: 12px; color: #a0a8b3; margin-top: 6px; }
+.upload-row { margin-bottom: 12px; }
+.upload-row :deep(.el-upload-dragger) { padding: 18px; }
+.up-icon { font-size: 34px; color: #b3c0d1; }
+.up-text { font-size: 13px; color: #606266; line-height: 1.6; }
+.up-text span { font-size: 12px; color: #a0a8b3; }
+.text-tools { margin-bottom: 12px; }
+.source-info {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  font-size: 12px; color: #00926e;
+  background: rgba(0,179,134,.06); border: 1px solid rgba(0,179,134,.2);
+  border-radius: 4px; padding: 6px 10px;
+}
+.form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.req-input { font-size: 14px; }
+.actions { margin-top: 14px; display: flex; gap: 12px; }
+.btn-icon { margin-right: 4px; }
+
+/* 生成过程 */
+.stream-card :deep(.el-card__body) { padding: 16px 20px; }
+.running-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.running-text { font-size: 14px; color: #303133; flex: 1; }
+.elapsed { font-size: 13px; color: #00926e; }
+.pulse-dot {
+  width: 10px; height: 10px; border-radius: 50%; background: #00b386;
+  box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.6); animation: pulse 1.4s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.5); }
+  70% { box-shadow: 0 0 0 10px rgba(0, 179, 134, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 179, 134, 0); }
+}
+.raw-stream {
+  margin-top: 12px; max-height: 220px; overflow: auto;
+  background: #0f1c2e; color: #7fe7c4; border-radius: 6px; padding: 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;
+  white-space: pre-wrap; word-break: break-all;
+}
+.raw-hint { margin-top: 10px; font-size: 13px; color: #909399; }
+
+/* 战绩统计条 */
+.stat-strip {
+  display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.stat {
+  flex: 1; min-width: 96px; text-align: center;
+  padding: 12px 8px; border-radius: 8px;
+  background: linear-gradient(160deg, #f3fbf8, #eaf5ff);
+  border: 1px solid #e3eef0;
+}
+.stat-num { font-size: 22px; font-weight: 700; color: #00926e; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.stat-label { font-size: 12px; color: #8a94a6; margin-top: 4px; }
+.stat.adopted .stat-num { color: #3b9ad9; }
+
+.result-title { font-weight: 600; color: #1f2d3d; }
+.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
+.case-table { margin-top: 4px; }
+</style>

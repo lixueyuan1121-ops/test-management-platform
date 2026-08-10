@@ -21,6 +21,11 @@
           <el-icon><Monitor /></el-icon><span>工作台</span>
         </el-menu-item>
 
+        <!-- QA Copilot：AI 测试助手（展示位，全员可见） -->
+        <el-menu-item index="/ai-testgen" class="ai-entry">
+          <el-icon><MagicStick /></el-icon><span>AI 测试助手</span>
+        </el-menu-item>
+
         <!-- 组织管理 -->
         <el-sub-menu v-if="auth.isPlatformAdmin" index="org">
           <template #title><el-icon><OfficeBuilding /></el-icon><span>组织管理</span></template>
@@ -89,7 +94,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand,
+  Fold, Expand, MagicStick,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
@@ -163,6 +168,12 @@ function onCommand(cmd) {
 }
 /* 激活态图标也染青绿 */
 .menu :deep(.el-menu-item.is-active .el-icon) { color: #00e5a0; }
+/* AI 入口：微微高亮，暗示这是"秀肌肉"的能力位 */
+.menu :deep(.ai-entry span) {
+  background: linear-gradient(90deg, #00e5a0, #3b9ad9);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  font-weight: 600;
+}
 
 .header {
   display: flex; align-items: center; justify-content: space-between;

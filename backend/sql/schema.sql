@@ -170,6 +170,53 @@ CREATE TABLE `integration_event` (
   CONSTRAINT `fk_event_integration` FOREIGN KEY (`integration_id`) REFERENCES `integration`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ---------- QA Copilot：AI 生成任务与测试点 ----------
+CREATE TABLE `ai_task` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `task_id` BIGINT DEFAULT NULL,
+  `user_id` BIGINT NOT NULL,
+  `kind` VARCHAR(32) NOT NULL DEFAULT 'testcase_gen',
+  `input_type` ENUM('text','url','file') NOT NULL DEFAULT 'text',
+  `input_ref` TEXT,
+  `status` ENUM('running','done','failed') NOT NULL DEFAULT 'running',
+  `output_raw` TEXT,
+  `error` TEXT,
+  `case_count` INT NOT NULL DEFAULT 0,
+  `cost_usd` DECIMAL(10,4) DEFAULT NULL,
+  `output_tokens` INT DEFAULT NULL,
+  `duration_ms` INT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_aitask_project` (`project_id`),
+  KEY `idx_aitask_task` (`task_id`),
+  KEY `idx_aitask_user` (`user_id`),
+  CONSTRAINT `fk_aitask_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_aitask_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_aitask_user` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `test_case` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `ai_task_id` BIGINT NOT NULL,
+  `project_id` BIGINT NOT NULL,
+  `task_id` BIGINT DEFAULT NULL,
+  `category` VARCHAR(32) DEFAULT NULL,
+  `title` VARCHAR(512) NOT NULL,
+  `steps` TEXT,
+  `expected` TEXT,
+  `priority` VARCHAR(8) DEFAULT NULL,
+  `adopted` TINYINT(1) NOT NULL DEFAULT 0,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_testcase_aitask` (`ai_task_id`),
+  KEY `idx_testcase_project` (`project_id`),
+  KEY `idx_testcase_task` (`task_id`),
+  CONSTRAINT `fk_testcase_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_testcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_testcase_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。
