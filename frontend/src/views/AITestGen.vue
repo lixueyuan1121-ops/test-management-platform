@@ -20,7 +20,7 @@
         <el-select v-model="pid" placeholder="选择项目" style="width:200px" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <el-select v-model="taskId" placeholder="关联任务（可选）" clearable filterable style="width:240px">
+        <el-select v-model="taskId" placeholder="关联任务（可选）" clearable filterable style="width:240px" @change="onTaskChange">
           <el-option v-for="t in tasks" :key="t.id" :label="t.title" :value="t.id" />
         </el-select>
       </div>
@@ -38,10 +38,10 @@
 
       <div v-if="inputType === 'url'" class="extract-row-wrap">
         <div class="extract-row">
-          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="extracting" @keyup.enter="doExtractUrl">
+          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="extracting" @keyup.enter="doExtractUrl()">
             <template #prepend>URL</template>
           </el-input>
-          <el-button type="primary" :loading="extracting" :disabled="!urlInput.trim()" @click="doExtractUrl">抓取正文</el-button>
+          <el-button type="primary" :loading="extracting" :disabled="!urlInput.trim()" @click="doExtractUrl()">抓取正文</el-button>
         </div>
         <div class="extract-tip">支持普通网页与飞书文档（飞书需管理员配置应用凭据并把文档共享给应用）</div>
       </div>
@@ -249,15 +249,54 @@ async function onProjectChange() {
   ])
 }
 
+// 飞书文档主机（与后端 feishu.is_feishu_url 保持一致）
+const FEISHU_HOSTS = ['feishu.cn', 'feishu.net', 'larksuite.com', 'larkoffice.com']
+const URL_IN_TEXT_RE = /https?:\/\/[^\s"'<>()（）【】]+/g
+
+function isFeishuUrl(u) {
+  try {
+    const host = new URL(u).hostname
+    return FEISHU_HOSTS.some((h) => host === h || host.endsWith('.' + h))
+  } catch { return false }
+}
+
+// 从一段正文里挑出第一个飞书文档链接（需求页常只放一个飞书跳转链接）
+function findFeishuUrl(text) {
+  const matches = (text || '').match(URL_IN_TEXT_RE) || []
+  return matches.find(isFeishuUrl) || null
+}
+
+// 选中任务：带入其需求地址并自动抓取正文
+function onTaskChange(id) {
+  const t = tasks.value.find((x) => x.id === id)
+  const url = (t?.requirement_url || '').trim()
+  if (!url) return
+  inputType.value = 'url'
+  urlInput.value = url
+  doExtractUrl(url)
+}
+
 function fillDemo() { requirement.value = DEMO; sourceInfo.value = null }
 
-async function doExtractUrl() {
-  if (!urlInput.value.trim()) return
+async function doExtractUrl(overrideUrl) {
+  let url = (typeof overrideUrl === 'string' ? overrideUrl : urlInput.value).trim()
+  if (!url) return
+  urlInput.value = url
   extracting.value = true
   try {
-    const r = await extractUrl(urlInput.value.trim())
+    let r = await extractUrl(url)
+    // 抓回来的"正文"其实指向一个飞书文档链接 → 替换 URL 再抓一次
+    if (!isFeishuUrl(url)) {
+      const fs = findFeishuUrl(r.text)
+      if (fs) {
+        ElMessage.info('检测到飞书文档链接，跳转抓取…')
+        url = fs
+        urlInput.value = fs
+        r = await extractUrl(fs)
+      }
+    }
     requirement.value = r.text
-    sourceInfo.value = { label: r.title || urlInput.value.trim(), chars: r.chars }
+    sourceInfo.value = { label: r.title || url, chars: r.chars }
     ElMessage.success(`已提取 ${r.chars} 字`)
   } finally {
     extracting.value = false
