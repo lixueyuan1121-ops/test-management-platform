@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI 战绩墙 · 原型</title>
+<!--
+  AI 战绩墙原型 —— 单文件、可直接浏览器打开。
+  配色全部经 dataviz validate_palette.js 校验（categorical 蓝/aqua、ordinal 蓝 ramp、status good/warn/critical）。
+  平台品牌青绿 #00b386 仅作强调/chrome，不承担数据序列识别（避免与蓝色数据色冲突）。
+  示例数据字段对齐后端 ai_task / test_case / 规划中的 /api/stats/ai，接真接口时可直接映射。
+-->
+<style>
+  .viz-root {
+    color-scheme: light;
+    /* —— 平台科技风 chrome（取自 theme.css / Dashboard.vue）—— */
+    --bg:            #f4f6f9;
+    --surface-1:     #ffffff;
+    --surface-2:     #f7f9fc;
+    --line:          #e3e8ef;
+    --line-strong:   #d0d7e2;
+    --text-primary:  #1a1d21;
+    --text-secondary:#52514e;
+    --muted:         #6b7280;
+    --dim:           #9aa3b2;
+    --signal:        #00b386;      /* 品牌强调色（chrome/hero，不做数据识别） */
+    --signal-weak:   rgba(0,179,134,0.10);
+    --mono: 'JetBrains Mono','SFMono-Regular',ui-monospace,'Menlo',monospace;
+    --sans: system-ui,-apple-system,'Segoe UI',sans-serif;
+
+    /* —— dataviz 校验过的数据色 —— */
+    --series-gen:    #2a78d6;      /* categorical slot1 blue —— 生成 */
+    --series-adopt:  #1baf7a;      /* categorical slot2 aqua —— 采纳 */
+    --seq-100:#cde2fb; --seq-250:#86b6ef; --seq-350:#5598e7; --seq-450:#2a78d6; --seq-600:#184f95;
+    --ord-p0:#184f95; --ord-p1:#2a78d6; --ord-p2:#5598e7; --ord-p3:#86b6ef; /* 优先级 ordinal（深=P0 高） */
+    --status-good:#0ca30c; --status-warn:#fab219; --status-critical:#d03b3b;
+    --grid: #e8ecf2;
+  }
+  /* dark 值声明两份：媒体查询覆盖 OS 深色偏好；data-theme 属性覆盖手动切换（须双向生效）。
+     palette.md 约定：:not() 守卫让亮色 stamp 能压过 OS-dark；:where() 让媒体块权重低于 toggle。 */
+  :root[data-theme="dark"] .viz-root,
+  .viz-root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:#0d0d0d; --surface-1:#1a1a19; --surface-2:#222220; --line:#2c2c2a; --line-strong:#383835;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781; --dim:#6d6c66;
+    --signal-weak:rgba(0,179,134,0.14);
+    --series-gen:#3987e5; --series-adopt:#199e70;
+    --seq-100:#184f95; --seq-250:#1c5cab; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#6da7ec;
+    --ord-p0:#184f95; --ord-p1:#3987e5; --ord-p2:#6da7ec; --ord-p3:#9ec5f4;
+    --grid:#2c2c2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    .viz-root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --bg:#0d0d0d; --surface-1:#1a1a19; --surface-2:#222220; --line:#2c2c2a; --line-strong:#383835;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781; --dim:#6d6c66;
+      --signal-weak:rgba(0,179,134,0.14);
+      --series-gen:#3987e5; --series-adopt:#199e70;
+      --seq-100:#184f95; --seq-250:#1c5cab; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#6da7ec;
+      --ord-p0:#184f95; --ord-p1:#3987e5; --ord-p2:#6da7ec; --ord-p3:#9ec5f4;
+      --grid:#2c2c2a;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); }
+  .viz-root {
+    background: var(--bg); color: var(--text-primary);
+    font-family: var(--sans); padding: 24px; min-height: 100vh;
+    max-width: 1240px; margin: 0 auto;
+  }
+
+  /* panel 通用（对齐 Dashboard .panel） */
+  .panel { position: relative; background: var(--surface-1); border: 1px solid var(--line);
+    border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  .grid-bg { position:absolute; inset:0; pointer-events:none; opacity:.55;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:40px 40px;
+    -webkit-mask-image:radial-gradient(120% 120% at 15% 0%,#000 30%,transparent 80%);
+    mask-image:radial-gradient(120% 120% at 15% 0%,#000 30%,transparent 80%); }
+  .eyebrow { font-family:var(--mono); font-size:12px; letter-spacing:3px; color:var(--signal); text-transform:uppercase; }
+
+  /* 顶部标题条 */
+  .head { display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:16px; }
+  .head h1 { font-size:24px; font-weight:700; letter-spacing:1px; margin-top:12px; }
+  .head .sub { font-size:13px; color:var(--muted); margin-top:8px; }
+  .toggle { font-family:var(--mono); font-size:11px; letter-spacing:1px; color:var(--muted); cursor:pointer;
+    border:1px solid var(--line); border-radius:6px; padding:6px 12px; background:var(--surface-1); user-select:none;
+    transition:border-color .18s, color .18s; }
+  .toggle:hover { border-color:var(--signal); color:var(--signal); }
+
+  /* hero + KPI 行 */
+  .top { display:grid; grid-template-columns: 1.3fr 2fr; gap:14px; margin-bottom:14px; }
+  .hero { padding:24px 28px; display:flex; flex-direction:column; justify-content:center; }
+  .hero .val { font-family:var(--mono); font-size:52px; font-weight:700; line-height:1.05; letter-spacing:1px;
+    color:var(--signal); font-variant-numeric:tabular-nums; filter:drop-shadow(0 0 10px rgba(0,179,134,.24)); }
+  .hero .val small { font-family:var(--sans); font-size:18px; color:var(--dim); margin-left:6px; font-weight:400; letter-spacing:0; }
+  .hero .cap { font-size:13px; color:var(--muted); margin-top:12px; line-height:1.55; }
+  .hero .delta { font-family:var(--mono); font-size:12px; letter-spacing:.5px; margin-top:10px; color:var(--signal); }
+
+  .kpis { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+  .kpi { padding:18px; transition:border-color .18s ease, box-shadow .2s ease, transform .18s ease; }
+  .kpi .lbl { font-family:var(--mono); font-size:10px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; }
+  .kpi .num { font-family:var(--mono); font-size:34px; font-weight:700; line-height:1.1; margin-top:10px;
+    color:var(--signal); font-variant-numeric:tabular-nums; }
+  .kpi .num small { font-family:var(--sans); font-size:15px; color:var(--dim); margin-left:3px; font-weight:400; }
+  .kpi .foot { font-size:11px; color:var(--muted); margin-top:8px; font-family:var(--mono); letter-spacing:.3px; }
+  .kpi:hover { border-color:var(--signal); box-shadow:0 0 16px rgba(0,179,134,.18); transform:translateY(-2px); }
+
+  /* 主趋势图 */
+  .trend { padding:20px 24px; margin-bottom:14px; }
+  .row-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
+  .row-title { font-size:14px; font-weight:600; letter-spacing:.3px; display:flex; align-items:center; gap:8px; }
+  .row-title::before { content:''; width:3px; height:13px; background:var(--signal); border-radius:2px;
+    box-shadow:0 0 6px rgba(0,179,134,.5); }
+  .legend { font-family:var(--mono); font-size:11px; color:var(--secondary); display:flex; gap:16px; }
+  .lg { display:inline-flex; align-items:center; gap:6px; color:var(--muted); }
+  .lg i { width:14px; height:3px; border-radius:2px; display:inline-block; }
+  .trend-svg { width:100%; height:auto; display:block; overflow:visible; }
+  .crosshair { stroke:var(--line-strong); stroke-width:1; stroke-dasharray:3 3; opacity:0; }
+  .tt { position:absolute; pointer-events:none; opacity:0; transform:translate(-50%,-115%);
+    background:var(--surface-1); border:1px solid var(--line-strong); border-radius:6px; padding:8px 10px;
+    font-size:12px; box-shadow:0 4px 14px rgba(16,24,40,.12); white-space:nowrap; transition:opacity .1s; z-index:5; }
+  .tt .d { font-family:var(--mono); color:var(--muted); font-size:10px; margin-bottom:4px; letter-spacing:.5px; }
+  .tt .r { display:flex; align-items:center; gap:6px; margin-top:2px; }
+  .tt .r i { width:8px; height:8px; border-radius:2px; }
+  .tt .r b { font-variant-numeric:tabular-nums; }
+
+  /* 底部两栏 */
+  .bottom { display:grid; grid-template-columns:1.1fr 1fr; gap:14px; }
+  .card { padding:20px 24px; }
+
+  /* 维度覆盖：sequential 横向 bar */
+  .barrow { display:flex; align-items:center; gap:12px; margin:11px 0; }
+  .barrow .name { font-size:12px; color:var(--text-secondary); width:52px; flex:0 0 auto; font-family:var(--mono); }
+  .bartrack { flex:1; height:16px; background:var(--surface-2); border-radius:3px; overflow:hidden; position:relative; }
+  .barfill { height:100%; border-radius:3px 0 0 3px; }
+  .barrow .v { font-size:12px; color:var(--text-primary); width:34px; text-align:right; font-variant-numeric:tabular-nums; font-family:var(--mono); flex:0 0 auto; }
+
+  /* 采纳率 meter */
+  .meter-wrap { margin-bottom:22px; }
+  .meter-top { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+  .meter-top .pct { font-family:var(--mono); font-size:30px; font-weight:700; color:var(--signal); font-variant-numeric:tabular-nums; letter-spacing:.5px; }
+  .meter-top .of { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .meter-track { height:12px; background:var(--surface-2); border-radius:6px; overflow:hidden; }
+  .meter-fill { height:100%; background:var(--signal); border-radius:6px; box-shadow:0 0 8px rgba(0,179,134,.35); }
+
+  /* 优先级 ordinal 分段 */
+  .prio-title { font-size:12px; color:var(--muted); font-family:var(--mono); letter-spacing:.5px; margin-bottom:10px; }
+  .prio-bar { display:flex; height:26px; border-radius:4px; overflow:hidden; gap:2px; background:var(--surface-1); }
+  .prio-seg { display:flex; align-items:center; justify-content:center; font-size:11px; font-family:var(--mono);
+    color:#fff; min-width:28px; }
+  .prio-legend { display:flex; gap:14px; margin-top:10px; font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .prio-legend span { display:inline-flex; align-items:center; gap:5px; }
+  .prio-legend i { width:9px; height:9px; border-radius:2px; }
+
+  .foot-note { margin-top:20px; font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.5px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">// AI CONTRIBUTION · QA COPILOT</div>
+      <h1>AI 战绩墙</h1>
+      <div class="sub">QA Copilot 累计为测试团队生成、被采纳的测试点，以及折算的提效与成本</div>
+    </div>
+    <div class="toggle" id="toggle">◐ 切换明/暗</div>
+  </div>
+
+  <!-- 顶部：hero 节省工时 + 4 KPI -->
+  <div class="top">
+    <div class="panel hero">
+      <div class="grid-bg"></div>
+      <div style="position:relative;z-index:2">
+        <div class="eyebrow" style="margin-bottom:10px">// 累计节省工时（估）</div>
+        <div class="val" id="h-hours">312<small>人时</small></div>
+        <div class="cap">按「每条采纳测试点折算 <b id="h-factor">0.5</b> 人时」估算<br>≈ 节省 <b id="h-days">39</b> 个人日</div>
+        <div class="delta" id="h-delta">▲ 近30天 +48 人时</div>
+      </div>
+    </div>
+    <div class="kpis">
+      <div class="panel kpi"><div class="lbl">累计生成测试点</div><div class="num" id="k-gen">1,284</div><div class="foot">across 6 项目 · 92 次生成</div></div>
+      <div class="panel kpi"><div class="lbl">采纳率</div><div class="num" id="k-rate">48.6%</div><div class="foot">624 / 1,284 已采纳</div></div>
+      <div class="panel kpi"><div class="lbl">累计 AI 花费</div><div class="num" id="k-cost">$4.12</div><div class="foot">avg $0.045 / 次</div></div>
+      <div class="panel kpi"><div class="lbl">平均生成耗时</div><div class="num" id="k-dur">18<small style="font-size:15px;color:var(--dim)">s</small></div><div class="foot">p95 34s</div></div>
+    </div>
+  </div>
+
+  <!-- 主图：生成 vs 采纳 趋势（categorical 双线 + hover） -->
+  <div class="panel trend" style="position:relative">
+    <div class="grid-bg"></div>
+    <div class="row-head" style="position:relative;z-index:2">
+      <div class="row-title">近 14 天：生成 vs 采纳</div>
+      <div class="legend">
+        <span class="lg"><i style="background:var(--series-gen)"></i>生成</span>
+        <span class="lg"><i style="background:var(--series-adopt)"></i>采纳</span>
+      </div>
+    </div>
+    <svg class="trend-svg" viewBox="0 0 720 220" id="trendSvg" aria-label="生成与采纳趋势折线图" style="position:relative;z-index:2"></svg>
+    <div class="tt" id="tt"></div>
+  </div>
+
+  <!-- 底部两栏 -->
+  <div class="bottom">
+    <!-- 维度覆盖 sequential bar -->
+    <div class="panel card">
+      <div class="grid-bg"></div>
+      <div style="position:relative;z-index:2">
+        <div class="row-head"><div class="row-title">测试点维度覆盖</div></div>
+        <div id="dims"></div>
+      </div>
+    </div>
+
+    <!-- 采纳率 meter + 优先级 ordinal -->
+    <div class="panel card">
+      <div class="grid-bg"></div>
+      <div style="position:relative;z-index:2">
+        <div class="row-head"><div class="row-title">采纳质量</div></div>
+        <div class="meter-wrap">
+          <div class="meter-top"><span class="pct" id="m-pct">48.6%</span><span class="of">整体采纳率 · 目标 45%</span></div>
+          <div class="meter-track"><div class="meter-fill" id="m-fill" style="width:48.6%"></div></div>
+        </div>
+        <div class="prio-title">// 采纳测试点的优先级分布</div>
+        <div class="prio-bar" id="prioBar"></div>
+        <div class="prio-legend" id="prioLegend"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot-note">// 示例数据 · 字段对齐 ai_task / test_case · 配色经 dataviz 校验</div>
+</div>
+
+<script>
+/* ============ 示例数据（结构对齐后端）============ */
+// 规划中的 GET /api/stats/ai 汇总
+const STATS = {
+  total_generated: 1284, total_adopted: 624, adopt_rate: 0.486,
+  total_cost_usd: 4.12, avg_duration_s: 18, p95_duration_s: 34,
+  saved_hours: 312, save_factor: 0.5, project_cnt: 6, run_cnt: 92,
+  delta_hours_30d: 48,
+  // 维度覆盖（test_case.category 计数）
+  dims: [
+    { name: '功能', count: 512 }, { name: '边界', count: 268 },
+    { name: '异常', count: 231 }, { name: '兼容', count: 158 }, { name: '性能', count: 115 },
+  ],
+  // 采纳测试点优先级分布（test_case.priority where adopted）
+  prio: [ { p:'P0', n:96 }, { p:'P1', n:214 }, { p:'P2', n:236 }, { p:'P3', n:78 } ],
+  // 近 14 天趋势
+  trend: [
+    ['08-01',72,30],['08-02',48,22],['08-03',20,11],['08-04',96,40],['08-05',64,33],
+    ['08-06',110,52],['08-07',88,44],['08-08',56,28],['08-09',102,49],['08-10',134,68],
+    ['08-11',78,40],['08-12',90,46],['08-13',120,60],['08-14',96,50],
+  ],
+};
+
+const $ = s => document.querySelector(s);
+const cvar = n => getComputedStyle($('#root')).getPropertyValue(n).trim();
+
+/* ---- 维度覆盖：sequential 单 hue，越多越深 ---- */
+function renderDims() {
+  const seq = ['--seq-600','--seq-450','--seq-350','--seq-250','--seq-100'];
+  const max = Math.max(...STATS.dims.map(d=>d.count));
+  const sorted = [...STATS.dims].sort((a,b)=>b.count-a.count);
+  $('#dims').innerHTML = sorted.map((d,i)=>`
+    <div class="barrow">
+      <span class="name">${d.name}</span>
+      <div class="bartrack"><div class="barfill" style="width:${(d.count/max*100).toFixed(1)}%;background:${cvar(seq[Math.min(i,4)])}"></div></div>
+      <span class="v">${d.count}</span>
+    </div>`).join('');
+}
+
+/* ---- 优先级 ordinal 分段条 ---- */
+function renderPrio() {
+  const map = { P0:'--ord-p0', P1:'--ord-p1', P2:'--ord-p2', P3:'--ord-p3' };
+  const total = STATS.prio.reduce((s,x)=>s+x.n,0);
+  $('#prioBar').innerHTML = STATS.prio.map(x=>{
+    const c = cvar(map[x.p]);
+    const w = (x.n/total*100).toFixed(1);
+    // 内嵌标签仅在够宽时显示（marks-and-anatomy：放不下就不硬塞）
+    const lbl = w>10 ? `${x.p} ${x.n}` : '';
+    return `<div class="prio-seg" style="flex:${x.n};background:${c}" title="${x.p}: ${x.n}">${lbl}</div>`;
+  }).join('');
+  $('#prioLegend').innerHTML = STATS.prio.map(x=>
+    `<span><i style="background:${cvar(map[x.p])}"></i>${x.p} · ${x.n}</span>`).join('');
+}
+
+/* ---- 主趋势：双线 categorical + crosshair hover ---- */
+const VB = { w:720, h:220, l:44, r:16, t:20, b:34 };
+function renderTrend() {
+  const svg = $('#trendSvg'), tt = $('#tt');
+  const data = STATS.trend;
+  const innerW = VB.w - VB.l - VB.r, innerH = VB.h - VB.t - VB.b;
+  const maxY = Math.ceil(Math.max(...data.map(d=>Math.max(d[1],d[2])))/20)*20;
+  const X = i => VB.l + innerW * (data.length===1?0:i/(data.length-1));
+  const Y = v => VB.t + innerH * (1 - v/maxY);
+  const path = idx => data.map((d,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(d[idx]).toFixed(1)}`).join(' ');
+
+  const cGen = cvar('--series-gen'), cAdopt = cvar('--series-adopt');
+  const cGrid = cvar('--grid'), cMuted = cvar('--muted'), cSurf = cvar('--surface-1'), cLineS = cvar('--line-strong');
+  const ticks = [0,.25,.5,.75,1].map(f=>Math.round(maxY*f));
+
+  let s = '';
+  // 网格 + y 轴刻度
+  ticks.forEach(v=>{ const y=Y(v).toFixed(1);
+    s += `<line x1="${VB.l}" y1="${y}" x2="${VB.w-VB.r}" y2="${y}" stroke="${cGrid}" stroke-width="1"/>`;
+    s += `<text x="${VB.l-8}" y="${(+y+4)}" text-anchor="end" font-size="10" font-family="${cvar('--mono')}" fill="${cMuted}">${v}</text>`;
+  });
+  // x 轴标签（隔一个显示，避免拥挤）
+  data.forEach((d,i)=>{ if(i%2 && i!==data.length-1) return;
+    const lbl = i===data.length-1 ? '今日' : d[0];
+    s += `<text x="${X(i).toFixed(1)}" y="${VB.h-12}" text-anchor="middle" font-size="10" font-family="${cvar('--mono')}" fill="${cMuted}">${lbl}</text>`;
+  });
+  // 两条线（2px）
+  s += `<path d="${path(1)}" fill="none" stroke="${cGen}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  s += `<path d="${path(2)}" fill="none" stroke="${cAdopt}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  // 端点 marker（≥8px，2px surface ring）——只标最后一点，做直接标签
+  const li = data.length-1;
+  [[1,cGen],[2,cAdopt]].forEach(([idx,c])=>{
+    s += `<circle cx="${X(li).toFixed(1)}" cy="${Y(data[li][idx]).toFixed(1)}" r="4.5" fill="${c}" stroke="${cSurf}" stroke-width="2"/>`;
+    s += `<text x="${(X(li)+8).toFixed(1)}" y="${(Y(data[li][idx])+4).toFixed(1)}" font-size="11" font-family="${cvar('--mono')}" font-weight="600" fill="${cvar('--text-primary')}">${data[li][idx]}</text>`;
+  });
+  // crosshair + 命中层
+  s += `<line class="crosshair" id="cross" y1="${VB.t}" y2="${VB.h-VB.b}"/>`;
+  data.forEach((d,i)=>{ const x=X(i);
+    s += `<rect x="${(x-innerW/(data.length-1)/2).toFixed(1)}" y="${VB.t}" width="${(innerW/(data.length-1)).toFixed(1)}" height="${innerH}" fill="transparent" data-i="${i}"/>`;
+  });
+  svg.innerHTML = s;
+
+  // hover 交互
+  const cross = svg.querySelector('#cross');
+  svg.querySelectorAll('rect[data-i]').forEach(r=>{
+    r.addEventListener('mouseenter', e=>{
+      const i = +e.target.dataset.i, d = data[i];
+      const px = X(i);
+      cross.setAttribute('x1',px); cross.setAttribute('x2',px); cross.style.opacity=1;
+      const rect = svg.getBoundingClientRect();
+      const sx = rect.left + (px/VB.w)*rect.width;
+      const sy = rect.top + (Y(Math.max(d[1],d[2]))/VB.h)*rect.height;
+      tt.style.left = (sx - $('#root').getBoundingClientRect().left) + 'px';
+      tt.style.top  = (sy - $('#root').getBoundingClientRect().top) + 'px';
+      tt.innerHTML = `<div class="d">${d[0]==='08-14'?'今日 08-14':d[0]}</div>`+
+        `<div class="r"><i style="background:${cGen}"></i>生成 <b>${d[1]}</b></div>`+
+        `<div class="r"><i style="background:${cAdopt}"></i>采纳 <b>${d[2]}</b>（${Math.round(d[2]/d[1]*100)}%）</div>`;
+      tt.style.opacity=1;
+    });
+  });
+  svg.addEventListener('mouseleave', ()=>{ cross.style.opacity=0; tt.style.opacity=0; });
+}
+
+/* ---- KPI 文本 ---- */
+function renderKpis() {
+  $('#h-hours').innerHTML = `${STATS.saved_hours}<small>人时</small>`;
+  $('#h-factor').textContent = STATS.save_factor;
+  $('#h-days').textContent = Math.round(STATS.saved_hours/8);
+  $('#h-delta').textContent = `▲ 近30天 +${STATS.delta_hours_30d} 人时`;
+  $('#k-gen').textContent = STATS.total_generated.toLocaleString();
+  $('#k-rate').textContent = (STATS.adopt_rate*100).toFixed(1)+'%';
+  $('#k-cost').textContent = '$'+STATS.total_cost_usd.toFixed(2);
+  $('#k-dur').innerHTML = `${STATS.avg_duration_s}<small style="font-size:15px;color:var(--dim)">s</small>`;
+  $('#m-pct').textContent = (STATS.adopt_rate*100).toFixed(1)+'%';
+  $('#m-fill').style.width = (STATS.adopt_rate*100).toFixed(1)+'%';
+}
+
+function renderAll(){ renderKpis(); renderTrend(); renderDims(); renderPrio(); }
+renderAll();
+
+// 明暗切换（重渲染让 SVG 取到新 CSS 变量色）
+$('#toggle').addEventListener('click', ()=>{
+  const r = $('#root');
+  const cur = r.getAttribute('data-theme');
+  r.setAttribute('data-theme', cur==='dark' ? 'light' : 'dark');
+  renderAll();
+});
+</script>
+</body>
+</html>
