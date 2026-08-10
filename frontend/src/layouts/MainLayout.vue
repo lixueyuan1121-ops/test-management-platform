@@ -45,6 +45,7 @@
           <template #title><el-icon><DataLine /></el-icon><span>数据统计</span></template>
           <el-menu-item index="/stats"><el-icon><DataAnalysis /></el-icon><span>日报统计</span></el-menu-item>
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
+          <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
           <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
         </el-sub-menu>
 
@@ -94,7 +95,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick,
+  Fold, Expand, MagicStick, Trophy,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 

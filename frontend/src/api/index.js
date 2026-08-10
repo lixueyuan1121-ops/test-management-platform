@@ -36,6 +36,9 @@ export const overviewStats = (date) => http.get('/stats/overview', { params: { d
 
 // ===== P2: 工作量统计 + 遗留问题 =====
 export const workloadStats = (project_id, from, to) => http.get('/stats/workload', { params: { project_id, from, to } })
+
+// AI 战绩墙聚合（返回已解包 data）；params: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
+export const aiStats = (params) => http.get('/stats/ai', { params })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
 export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
 
