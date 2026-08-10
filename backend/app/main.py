@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.db.migrate import ensure_task_columns, migrate_task_status
+from app.db.migrate import ensure_task_columns, ensure_testcase_columns, migrate_task_status
 from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
@@ -29,6 +29,7 @@ def init_db() -> None:
     tables = [t for t in Base.metadata.sorted_tables if t.name not in _SKIP_TABLES]
     Base.metadata.create_all(bind=engine, tables=tables)
     ensure_task_columns()
+    ensure_testcase_columns()
     migrate_task_status()
     db = SessionLocal()
     try:

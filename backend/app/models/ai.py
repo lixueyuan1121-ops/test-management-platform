@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import String, Text, Integer, DateTime, Enum, Boolean, Numeric, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import AiTaskStatus, AiInputType
+from app.core.enums import AiTaskStatus, AiInputType, ReviewStatus
 from app.db.session import Base
 
 
@@ -57,4 +57,9 @@ class TestCase(Base):
     expected: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority: Mapped[str | None] = mapped_column(String(8), nullable=True)  # P0-P3
     adopted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 三态评审：pending/adopted/rejected（adopted 布尔保留做兼容，见 migrate.ensure_testcase_columns）
+    review_status: Mapped[ReviewStatus] = mapped_column(
+        Enum(ReviewStatus, length=16), default=ReviewStatus.pending, server_default="pending"
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

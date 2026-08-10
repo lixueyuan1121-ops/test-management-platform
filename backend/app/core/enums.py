@@ -72,6 +72,13 @@ class AiInputType(str, enum.Enum):
     file = "file"    # 上传需求文档
 
 
+class ReviewStatus(str, enum.Enum):
+    """AI 测试点的三态评审状态（供「AI 战绩墙」统计采纳率）。"""
+    pending = "pending"    # 未评审
+    adopted = "adopted"    # 已采纳
+    rejected = "rejected"  # 已否决
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写
