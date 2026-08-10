@@ -5,7 +5,7 @@
       <div>
         <div class="eyebrow">// AI CONTRIBUTION · QA COPILOT</div>
         <h1>AI 战绩墙</h1>
-        <div class="sub">QA Copilot 累计为测试团队生成、被采纳的测试点，以及折算的提效与成本</div>
+        <div class="sub">QA Copilot 在所选区间内为测试团队生成、被采纳的测试点，以及折算的提效与成本</div>
       </div>
       <div class="controls">
         <el-radio-group v-model="range" size="small" @change="onRangeChange">
@@ -58,7 +58,7 @@
           <div class="panel hero">
             <div class="grid-bg"></div>
             <div class="hero-inner">
-              <div class="eyebrow" style="margin-bottom:10px">// 累计节省工时（估）</div>
+              <div class="eyebrow" style="margin-bottom:10px">// 区间内节省工时（估）</div>
               <div class="val">{{ savedHours.toLocaleString() }}<small>人时</small></div>
               <div class="cap">
                 按「每条采纳测试点折算
@@ -85,7 +85,7 @@
 
           <div class="kpis">
             <div class="panel kpi">
-              <div class="lbl">累计生成测试点</div>
+              <div class="lbl">区间内生成测试点</div>
               <div class="num">{{ (stats?.total_generated || 0).toLocaleString() }}</div>
               <div class="foot">across {{ stats?.project_cnt || 0 }} 项目 · {{ stats?.run_cnt || 0 }} 次生成</div>
             </div>
@@ -95,7 +95,7 @@
               <div class="foot">{{ (stats?.total_adopted || 0).toLocaleString() }} / {{ (stats?.total_reviewed || 0).toLocaleString() }} 已采纳</div>
             </div>
             <div class="panel kpi">
-              <div class="lbl">累计 AI 花费</div>
+              <div class="lbl">区间内 AI 花费</div>
               <div class="num">${{ (stats?.total_cost_usd || 0).toFixed(2) }}</div>
               <div class="foot">{{ costPerRun }}</div>
             </div>

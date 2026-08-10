@@ -395,6 +395,7 @@ async function reviewRow(row, val) {
     row.adopted = data.adopted
   } catch {
     Object.assign(row, prev)  // 回滚
+    ElMessage.error('操作失败，请重试')
   } finally {
     reviewingId.value = null
   }
