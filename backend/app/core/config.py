@@ -1,10 +1,21 @@
+from urllib.parse import quote
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    # 数据库：两种配法，二选一。
+    # 1) 分字段（推荐用于 MySQL）：设 DB_HOST 即启用，密码含特殊字符也无需手动编码。
+    # 2) 整串：DATABASE_URL（默认 SQLite，开箱即用）。仅当未设 DB_HOST 时生效。
     DATABASE_URL: str = "sqlite:///./test_platform.db"
+    DB_HOST: str = ""
+    DB_PORT: int = 3306
+    DB_USER: str = ""
+    DB_PASSWORD: str = ""
+    DB_NAME: str = ""
+    DB_CHARSET: str = "utf8mb4"
 
     JWT_SECRET: str = "please-change-this-secret-in-production"
     JWT_ALG: str = "HS256"
@@ -32,6 +43,19 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        """最终连接串。设了 DB_HOST 则由分字段拼 MySQL（密码自动 URL 编码，
+        兼容 # ^ ! * 等特殊字符）；否则回落到 DATABASE_URL。"""
+        if self.DB_HOST:
+            user = quote(self.DB_USER, safe="")
+            pwd = quote(self.DB_PASSWORD, safe="")
+            return (
+                f"mysql+pymysql://{user}:{pwd}@{self.DB_HOST}:{self.DB_PORT}"
+                f"/{self.DB_NAME}?charset={self.DB_CHARSET}"
+            )
+        return self.DATABASE_URL
 
 
 settings = Settings()

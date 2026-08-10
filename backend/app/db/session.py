@@ -4,12 +4,13 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 
 # SQLite 需要这个参数以支持多线程（FastAPI 的线程池会用到）
+_db_url = settings.sqlalchemy_url
 _connect_args = (
-    {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
+    {"check_same_thread": False} if _db_url.startswith("sqlite") else {}
 )
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    _db_url,
     connect_args=_connect_args,
     pool_pre_ping=True,
     echo=False,
