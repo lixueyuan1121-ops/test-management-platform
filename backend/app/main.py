@@ -19,8 +19,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 
 def init_db() -> None:
-    """建表 + 种子平台管理员。P0 用 create_all；生产建议用 alembic 迁移。"""
-    Base.metadata.create_all(bind=engine)
+    """建表 + 种子平台管理员。P0 用 create_all；生产建议用 alembic 迁移。
+
+    P3 集成层三张占位表（integration/api_token/integration_event）含 JSON 列，
+    MySQL 5.6 不支持原生 JSON，且这三张表尚无任何业务代码——建表时排除，
+    等真正实现 P3 时再单独处理（届时可把 JSON 降级为 Text 或升级 DB）。
+    """
+    _SKIP_TABLES = {"integration", "api_token", "integration_event"}
+    tables = [t for t in Base.metadata.sorted_tables if t.name not in _SKIP_TABLES]
+    Base.metadata.create_all(bind=engine, tables=tables)
     ensure_task_columns()
     migrate_task_status()
     db = SessionLocal()
