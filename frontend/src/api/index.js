@@ -67,7 +67,8 @@ export const toggleTool = (id) => http.patch(`/tools/${id}/toggle`)
 export const aiStatus = () => http.get('/ai/status')
 export const listAiTasks = (project_id, limit = 20) => http.get('/ai/tasks', { params: { project_id, limit } })
 export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
-export const adoptCase = (id, adopted) => http.patch(`/ai/testcases/${id}`, { adopted })
+// 评审测试点：review_status ∈ 'adopted' | 'rejected' | 'pending'（返回已解包的测试点 data）
+export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
 export const extractUrl = (url) => http.post('/ai/extract-url', { url })
 export const extractFile = (file) => {
   const fd = new FormData()
