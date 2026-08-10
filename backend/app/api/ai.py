@@ -283,7 +283,7 @@ def review_testcase(
     if body.review_status == ReviewStatus.pending:
         tc.reviewed_at = None
     else:
-        tc.reviewed_at = datetime.now()
+        tc.reviewed_at = datetime.utcnow()  # 与 issues.py resolved_at 对齐（UTC naive），供 /stats/ai 按日聚合
     tc.adopted = (body.review_status == ReviewStatus.adopted)
     db.commit()
     db.refresh(tc)
