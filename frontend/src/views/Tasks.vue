@@ -16,25 +16,25 @@
       </template>
       <el-table :data="tasks" v-loading="loading" size="small" empty-text="该日无任务" row-key="id" @expand-change="onExpandChange">
         <el-table-column type="expand">
-        <template #default="{ row }">
-          <div class="cl-expand">
-            <div v-if="!row._summary" class="cl-empty">该任务暂无验收清单</div>
-            <el-table v-else :data="row._items || []" v-loading="row._itemsLoading" size="small"
-                      empty-text="加载中或无验收项">
-              <el-table-column prop="title" label="测试点" min-width="180" show-overflow-tooltip />
-              <el-table-column prop="category" label="维度" width="80" />
-              <el-table-column label="结果" width="90">
-                <template #default="{ row: it }">
-                  <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
-                    {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="title" label="任务名称" min-width="160" />
+          <template #default="{ row }">
+            <div class="cl-expand">
+              <div v-if="!row._summary && !row._summaryFailed" class="cl-empty">该任务暂无验收清单</div>
+              <el-table v-else :data="row._items || []" v-loading="row._itemsLoading" size="small"
+                        empty-text="无验收项">
+                <el-table-column prop="title" label="测试点" min-width="180" show-overflow-tooltip />
+                <el-table-column prop="category" label="维度" width="80" />
+                <el-table-column label="结果" width="90">
+                  <template #default="{ row: it }">
+                    <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
+                      {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="title" label="任务名称" min-width="160" />
         <el-table-column prop="module" label="模块" width="110" />
         <el-table-column prop="developer" label="开发" width="100" />
         <el-table-column label="需求地址" width="120">
@@ -167,17 +167,27 @@ async function load() {
   await loadMembers()
   loading.value = true
   try {
-    const rows = await listTasks({ project_id: pid.value, date: date.value })
-    let summary = {}
-    try { summary = await getChecklistSummary(pid.value, date.value) } catch { summary = {} }
-    tasks.value = rows.map((t) => ({ ...t, _summary: summary[String(t.id)] || null, _items: null, _itemsLoading: false }))
+    // 任务与验收汇总并行拉取；汇总失败不阻断表格，记 _summaryFailed 供展开区区分「无清单」与「汇总不可用」
+    const [rows, summaryResult] = await Promise.all([
+      listTasks({ project_id: pid.value, date: date.value }),
+      getChecklistSummary(pid.value, date.value).catch(() => null),
+    ])
+    const summary = summaryResult || {}
+    const summaryFailed = summaryResult === null
+    tasks.value = rows.map((t) => ({
+      ...t,
+      _summary: summary[String(t.id)] || null,
+      _summaryFailed: summaryFailed,
+      _items: null,
+      _itemsLoading: false,
+    }))
   } finally { loading.value = false }
 }
 
 async function onExpandChange(row, expandedRows) {
   const isExpanded = expandedRows.some((r) => r.id === row.id)
   if (!isExpanded) return
-  if (!row._summary) return          // 无清单项：不请求，展开区显示占位
+  if (!row._summary && !row._summaryFailed) return  // 确定无清单：不请求；汇总失败则仍尝试拉明细
   if (row._items !== null) return    // 已缓存：不重复请求
   row._itemsLoading = true
   try { row._items = await getTaskChecklist(row.id) }

@@ -53,7 +53,7 @@ def _to_out(db: Session, item: ChecklistItem) -> dict:
 @router.get("/tasks/checklist-summary")
 def list_checklist_summary(
     project_id: int = Query(...),
-    date: date = Query(...),
+    on_date: date = Query(..., alias="date"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -66,7 +66,7 @@ def list_checklist_summary(
     task_ids = [
         tid for (tid,) in
         db.query(Task.id)
-        .filter(Task.project_id == project_id, Task.assigned_date == date)
+        .filter(Task.project_id == project_id, Task.assigned_date == on_date)
         .all()
     ]
     if not task_ids:
@@ -82,7 +82,8 @@ def list_checklist_summary(
         key = str(tid)
         rec = summary.setdefault(key, {"total": 0, "passed": 0, "failed": 0, "blocked": 0, "pending": 0})
         # st 是 ChecklistStatus 枚举；取 .value 作为 key（pending/passed/failed/blocked）
-        rec[st.value] = rec.get(st.value, 0) + int(cnt)
+        # GROUP BY 保证每个 (task_id, status) 只有一行，直接赋值即可
+        rec[st.value] = int(cnt)
         rec["total"] += int(cnt)
     return ok(summary)
 
