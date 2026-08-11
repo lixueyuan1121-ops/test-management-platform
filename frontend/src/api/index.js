@@ -69,6 +69,13 @@ export const listAiTasks = (project_id, limit = 20) => http.get('/ai/tasks', { p
 export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
 // 评审测试点：review_status ∈ 'adopted' | 'rejected' | 'pending'（返回已解包的测试点 data）
 export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
+
+// ===== 验收清单（测试点回流任务）=====
+export const getTaskChecklist = (tid) => http.get(`/tasks/${tid}/checklist`)
+export const attachChecklist = (tid, testCaseIds) => http.post(`/tasks/${tid}/checklist`, { test_case_ids: testCaseIds })
+export const updateChecklistItem = (itemId, exec_status) => http.patch(`/checklist/${itemId}`, { exec_status })
+export const checklistItemToIssue = (itemId, payload) => http.post(`/checklist/${itemId}/to-issue`, payload)
+export const listAdoptableCases = (tid) => http.get(`/tasks/${tid}/adoptable-cases`)
 export const extractUrl = (url) => http.post('/ai/extract-url', { url })
 export const extractFile = (file) => {
   const fd = new FormData()

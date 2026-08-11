@@ -191,3 +191,32 @@ def checklist_to_issue(
         "external_ref": issue.external_ref,
         "created_at": issue.created_at.isoformat() if issue.created_at else None,
     })
+
+
+@router.get("/tasks/{tid}/adoptable-cases")
+def list_adoptable_cases(
+    tid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """列出该任务所在项目、已采纳、且尚未进本任务清单的 test_case（供手动补挂弹窗选择）。"""
+    task = db.get(Task, tid)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    assert_project_role(db, user, task.project_id, _ALL_ROLES)
+    attached = {
+        cid for (cid,) in
+        db.query(ChecklistItem.test_case_id).filter(ChecklistItem.task_id == tid).all()
+    }
+    rows = (
+        db.query(TestCase)
+        .filter(TestCase.project_id == task.project_id,
+                TestCase.review_status == ReviewStatus.adopted)
+        .order_by(TestCase.id.desc())
+        .all()
+    )
+    out = [
+        {"id": tc.id, "title": tc.title, "category": tc.category, "priority": tc.priority}
+        for tc in rows if tc.id not in attached
+    ]
+    return ok(out)
