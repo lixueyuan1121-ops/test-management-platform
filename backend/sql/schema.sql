@@ -145,9 +145,9 @@ CREATE TABLE `checklist_item` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_checklist_task_case` (`task_id`,`test_case_id`),
   KEY `idx_checklist_task` (`task_id`),
+  KEY `idx_checklist_case` (`test_case_id`),
   KEY `idx_checklist_project` (`project_id`),
   CONSTRAINT `fk_checklist_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE CASCADE,
-  CONSTRAINT `fk_checklist_case` FOREIGN KEY (`test_case_id`) REFERENCES `test_case`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_checklist_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_checklist_user` FOREIGN KEY (`executed_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
