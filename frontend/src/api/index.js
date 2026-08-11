@@ -71,6 +71,7 @@ export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
 export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
 
 // ===== 验收清单（测试点回流任务）=====
+export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
 export const getTaskChecklist = (tid) => http.get(`/tasks/${tid}/checklist`)
 export const attachChecklist = (tid, testCaseIds) => http.post(`/tasks/${tid}/checklist`, { test_case_ids: testCaseIds })
 export const updateChecklistItem = (itemId, exec_status) => http.patch(`/checklist/${itemId}`, { exec_status })

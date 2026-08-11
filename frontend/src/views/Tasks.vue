@@ -14,8 +14,27 @@
           </div>
         </div>
       </template>
-      <el-table :data="tasks" v-loading="loading" size="small" empty-text="该日无任务">
-        <el-table-column prop="title" label="任务名称" min-width="160" />
+      <el-table :data="tasks" v-loading="loading" size="small" empty-text="该日无任务" row-key="id" @expand-change="onExpandChange">
+        <el-table-column type="expand">
+        <template #default="{ row }">
+          <div class="cl-expand">
+            <div v-if="!row._summary" class="cl-empty">该任务暂无验收清单</div>
+            <el-table v-else :data="row._items || []" v-loading="row._itemsLoading" size="small"
+                      empty-text="加载中或无验收项">
+              <el-table-column prop="title" label="测试点" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="category" label="维度" width="80" />
+              <el-table-column label="结果" width="90">
+                <template #default="{ row: it }">
+                  <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
+                    {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column prop="title" label="任务名称" min-width="160" />
         <el-table-column prop="module" label="模块" width="110" />
         <el-table-column prop="developer" label="开发" width="100" />
         <el-table-column label="需求地址" width="120">
@@ -40,6 +59,19 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+          </template>
+        </el-table-column>
+        <el-table-column label="验收进度" width="190">
+          <template #default="{ row }">
+            <div v-if="row._summary" class="cl-prog">
+              <el-progress
+                :percentage="row._summary.total ? Math.round(row._summary.passed / row._summary.total * 100) : 0"
+                :stroke-width="8" :show-text="false" color="var(--tech-signal)" style="width:70px"
+              />
+              <span class="cl-nums">{{ row._summary.passed }}/{{ row._summary.total }}</span>
+              <el-tag v-if="row._summary.failed" type="danger" size="small" effect="light">失败{{ row._summary.failed }}</el-tag>
+            </div>
+            <span v-else class="cl-dim">—</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="140">
@@ -90,7 +122,7 @@
 import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
-import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday } from '@/api'
+import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist } from '@/api'
 import { ArrowDown } from '@element-plus/icons-vue'
 
 // 任务状态四态：待测 → 测试中 →(阻塞)→ 已上线；标签配色与首页 KPI 一致
@@ -99,6 +131,14 @@ const STATUS_META = {
   testing: { label: '测试中', type: 'warning' },
   blocked: { label: '阻塞', type: 'danger' },
   online: { label: '已上线', type: 'success' },
+}
+
+// 验收清单项三态结果配色（沿用全局口径：通过青绿/失败红/阻塞warn/待测灰）
+const EXEC_META = {
+  passed: { label: '通过', type: 'success' },
+  failed: { label: '失败', type: 'danger' },
+  blocked: { label: '阻塞', type: 'warning' },
+  pending: { label: '待测', type: 'info' },
 }
 
 const auth = useAuthStore()
@@ -126,8 +166,23 @@ async function load() {
   if (!pid.value) return
   await loadMembers()
   loading.value = true
-  try { tasks.value = await listTasks({ project_id: pid.value, date: date.value }) }
-  finally { loading.value = false }
+  try {
+    const rows = await listTasks({ project_id: pid.value, date: date.value })
+    let summary = {}
+    try { summary = await getChecklistSummary(pid.value, date.value) } catch { summary = {} }
+    tasks.value = rows.map((t) => ({ ...t, _summary: summary[String(t.id)] || null, _items: null, _itemsLoading: false }))
+  } finally { loading.value = false }
+}
+
+async function onExpandChange(row, expandedRows) {
+  const isExpanded = expandedRows.some((r) => r.id === row.id)
+  if (!isExpanded) return
+  if (!row._summary) return          // 无清单项：不请求，展开区显示占位
+  if (row._items !== null) return    // 已缓存：不重复请求
+  row._itemsLoading = true
+  try { row._items = await getTaskChecklist(row.id) }
+  catch { row._items = [] }
+  finally { row._itemsLoading = false }
 }
 
 function openCreate() {
@@ -179,4 +234,9 @@ async function onCopy() {
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .status-trigger { cursor: pointer; }
+.cl-prog { display: flex; align-items: center; gap: 8px; }
+.cl-nums { font-family: var(--tech-mono, monospace); font-size: 12px; color: var(--tech-fg, #1a1d21); }
+.cl-dim { color: var(--tech-dim, #9aa3b2); }
+.cl-expand { padding: 8px 16px; }
+.cl-empty { color: var(--tech-dim, #9aa3b2); font-size: 13px; padding: 4px 0; }
 </style>
