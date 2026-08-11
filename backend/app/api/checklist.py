@@ -141,3 +141,53 @@ def tick_checklist(
     db.commit()
     db.refresh(item)
     return ok(_to_out(db, item))
+
+
+@router.post("/checklist/{item_id}/to-issue")
+def checklist_to_issue(
+    item_id: int,
+    body: ChecklistToIssueIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """失败清单项一键转遗留问题。前置：exec_status==failed。
+
+    创建 RemainingIssue：report_id=None（走任务直挂新路径），task_id/checklist_item_id
+    指向来源，status=open。title 缺省用来源 test_case.title。
+    """
+    item = db.get(ChecklistItem, item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="清单项不存在")
+    assert_project_role(db, user, item.project_id, _WRITE_ROLES)
+    if item.exec_status != ChecklistStatus.failed:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅失败的清单项可转遗留问题")
+
+    tc = db.get(TestCase, item.test_case_id)
+    title = (body.title or "").strip() or (tc.title if tc else "未命名遗留问题")
+    issue = RemainingIssue(
+        report_id=None,
+        task_id=item.task_id,
+        checklist_item_id=item.id,
+        project_id=item.project_id,
+        title=title[:255],
+        severity=body.severity,
+        status=IssueStatus.open,
+        owner=body.owner,
+        external_ref=body.external_ref,
+    )
+    db.add(issue)
+    db.commit()
+    db.refresh(issue)
+    return ok({
+        "id": issue.id,
+        "title": issue.title,
+        "severity": issue.severity.value,
+        "status": issue.status.value,
+        "project_id": issue.project_id,
+        "task_id": issue.task_id,
+        "checklist_item_id": issue.checklist_item_id,
+        "report_id": issue.report_id,
+        "owner": issue.owner,
+        "external_ref": issue.external_ref,
+        "created_at": issue.created_at.isoformat() if issue.created_at else None,
+    })
