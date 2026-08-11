@@ -65,12 +65,25 @@ def overview_stats(
     done_rate = round(online_cnt / total * 100, 1) if total else 0.0
 
     # ---- 未解决遗留问题（跨项目存量，不限今日）----
-    open_issues = (
-        db.query(func.count(RemainingIssue.id))
+    # 两条来源：report 路径（project_id 命中）与 task 直挂路径（task_id 指向可见项目的任务）。
+    # RemainingIssue.project_id 两路径都会带上，故 project_id.in_(pids) 已覆盖大部分；
+    # 但为兼容历史 task 直挂 issue 的 project_id 与其 task 项目一致的约定，按 id 取并集去重防双算。
+    open_ids = {
+        iid for (iid,) in
+        db.query(RemainingIssue.id)
         .filter(RemainingIssue.project_id.in_(pids),
                 RemainingIssue.status == IssueStatus.open)
-        .scalar() or 0
-    )
+        .all()
+    }
+    task_open_ids = {
+        iid for (iid,) in
+        db.query(RemainingIssue.id)
+        .join(Task, Task.id == RemainingIssue.task_id)
+        .filter(Task.project_id.in_(pids),
+                RemainingIssue.status == IssueStatus.open)
+        .all()
+    }
+    open_issues = len(open_ids | task_open_ids)
 
     # ---- 近 7 天趋势（含今日）：每日任务量 + 上线量 ----
     start = today - timedelta(days=6)
@@ -148,12 +161,26 @@ def daily_stats(
     workload_total = round(sum(float(r.workload_hours or 0) for r in submitted_rows), 1)
 
     report_ids = [r.id for r in submitted_rows]
-    open_issues = (
-        db.query(func.count(RemainingIssue.id))
+    # open_issues 两条来源，按 id 去重：
+    # (1) report 路径：该日已交日报下挂的 open issue；
+    # (2) task 路径：task_id 指向"本项目、assigned_date==该日"的任务的 open issue。
+    report_open_ids = {
+        iid for (iid,) in
+        db.query(RemainingIssue.id)
         .filter(RemainingIssue.report_id.in_(report_ids),
                 RemainingIssue.status == IssueStatus.open)
-        .scalar() if report_ids else 0
-    )
+        .all()
+    } if report_ids else set()
+    task_open_ids = {
+        iid for (iid,) in
+        db.query(RemainingIssue.id)
+        .join(Task, Task.id == RemainingIssue.task_id)
+        .filter(Task.project_id == project_id,
+                Task.assigned_date == date,
+                RemainingIssue.status == IssueStatus.open)
+        .all()
+    }
+    open_issues = len(report_open_ids | task_open_ids)
     new_issues = (
         db.query(func.count(RemainingIssue.id))
         .filter(RemainingIssue.report_id.in_(report_ids))
