@@ -18,22 +18,28 @@ def _user_name(db: Session, uid: int | None) -> str:
     return u.name if u else ""
 
 
-def _task_title(db: Session, report_id: int) -> str:
-    r = db.get(DailyReport, report_id)
-    if not r:
-        return ""
-    t = db.get(Task, r.task_id)
-    return t.title if t else ""
+def _issue_task_title(db: Session, it: RemainingIssue) -> str:
+    """取遗留问题所属任务名，兼容两条来源：report 路径(report→task) 与 task 直挂路径(task_id)。"""
+    if it.report_id is not None:
+        r = db.get(DailyReport, it.report_id)
+        if r:
+            t = db.get(Task, r.task_id)
+            return t.title if t else ""
+    if it.task_id is not None:
+        t = db.get(Task, it.task_id)
+        return t.title if t else ""
+    return ""
 
 
 def _to_out(db: Session, it: RemainingIssue) -> dict:
     return {
         "id": it.id, "report_id": it.report_id, "project_id": it.project_id,
+        "task_id": it.task_id, "checklist_item_id": it.checklist_item_id,
         "title": it.title, "description": it.description,
         "severity": it.severity.value, "status": it.status.value,
         "owner": it.owner, "owner_name": _user_name(db, it.owner),
         "external_ref": it.external_ref,
-        "task_title": _task_title(db, it.report_id),
+        "task_title": _issue_task_title(db, it),
         "created_at": it.created_at.isoformat() if it.created_at else None,
         "resolved_at": it.resolved_at.isoformat() if it.resolved_at else None,
     }
