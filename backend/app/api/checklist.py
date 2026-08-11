@@ -3,9 +3,10 @@
 清单项由采纳测试点自动挂载（见 ai.py review_testcase 副作用）或手动补挂。
 权限：清单项所属项目 member/admin 可写（不限 assigned_to，本版放开协作），guest 只读。
 """
-from datetime import datetime
+from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -47,6 +48,43 @@ def _to_out(db: Session, item: ChecklistItem) -> dict:
         "expected": tc.expected if tc else None,
         "priority": tc.priority if tc else None,
     }
+
+
+@router.get("/tasks/checklist-summary")
+def list_checklist_summary(
+    project_id: int = Query(...),
+    date: date = Query(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """管理员任务表用：某项目某日各任务的验收进度汇总（只读，SQL 现算聚合）。
+
+    返回 map：{ "<task_id>": {total, passed, failed, blocked, pending} }，
+    只含有清单项的任务；无清单项的任务不出现（前端据此显示 —）。
+    """
+    assert_project_role(db, user, project_id, _ALL_ROLES)
+    task_ids = [
+        tid for (tid,) in
+        db.query(Task.id)
+        .filter(Task.project_id == project_id, Task.assigned_date == date)
+        .all()
+    ]
+    if not task_ids:
+        return ok({})
+    rows = (
+        db.query(ChecklistItem.task_id, ChecklistItem.exec_status, func.count(ChecklistItem.id))
+        .filter(ChecklistItem.task_id.in_(task_ids))
+        .group_by(ChecklistItem.task_id, ChecklistItem.exec_status)
+        .all()
+    )
+    summary: dict[str, dict] = {}
+    for tid, st, cnt in rows:
+        key = str(tid)
+        rec = summary.setdefault(key, {"total": 0, "passed": 0, "failed": 0, "blocked": 0, "pending": 0})
+        # st 是 ChecklistStatus 枚举；取 .value 作为 key（pending/passed/failed/blocked）
+        rec[st.value] = rec.get(st.value, 0) + int(cnt)
+        rec["total"] += int(cnt)
+    return ok(summary)
 
 
 @router.get("/tasks/{tid}/checklist")
