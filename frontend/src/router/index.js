@@ -18,6 +18,7 @@ const routes = [
       { path: 'my-reports', name: 'my-reports', component: () => import('@/views/MyReports.vue') },
       { path: 'stats', name: 'stats', component: () => import('@/views/DailyStats.vue') },
       { path: 'workload', name: 'workload', component: () => import('@/views/WorkloadStats.vue') },
+      { path: 'ai-wall', name: 'ai-wall', component: () => import('@/views/AIWall.vue'), meta: { title: 'AI 战绩墙' } },
       { path: 'issues', name: 'issues', component: () => import('@/views/Issues.vue') },
       { path: 'tool-plaza', name: 'tool-plaza', component: () => import('@/views/ToolPlaza.vue') },
       { path: 'tool-admin', name: 'tool-admin', component: () => import('@/views/ToolAdmin.vue'), meta: { platformAdmin: true } },

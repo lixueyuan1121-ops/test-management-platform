@@ -230,3 +230,122 @@ def workload_stats(
         "members": members,
         "daily": daily_series,
     })
+
+
+@router.get("/ai")
+def ai_stats(
+    from_date: date = Query(default=None, alias="from"),
+    to_date: date = Query(default=None, alias="to"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """AI 战绩墙聚合：区间内生成/采纳/成本/耗时 + 维度/优先级分布 + 按天趋势。
+
+    生成类指标按 test_case.created_at / ai_task.created_at 落在 [from,to] 筛；
+    采纳类指标按 test_case.reviewed_at 落在 [from,to] 筛。现算聚合，不建统计表。
+
+    日期比较用 func.date(col)：SQLite 返回 'YYYY-MM-DD' 字符串、MySQL 返回 date 对象，
+    与 Python date 比较两端都正确（SQLite 下 ISO 字符串按字典序比较等价于日期比较，
+    且 date() 会截去时间部分，故 [from,to] 含边界无需 <to+1 天的补丁）。
+    分组 key 统一 str() 归一（MySQL 下是 date 对象，SQLite 下已是 str）。
+    """
+    from app.core.enums import AiTaskStatus, ReviewStatus
+    from app.models import AiTask, TestCase
+
+    today = date.today()
+    to_d = to_date or today
+    from_d = from_date or (to_d - timedelta(days=29))   # 默认近 30 天
+    scope = "platform" if user.is_platform_admin else "member"
+    pids = _visible_project_ids(db, user)
+
+    DIMS = ["功能", "边界", "异常", "兼容", "性能"]
+    PRIOS = ["P0", "P1", "P2", "P3"]
+
+    def empty():
+        days = (to_d - from_d).days
+        trend = [{"date": str(from_d + timedelta(days=i))[5:], "generated": 0, "adopted": 0}
+                 for i in range(days + 1)]
+        return ok({"scope": scope, "project_cnt": 0, "from": str(from_d), "to": str(to_d),
+                   "total_generated": 0, "run_cnt": 0, "total_cost_usd": 0.0, "avg_duration_s": 0.0,
+                   "dims": [{"name": n, "count": 0} for n in DIMS],
+                   "total_reviewed": 0, "total_adopted": 0, "adopt_rate": 0.0,
+                   "prio": [{"p": p, "n": 0} for p in PRIOS], "trend": trend})
+
+    if not pids:
+        return empty()
+
+    # ---- 生成类：test_case.created_at ∈ [from, to]（func.date 截时间，含边界）----
+    gen_filter = [TestCase.project_id.in_(pids),
+                  func.date(TestCase.created_at) >= from_d,
+                  func.date(TestCase.created_at) <= to_d]
+    total_generated = db.query(func.count(TestCase.id)).filter(*gen_filter).scalar() or 0
+
+    # 维度覆盖计数（固定 5 类，缺补 0）
+    dim_rows = (db.query(TestCase.category, func.count(TestCase.id))
+                .filter(*gen_filter)
+                .group_by(TestCase.category).all())
+    dim_map = {k: v for k, v in dim_rows}
+    dims = [{"name": n, "count": int(dim_map.get(n, 0))} for n in DIMS]
+
+    # ai_task：done 次数 / 成本 / 平均耗时（按 ai_task.created_at 区间）
+    at_filter = [AiTask.project_id.in_(pids),
+                 func.date(AiTask.created_at) >= from_d,
+                 func.date(AiTask.created_at) <= to_d]
+    run_cnt = (db.query(func.count(AiTask.id))
+               .filter(*at_filter, AiTask.status == AiTaskStatus.done).scalar() or 0)
+    total_cost = (db.query(func.coalesce(func.sum(AiTask.cost_usd), 0))
+                  .filter(*at_filter).scalar() or 0)
+    avg_ms = (db.query(func.avg(AiTask.duration_ms))
+              .filter(*at_filter,
+                      AiTask.status == AiTaskStatus.done,
+                      AiTask.duration_ms.isnot(None)).scalar())
+    avg_duration_s = round(float(avg_ms) / 1000, 1) if avg_ms else 0.0
+
+    # ---- 采纳类：test_case.reviewed_at ∈ [from, to] ----
+    rev_filter = [TestCase.project_id.in_(pids),
+                  TestCase.reviewed_at.isnot(None),
+                  func.date(TestCase.reviewed_at) >= from_d,
+                  func.date(TestCase.reviewed_at) <= to_d]
+    total_reviewed = (db.query(func.count(TestCase.id))
+                      .filter(*rev_filter,
+                              TestCase.review_status.in_([ReviewStatus.adopted, ReviewStatus.rejected]))
+                      .scalar() or 0)
+    total_adopted = (db.query(func.count(TestCase.id))
+                     .filter(*rev_filter, TestCase.review_status == ReviewStatus.adopted)
+                     .scalar() or 0)
+    adopt_rate = round(total_adopted / total_reviewed, 3) if total_reviewed else 0.0
+
+    # 采纳测试点优先级分布（固定 P0-P3，缺补 0）
+    prio_rows = (db.query(TestCase.priority, func.count(TestCase.id))
+                 .filter(*rev_filter, TestCase.review_status == ReviewStatus.adopted,
+                         TestCase.priority.isnot(None))
+                 .group_by(TestCase.priority).all())
+    prio_map = {k: v for k, v in prio_rows}
+    prio = [{"p": p, "n": int(prio_map.get(p, 0))} for p in PRIOS]
+
+    # ---- 趋势：每天 generated（按 created_at）+ adopted（按 reviewed_at）----
+    gen_day = dict(db.query(func.date(TestCase.created_at), func.count(TestCase.id))
+                   .filter(*gen_filter)
+                   .group_by(func.date(TestCase.created_at)).all())
+    adopt_day = dict(db.query(func.date(TestCase.reviewed_at), func.count(TestCase.id))
+                     .filter(*rev_filter, TestCase.review_status == ReviewStatus.adopted)
+                     .group_by(func.date(TestCase.reviewed_at)).all())
+    # func.date 在 SQLite 返回 str、MySQL 返回 date；统一转 str 再比对
+    gen_day = {str(k): v for k, v in gen_day.items()}
+    adopt_day = {str(k): v for k, v in adopt_day.items()}
+    days = (to_d - from_d).days
+    trend = []
+    for i in range(days + 1):
+        ds = str(from_d + timedelta(days=i))
+        trend.append({"date": ds[5:],  # MM-DD
+                      "generated": int(gen_day.get(ds, 0)),
+                      "adopted": int(adopt_day.get(ds, 0))})
+
+    return ok({
+        "scope": scope, "project_cnt": len(pids), "from": str(from_d), "to": str(to_d),
+        "total_generated": int(total_generated), "run_cnt": int(run_cnt),
+        "total_cost_usd": round(float(total_cost), 2), "avg_duration_s": avg_duration_s,
+        "dims": dims,
+        "total_reviewed": int(total_reviewed), "total_adopted": int(total_adopted),
+        "adopt_rate": adopt_rate, "prio": prio, "trend": trend,
+    })

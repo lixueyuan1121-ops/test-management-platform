@@ -6,16 +6,17 @@ running 记录拿到 id；SSE 生成器内部另开 SessionLocal 完成落库。
 """
 import json
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
-from app.core.enums import AiTaskStatus, ProjectRole
+from app.core.enums import AiTaskStatus, ProjectRole, ReviewStatus
 from app.db.session import SessionLocal, get_db
 from app.models import AiTask, Project, TestCase, User
-from app.schemas.ai import ExtractUrlIn, TestCaseAdoptIn, TestCaseGenIn
+from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors
 
@@ -47,6 +48,8 @@ def _to_case_out(tc: TestCase) -> dict:
         "expected": tc.expected,
         "priority": tc.priority,
         "adopted": tc.adopted,
+        "review_status": tc.review_status.value,
+        "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
         "created_at": tc.created_at.isoformat() if tc.created_at else None,
     }
 
@@ -265,18 +268,23 @@ def list_ai_task_cases(
 
 
 @router.patch("/testcases/{cid}")
-def adopt_testcase(
+def review_testcase(
     cid: int,
-    body: TestCaseAdoptIn,
+    body: TestCaseReviewIn,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """采纳 / 取消采纳一条测试点。"""
+    """采纳 / 否决 / 置回待定一条测试点。写 reviewed_at，同步 adopted 兼容列。"""
     tc = db.get(TestCase, cid)
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
     assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
-    tc.adopted = body.adopted
+    tc.review_status = body.review_status
+    if body.review_status == ReviewStatus.pending:
+        tc.reviewed_at = None
+    else:
+        tc.reviewed_at = datetime.utcnow()  # 与 issues.py resolved_at 对齐（UTC naive），供 /stats/ai 按日聚合
+    tc.adopted = (body.review_status == ReviewStatus.adopted)
     db.commit()
     db.refresh(tc)
     return ok(_to_case_out(tc))

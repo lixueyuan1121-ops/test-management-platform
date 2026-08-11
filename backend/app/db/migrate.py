@@ -27,6 +27,33 @@ def ensure_task_columns() -> None:
             conn.execute(text("ALTER TABLE task ADD COLUMN developer VARCHAR(64)"))
 
 
+def ensure_testcase_columns() -> None:
+    """test_case 表补列 review_status / reviewed_at（如缺失），并回填老数据。
+
+    三态评审字段（供「AI 战绩墙」统计采纳率）。回填规则：老库里已 adopted=1
+    的行视为「已采纳」——review_status='adopted'、reviewed_at=created_at；其余保持
+    pending。ADD COLUMN 的 DEFAULT 'pending' 保证新库/存量行都有初值。
+    幂等：ADD 前先探列；回填 UPDATE 带 review_status='pending' 条件，改过的行
+    （已是 adopted）不再命中，重复执行不改变数值。
+    """
+    cols = _columns("test_case")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "review_status" not in cols:
+            conn.execute(text(
+                "ALTER TABLE test_case ADD COLUMN review_status VARCHAR(16) "
+                "NOT NULL DEFAULT 'pending'"
+            ))
+        if "reviewed_at" not in cols:
+            conn.execute(text("ALTER TABLE test_case ADD COLUMN reviewed_at DATETIME NULL"))
+        # 回填：仅把仍为 pending 且 adopted=1 的老行标记为已采纳（幂等）。
+        conn.execute(text(
+            "UPDATE test_case SET review_status='adopted', reviewed_at=created_at "
+            "WHERE adopted=1 AND review_status='pending'"
+        ))
+
+
 def migrate_task_status() -> None:
     """任务状态枚举改版：doing/done/closed → testing/blocked/online 语义映射。
 

@@ -207,6 +207,8 @@ CREATE TABLE `test_case` (
   `expected` TEXT,
   `priority` VARCHAR(8) DEFAULT NULL,
   `adopted` TINYINT(1) NOT NULL DEFAULT 0,
+  `review_status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `reviewed_at` DATETIME DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_testcase_aitask` (`ai_task_id`),

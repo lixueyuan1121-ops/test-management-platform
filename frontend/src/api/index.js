@@ -36,6 +36,9 @@ export const overviewStats = (date) => http.get('/stats/overview', { params: { d
 
 // ===== P2: 工作量统计 + 遗留问题 =====
 export const workloadStats = (project_id, from, to) => http.get('/stats/workload', { params: { project_id, from, to } })
+
+// AI 战绩墙聚合（返回已解包 data）；params: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
+export const aiStats = (params) => http.get('/stats/ai', { params })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
 export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
 
@@ -64,7 +67,8 @@ export const toggleTool = (id) => http.patch(`/tools/${id}/toggle`)
 export const aiStatus = () => http.get('/ai/status')
 export const listAiTasks = (project_id, limit = 20) => http.get('/ai/tasks', { params: { project_id, limit } })
 export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
-export const adoptCase = (id, adopted) => http.patch(`/ai/testcases/${id}`, { adopted })
+// 评审测试点：review_status ∈ 'adopted' | 'rejected' | 'pending'（返回已解包的测试点 data）
+export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
 export const extractUrl = (url) => http.post('/ai/extract-url', { url })
 export const extractFile = (file) => {
   const fd = new FormData()

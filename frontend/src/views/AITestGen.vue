@@ -157,9 +157,19 @@
         <el-table-column label="预期结果" min-width="200">
           <template #default="{ row }"><span class="multiline">{{ row.expected || '—' }}</span></template>
         </el-table-column>
-        <el-table-column label="采纳" width="80" align="center" fixed="right">
+        <el-table-column label="评审" width="220" align="center" fixed="right">
           <template #default="{ row }">
-            <el-switch v-model="row.adopted" @change="(v) => toggleAdopt(row, v)" />
+            <el-radio-group
+              :model-value="row.review_status || 'pending'"
+              size="small"
+              :disabled="reviewingId === row.id"
+              @change="(v) => reviewRow(row, v)"
+              class="review-group"
+            >
+              <el-radio-button value="adopted" class="rv-adopted">采纳</el-radio-button>
+              <el-radio-button value="rejected" class="rv-rejected">否决</el-radio-button>
+              <el-radio-button value="pending" class="rv-pending">待定</el-radio-button>
+            </el-radio-group>
           </template>
         </el-table-column>
       </el-table>
@@ -172,7 +182,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, UploadFilled, Document } from '@element-plus/icons-vue'
 import {
-  listProjects, listTasks, aiStatus, listAiTasks, listAiCases, adoptCase, streamTestcases,
+  listProjects, listTasks, aiStatus, listAiTasks, listAiCases, reviewTestcase, streamTestcases,
   extractUrl, extractFile,
 } from '@/api'
 
@@ -217,11 +227,12 @@ const cases = ref([])
 const meta = ref(null)
 const history = ref([])
 const viewingId = ref(null)
+const reviewingId = ref(null)   // 正在提交评审的行 id，禁用该行控件避免连点
 
 let timer = null
 let ctrl = null
 
-const adoptedCount = computed(() => cases.value.filter((c) => c.adopted).length)
+const adoptedCount = computed(() => cases.value.filter((c) => (c.review_status || (c.adopted ? 'adopted' : 'pending')) === 'adopted').length)
 const phaseText = computed(() => PHASES[Math.min(phaseIdx.value, PHASES.length - 1)])
 const reqPlaceholder = computed(() => PLACEHOLDERS[inputType.value] || PLACEHOLDERS.text)
 
@@ -371,11 +382,22 @@ async function onViewHistory(id) {
   rawStream.value = ''
 }
 
-async function toggleAdopt(row, val) {
+// 三态评审：采纳/否决/待定。用后端返回的 data 回写本地行（review_status/reviewed_at/adopted）。
+async function reviewRow(row, val) {
+  const prev = { review_status: row.review_status, reviewed_at: row.reviewed_at, adopted: row.adopted }
+  reviewingId.value = row.id
+  // 乐观更新：先切控件选中态，失败再回滚
+  row.review_status = val
   try {
-    await adoptCase(row.id, val)
+    const data = await reviewTestcase(row.id, val)
+    row.review_status = data.review_status
+    row.reviewed_at = data.reviewed_at
+    row.adopted = data.adopted
   } catch {
-    row.adopted = !val  // 回滚 UI
+    Object.assign(row, prev)  // 回滚
+    ElMessage.error('操作失败，请重试')
+  } finally {
+    reviewingId.value = null
   }
 }
 
@@ -457,4 +479,33 @@ function fmtTime(s) {
 .result-title { font-weight: 600; color: #1f2d3d; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .case-table { margin-top: 4px; }
+
+/* 三态评审控件：采纳=青绿 / 否决=danger / 待定=灰，与 Dashboard .dtag 配色一致 */
+.review-group { --el-border-radius-base: 4px; }
+.review-group :deep(.el-radio-button__inner) {
+  font-family: var(--tech-mono);
+  letter-spacing: .5px;
+  padding: 5px 12px;
+}
+/* 采纳（选中）→ 青绿 */
+.review-group :deep(.rv-adopted.is-active .el-radio-button__inner) {
+  background: var(--tech-signal);
+  border-color: var(--tech-signal);
+  box-shadow: -1px 0 0 0 var(--tech-signal);
+  color: #fff;
+}
+/* 否决（选中）→ danger 红 */
+.review-group :deep(.rv-rejected.is-active .el-radio-button__inner) {
+  background: var(--tech-danger);
+  border-color: var(--tech-danger);
+  box-shadow: -1px 0 0 0 var(--tech-danger);
+  color: #fff;
+}
+/* 待定（选中）→ 灰 */
+.review-group :deep(.rv-pending.is-active .el-radio-button__inner) {
+  background: var(--tech-muted);
+  border-color: var(--tech-muted);
+  box-shadow: -1px 0 0 0 var(--tech-muted);
+  color: #fff;
+}
 </style>

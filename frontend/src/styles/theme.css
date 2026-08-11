@@ -95,3 +95,16 @@
   text-transform: uppercase;
 }
 .tech-mono { font-family: var(--tech-mono); }
+
+/* 全局滚动条美化：纤细、半透明、圆角，跨平台（尤其 Windows 常驻滚动条）都低调不碍眼。
+   作用于内容区 el-main 与全站可滚动元素。 */
+.el-main::-webkit-scrollbar,
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+.el-main::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb { background: var(--tech-line-strong); border-radius: 4px; }
+.el-main::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover { background: var(--tech-dim); }
+.el-main::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track { background: transparent; }
+/* Firefox */
+.el-main { scrollbar-width: thin; scrollbar-color: var(--tech-line-strong) transparent; }
