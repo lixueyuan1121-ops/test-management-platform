@@ -79,6 +79,14 @@ class ReviewStatus(str, enum.Enum):
     rejected = "rejected"  # 已否决
 
 
+class ChecklistStatus(str, enum.Enum):
+    """验收清单项的执行状态（成员逐条勾选）。"""
+    pending = "pending"    # 待执行
+    passed = "passed"      # 通过
+    failed = "failed"      # 失败
+    blocked = "blocked"    # 阻塞
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写

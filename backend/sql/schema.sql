@@ -111,7 +111,9 @@ CREATE TABLE `daily_report` (
 -- ---------- 遗留问题 ----------
 CREATE TABLE `remaining_issue` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
-  `report_id` BIGINT NOT NULL,
+  `report_id` BIGINT DEFAULT NULL,
+  `task_id` BIGINT DEFAULT NULL,
+  `checklist_item_id` BIGINT DEFAULT NULL,
   `project_id` BIGINT NOT NULL,
   `title` VARCHAR(255) NOT NULL,
   `description` TEXT,
@@ -125,7 +127,29 @@ CREATE TABLE `remaining_issue` (
   KEY `idx_issue_project_status` (`project_id`,`status`),
   CONSTRAINT `fk_issue_report` FOREIGN KEY (`report_id`) REFERENCES `daily_report`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_issue_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
-  CONSTRAINT `fk_issue_owner` FOREIGN KEY (`owner`) REFERENCES `user`(`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_issue_owner` FOREIGN KEY (`owner`) REFERENCES `user`(`id`) ON DELETE SET NULL,
+  KEY `idx_issue_task` (`task_id`),
+  KEY `idx_issue_checklist` (`checklist_item_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 验收清单（测试点回流任务） ----------
+CREATE TABLE `checklist_item` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `task_id` BIGINT NOT NULL,
+  `test_case_id` BIGINT NOT NULL,
+  `project_id` BIGINT NOT NULL,
+  `exec_status` ENUM('pending','passed','failed','blocked') NOT NULL DEFAULT 'pending',
+  `executed_by` BIGINT DEFAULT NULL,
+  `executed_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_checklist_task_case` (`task_id`,`test_case_id`),
+  KEY `idx_checklist_task` (`task_id`),
+  KEY `idx_checklist_case` (`test_case_id`),
+  KEY `idx_checklist_project` (`project_id`),
+  CONSTRAINT `fk_checklist_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_checklist_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_checklist_user` FOREIGN KEY (`executed_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------- 集成层（扩展位，P3 使用） ----------

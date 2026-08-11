@@ -13,9 +13,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
-from app.core.enums import AiTaskStatus, ProjectRole, ReviewStatus
+from app.core.enums import AiTaskStatus, ChecklistStatus, ProjectRole, ReviewStatus
 from app.db.session import SessionLocal, get_db
-from app.models import AiTask, Project, TestCase, User
+from app.models import AiTask, ChecklistItem, Project, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors
@@ -285,6 +285,26 @@ def review_testcase(
     else:
         tc.reviewed_at = datetime.utcnow()  # 与 issues.py resolved_at 对齐（UTC naive），供 /stats/ai 按日聚合
     tc.adopted = (body.review_status == ReviewStatus.adopted)
+
+    # ---- 采纳回流副作用：带 task_id 的测试点采纳→upsert 清单项；取消采纳→删仍 pending 的清单项 ----
+    if tc.task_id is not None:
+        existing = (
+            db.query(ChecklistItem)
+            .filter(ChecklistItem.task_id == tc.task_id,
+                    ChecklistItem.test_case_id == tc.id)
+            .first()
+        )
+        if body.review_status == ReviewStatus.adopted:
+            if existing is None:
+                db.add(ChecklistItem(
+                    task_id=tc.task_id, test_case_id=tc.id, project_id=tc.project_id,
+                ))
+            # 已存在则幂等跳过（保留其执行状态）
+        else:
+            # 取消采纳：仅删仍 pending 未执行的清单项，已执行过的保留（避免丢执行记录）
+            if existing is not None and existing.exec_status == ChecklistStatus.pending:
+                db.delete(existing)
+
     db.commit()
     db.refresh(tc)
     return ok(_to_case_out(tc))

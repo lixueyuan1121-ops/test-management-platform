@@ -84,3 +84,25 @@ def migrate_task_status() -> None:
                 "ENUM('pending','testing','blocked','online') "
                 "NOT NULL DEFAULT 'pending'"
             ))
+
+
+def ensure_issue_columns() -> None:
+    """remaining_issue 表补列 task_id / checklist_item_id（如缺失），并放宽 report_id 可空。
+
+    放宽 report_id：SQLite 列约束宽松，NOT NULL 不阻塞新路径的 NULL 插入无需 DDL；
+    MySQL 需 MODIFY COLUMN 去掉 NOT NULL。加列/放宽都幂等：ADD 前探列，MODIFY 重复执行安全。
+    """
+    cols = _columns("remaining_issue")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if "task_id" not in cols:
+            conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN task_id BIGINT NULL"))
+        if "checklist_item_id" not in cols:
+            conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN checklist_item_id BIGINT NULL"))
+        if dialect == "mysql":
+            # 放宽 report_id 为可空（旧库是 NOT NULL）；SQLite 无需此步
+            conn.execute(text(
+                "ALTER TABLE remaining_issue MODIFY COLUMN `report_id` BIGINT NULL"
+            ))
