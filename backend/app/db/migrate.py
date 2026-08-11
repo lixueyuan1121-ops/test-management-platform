@@ -102,7 +102,25 @@ def ensure_issue_columns() -> None:
         if "checklist_item_id" not in cols:
             conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN checklist_item_id BIGINT NULL"))
         if dialect == "mysql":
-            # 放宽 report_id 为可空（旧库是 NOT NULL）；SQLite 无需此步
-            conn.execute(text(
-                "ALTER TABLE remaining_issue MODIFY COLUMN `report_id` BIGINT NULL"
-            ))
+            # report_id 放宽为可空。MySQL 不允许直接 MODIFY 被 FK 引用的列（errno 1832
+            # "Cannot change column ... used in a foreign key constraint"），需先 drop 该 FK
+            # → MODIFY → 重建 FK。FK 名不硬编码：用 inspector 按 constrained_columns 查其真实名
+            # （老库多为自动命名 remaining_issue_ibfk_1）。幂等：report_id 已可空则整段跳过；
+            # 重建统一命名为 fk_issue_report（与 schema.sql 对齐），后续 startup 再跑时因已可空跳过。
+            insp = inspect(engine)
+            rid = next((c for c in insp.get_columns("remaining_issue")
+                        if c["name"] == "report_id"), None)
+            if rid is not None and rid["nullable"] is False:
+                fk_name = next(
+                    (fk["name"] for fk in insp.get_foreign_keys("remaining_issue")
+                     if fk.get("constrained_columns") == ["report_id"] and fk.get("name")),
+                    None,
+                )
+                if fk_name:
+                    conn.execute(text(f"ALTER TABLE remaining_issue DROP FOREIGN KEY `{fk_name}`"))
+                conn.execute(text("ALTER TABLE remaining_issue MODIFY COLUMN `report_id` BIGINT NULL"))
+                if fk_name:
+                    conn.execute(text(
+                        "ALTER TABLE remaining_issue ADD CONSTRAINT `fk_issue_report` "
+                        "FOREIGN KEY (`report_id`) REFERENCES `daily_report`(`id`) ON DELETE CASCADE"
+                    ))
