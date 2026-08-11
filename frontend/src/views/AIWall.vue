@@ -393,11 +393,12 @@ const tv = computed(() => {
   --status-good:#0ca30c; --status-warn:#fab219; --status-critical:#d03b3b;
   --grid: #e8ecf2;
 
-  /* 铺满内容区底色：抵消 el-main 的 20px padding（对齐 Dashboard） */
+  /* 铺满内容区底色：抵消 el-main 的 20px padding（对齐 Dashboard）。
+     不设 min-height——高度随内容自然收缩，避免比 el-main 可用区高出而无端触发纵向滚动条。 */
   background: var(--bg); color: var(--text-primary);
   font-family: var(--sans);
   margin: -20px; padding: 20px;
-  min-height: calc(100vh - 60px);
+  box-sizing: border-box;
 }
 /* dark 值声明两份：媒体查询覆盖 OS 深色偏好；data-theme 属性覆盖手动切换（双向生效）。
    平台目前仅亮色，故页内不提供明暗切换按钮；dark 变量块保留以备将来接入全站暗色。 */
@@ -459,7 +460,7 @@ const tv = computed(() => {
 .factor-hint { font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.3px; }
 .hero .delta { font-family:var(--mono); font-size:12px; letter-spacing:.5px; margin-top:12px; color:var(--signal); }
 
-.kpis { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+.kpis { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; align-content:stretch; }
 .kpi { padding:18px; transition:border-color .18s ease, box-shadow .2s ease, transform .18s ease; }
 .kpi .lbl { font-family:var(--mono); font-size:10px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; }
 .kpi .num { font-family:var(--mono); font-size:34px; font-weight:700; line-height:1.1; margin-top:10px;
@@ -536,6 +537,12 @@ const tv = computed(() => {
 .viz-body > *:nth-child(2) { animation-delay:.06s; }
 .viz-body > *:nth-child(3) { animation-delay:.12s; }
 @keyframes vizUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+
+/* 宽屏：hero 收窄、KPI 一排 4 列，让 hero + 4 KPI 齐平铺满，减少大屏空白 */
+@media (min-width: 1600px) {
+  .top { grid-template-columns: 0.9fr 2.4fr; }
+  .kpis { grid-template-columns: repeat(4, 1fr); }
+}
 
 /* 响应式 */
 @media (max-width: 1080px) {
