@@ -13,7 +13,15 @@ class RemainingIssue(Base):
     __tablename__ = "remaining_issue"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    report_id: Mapped[int] = mapped_column(ForeignKey("daily_report.id", ondelete="CASCADE"), index=True)
+    report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_report.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    checklist_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("checklist_item.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

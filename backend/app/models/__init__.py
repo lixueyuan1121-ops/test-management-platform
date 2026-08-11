@@ -7,6 +7,7 @@ from app.models.issue import RemainingIssue
 from app.models.integration import Integration, ApiToken, IntegrationEvent
 from app.models.tool import ToolCategory, TestTool
 from app.models.ai import AiTask, TestCase
+from app.models.checklist import ChecklistItem
 
 __all__ = [
     "User",
@@ -23,4 +24,5 @@ __all__ = [
     "TestTool",
     "AiTask",
     "TestCase",
+    "ChecklistItem",
 ]
