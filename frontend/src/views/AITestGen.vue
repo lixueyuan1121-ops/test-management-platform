@@ -185,6 +185,7 @@ import {
   listProjects, listTasks, aiStatus, listAiTasks, listAiCases, reviewTestcase, streamTestcases,
   extractUrl, extractFile,
 } from '@/api'
+import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 // 维度 / 优先级 → el-tag 配色
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
@@ -243,7 +244,7 @@ onMounted(async () => {
   } catch { aiAvailable.value = false }
   projects.value = await listProjects()
   if (projects.value.length) {
-    pid.value = projects.value[0].id
+    pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()
   }
 })
@@ -254,6 +255,7 @@ async function onProjectChange() {
   meta.value = null
   viewingId.value = null
   if (!pid.value) { tasks.value = []; history.value = []; return }
+  setLastProjectId(pid.value)
   ;[tasks.value, history.value] = await Promise.all([
     listTasks({ project_id: pid.value }),
     listAiTasks(pid.value, 20),

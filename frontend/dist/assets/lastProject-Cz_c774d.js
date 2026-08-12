@@ -1,0 +1,1 @@
+const l="tp_last_project";function u(){const t=localStorage.getItem(l);if(t===null)return null;const n=Number(t);return Number.isFinite(n)?n:null}function i(t){t!=null&&localStorage.setItem(l,String(t))}function o(t){if(!t||!t.length)return null;const n=u(),e=t.find(r=>r.id===n);return e?e.id:t[0].id}export{o as p,i as s};

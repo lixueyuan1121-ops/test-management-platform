@@ -59,6 +59,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { listProjects, dailyStats } from '@/api'
+import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const projects = ref([])
 const pid = ref(null)
@@ -68,11 +69,12 @@ const loading = ref(false)
 
 onMounted(async () => {
   projects.value = await listProjects()
-  if (projects.value.length) { pid.value = projects.value[0].id; await load() }
+  if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
 })
 
 async function load() {
   if (!pid.value) return
+  setLastProjectId(pid.value)
   loading.value = true
   try {
     const d = await dailyStats(pid.value, date.value)

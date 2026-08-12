@@ -13,7 +13,9 @@
         </div>
       </template>
       <el-table :data="tasks" v-loading="loading" size="small" empty-text="该日没有指派给你的任务">
-        <el-table-column prop="title" label="任务名称" min-width="150" />
+        <el-table-column prop="description" label="任务名称" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.description || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="developer" label="开发" width="100" />
         <el-table-column label="需求" width="80">
           <template #default="{ row }">
@@ -149,6 +151,7 @@ import {
   listProjects, listTasks, listReports, upsertReport,
   getTaskChecklist, attachChecklist, updateChecklistItem, checklistItemToIssue, listAdoptableCases,
 } from '@/api'
+import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const projects = ref([])
 const pid = ref(null)
@@ -175,11 +178,12 @@ const toIssue = reactive({ visible: false, saving: false, itemId: null, form: { 
 
 onMounted(async () => {
   projects.value = await listProjects()
-  if (projects.value.length) { pid.value = projects.value[0].id; await load() }
+  if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
 })
 
 async function load() {
   if (!pid.value) return
+  setLastProjectId(pid.value)
   loading.value = true
   try {
     const [myTasks, reports] = await Promise.all([

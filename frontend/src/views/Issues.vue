@@ -67,6 +67,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { listProjects, listIssues, updateIssue } from '@/api'
+import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const auth = useAuthStore()
 const projects = ref([])
@@ -79,11 +80,12 @@ const dialog = reactive({ visible: false, id: null, title: '', external_ref: '',
 
 onMounted(async () => {
   projects.value = await listProjects()
-  if (projects.value.length) { pid.value = projects.value[0].id; await load() }
+  if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
 })
 
 async function load() {
   if (!pid.value) return
+  setLastProjectId(pid.value)
   loading.value = true
   try { issues.value = await listIssues(pid.value, statusFilter.value || undefined) }
   finally { loading.value = false }

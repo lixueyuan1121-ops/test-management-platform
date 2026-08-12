@@ -130,6 +130,7 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist } from '@/api'
+import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown } from '@element-plus/icons-vue'
 
 // 任务状态四态：待测 → 测试中 →(阻塞)→ 已上线；标签配色与首页 KPI 一致
@@ -161,7 +162,8 @@ const form = reactive({ title: '', requirement_url: '', developer: '', module: '
 
 onMounted(async () => {
   projects.value = await listProjects()
-  if (projects.value.length) { pid.value = projects.value[0].id; await load() }
+  pid.value = pickDefaultProjectId(projects.value)
+  if (pid.value) await load()
 })
 
 async function loadMembers() {
@@ -172,6 +174,7 @@ watch(pid, loadMembers)
 
 async function load() {
   if (!pid.value) return
+  setLastProjectId(pid.value)   // 记住当前项目，供其他页面默认选中
   await loadMembers()
   loading.value = true
   try {

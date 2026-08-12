@@ -39,6 +39,7 @@ import { BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { listProjects, workloadStats } from '@/api'
+import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -56,7 +57,7 @@ onMounted(async () => {
   const start = new Date(today.getTime() - 13 * 86400000)
   range.value = [start.toISOString().slice(0, 10), today.toISOString().slice(0, 10)]
   projects.value = await listProjects()
-  if (projects.value.length) { pid.value = projects.value[0].id; await load() }
+  if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
   await nextTick()
   barChart = echarts.init(barEl.value)
   lineChart = echarts.init(lineEl.value)
@@ -68,6 +69,7 @@ function onResize() { barChart?.resize(); lineChart?.resize() }
 
 async function load() {
   if (!pid.value || !range.value?.length) return
+  setLastProjectId(pid.value)
   loading.value = true
   try {
     const d = await workloadStats(pid.value, range.value[0], range.value[1])
