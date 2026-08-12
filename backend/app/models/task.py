@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import String, Text, Date, DateTime, Enum, ForeignKey, Numeric, func
+from sqlalchemy import String, Text, Date, DateTime, Enum, ForeignKey, Numeric, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import TaskStatus, TaskPriority
@@ -31,6 +31,9 @@ class Task(Base):
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, length=16), default=TaskStatus.pending, server_default="pending"
     )
+    # 状态是否已被人工接管：人工（登录用户）改过 status 即置 True，
+    # 此后派单同步（agent 的 PATCH）不再覆盖 status，只更新其它元信息。
+    status_locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

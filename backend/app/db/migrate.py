@@ -25,6 +25,10 @@ def ensure_task_columns() -> None:
             conn.execute(text("ALTER TABLE task ADD COLUMN requirement_url VARCHAR(512)"))
         if "developer" not in cols:
             conn.execute(text("ALTER TABLE task ADD COLUMN developer VARCHAR(64)"))
+        if "status_locked" not in cols:
+            conn.execute(text(
+                "ALTER TABLE task ADD COLUMN status_locked TINYINT(1) NOT NULL DEFAULT 0"
+            ))
 
 
 def ensure_testcase_columns() -> None:

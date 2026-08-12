@@ -35,6 +35,7 @@ def _to_out(db: Session, t: Task, on_date: date | None = None) -> dict:
         "priority": t.priority.value,
         "assigned_date": str(t.assigned_date),
         "status": t.status.value,
+        "status_locked": bool(t.status_locked),
         # 顺延标记：派单日早于查询日即为顺延（仅 list 传 on_date 时有意义）
         "is_carried": on_date is not None and t.assigned_date < on_date,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -110,11 +111,43 @@ def update_task(
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, t.project_id, (ProjectRole.admin,))
+    # 非 status 字段照常更新（派单同步与人工都可写）
     for f in ("title", "description", "module", "requirement_url", "developer",
-              "priority", "assigned_to", "assigned_date", "status"):
+              "priority", "assigned_to", "assigned_date"):
         v = getattr(body, f, None)
         if v is not None:
             setattr(t, f, v)
+    new_status = getattr(body, "status", None)
+    # 人工端点：管理员可随时改状态（本端点仅前端 UI 调用，agent 走 /sync）。
+    # 人工真正改变 status 即置锁，标记已被人工接管——此后 agent 的 /sync 不再覆盖，
+    # 人工自己仍可继续经本端点修改。编辑任务带原状态值提交（未变）不置锁，避免误锁。
+    if new_status is not None and new_status != t.status:
+        t.status = new_status
+        t.status_locked = True  # 人工接管标记
+    db.commit()
+    return ok(_to_out(db, t))
+
+
+@router.patch("/{tid}/sync")
+def sync_task_status(
+    tid: int,
+    body: TaskUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """派单 agent 专用状态同步端点。语义：自动同步，绝不覆盖人工接管过的状态。
+
+    人机同账号，无法靠身份区分，故按端点区分：人工走 PATCH /api/tasks/{id}（会置锁），
+    agent 走本端点。若 status_locked 为真（已被人工接管），忽略传入 status，保留现状；
+    未锁时才写入 status，且不置锁（自动同步不算人工接管，人工随后仍可接管）。
+    """
+    t = db.get(Task, tid)
+    if not t:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    assert_project_role(db, user, t.project_id, (ProjectRole.admin,))
+    new_status = getattr(body, "status", None)
+    if new_status is not None and not t.status_locked:
+        t.status = new_status
     db.commit()
     return ok(_to_out(db, t))
 
