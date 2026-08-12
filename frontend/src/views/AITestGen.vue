@@ -21,7 +21,7 @@
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
         <el-select v-model="taskId" placeholder="关联任务（可选）" clearable filterable style="width:240px" @change="onTaskChange">
-          <el-option v-for="t in tasks" :key="t.id" :label="t.title" :value="t.id" />
+          <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" />
         </el-select>
       </div>
 

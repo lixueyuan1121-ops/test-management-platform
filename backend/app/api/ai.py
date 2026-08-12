@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import AiTaskStatus, ChecklistStatus, ProjectRole, ReviewStatus
 from app.db.session import SessionLocal, get_db
-from app.models import AiTask, ChecklistItem, Project, TestCase, User
+from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors
@@ -36,7 +36,7 @@ def _sse(obj: dict) -> str:
     return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
 
-def _to_case_out(tc: TestCase) -> dict:
+def _to_case_out(tc: TestCase, task_title: str | None = None) -> dict:
     return {
         "id": tc.id,
         "ai_task_id": tc.ai_task_id,
@@ -51,6 +51,7 @@ def _to_case_out(tc: TestCase) -> dict:
         "review_status": tc.review_status.value,
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
         "created_at": tc.created_at.isoformat() if tc.created_at else None,
+        "task_title": task_title,
     }
 
 
@@ -265,6 +266,39 @@ def list_ai_task_cases(
         .all()
     )
     return ok([_to_case_out(tc) for tc in rows])
+
+
+@router.get("/cases")
+def list_cases(
+    project_id: int = Query(...),
+    task_id: int | None = Query(None),
+    review_status: ReviewStatus | None = Query(None),
+    category: str | None = Query(None),
+    keyword: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """跨批次查询某项目的测试点（用例库 / 日报已采纳用例共用）。只读，支持多维过滤。"""
+    assert_project_role(db, user, project_id, _ALL_ROLES)
+    q = db.query(TestCase).filter(TestCase.project_id == project_id)
+    if task_id is not None:
+        q = q.filter(TestCase.task_id == task_id)
+    if review_status is not None:
+        q = q.filter(TestCase.review_status == review_status)
+    if category:
+        q = q.filter(TestCase.category == category)
+    if keyword:
+        q = q.filter(TestCase.title.ilike(f"%{keyword}%"))
+    rows = q.order_by(TestCase.id.desc()).all()
+
+    # 批量预取关联任务名，避免 N+1
+    task_ids = {tc.task_id for tc in rows if tc.task_id is not None}
+    title_map = {}
+    if task_ids:
+        title_map = dict(
+            db.query(Task.id, Task.title).filter(Task.id.in_(task_ids)).all()
+        )
+    return ok([_to_case_out(tc, task_title=title_map.get(tc.task_id)) for tc in rows])
 
 
 @router.patch("/testcases/{cid}")

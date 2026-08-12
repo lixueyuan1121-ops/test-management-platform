@@ -34,10 +34,11 @@
             <el-tag v-else type="warning" size="small">未提交</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190">
+        <el-table-column label="操作" width="260">
           <template #default="{ row }">
             <el-button link type="primary" @click="openReport(row)">填报</el-button>
             <el-button link type="primary" @click="openChecklist(row)">验收清单</el-button>
+            <el-button link type="success" @click="openAdopted(row)">已采纳用例</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -103,7 +104,28 @@
       </el-table>
     </el-drawer>
 
-    <!-- 手动补挂弹窗 -->
+    <!-- 已采纳用例抽屉（只读回溯）-->
+    <el-drawer v-model="adopted.visible" :title="`已采纳用例 · ${adopted.taskTitle}`" size="640px">
+      <el-table :data="adopted.items" v-loading="adopted.loading" size="small" empty-text="该任务暂无已采纳用例">
+        <el-table-column label="维度" width="70" align="center">
+          <template #default="{ row }">
+            <el-tag :type="CAT_TYPE[row.category] || 'info'" effect="plain" size="small">{{ row.category || '—' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="优先级" width="76" align="center">
+          <template #default="{ row }">
+            <el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="title" label="测试点" min-width="150" show-overflow-tooltip />
+        <el-table-column label="步骤" min-width="160">
+          <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column label="预期" min-width="140">
+          <template #default="{ row }"><span class="multiline">{{ row.expected || '—' }}</span></template>
+        </el-table-column>
+      </el-table>
+    </el-drawer>
     <el-dialog v-model="attach.visible" title="添加测试点到验收清单" width="560px">
       <div v-if="!attach.options.length" class="cl-dim" style="padding:12px 0">该项目暂无「已采纳、且未加入本清单」的测试点。</div>
       <el-checkbox-group v-else v-model="attach.selected">
@@ -149,7 +171,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   listProjects, listTasks, listReports, upsertReport,
-  getTaskChecklist, attachChecklist, updateChecklistItem, checklistItemToIssue, listAdoptableCases,
+  getTaskChecklist, attachChecklist, updateChecklistItem, checklistItemToIssue, listAdoptableCases, listCases,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
@@ -175,6 +197,11 @@ const clStat = computed(() => {
 const attach = reactive({ visible: false, saving: false, options: [], selected: [] })
 // 失败转遗留
 const toIssue = reactive({ visible: false, saving: false, itemId: null, form: { title: '', severity: 'major', external_ref: '' } })
+// 已采纳用例（只读回溯）
+const adopted = reactive({ visible: false, loading: false, taskTitle: '', items: [] })
+// 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
+const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
+const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 
 onMounted(async () => {
   projects.value = await listProjects()
@@ -230,12 +257,22 @@ async function submit() {
 // ---- 验收清单 ----
 async function openChecklist(row) {
   cl.taskId = row.id
-  cl.taskTitle = row.title
+  cl.taskTitle = row.description || row.title
   cl.visible = true
   cl.loading = true
   try {
     cl.items = await getTaskChecklist(row.id)
   } finally { cl.loading = false }
+}
+
+// ---- 已采纳用例（只读回溯）----
+async function openAdopted(row) {
+  adopted.taskTitle = row.description || row.title
+  adopted.visible = true
+  adopted.loading = true
+  try {
+    adopted.items = await listCases({ project_id: pid.value, task_id: row.id, review_status: 'adopted' })
+  } finally { adopted.loading = false }
 }
 
 async function tick(row, exec_status) {
@@ -295,4 +332,5 @@ async function doToIssue() {
 .cl-sum { font-size: 12px; color: var(--tech-muted, #6b7280); }
 .cl-dim { color: var(--tech-dim, #9aa3b2); }
 .attach-row { padding: 4px 0; }
+.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 </style>

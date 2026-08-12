@@ -26,6 +26,11 @@
           <el-icon><MagicStick /></el-icon><span>AI 测试助手</span>
         </el-menu-item>
 
+        <!-- 用例库：跨批次回溯已生成 / 已采纳测试点（全员可见，只读） -->
+        <el-menu-item index="/case-library">
+          <el-icon><Collection /></el-icon><span>用例库</span>
+        </el-menu-item>
+
         <!-- 组织管理 -->
         <el-sub-menu v-if="auth.isPlatformAdmin" index="org">
           <template #title><el-icon><OfficeBuilding /></el-icon><span>组织管理</span></template>
@@ -95,7 +100,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy,
+  Fold, Expand, MagicStick, Trophy, Collection,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
