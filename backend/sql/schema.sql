@@ -74,7 +74,7 @@ CREATE TABLE `task` (
   `module` VARCHAR(128) DEFAULT NULL,
   `priority` ENUM('p0','p1','p2','p3') NOT NULL DEFAULT 'p2',
   `assigned_date` DATE NOT NULL,
-  `status` ENUM('pending','testing','blocked','online') NOT NULL DEFAULT 'pending',
+  `status` ENUM('pending','testing','blocked','online','closed') NOT NULL DEFAULT 'pending',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

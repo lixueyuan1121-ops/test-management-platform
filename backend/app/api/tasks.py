@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -18,7 +19,7 @@ def _user_name(db: Session, uid: int) -> str:
     return u.name if u else ""
 
 
-def _to_out(db: Session, t: Task) -> dict:
+def _to_out(db: Session, t: Task, on_date: date | None = None) -> dict:
     return {
         "id": t.id,
         "project_id": t.project_id,
@@ -34,6 +35,8 @@ def _to_out(db: Session, t: Task) -> dict:
         "priority": t.priority.value,
         "assigned_date": str(t.assigned_date),
         "status": t.status.value,
+        # 顺延标记：派单日早于查询日即为顺延（仅 list 传 on_date 时有意义）
+        "is_carried": on_date is not None and t.assigned_date < on_date,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -46,15 +49,24 @@ def list_tasks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """查项目任务。mine=1 时只看指派给我的；date 过滤分配日期。"""
+    """查项目任务。mine=1 时只看指派给我的；date 过滤分配日期。
+
+    顺延可见：传 date 时，除当天派单的任务外，还带出更早日期但仍未完成
+    （status ∉ {online, closed}）的任务，使未做完的任务不会因翻页到次日而消失。
+    """
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     q = db.query(Task).filter(Task.project_id == project_id)
     if date:
-        q = q.filter(Task.assigned_date == date)
+        q = q.filter(or_(
+            Task.assigned_date == date,
+            (Task.assigned_date < date) & Task.status.notin_(
+                [TaskStatus.online, TaskStatus.closed]
+            ),
+        ))
     if mine and not user.is_platform_admin:
         q = q.filter(Task.assigned_to == user.id)
     rows = q.order_by(Task.assigned_date.desc(), Task.id.desc()).all()
-    return ok([_to_out(db, t) for t in rows])
+    return ok([_to_out(db, t, on_date=date) for t in rows])
 
 
 @router.post("")

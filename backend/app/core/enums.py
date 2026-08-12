@@ -27,6 +27,7 @@ class TaskStatus(str, enum.Enum):
     testing = "testing"    # 测试中：正在执行
     blocked = "blocked"    # 阻塞：卡住（环境/缺陷/依赖）
     online = "online"      # 已上线：测完通过、已上线
+    closed = "closed"      # 已关闭：不再跟进/取消/合并
 
 
 class TaskPriority(str, enum.Enum):

@@ -35,7 +35,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="description" label="任务名称" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.description || '-' }}</template>
+          <template #default="{ row }">
+            <el-tag v-if="row.is_carried" size="small" type="warning" effect="light" style="margin-right:6px">
+              顺延自 {{ (row.assigned_date || '').slice(5) }}
+            </el-tag>
+            {{ row.description || '-' }}
+          </template>
         </el-table-column>
         <el-table-column prop="module" label="模块" width="110" />
         <el-table-column prop="developer" label="开发" width="100" />
@@ -133,6 +138,7 @@ const STATUS_META = {
   testing: { label: '测试中', type: 'warning' },
   blocked: { label: '阻塞', type: 'danger' },
   online: { label: '已上线', type: 'success' },
+  closed: { label: '已关闭', type: 'info' },
 }
 
 // 验收清单项三态结果配色（沿用全局口径：通过青绿/失败红/阻塞warn/待测灰）
