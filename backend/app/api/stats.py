@@ -215,26 +215,30 @@ def workload_stats(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """工作量统计：按成员聚合人时/任务数/上线数 + 每日趋势序列。"""
+    """工作量统计：按成员聚合任务数/上线数 + 每日趋势序列。
+
+    口径基于 task 派单（非日报）：工作量 = 任务数量（条），成员按 assigned_to 分组，
+    上线数 = status==online 的任务数。对 task 现算聚合，不建统计表。
+    """
     assert_project_role(db, user, project_id,
                         (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     rows = (
-        db.query(DailyReport)
-        .filter(DailyReport.project_id == project_id,
-                DailyReport.report_date >= from_date,
-                DailyReport.report_date <= to_date)
+        db.query(Task)
+        .filter(Task.project_id == project_id,
+                Task.assigned_date >= from_date,
+                Task.assigned_date <= to_date)
         .all()
     )
     by_member: dict[int, dict] = {}
     daily: dict[str, dict] = {}
-    for r in rows:
-        m = by_member.setdefault(r.user_id, {"hours": 0.0, "tasks": set(), "online": 0})
-        m["hours"] += float(r.workload_hours or 0)
-        m["tasks"].add(r.task_id)
-        m["online"] += 1 if r.is_online else 0
-        d = daily.setdefault(str(r.report_date), {"hours": 0.0, "online": 0})
-        d["hours"] += float(r.workload_hours or 0)
-        d["online"] += 1 if r.is_online else 0
+    for t in rows:
+        is_online = t.status == TaskStatus.online
+        m = by_member.setdefault(t.assigned_to, {"task_cnt": 0, "online": 0})
+        m["task_cnt"] += 1
+        m["online"] += 1 if is_online else 0
+        d = daily.setdefault(str(t.assigned_date), {"task_cnt": 0, "online": 0})
+        d["task_cnt"] += 1
+        d["online"] += 1 if is_online else 0
 
     def _name(uid):
         u = db.get(User, uid)
@@ -242,17 +246,16 @@ def workload_stats(
 
     members = [{
         "user_id": uid, "name": _name(uid),
-        "hours": round(v["hours"], 1), "task_cnt": len(v["tasks"]), "online_cnt": v["online"],
+        "task_cnt": v["task_cnt"], "online_cnt": v["online"],
     } for uid, v in by_member.items()]
-    members.sort(key=lambda x: x["hours"], reverse=True)
+    members.sort(key=lambda x: x["task_cnt"], reverse=True)
 
-    daily_series = [{"date": d, "hours": round(v["hours"], 1), "online_cnt": v["online"]}
+    daily_series = [{"date": d, "task_cnt": v["task_cnt"], "online_cnt": v["online"]}
                      for d, v in sorted(daily.items())]
-    total_hours = round(sum(v["hours"] for v in by_member.values()), 1)
     return ok({
         "project_id": project_id,
         "from": str(from_date), "to": str(to_date),
-        "total_hours": total_hours,
+        "total_tasks": len(rows),
         "total_online": sum(v["online"] for v in by_member.values()),
         "members": members,
         "daily": daily_series,

@@ -14,7 +14,7 @@
         </div>
       </template>
       <el-row :gutter="12" v-loading="loading">
-        <el-col :span="8"><div class="stat"><div class="num">{{ data.total_hours }}</div><div class="lbl">总工作量(人时)</div></div></el-col>
+        <el-col :span="8"><div class="stat"><div class="num">{{ data.total_tasks }}</div><div class="lbl">总任务数(条)</div></div></el-col>
         <el-col :span="8"><div class="stat"><div class="num green">{{ data.total_online }}</div><div class="lbl">累计上线数</div></div></el-col>
         <el-col :span="8"><div class="stat"><div class="num">{{ data.members?.length || 0 }}</div><div class="lbl">参与人数</div></div></el-col>
       </el-row>
@@ -45,7 +45,7 @@ echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendCompone
 const projects = ref([])
 const pid = ref(null)
 const range = ref([])
-const data = reactive({ total_hours: 0, total_online: 0, members: [], daily: [] })
+const data = reactive({ total_tasks: 0, total_online: 0, members: [], daily: [] })
 const loading = ref(false)
 const barEl = ref(null)
 const lineEl = ref(null)
@@ -83,21 +83,21 @@ function render() {
     tooltip: { trigger: 'axis' },
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: members.map((m) => m.name), axisLabel: { interval: 0 } },
-    yAxis: [{ type: 'value', name: '人时' }],
+    yAxis: [{ type: 'value', name: '任务数' }],
     series: [
-      { name: '工作量(人时)', type: 'bar', data: members.map((m) => m.hours), itemStyle: { color: '#00b386' }, barMaxWidth: 40 },
+      { name: '任务数', type: 'bar', data: members.map((m) => m.task_cnt), itemStyle: { color: '#00b386' }, barMaxWidth: 40 },
       { name: '上线数', type: 'bar', data: members.map((m) => m.online_cnt), itemStyle: { color: '#67c23a' }, barMaxWidth: 40 },
     ],
   })
   const daily = data.daily || []
   lineChart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['工作量(人时)', '当日上线'] },
+    legend: { data: ['任务数', '当日上线'] },
     grid: { left: 50, right: 20, top: 40, bottom: 30 },
     xAxis: { type: 'category', data: daily.map((d) => d.date), boundaryGap: false },
-    yAxis: [{ type: 'value', name: '人时' }, { type: 'value', name: '上线数' }],
+    yAxis: [{ type: 'value', name: '任务数' }, { type: 'value', name: '上线数' }],
     series: [
-      { name: '工作量(人时)', type: 'line', smooth: true, data: daily.map((d) => d.hours), areaStyle: { opacity: 0.15 }, itemStyle: { color: '#00b386' } },
+      { name: '任务数', type: 'line', smooth: true, data: daily.map((d) => d.task_cnt), areaStyle: { opacity: 0.15 }, itemStyle: { color: '#00b386' } },
       { name: '当日上线', type: 'line', yAxisIndex: 1, data: daily.map((d) => d.online_cnt), itemStyle: { color: '#67c23a' } },
     ],
   })
