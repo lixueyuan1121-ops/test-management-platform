@@ -34,7 +34,9 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="任务名称" min-width="160" />
+        <el-table-column prop="description" label="任务名称" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.description || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="module" label="模块" width="110" />
         <el-table-column prop="developer" label="开发" width="100" />
         <el-table-column label="需求地址" width="120">
