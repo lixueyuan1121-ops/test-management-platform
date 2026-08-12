@@ -13,8 +13,8 @@
               <el-option label="已否决" value="rejected" />
               <el-option label="待定" value="pending" />
             </el-select>
-            <el-select v-model="taskId" placeholder="关联任务" size="small" clearable filterable style="width:200px" @change="load">
-              <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" />
+            <el-select v-model="taskId" placeholder="关联任务" size="small" clearable filterable fit-input-width style="width:240px" @change="load">
+              <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" :title="t.description || t.title" />
             </el-select>
             <el-select v-model="category" placeholder="维度" size="small" clearable style="width:110px" @change="load">
               <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
