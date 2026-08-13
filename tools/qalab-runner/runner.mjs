@@ -139,12 +139,27 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 - api 用例:用 curl / fetch 验证接口与响应。
 - cli 用例:起进程并校验退出码 / 输出。
 - 能用确定性断言就断言,不要"看一眼觉得对";判定不了或超时一律 verdict=fail。
+- **只测被测客户端/接口本身,不研究"功能如何实现"**:禁止用 Bash/git/grep/ls/Read 去翻本地代码仓库或平台源码;
+  你的工作目录可能恰好是某个代码仓库,忽略它,绝不 cd 进去或读它的文件。
+- 读不出可自动化执行的步骤(如用例是功能描述/需求,而非"点哪、断言啥")→ **立即 verdict=fail**,
+  reason 写"用例不可自动化执行:<原因>";**不要反问、不要研究代码、不要空等**。
+- 工具边界:GUI/E2E 用例只用 mcp__gui__*;api 用例用 Bash 跑 curl/fetch;cli 用例用 Bash 起进程。别越界。
 再次强调:最后一行必须是纯 JSON,这是机器解析的唯一依据。`;
 
-function runClaude(payload) {
+function runClaude(payload, kind) {
   return new Promise((resolve) => {
     const started = Date.now();
     const sec = () => ((Date.now() - started) / 1000).toFixed(1);   // 相对起始的秒数,标在每条进度前
+    // 按 kind 给最小工具集:gui/e2e 只给 gui-mcp(不给 Bash,杜绝 claude 跑去翻代码/执行命令);
+    // api/cli 才给 Bash(curl/fetch/起进程)。工具越权是之前 claude 跑偏去研究平台源码的口子。
+    const allowed = (kind === "api" || kind === "cli") ? "Bash" : "mcp__gui__*";
+    // **硬禁内置工具**(关键):--allowedTools 只是"额外允许",不排除 Bash/Read/Grep 等内置工具——
+    // 光靠 SYSTEM_PROMPT 软约束拦不住,claude 会去 grep/Read 翻本地仓库源码而不调 gui(实测踩过)。
+    // gui/e2e 一个内置工具都不给;api/cli 保留 Bash 但禁掉一切"翻代码/联网/改文件"的工具。
+    const READ_CODE_TOOLS = ["Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "TodoWrite"];
+    const disallowed = (kind === "api" || kind === "cli")
+      ? READ_CODE_TOOLS                                       // 留 Bash,禁翻代码/联网/改文件
+      : ["Bash", "BashOutput", "KillShell", ...READ_CODE_TOOLS]; // gui/e2e:内置工具全禁,只剩 mcp__gui__*
     // 安全:用例 payload(用户可控 —— steps/expected 等自由文本,经平台入队流入)通过 stdin 传入,
     // **不进命令行 argv**。否则在 Windows(执行 claude.cmd 必须 shell:true)下,payload 里的
     // " & | % 等元字符会被 cmd.exe 解释导致命令注入(能编辑用例的成员即可在执行机上 RCE)。
@@ -157,8 +172,10 @@ function runClaude(payload) {
       "--append-system-prompt", SYSTEM_PROMPT,
       // 白名单必须是**一个**空格分隔的值;写成 "Bash","mcp__gui__*" 两个 arg 会让 --allowedTools
       // 只收到 "Bash"、另一个游离,约束失效→claude 回退到可用任意工具(含 WebSearch),
-      // 导致跑偏、不聚焦执行、不输出结论 JSON(实测踩过)。
-      "--allowedTools", "Bash mcp__gui__*",
+      // 导致跑偏、不聚焦执行、不输出结论 JSON(实测踩过)。按 kind 收敛见上方 allowed。
+      "--allowedTools", allowed,
+      // 硬禁内置工具(见上方 disallowed):这是拦住 claude 跑偏去翻代码的关键,比 prompt 软约束可靠。
+      "--disallowedTools", ...disallowed,
       // 只加载 gui 这一个 MCP server(见 MCP_CONFIG),屏蔽执行机上用户全局 MCP;否则 claude 启动会
       // 连带 spawn 一堆无关 server(context7/figma/playwright…),拖慢启动甚至长挂(Mac 实测踩过)。
       "--mcp-config", MCP_CONFIG,
@@ -265,7 +282,7 @@ async function tick() {
         result = { verdict: "pass", reason: "dry-run 握手验证", duration_ms: 1 };
       } else {
         if (item.kind === "gui") await ensureNamiclaw();   // GUI 用例:先确保客户端带 CDP 在跑
-        result = await runClaude(item.payload);
+        result = await runClaude(item.payload, item.kind);
       }
 
       await report(item.run_id, {
