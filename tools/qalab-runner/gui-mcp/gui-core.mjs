@@ -151,6 +151,21 @@ export function createGuiCore(opts = {}) {
     throw new Error("需要提供 key(语义,优先)或 selector(原始 CSS)之一");
   }
 
+  // 某语义 key 当前在页面上是否可见(不抛错,快速探一次;用于 waitResponse 轮询生成态)。
+  async function isKeyVisible(key) {
+    const entry = REGISTRY[key];
+    if (!entry) return false;
+    for (const s of scopesFor(entry.frame)) {
+      for (const cand of entry.candidates) {
+        try {
+          const loc = byToLocator(s.scope, cand).first();
+          if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) return true;
+        } catch { /* 试下一个 */ }
+      }
+    }
+    return false;
+  }
+
   // ---- 对外操作(server 和 StepExecutor 共用)----
   return {
     get registry() { return REGISTRY; },
@@ -207,6 +222,29 @@ export function createGuiCore(opts = {}) {
       if (args.key) await resolveKey(args.key, { timeout, requireVisible: true });
       else await contentFrame().locator(args.selector).first().waitFor({ state: "visible", timeout });
       return { visible: args.key || args.selector };
+    },
+    // 等 AI 回复生成完成(e2e 关键):发消息后调。判据 = stopBtn(生成中标志)消失 且 出现带 has-copy 的
+    // answerBubble(流式输出完成)。带上限 timeout_ms(默认 90s),超时不抛崩溃、返回 {done:false} 由调用方判 fail。
+    // 逻辑:先等生成"起来"(stopBtn 出现,最多 quietMs 内没起来就认为无需等),再等它"结束"(stopBtn 消失 + answerBubble 就绪)。
+    async waitResponse({ timeout_ms = 90000 } = {}) {
+      await ensureConnected();
+      const start = Date.now();
+      const stopKey = REGISTRY.stopBtn ? "stopBtn" : null;
+      const doneKey = REGISTRY.answerBubble ? "answerBubble" : null;
+      let sawGenerating = false;
+      for (;;) {
+        const generating = stopKey ? await isKeyVisible(stopKey) : false;
+        if (generating) sawGenerating = true;
+        const answered = doneKey ? await isKeyVisible(doneKey) : false;
+        // 完成判据:不在生成中 且 已出现完成的回复气泡(has-copy)
+        if (!generating && answered && (sawGenerating || Date.now() - start > 3000)) {
+          return { done: true, elapsed_ms: Date.now() - start, saw_generating: sawGenerating };
+        }
+        if (Date.now() - start > timeout_ms) {
+          return { done: false, elapsed_ms: Date.now() - start, saw_generating: sawGenerating, reason: `等待回复超时(>${timeout_ms}ms):generating=${generating} answered=${answered}` };
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
     },
     // 断言文本:返回 {pass, actual, expected, mode, via}(不抛错,由调用方按 pass 判定)
     async assertText(args) {

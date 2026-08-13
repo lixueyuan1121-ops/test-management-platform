@@ -11,11 +11,11 @@
 // 证据:每步结果(命中候选 via、实际值、截图)累积进 steps[],回写时可读。
 
 const DETERMINISTIC = new Set([
-  "connect", "click", "fill", "wait_for", "get_text", "screenshot", "goto",
+  "connect", "click", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible",
 ]);
-// 这些 action 需要主观判断或长等待,确定性执行器不碰,退回 claude:
-const NEEDS_CLAUDE = new Set(["judge", "wait_response"]);
+// 这些 action 需要主观判断,确定性执行器不碰,退回 claude:
+const NEEDS_CLAUDE = new Set(["judge"]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调(sec, msg)
 export async function runScript(gui, script, log = () => {}) {
@@ -46,6 +46,12 @@ export async function runScript(gui, script, log = () => {}) {
         case "click": { const r = await gui.click(target); steps.push({ action, ok: true, ...r }); break; }
         case "fill": { const r = await gui.fill({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); break; }
         case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); break; }
+        case "wait_response": {
+          const r = await gui.waitResponse({ timeout_ms: args.timeout_ms });
+          steps.push({ action, ...r, desc });
+          if (!r.done) return fail(`step${i + 1} 等待 AI 回复未完成:${r.reason || ""}`, steps, evidence, started);
+          break;
+        }
         case "get_text": { const r = await gui.getText(target); steps.push({ action, ok: true, ...r }); break; }
         case "screenshot": { const r = await gui.screenshot(args.path || `evidence/step${i + 1}.png`); evidence.push(r.evidence); steps.push({ action, ok: true, ...r }); break; }
         case "assert_visible": {

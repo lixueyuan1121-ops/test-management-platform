@@ -104,7 +104,7 @@ def build_testcase_prompt(requirement: str) -> str:
    - e2e：跨多个界面步骤的端到端流程（如登录→进入某页→操作→验证结果），比单点 gui 长
    - manual：**无法用上述自动化方式表达**的——纯人工体验/探索性/主观判断（如"页面美观""交互流畅""某功能是否符合需求预期"这类描述性、无明确可断言元素的）。拿不准是否可自动化时，优先判 manual。
 4. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
-   - action 只能取：connect（第一步必须，连接客户端）、click、fill、wait_for、get_text、assert_text、assert_visible、screenshot
+   - action 只能取：connect（第一步必须，连接客户端）、click、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、screenshot
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
    - args：assert_text 用 {{"expected":"...","contains":true}}；fill 用 {{"text":"..."}}；wait_for 用 {{"timeout_ms":6000}}
    - desc：该步人读说明
@@ -307,7 +307,7 @@ def parse_testcases(raw: str) -> list[dict]:
     return out
 
 
-_VALID_ACTIONS = {"connect", "click", "fill", "wait_for", "get_text", "assert_text", "assert_visible", "screenshot"}
+_VALID_ACTIONS = {"connect", "click", "fill", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "screenshot"}
 
 
 def _validate_script(script) -> tuple[list, str | None]:
