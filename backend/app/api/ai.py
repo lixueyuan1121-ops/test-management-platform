@@ -202,6 +202,8 @@ def gen_testcases(
                     steps=c["steps"] or None,
                     expected=c["expected"] or None,
                     priority=c["priority"] or None,
+                    exec_kind=c.get("kind") or "manual",       # 生成侧已判类型;缺省 manual(不误派)
+                    kind_reason=c.get("kind_reason") or None,
                 )
                 s.add(tc)
                 objs.append(tc)

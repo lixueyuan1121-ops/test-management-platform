@@ -69,8 +69,16 @@ def build_testcase_prompt(requirement: str) -> str:
    - steps：操作步骤（可多步，用换行分隔）
    - expected：预期结果
    - priority：优先级（P0/P1/P2/P3）
-3. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
-4. 数量控制在 8-20 条，聚焦关键路径与高风险场景。
+   - kind：自动化执行类型，只能是 gui/api/cli/e2e/manual 之一（判定规则见下）
+   - kind_reason：一句话说明为何判该 kind
+3. kind 判定规则：
+   - gui：在被测客户端界面上点击/输入/断言某元素或文案（单点、一两步）
+   - api：调接口、校验响应码/响应体
+   - cli：跑命令行、校验退出码/输出
+   - e2e：跨多个界面步骤的端到端流程（如登录→进入某页→操作→验证结果），比单点 gui 长
+   - manual：**无法用上述自动化方式表达**的——纯人工体验/探索性/主观判断（如"页面美观""交互流畅""某功能是否符合需求预期"这类描述性、无明确可断言元素的）。拿不准是否可自动化时，优先判 manual。
+4. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
+5. 数量控制在 8-20 条，聚焦关键路径与高风险场景。
 
 需求内容：
 <requirement>
@@ -233,17 +241,24 @@ def parse_testcases(raw: str) -> list[dict]:
     if not isinstance(arr, list):
         return []
     out = []
+    _VALID_KINDS = {"gui", "api", "cli", "e2e", "manual"}
     for it in arr:
         if not isinstance(it, dict):
             continue
         title = str(it.get("title") or "").strip()[:512]
         if not title:
             continue
+        # kind:模型给的若不在合法集内(或漏给)→ 兜底 manual(宁可人工复核,不可误派执行机)
+        kind = str(it.get("kind") or "").strip().lower()
+        if kind not in _VALID_KINDS:
+            kind = "manual"
         out.append({
             "category": str(it.get("category") or "").strip()[:32],
             "title": title,
             "steps": str(it.get("steps") or "").strip(),
             "expected": str(it.get("expected") or "").strip(),
             "priority": str(it.get("priority") or "").strip()[:8],
+            "kind": kind,
+            "kind_reason": str(it.get("kind_reason") or "").strip()[:500],
         })
     return out
