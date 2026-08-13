@@ -33,7 +33,9 @@ const RUNNER_TOKEN = process.env.RUNNER_TOKEN  || "";
 const RUNNER_ID    = process.env.RUNNER_ID     || "win-01";
 const POLL_MS      = Number(process.env.POLL_MS || 5000);
 const CLAUDE_BIN   = process.env.CLAUDE_BIN    || "claude";
-const NAMICLAW_EXE = process.env.NAMICLAW_EXE  || "D:\\Program Files\\namiclaw\\Application\\namiclaw.exe";
+// NAMICLAW_EXE 不设默认值:空=这台机器没有被测客户端,不该跑 gui 用例(而非兜底成某个
+// 平台的固定路径,否则在没有该客户端的机器上会去 spawn 不存在的路径而崩溃)。
+const NAMICLAW_EXE = process.env.NAMICLAW_EXE  || "";
 const CDP_PORT     = Number(process.env.CDP_PORT || 9222);
 const DRY          = process.argv.includes("--dry");
 
@@ -85,8 +87,13 @@ async function coldStartClient() {
     const name = NAMICLAW_EXE.split("/").pop();
     await new Promise((r) => execFile("pkill", ["-f", name], () => r()));
     await sleep(2000);
-    const child = spawn(NAMICLAW_EXE, [`--remote-debugging-port=${CDP_PORT}`], { detached: true, stdio: "ignore" });
-    child.unref();
+    // spawn 失败(路径不存在等)走异步 'error' 事件,不监听会以未捕获异常 crash 整个 runner
+    // (try/catch 抓不到 EventEmitter 的 error)。这里转成 Promise,让上层 tick 的 catch 回写 fail。
+    await new Promise((resolve, reject) => {
+      const child = spawn(NAMICLAW_EXE, [`--remote-debugging-port=${CDP_PORT}`], { detached: true, stdio: "ignore" });
+      child.once("error", reject);
+      child.once("spawn", () => { child.unref(); resolve(); });
+    });
   }
 }
 
@@ -139,6 +146,11 @@ function runClaude(payload) {
     ];
     const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
     let out = "", err = "";
+    // spawn 失败(claude 未安装/PATH 不对)走异步 'error' 事件,不监听会 crash 整个 runner。
+    // 转成一次 fail 结论回写,而非拖垮进程。
+    child.on("error", (e) => {
+      resolve({ verdict: "fail", reason: `无法启动 claude(${CLAUDE_BIN}): ${e.message}`, duration_ms: Date.now() - started });
+    });
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("close", (code) => {
@@ -225,5 +237,10 @@ async function main() {
     await sleep(POLL_MS);
   }
 }
+
+// 进程级兜底:任何漏网的未捕获异常/Promise 拒绝都只记日志,绝不让 runner 静默退出
+// (无人值守进程一旦崩溃,后续用例全部停摆且不回写)。
+process.on("uncaughtException", (e) => log("未捕获异常(已忽略,继续轮询):", e.message));
+process.on("unhandledRejection", (e) => log("未处理拒绝(已忽略,继续轮询):", e?.message || e));
 
 main();
