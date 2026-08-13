@@ -235,6 +235,8 @@ CREATE TABLE `test_case` (
   `review_status` VARCHAR(16) NOT NULL DEFAULT 'pending',
   `reviewed_at` DATETIME DEFAULT NULL,
   `exec_kind` VARCHAR(8) NOT NULL DEFAULT 'gui',
+  `kind_reason` TEXT NULL,
+  `script` TEXT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_testcase_aitask` (`ai_task_id`),
