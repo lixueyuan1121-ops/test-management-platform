@@ -1,0 +1,638 @@
+{
+  "_comment": "纳米Work 语义选择器注册表(gui-mcp 消费)。key -> {frame:shell|vm|auto, desc, candidates:[{by,value,name?}]}。candidates 按稳定性排序(testid>role>label>text>placeholder>css),命中即用。基座导出自 nami-work-test/lib/selectors.js,已并入 daily_test 实测项。更新:往对应 key 的 candidates 头部(更稳)或尾部(兜底)加一条即可。",
+  "vmIframe": "iframe[src*=\".work.n.cn\"]",
+  "registry": {
+    "loginAccountTab": {
+      "frame": "shell",
+      "desc": "登录弹窗「账号登录」Tab（切到手机号+密码方式）",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "账号登录"
+        }
+      ]
+    },
+    "loginUserName": {
+      "frame": "shell",
+      "desc": "登录 用户名/手机号 输入框",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "input[name=userName]"
+        },
+        {
+          "by": "placeholder",
+          "value": "手机号/用户名/邮箱"
+        }
+      ]
+    },
+    "loginPassword": {
+      "frame": "shell",
+      "desc": "登录 密码输入框",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "input[name=password]"
+        },
+        {
+          "by": "placeholder",
+          "value": "密码"
+        }
+      ]
+    },
+    "loginAgree": {
+      "frame": "shell",
+      "desc": "登录 同意协议勾选框（不勾无法登录）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "input[name=is_agree]"
+        }
+      ]
+    },
+    "loginSubmit": {
+      "frame": "shell",
+      "desc": "登录 提交按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "input[type=submit]"
+        },
+        {
+          "by": "role",
+          "value": "button",
+          "name": "登录"
+        }
+      ]
+    },
+    "loginCaptchaImg": {
+      "frame": "shell",
+      "desc": "登录 图形验证码图片（quc 组件，点击可刷新）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "img.quc-captcha-img"
+        }
+      ]
+    },
+    "loginCaptchaInput": {
+      "frame": "shell",
+      "desc": "登录 验证码输入框",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "input[placeholder=\"验证码\"]"
+        }
+      ]
+    },
+    "sidebarItem": {
+      "frame": "shell",
+      "desc": "左侧栏 会话/任务列表项（点击进入该会话）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".aside-panel-task-list__item"
+        },
+        {
+          "by": "css",
+          "value": "[aria-label*=\"会话\"]"
+        },
+        {
+          "by": "css",
+          "value": "[data-testid*=\"session\"]"
+        }
+      ]
+    },
+    "sidebarItemSelected": {
+      "frame": "shell",
+      "desc": "左侧栏 当前选中的会话项",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".aside-panel-task-list__item.is-selected"
+        }
+      ]
+    },
+    "sidebarTitle": {
+      "frame": "shell",
+      "desc": "左侧栏 会话标题文本（按文本匹配定位某会话）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".aside-panel-task-list__title-text"
+        }
+      ]
+    },
+    "newTask": {
+      "frame": "shell",
+      "desc": "左侧栏顶部「+新建任务」按钮",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "新建任务"
+        },
+        {
+          "by": "role",
+          "value": "button",
+          "name": "新建任务"
+        }
+      ]
+    },
+    "loginNow": {
+      "frame": "shell",
+      "desc": "未登录假首页的「立即登录」按钮（出现=未登录）",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "立即登录"
+        }
+      ]
+    },
+    "avatar": {
+      "frame": "shell",
+      "desc": "右上角头像（打开个人菜单）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "[class*=\"avatar\"]"
+        },
+        {
+          "by": "css",
+          "value": "header img"
+        }
+      ]
+    },
+    "chatInput": {
+      "frame": "auto",
+      "desc": "对话输入框（ProseMirror/Tiptap，逐字输入 pressSequentially 更可靠）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".ql-editor"
+        },
+        {
+          "by": "css",
+          "value": ".tiptap.ProseMirror"
+        },
+        {
+          "by": "css",
+          "value": "[contenteditable=\"true\"]"
+        }
+      ]
+    },
+    "sendBtn": {
+      "frame": "auto",
+      "desc": "发送按钮（空闲态）。⚠️生成中会变停止按钮，发送统一用 Enter，勿点此",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-editor-actions__btn--send"
+        },
+        {
+          "by": "css",
+          "value": ".btn.send-btn"
+        },
+        {
+          "by": "css",
+          "value": "button[class*=\"send\"]"
+        }
+      ]
+    },
+    "stopBtn": {
+      "frame": "auto",
+      "desc": "停止/暂停按钮（可见=正在生成）。用于判断生成是否进行中",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-editor-actions__btn--stop"
+        },
+        {
+          "by": "css",
+          "value": ".send-btn--empty-disabled"
+        }
+      ]
+    },
+    "userGroup": {
+      "frame": "auto",
+      "desc": "用户消息组（每轮提问一个）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-group.user"
+        }
+      ]
+    },
+    "assistantGroup": {
+      "frame": "auto",
+      "desc": "AI 回复组（每轮回复一个）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-group.assistant"
+        }
+      ]
+    },
+    "answerBubble": {
+      "frame": "auto",
+      "desc": "答案气泡（含 has-copy = 流式输出完成，可安全读取）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-bubble.has-copy"
+        }
+      ]
+    },
+    "prevNextSlot": {
+      "frame": "auto",
+      "desc": "上一条/下一条 容器（隐藏时带 is-hidden 类，display:none）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "div.pre-step-slot"
+        }
+      ]
+    },
+    "prevNextToolbar": {
+      "frame": "auto",
+      "desc": "上一条/下一条 父工具条",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-bottom-panels-anchor__toolbar"
+        }
+      ]
+    },
+    "prevBtn": {
+      "frame": "auto",
+      "desc": "上一条 按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "button.pre-step__action[aria-label=\"上一条\"]"
+        },
+        {
+          "by": "label",
+          "value": "上一条"
+        }
+      ]
+    },
+    "nextBtn": {
+      "frame": "auto",
+      "desc": "下一条 按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "button.pre-step__action[aria-label=\"下一条\"]"
+        },
+        {
+          "by": "label",
+          "value": "下一条"
+        }
+      ]
+    },
+    "shareBtn": {
+      "frame": "auto",
+      "desc": "顶栏「分享」按钮",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "分享"
+        }
+      ]
+    },
+    "shareCheckbox": {
+      "frame": "auto",
+      "desc": "分享面板 每条消息勾选框（含 <path> = 已勾）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-share-panel__checkbox"
+        }
+      ]
+    },
+    "askFormCard": {
+      "frame": "auto",
+      "desc": "专家反问卡片（内联选择题）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-ask-form-card"
+        },
+        {
+          "by": "css",
+          "value": "chat-question-form-card"
+        }
+      ]
+    },
+    "askOptions": {
+      "frame": "auto",
+      "desc": "反问 一道题的选项组",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".ask-form__options"
+        }
+      ]
+    },
+    "askOption": {
+      "frame": "auto",
+      "desc": "反问 单个选项（已选带 is-selected）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".ask-form__option"
+        }
+      ]
+    },
+    "askSubmit": {
+      "frame": "auto",
+      "desc": "反问 提交按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".ask-form__btn--ok"
+        }
+      ]
+    },
+    "toolConfirmModal": {
+      "frame": "auto",
+      "desc": "工作流确认卡（Shadow DOM 内，选项 .opt / 提交 .btn-submit）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "tool-confirm-modal"
+        }
+      ]
+    },
+    "coinRow": {
+      "frame": "shell",
+      "desc": "算力豆明细 每行",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".coin-info__row"
+        }
+      ]
+    },
+    "coinChange": {
+      "frame": "shell",
+      "desc": "算力豆 变动数值",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".coin-info__change-amount"
+        }
+      ]
+    },
+    "homepageTitle": {
+      "frame": "auto",
+      "desc": "首页问候标题(早上好，X，今天干点什么)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "h1.home-revamp-title__text"
+        }
+      ]
+    },
+    "loginModal": {
+      "frame": "shell",
+      "desc": "登录弹窗容器(未登录时出现,登录后消失)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".login-modal-wrap"
+        }
+      ]
+    },
+    "newChat": {
+      "frame": "auto",
+      "desc": "新建对话入口(开一个干净会话)",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "新对话"
+        }
+      ]
+    },
+    "reasoningBlock": {
+      "frame": "auto",
+      "desc": "推理过程外层块(终态附加 .is-collapsed)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-assistant-reasoning-block"
+        }
+      ]
+    },
+    "guideCard": {
+      "frame": "auto",
+      "desc": "首响引导语卡片(活动态 .chat-task-guide--active)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-task-guide"
+        }
+      ]
+    },
+    "guideProcessedTitle": {
+      "frame": "auto",
+      "desc": "引导语活动态标题「已处理 {t}」",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-task-status"
+        }
+      ]
+    },
+    "guideNode": {
+      "frame": "auto",
+      "desc": "引导语正文容器(取文本用 guideNode p)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-task-guide__content"
+        }
+      ]
+    },
+    "guideParagraph": {
+      "frame": "auto",
+      "desc": "引导语正文段落",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-task-guide__content p"
+        }
+      ]
+    },
+    "collapseToggle": {
+      "frame": "auto",
+      "desc": "推理收起/展开箭头(活动态 aria-disabled=true)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-thinking-toggle"
+        }
+      ]
+    },
+    "stateLabel": {
+      "frame": "auto",
+      "desc": "toggle 文案位(思考中…/已完成/停止/中断 {t})",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-thinking-toggle__label"
+        }
+      ]
+    },
+    "thinkingContent": {
+      "frame": "auto",
+      "desc": "折叠区容器(推理步骤+工具调用)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-thinking-content"
+        }
+      ]
+    },
+    "reasoningStep": {
+      "frame": "auto",
+      "desc": "单条推理步骤(正文在 .chat-thinking__body)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-thinking"
+        }
+      ]
+    },
+    "toolStep": {
+      "frame": "auto",
+      "desc": "工具调用节点(标题 .chat-inline-tool-event__title-text)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-inline-tool-event"
+        }
+      ]
+    },
+    "elapsedText": {
+      "frame": "auto",
+      "desc": "处理时间(自定义元素,活动态在 .chat-task-status 内)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "chat-task-duration"
+        }
+      ]
+    },
+    "answerText": {
+      "frame": "auto",
+      "desc": "回复正文(复用现有,已验证)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-text"
+        }
+      ]
+    },
+    "deliverable": {
+      "frame": "auto",
+      "desc": "交付物/文件卡片(启发式,对应任务需复核)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-file-card"
+        }
+      ]
+    },
+    "navItem": {
+      "frame": "vm",
+      "desc": "主导航项(左侧栏 首页/任务/专家/文件/自动化/连接器)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".sidebar-nav__item"
+        }
+      ]
+    },
+    "navItemActive": {
+      "frame": "vm",
+      "desc": "当前激活的主导航项",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".sidebar-nav__item--active"
+        }
+      ]
+    },
+    "navText": {
+      "frame": "vm",
+      "desc": "主导航项文本(按文本定位某个导航,如『任务』)",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".sidebar-nav__text"
+        }
+      ]
+    },
+    "navHome": {
+      "frame": "vm",
+      "desc": "主导航『首页』",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "首页"
+        }
+      ]
+    },
+    "navTasks": {
+      "frame": "vm",
+      "desc": "主导航『任务』",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "任务"
+        }
+      ]
+    },
+    "navExperts": {
+      "frame": "vm",
+      "desc": "主导航『专家』",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "专家"
+        }
+      ]
+    },
+    "navFiles": {
+      "frame": "vm",
+      "desc": "主导航『文件』",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "文件"
+        }
+      ]
+    },
+    "navAutomation": {
+      "frame": "vm",
+      "desc": "主导航『自动化』",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "自动化"
+        }
+      ]
+    },
+    "navConnectors": {
+      "frame": "vm",
+      "desc": "主导航『连接器』",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "连接器"
+        }
+      ]
+    }
+  }
+}

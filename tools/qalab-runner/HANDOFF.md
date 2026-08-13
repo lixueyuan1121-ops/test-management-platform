@@ -124,8 +124,11 @@ cd gui-mcp && npm install    # 装 MCP + playwright-core(不下载浏览器)
 - [x] ✅ **命令注入(HIGH)已修**:用例 payload(用户可控)改经 **stdin** 传给 claude,不进命令行 argv。
       Windows 下 `shell:true` 执行 claude.cmd 是必需的,但 argv 里已无用户数据可被 cmd 解释。
 - [ ] `--allowedTools "Bash mcp__gui__*"` 目前允许任意 Bash;按真实用例形态收敛成命令白名单(独立于上条注入修复,属纵深防御)。
-- [ ] GUI selector:iframe 下钻已做(gui-mcp 自动进 `<vm_id>.work.n.cn`);真实用例要按业务页面 DOM 写具体 selector
-      (连上 CDP 后在 DevTools 里选;注意选的是 iframe 内的元素)。样例仍只断言了 `body` 含文本。
+- [x] ✅ **语义选择器库**:`gui-mcp/selectors.json`(注册表)+ server.mjs 内置定位引擎(移植自
+      nami-work-test/lib/dom.js)。用例引用语义 key(如 `navTasks`/`chatInput`),不再猜 CSS;
+      多候选失效自愈 + frameLocator 穿透业务 iframe。v1 基座导出自 nami-work-test/selectors.js 并
+      并入 daily_test 实测项 + 主导航 nav*(57 key)。更新只改 selectors.json(git 拉取/更新)。
+      用法/更新见 `gui-mcp/README.md`;claude 侧先 `gui_list_keys` 再用 key 定位。
 - [x] ✅ MCP 隔离:runner 调 claude 加 `--mcp-config <abs>/.mcp.json --strict-mcp-config`,只加载 gui,屏蔽执行机全局 MCP。
 - [x] ✅ runClaude 硬超时(`CLAUDE_TIMEOUT_MS`,默认 240s):卡死用例不再让 run 永久 running。
 

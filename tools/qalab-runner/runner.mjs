@@ -132,9 +132,9 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 
 【执行规则】
 - 严格按 payload.steps 操作,对照 payload.expected 判定;禁止联网搜索,只在本地执行。
-- GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect(会自动下钻到业务 iframe),再用 gui_wait_for /
-  gui_get_text / gui_assert_text 做断言、gui_screenshot 存证;禁止自己写 Playwright、禁止用鼠标坐标。
-  selector 直接按业务页面(iframe 内)的 DOM 写。
+- GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect,再 gui_list_keys 看有哪些语义 key;
+  定位元素**优先传 key**(gui_click/gui_fill/gui_get_text/gui_wait_for/gui_assert_text 都接 {key} 或 {selector}),
+  注册表没覆盖的元素才传原始 selector 兜底;gui_screenshot 存证。禁止自己写 Playwright、禁止用鼠标坐标。
 - api 用例:用 curl / fetch 验证接口与响应。
 - cli 用例:起进程并校验退出码 / 输出。
 - 能用确定性断言就断言,不要"看一眼觉得对";判定不了或超时一律 verdict=fail。
@@ -243,7 +243,9 @@ async function tick() {
         evidence_url: result.evidence ?? null,
         duration_ms: result.duration_ms ?? null,
       });
-      log(`回写 run_id=${item.run_id} -> ${result.verdict}`);
+      // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
+      const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";
+      log(`回写 run_id=${item.run_id} -> ${result.verdict} (${result.duration_ms ?? "?"}ms)${reasonTail}`);
     } catch (e) {
       log(`run_id=${item.run_id} 执行异常:`, e.message);
       try { await report(item.run_id, { verdict: "fail", reason: `runner异常: ${e.message}` }); } catch {}
