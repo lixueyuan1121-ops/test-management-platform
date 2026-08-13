@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.enums import ProjectRole
 from app.core.security import decode_token
 from app.db.session import get_db
@@ -35,6 +36,20 @@ def require_platform_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_platform_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="需要平台管理员权限")
     return user
+
+
+def require_runner(
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> str:
+    """执行机（runner）鉴权：校验固定长期 token（settings.RUNNER_TOKEN）。
+
+    与用户 JWT 体系分离——runner 是无人值守进程，不走登录。token 配在后端 .env，
+    runner 端同名配置须填相同值。未配置 RUNNER_TOKEN 时一律拒绝（避免空口令放行）。
+    """
+    token = creds.credentials
+    if not settings.RUNNER_TOKEN or token != settings.RUNNER_TOKEN:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="无效的 runner 令牌")
+    return token
 
 
 def get_project_member(

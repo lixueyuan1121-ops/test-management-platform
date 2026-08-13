@@ -1,0 +1,13 @@
+{
+  "_comment": "路径相对于运行 claude 时的工作目录(即 qalab-runner/)。跨平台通用。",
+  "mcpServers": {
+    "gui": {
+      "command": "node",
+      "args": ["./gui-mcp/server.mjs"],
+      "env": {
+        "CDP_URL": "http://127.0.0.1:9222",
+        "GUI_TIMEOUT_MS": "10000"
+      }
+    }
+  }
+}

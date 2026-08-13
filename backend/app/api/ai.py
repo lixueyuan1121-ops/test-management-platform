@@ -47,6 +47,7 @@ def _to_case_out(tc: TestCase, task_title: str | None = None) -> dict:
         "steps": tc.steps,
         "expected": tc.expected,
         "priority": tc.priority,
+        "exec_kind": getattr(tc, "exec_kind", "gui"),
         "adopted": tc.adopted,
         "review_status": tc.review_status.value,
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
@@ -308,36 +309,46 @@ def review_testcase(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """采纳 / 否决 / 置回待定一条测试点。写 reviewed_at，同步 adopted 兼容列。"""
+    """编辑一条测试点：评审三态 和/或 执行类型（exec_kind）。
+
+    - 传 review_status：采纳/否决/置回待定，写 reviewed_at、同步 adopted 兼容列，并触发清单回流。
+    - 传 exec_kind：改自动化执行类型（gui/api/cli），供下发到 runner 时决定怎么跑。
+    schema 保证两者至少有一个。
+    """
     tc = db.get(TestCase, cid)
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
     assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
-    tc.review_status = body.review_status
-    if body.review_status == ReviewStatus.pending:
-        tc.reviewed_at = None
-    else:
-        tc.reviewed_at = datetime.utcnow()  # 与 issues.py resolved_at 对齐（UTC naive），供 /stats/ai 按日聚合
-    tc.adopted = (body.review_status == ReviewStatus.adopted)
 
-    # ---- 采纳回流副作用：带 task_id 的测试点采纳→upsert 清单项；取消采纳→删仍 pending 的清单项 ----
-    if tc.task_id is not None:
-        existing = (
-            db.query(ChecklistItem)
-            .filter(ChecklistItem.task_id == tc.task_id,
-                    ChecklistItem.test_case_id == tc.id)
-            .first()
-        )
-        if body.review_status == ReviewStatus.adopted:
-            if existing is None:
-                db.add(ChecklistItem(
-                    task_id=tc.task_id, test_case_id=tc.id, project_id=tc.project_id,
-                ))
-            # 已存在则幂等跳过（保留其执行状态）
+    if body.exec_kind is not None:
+        tc.exec_kind = body.exec_kind.value
+
+    if body.review_status is not None:
+        tc.review_status = body.review_status
+        if body.review_status == ReviewStatus.pending:
+            tc.reviewed_at = None
         else:
-            # 取消采纳：仅删仍 pending 未执行的清单项，已执行过的保留（避免丢执行记录）
-            if existing is not None and existing.exec_status == ChecklistStatus.pending:
-                db.delete(existing)
+            tc.reviewed_at = datetime.utcnow()  # 与 issues.py resolved_at 对齐（UTC naive），供 /stats/ai 按日聚合
+        tc.adopted = (body.review_status == ReviewStatus.adopted)
+
+        # ---- 采纳回流副作用：带 task_id 的测试点采纳→upsert 清单项；取消采纳→删仍 pending 的清单项 ----
+        if tc.task_id is not None:
+            existing = (
+                db.query(ChecklistItem)
+                .filter(ChecklistItem.task_id == tc.task_id,
+                        ChecklistItem.test_case_id == tc.id)
+                .first()
+            )
+            if body.review_status == ReviewStatus.adopted:
+                if existing is None:
+                    db.add(ChecklistItem(
+                        task_id=tc.task_id, test_case_id=tc.id, project_id=tc.project_id,
+                    ))
+                # 已存在则幂等跳过（保留其执行状态）
+            else:
+                # 取消采纳：仅删仍 pending 未执行的清单项，已执行过的保留（避免丢执行记录）
+                if existing is not None and existing.exec_status == ChecklistStatus.pending:
+                    db.delete(existing)
 
     db.commit()
     db.refresh(tc)

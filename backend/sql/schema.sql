@@ -234,6 +234,7 @@ CREATE TABLE `test_case` (
   `adopted` TINYINT(1) NOT NULL DEFAULT 0,
   `review_status` VARCHAR(16) NOT NULL DEFAULT 'pending',
   `reviewed_at` DATETIME DEFAULT NULL,
+  `exec_kind` VARCHAR(8) NOT NULL DEFAULT 'gui',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_testcase_aitask` (`ai_task_id`),
@@ -242,6 +243,41 @@ CREATE TABLE `test_case` (
   CONSTRAINT `fk_testcase_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 执行队列（勾选用例下发目标机 → Claude Code 执行 → 回写）----------
+-- payload 用 TEXT 存 JSON 字符串（不用原生 JSON 列，兼容 MySQL 5.6）。
+-- checklist_item_id 是回写落点：runner 判 pass/fail 后同步对应清单项的 exec_status。
+-- 放在 test_case / checklist_item 之后，保证被引用表先建。
+CREATE TABLE `exec_run` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `checklist_item_id` BIGINT DEFAULT NULL,
+  `test_case_id` BIGINT DEFAULT NULL,
+  `task_id` BIGINT DEFAULT NULL,
+  `project_id` BIGINT NOT NULL,
+  `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
+  `kind` ENUM('gui','api','cli') NOT NULL DEFAULT 'gui',
+  `status` ENUM('pending','running','passed','failed') NOT NULL DEFAULT 'pending',
+  `payload` TEXT,
+  `verdict` VARCHAR(16) DEFAULT NULL,
+  `reason` TEXT,
+  `evidence_url` VARCHAR(512) DEFAULT NULL,
+  `duration_ms` INT DEFAULT NULL,
+  `enqueued_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_execrun_checklist` (`checklist_item_id`),
+  KEY `idx_execrun_case` (`test_case_id`),
+  KEY `idx_execrun_task` (`task_id`),
+  KEY `idx_execrun_project` (`project_id`),
+  KEY `idx_execrun_status` (`status`),
+  KEY `idx_execrun_runner` (`runner`),
+  CONSTRAINT `fk_execrun_checklist` FOREIGN KEY (`checklist_item_id`) REFERENCES `checklist_item`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_execrun_case` FOREIGN KEY (`test_case_id`) REFERENCES `test_case`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_execrun_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_execrun_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_execrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================

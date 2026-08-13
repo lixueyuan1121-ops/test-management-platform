@@ -1,0 +1,12 @@
+{
+  "name": "qalab-gui-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "GUI MCP server for namiclaw (纳米Work) automation via Playwright connectOverCDP",
+  "bin": { "qalab-gui-mcp": "server.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "playwright-core": "^1.49.0"
+  }
+}

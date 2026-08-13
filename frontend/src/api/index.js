@@ -71,6 +71,8 @@ export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
 export const listCases = (params) => http.get('/ai/cases', { params })
 // 评审测试点：review_status ∈ 'adopted' | 'rejected' | 'pending'（返回已解包的测试点 data）
 export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
+// 设置测试点的自动化执行类型：exec_kind ∈ 'gui' | 'api' | 'cli'（下发到 runner 时决定怎么跑）
+export const setCaseExecKind = (id, exec_kind) => http.patch(`/ai/testcases/${id}`, { exec_kind })
 
 // ===== 验收清单（测试点回流任务）=====
 export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
@@ -79,6 +81,11 @@ export const attachChecklist = (tid, testCaseIds) => http.post(`/tasks/${tid}/ch
 export const updateChecklistItem = (itemId, exec_status) => http.patch(`/checklist/${itemId}`, { exec_status })
 export const checklistItemToIssue = (itemId, payload) => http.post(`/checklist/${itemId}/to-issue`, payload)
 export const listAdoptableCases = (tid) => http.get(`/tasks/${tid}/adoptable-cases`)
+
+// ===== 本地执行（勾选清单项下发目标机 → Claude Code 执行 → 回写）=====
+// 前端只调 enqueue；拉取/认领/回写由 runner 用独立 token 完成。回写后 checklist_item.exec_status 自动更新。
+export const enqueueExec = (project_id, runner, checklistItemIds) =>
+  http.post('/exec-queue/enqueue', { project_id, runner, checklist_item_ids: checklistItemIds })
 export const extractUrl = (url) => http.post('/ai/extract-url', { url })
 export const extractFile = (file) => {
   const fd = new FormData()

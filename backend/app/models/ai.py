@@ -56,6 +56,9 @@ class TestCase(Base):
     steps: Mapped[str | None] = mapped_column(Text, nullable=True)
     expected: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority: Mapped[str | None] = mapped_column(String(8), nullable=True)  # P0-P3
+    # 自动化执行类型：gui/api/cli（下发到 runner 时决定 Claude Code 怎么跑）。
+    # 缺省 gui（被测客户端主要是 Electron GUI）。老库由 migrate.ensure_testcase_columns 补列。
+    exec_kind: Mapped[str] = mapped_column(String(8), default="gui", server_default="gui")
     adopted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 三态评审：pending/adopted/rejected（adopted 布尔保留做兼容，见 migrate.ensure_testcase_columns）
     review_status: Mapped[ReviewStatus] = mapped_column(

@@ -19,18 +19,34 @@
           <template #default="{ row }">
             <div class="cl-expand">
               <div v-if="!row._summary && !row._summaryFailed" class="cl-empty">该任务暂无验收清单</div>
-              <el-table v-else :data="row._items || []" v-loading="row._itemsLoading" size="small"
-                        empty-text="无验收项">
-                <el-table-column prop="title" label="测试点" min-width="180" show-overflow-tooltip />
-                <el-table-column prop="category" label="维度" width="80" />
-                <el-table-column label="结果" width="90">
-                  <template #default="{ row: it }">
-                    <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
-                      {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
-                    </el-tag>
-                  </template>
-                </el-table-column>
-              </el-table>
+              <template v-else>
+                <div class="cl-toolbar">
+                  <el-select v-model="row._runner" size="small" style="width:120px" placeholder="执行机">
+                    <el-option v-for="rn in RUNNERS" :key="rn" :label="rn" :value="rn" />
+                  </el-select>
+                  <el-button type="primary" size="small" plain
+                             :loading="row._enqueuing"
+                             :disabled="!(row._checked && row._checked.length)"
+                             @click="sendToRunner(row)">
+                    发送到本地执行{{ row._checked && row._checked.length ? `（${row._checked.length}）` : '' }}
+                  </el-button>
+                  <span class="cl-hint">勾选后下发；执行机跑完自动回写通过/失败</span>
+                </div>
+                <el-table :data="row._items || []" v-loading="row._itemsLoading" size="small"
+                          empty-text="无验收项"
+                          @selection-change="(sel) => (row._checked = sel)">
+                  <el-table-column type="selection" width="40" />
+                  <el-table-column prop="title" label="测试点" min-width="180" show-overflow-tooltip />
+                  <el-table-column prop="category" label="维度" width="80" />
+                  <el-table-column label="结果" width="90">
+                    <template #default="{ row: it }">
+                      <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
+                        {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </template>
             </div>
           </template>
         </el-table-column>
@@ -129,7 +145,7 @@
 import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
-import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist } from '@/api'
+import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown } from '@element-plus/icons-vue'
 
@@ -149,6 +165,10 @@ const EXEC_META = {
   blocked: { label: '阻塞', type: 'warning' },
   pending: { label: '待测', type: 'info' },
 }
+
+// 可下发的执行机 id（须与各目标机 runner 的 RUNNER_ID 一致）：
+// mac-01 只跑 cli/api 用例；win-01 有被测客户端 namiclaw，跑 gui 用例。
+const RUNNERS = ['mac-01', 'win-01']
 
 const auth = useAuthStore()
 const projects = ref([])
@@ -191,6 +211,9 @@ async function load() {
       _summaryFailed: summaryFailed,
       _items: null,
       _itemsLoading: false,
+      _runner: RUNNERS[0],   // 默认下发到第一台执行机
+      _checked: [],          // 展开区勾选的清单项
+      _enqueuing: false,
     }))
   } finally { loading.value = false }
 }
@@ -204,6 +227,19 @@ async function onExpandChange(row, expandedRows) {
   try { row._items = await getTaskChecklist(row.id) }
   catch { row._items = [] }
   finally { row._itemsLoading = false }
+}
+
+async function sendToRunner(row) {
+  const items = row._checked || []
+  if (!items.length) return
+  if (!row._runner) { ElMessage.warning('请选择执行机'); return }
+  row._enqueuing = true
+  try {
+    const res = await enqueueExec(pid.value, row._runner, items.map((it) => it.id))
+    const n = res?.run_ids?.length || items.length
+    ElMessage.success(`已下发 ${n} 条到 ${row._runner}，执行机跑完会自动回写结果`)
+  } catch { /* http 拦截器已提示 */ }
+  finally { row._enqueuing = false }
 }
 
 function openCreate() {
@@ -260,4 +296,6 @@ async function onCopy() {
 .cl-dim { color: var(--tech-dim, #9aa3b2); }
 .cl-expand { padding: 8px 16px; }
 .cl-empty { color: var(--tech-dim, #9aa3b2); font-size: 13px; padding: 4px 0; }
+.cl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cl-hint { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
 </style>

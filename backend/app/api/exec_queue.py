@@ -1,0 +1,190 @@
+"""执行队列路由：勾选用例下发 → runner 拉取/认领/回写 的闭环。
+
+四个接口（详见 tools/qalab-runner/HANDOFF.md）：
+- POST /api/exec-queue/enqueue   前端「发送到本地执行」按钮调；用户 JWT + 项目 member/admin。
+- GET  /api/exec-queue           runner 拉取 pending；runner token。
+- POST /api/exec-queue/{id}/claim runner 认领防重跑；runner token。
+- PATCH /api/exec-queue/{id}      runner 回写 pass/fail，并同步 checklist_item.exec_status；runner token。
+
+沿用全项目约定：{code,msg,data} 信封（ok/fail）、手写 _to_out、体外 assert_project_role。
+"""
+import json
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from app.core.deps import assert_project_role, get_current_user, require_runner
+from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
+from app.db.session import get_db
+from app.models import ChecklistItem, ExecRun, TestCase, User
+from app.schemas.common import ok
+from app.schemas.exec_queue import EnqueueExecIn, ExecReportIn
+
+router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
+
+_WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
+
+# test_case.exec_kind（若存在）→ ExecKind；缺省 gui。exec_kind 列由 migrate 补，
+# 老库/未设值的用例回落到 gui（GUI 是被测客户端的主要形态）。
+def _kind_of(tc: TestCase | None) -> ExecKind:
+    raw = getattr(tc, "exec_kind", None) if tc else None
+    try:
+        return ExecKind(raw) if raw else ExecKind.gui
+    except ValueError:
+        return ExecKind.gui
+
+
+def _payload_of(tc: TestCase | None) -> dict:
+    """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params）。"""
+    if not tc:
+        return {}
+    return {
+        "test_case_id": tc.id,
+        "title": tc.title,
+        "category": tc.category,
+        "steps": tc.steps,
+        "expected": tc.expected,
+        "priority": tc.priority,
+    }
+
+
+def _to_out(r: ExecRun) -> dict:
+    return {
+        "run_id": r.id,
+        "checklist_item_id": r.checklist_item_id,
+        "case_id": r.test_case_id,     # 对齐 runner 端字段名 case_id
+        "test_case_id": r.test_case_id,
+        "task_id": r.task_id,
+        "project_id": r.project_id,
+        "runner": r.runner,
+        "kind": r.kind.value,
+        "status": r.status.value,
+        "payload": json.loads(r.payload or "{}"),
+        "verdict": r.verdict,
+        "reason": r.reason,
+        "evidence_url": r.evidence_url,
+        "duration_ms": r.duration_ms,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+# ---- ① 前端「发送到本地执行」：把勾选的清单项入队 ----
+@router.post("/enqueue")
+def enqueue(
+    body: EnqueueExecIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把选中的验收清单项下发到指定 runner。项目 member/admin 可操作。
+
+    整体校验：任一清单项不存在或跨项目 → 400，整批拒绝。
+    """
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+
+    ids = list(dict.fromkeys(body.checklist_item_ids))  # 去重保序
+    items = db.query(ChecklistItem).filter(ChecklistItem.id.in_(ids)).all()
+    found = {it.id: it for it in items}
+    for cid in ids:
+        it = found.get(cid)
+        if it is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"清单项 {cid} 不存在")
+        if it.project_id != body.project_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"清单项 {cid} 不属于该项目")
+
+    created = []
+    for cid in ids:
+        it = found[cid]
+        tc = db.get(TestCase, it.test_case_id)
+        row = ExecRun(
+            checklist_item_id=it.id,
+            test_case_id=it.test_case_id,
+            task_id=it.task_id,
+            project_id=it.project_id,
+            runner=body.runner,
+            kind=_kind_of(tc),
+            status=ExecStatus.pending,
+            payload=json.dumps(_payload_of(tc), ensure_ascii=False),
+            enqueued_by=user.id,
+        )
+        db.add(row)
+        db.flush()
+        created.append(row.id)
+    db.commit()
+    return ok({"run_ids": created})
+
+
+# ---- ② runner 拉取待执行 ----
+@router.get("")
+def list_pending(
+    runner: str = Query("mac-01"),
+    limit: int = Query(5, le=20),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_runner),
+):
+    rows = (
+        db.query(ExecRun)
+        .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner)
+        .order_by(ExecRun.id)
+        .limit(limit)
+        .all()
+    )
+    return ok([_to_out(r) for r in rows])
+
+
+# ---- ③ runner 认领（防重跑）----
+@router.post("/{run_id}/claim")
+def claim(
+    run_id: int,
+    runner: str = Query(...),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_runner),
+):
+    r = db.get(ExecRun, run_id)
+    if not r or r.status != ExecStatus.pending:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项不可认领")
+    # 归属校验：只能认领派给自己的执行项，避免多台 runner 共用 token 时串扰
+    # （如 win-01 认领了本该 mac-01 执行的用例）。
+    if r.runner != runner:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+    r.status = ExecStatus.running
+    db.commit()
+    db.refresh(r)
+    return ok(_to_out(r))
+
+
+# ---- ④ runner 回写结果，并同步验收清单项状态 ----
+@router.patch("/{run_id}")
+def report(
+    run_id: int,
+    body: ExecReportIn,
+    runner: str = Query(...),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_runner),
+):
+    r = db.get(ExecRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    # 归属校验：只能回写派给自己的执行项（见 claim 说明）。
+    if r.runner != runner:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+
+    is_pass = body.verdict == "pass"
+    r.verdict = body.verdict
+    r.status = ExecStatus.passed if is_pass else ExecStatus.failed
+    r.reason = body.reason
+    r.evidence_url = body.evidence_url
+    r.duration_ms = body.duration_ms
+
+    # 闭环落点：把结果同步回验收清单项（pass→passed / fail→failed）。
+    # 复用现有清单展示、checklist-summary 统计、失败转遗留问题等下游能力。
+    if r.checklist_item_id:
+        item = db.get(ChecklistItem, r.checklist_item_id)
+        if item:
+            item.exec_status = ChecklistStatus.passed if is_pass else ChecklistStatus.failed
+            item.executed_by = None  # 机器自动执行，无归属用户
+            item.executed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(r)
+    return ok(_to_out(r))

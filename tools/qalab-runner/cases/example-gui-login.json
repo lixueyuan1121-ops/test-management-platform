@@ -1,0 +1,18 @@
+{
+  "run_id": 1001,
+  "case_id": 42,
+  "kind": "gui",
+  "title": "打开纳米Work,首页应加载成功",
+  "steps": [
+    "调用 gui_connect 连接客户端",
+    "断言当前页面 URL 包含 work.n.cn",
+    "等待首页主容器出现",
+    "截图存证"
+  ],
+  "expected": "客户端首页 work.n.cn 正常加载,主容器可见",
+  "params": {
+    "expect_url_contains": "work.n.cn",
+    "main_selector": "body",
+    "evidence_dir": "./evidence"
+  }
+}

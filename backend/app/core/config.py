@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     SEED_ADMIN_PASSWORD: str = "admin123"
     SEED_ADMIN_NAME: str = "平台管理员"
 
+    # ---- 本地执行 runner（勾选用例下发到目标机执行）----
+    # runner 是无人值守进程，用单独长期 token 鉴权（与用户 JWT 分离）；
+    # runner 端 .env 的 RUNNER_TOKEN 须填相同值。空则拒绝一切 runner 请求。
+    RUNNER_TOKEN: str = ""
+
     # ---- QA Copilot（AI 生成测试点，subprocess 调 claude CLI）----
     AI_ENABLED: bool = True
     CLAUDE_BIN: str = ""            # 空则运行时 shutil.which("claude")

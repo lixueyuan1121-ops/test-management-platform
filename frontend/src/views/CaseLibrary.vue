@@ -38,6 +38,14 @@
             <el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="执行类型" width="110" align="center">
+          <template #default="{ row }">
+            <el-select :model-value="row.exec_kind || 'gui'" size="small" style="width:90px"
+                       @change="(v) => onExecKindChange(row, v)">
+              <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
+            </el-select>
+          </template>
+        </el-table-column>
         <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
         <el-table-column label="步骤" min-width="200">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
@@ -63,7 +71,8 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { listProjects, listTasks, listCases } from '@/api'
+import { ElMessage } from 'element-plus'
+import { listProjects, listTasks, listCases, setCaseExecKind } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -73,6 +82,12 @@ const CATEGORIES = ['功能', '边界', '异常', '兼容', '性能']
 // 采纳三态 → 配色/文案（采纳=success / 否决=danger / 待定=info）
 const RV_TYPE = { adopted: 'success', rejected: 'danger', pending: 'info' }
 const RV_LABEL = { adopted: '已采纳', rejected: '已否决', pending: '待定' }
+// 自动化执行类型：gui(客户端 UI) / api(接口) / cli(命令行)。下发到 runner 时决定 Claude Code 怎么跑。
+const EXEC_KINDS = [
+  { value: 'gui', label: 'GUI' },
+  { value: 'api', label: 'API' },
+  { value: 'cli', label: 'CLI' },
+]
 
 const projects = ref([])
 const pid = ref(null)
@@ -117,6 +132,18 @@ async function load() {
 function fmtTime(s) {
   if (!s) return '—'
   return String(s).replace('T', ' ').slice(0, 16)
+}
+
+async function onExecKindChange(row, val) {
+  const prev = row.exec_kind || 'gui'
+  if (val === prev) return
+  row.exec_kind = val   // 乐观更新
+  try {
+    await setCaseExecKind(row.id, val)
+    ElMessage.success(`已设为 ${val.toUpperCase()} 执行`)
+  } catch {
+    row.exec_kind = prev   // 失败回滚（http 拦截器已弹错）
+  }
 }
 </script>
 

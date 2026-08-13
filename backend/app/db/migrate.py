@@ -51,6 +51,12 @@ def ensure_testcase_columns() -> None:
             ))
         if "reviewed_at" not in cols:
             conn.execute(text("ALTER TABLE test_case ADD COLUMN reviewed_at DATETIME NULL"))
+        if "exec_kind" not in cols:
+            # 自动化执行类型 gui/api/cli；老行缺省 gui（下发时回落到 GUI 用例）。
+            conn.execute(text(
+                "ALTER TABLE test_case ADD COLUMN exec_kind VARCHAR(8) "
+                "NOT NULL DEFAULT 'gui'"
+            ))
         # 回填：仅把仍为 pending 且 adopted=1 的老行标记为已采纳（幂等）。
         conn.execute(text(
             "UPDATE test_case SET review_status='adopted', reviewed_at=created_at "

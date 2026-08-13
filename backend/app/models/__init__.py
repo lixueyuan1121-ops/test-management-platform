@@ -8,6 +8,7 @@ from app.models.integration import Integration, ApiToken, IntegrationEvent
 from app.models.tool import ToolCategory, TestTool
 from app.models.ai import AiTask, TestCase
 from app.models.checklist import ChecklistItem
+from app.models.exec_queue import ExecRun
 
 __all__ = [
     "User",
@@ -25,4 +26,5 @@ __all__ = [
     "AiTask",
     "TestCase",
     "ChecklistItem",
+    "ExecRun",
 ]

@@ -1,0 +1,60 @@
+"""执行队列表 exec_run —— 勾选用例下发到目标机 → Claude Code 执行 → 回写的载体。
+
+数据流（详见 tools/qalab-runner/HANDOFF.md）：
+  前端勾选清单项 →POST /enqueue 入队(pending)
+  → runner 轮询 GET /exec-queue 拉取 →POST claim(running)
+  → 本地 Claude Code headless 按 kind 执行被测客户端
+  →PATCH 回写 {verdict,reason,evidence}，平台同步 checklist_item.exec_status
+
+设计要点：
+- payload 用 Text 存 JSON 字符串（**不用原生 JSON 列**）——兼容生产 MySQL 5.6（见 MEMORY）。
+- checklist_item_id 是回写落点：runner 判 pass/fail 后据此更新对应清单项的 exec_status，
+  从而复用现有清单展示 / checklist-summary 统计 / 失败转遗留问题等全部下游能力。
+- 启动时 Base.metadata.create_all 自动建表（新表，无需 migrate）。
+"""
+from datetime import datetime
+
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.enums import ExecKind, ExecStatus
+from app.db.session import Base
+
+
+class ExecRun(Base):
+    __tablename__ = "exec_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # 回写落点：指向被执行的验收清单项（可空——允许无清单项的裸执行记录）
+    checklist_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("checklist_item.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 快照来源与追溯（冗余，便于查询/展示，且清单项被删后仍留痕）
+    test_case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_case.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    runner: Mapped[str] = mapped_column(String(64), default="mac-01", server_default="mac-01", index=True)
+    kind: Mapped[ExecKind] = mapped_column(
+        Enum(ExecKind, length=8), default=ExecKind.gui, server_default="gui"
+    )
+    status: Mapped[ExecStatus] = mapped_column(
+        Enum(ExecStatus, length=16), default=ExecStatus.pending, server_default="pending", index=True
+    )
+    payload: Mapped[str] = mapped_column(Text)  # 用例快照 JSON 字符串（steps/expected/params）
+    verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)  # runner 回写原值 pass/fail
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enqueued_by: Mapped[int | None] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

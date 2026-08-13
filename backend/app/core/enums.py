@@ -88,6 +88,24 @@ class ChecklistStatus(str, enum.Enum):
     blocked = "blocked"    # 阻塞
 
 
+class ExecKind(str, enum.Enum):
+    """自动化执行类型（下发给 runner 时决定 Claude Code 怎么跑）。"""
+    gui = "gui"    # GUI 用例：Playwright connectOverCDP 操作被测客户端 DOM
+    api = "api"    # 接口用例：curl / fetch 验证接口与响应
+    cli = "cli"    # 命令行用例：起进程校验退出码 / 输出
+
+
+class ExecStatus(str, enum.Enum):
+    """执行队列项（exec_run）的生命周期。
+
+    runner 回写用 pass/fail（见 runner.mjs 契约），平台侧映射到 passed/failed。
+    """
+    pending = "pending"    # 待执行（已入队，等 runner 拉取）
+    running = "running"    # 执行中（runner 已 claim）
+    passed = "passed"      # 通过（verdict=pass）
+    failed = "failed"      # 失败（verdict=fail 或异常）
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写
