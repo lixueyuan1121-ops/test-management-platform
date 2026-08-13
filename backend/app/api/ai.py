@@ -48,6 +48,8 @@ def _to_case_out(tc: TestCase, task_title: str | None = None) -> dict:
         "expected": tc.expected,
         "priority": tc.priority,
         "exec_kind": getattr(tc, "exec_kind", "gui"),
+        "kind_reason": getattr(tc, "kind_reason", None),
+        "script": getattr(tc, "script", None),
         "adopted": tc.adopted,
         "review_status": tc.review_status.value,
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
