@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
     AI_TIMEOUT_SECONDS: int = 240  # 单次生成硬超时
     AI_MAX_CONCURRENCY: int = 2    # 全局并发上限（控成本，超出即拒绝）
+    # gui/e2e 用例生成时注入的语义选择器注册表路径（runner 侧 gui-mcp/selectors.json）。
+    # 空则用默认：相对本仓库 tools/qalab-runner/gui-mcp/selectors.json。让 AI 只用库内 key 写 script。
+    SELECTORS_PATH: str = ""
 
     # ---- 飞书 OpenAPI（读取需求文档 docx/wiki/sheets/base）----
     FEISHU_APP_ID: str = ""

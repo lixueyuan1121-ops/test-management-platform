@@ -204,6 +204,7 @@ def gen_testcases(
                     priority=c["priority"] or None,
                     exec_kind=c.get("kind") or "manual",       # 生成侧已判类型;缺省 manual(不误派)
                     kind_reason=c.get("kind_reason") or None,
+                    script=c.get("script") or None,            # gui/e2e 的结构化步骤(JSON 字符串);其余为 None
                 )
                 s.add(tc)
                 objs.append(tc)
