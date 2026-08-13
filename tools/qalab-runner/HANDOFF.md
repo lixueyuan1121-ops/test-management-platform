@@ -51,11 +51,22 @@ qalab-runner/
 | runner 骨架(轮询/claim/回写/--dry)| ✅ 写完 |
 | GUI MCP server(7 个工具)| ✅ 写完 |
 | namiclaw CDP 可行性 | ✅ **已在 Windows 实测通过** |
-| 平台侧 FastAPI 代码(4 接口)| ✅ 写完,**未并入 qalab、未跑过** |
+| 平台侧 FastAPI 代码(4 接口)| ✅ 写完并已并入 qalab(backend/) |
 | 跨平台改造(.env / run.sh / GUI 冷启动分支)| ✅ 写完 |
-| **端到端跑通(哪怕一条用例)** | ❌ **还没跑过** —— 这是搬到 Mac 后的首要目标 |
+| **端到端跑通(gui 用例)** | ✅ **2026-08-13 在 Mac 跑通** —— 见下 |
 
-**结论:所有代码就位,但整条链路一次都没真正跑通过。** 下一步是先验证握手,再跑第一条用例。
+**结论:整条链路已在 Mac 上真正跑通(gui 用例 pass 回写)。** Mac 用 mac-01(装了 Namiwork),Windows 保留 win-01。
+
+### 4.1 Mac gui 闭环实测记录(2026-08-13)
+- 被测客户端 **Namiwork(纳米Work)Mac 版已装**:`/Applications/Namiwork.app`(Electron 42),可执行文件 `Contents/MacOS/Namiwork`。
+- 实测带 `--remote-debugging-port=9222` 冷启动 → CDP 2s 就绪(`Chrome/148 Electron/42`),主页面 `work.n.cn`。
+- **真实业务 UI 在跨域子 iframe `<vm_id>.work.n.cn` 里**(顶层 `work.n.cn/claw` 是空壳)。为此给 gui-mcp 加了
+  **iframe 自动下钻**(`contentFrame()`):元素操作作用在业务 iframe,页面级(截图/goto)仍在顶层。
+- **坑(已修):执行机上用户全局 MCP 会拖垮 claude**。claude 从 qalab-runner/ 跑时,除 `.mcp.json` 的 gui 外还会加载
+  用户全局 `.claude.json` 的 MCP(context7/figma/playwright…),spawn 一堆 server 导致 runClaude 长挂。
+  runner 已改为 `--mcp-config <abs>/.mcp.json --strict-mcp-config`,只加载 gui。另给 runClaude 加了硬超时。
+- 闭环结果:seed 一条 gui 用例派 mac-01 → runner 冷启动/复用 CDP → claude 用 `mcp__gui__*`(gui_connect→
+  gui_assert_text)→ 34s 回写 **pass**。
 
 ## 5. 在 Mac 上继续 —— 分阶段(按序,别跳)
 
@@ -83,13 +94,12 @@ cd gui-mcp && npm install    # 装 MCP + playwright-core(不下载浏览器)
 
 ## 6. ⚠️ Mac 上做不了 / 需要注意的事(最重要,别踩)
 
-1. **被测客户端 namiclaw 是 Windows Electron 应用**(实测路径 `D:\Program Files\namiclaw\Application\namiclaw.exe`)。
-   - **Mac 上没有这个客户端,`kind=gui` 的用例无法在 Mac 执行。**
-   - 三条出路,选一:
-     - **(a) GUI 用例仍在那台 Windows 上跑**:Windows 也部署一个 runner(`RUNNER_ID=win-01`),平台把 gui 用例只派给 win-01;Mac 上的 runner 用另一个 id(如 `mac-01`)只领 cli/api 用例。**推荐**——各司其职。
-     - **(b) Mac 上若有对应的 Mac 版客户端**:把 `.env` 的 `NAMICLAW_EXE` 指向 `/Applications/xxx.app/Contents/MacOS/xxx`,`runner.mjs` 的 `coldStartClient()` 已写好 Mac 分支(pkill + detached 启动)。**但需先确认 Mac 版客户端存在且同样支持 `--remote-debugging-port`。**
-     - **(c) 先不做 GUI**:Mac 上只跑 cli/api 用例打通闭环,GUI 后续再说。
-   - **建议**:Mac 主要用于**开发 runner / MCP / 平台代码**;GUI 执行放回 Windows。
+1. **被测客户端 Namiwork(纳米Work)—— Mac 版已装,gui 可在 Mac 跑(2026-08-13 已验)。**
+   - Mac:`/Applications/Namiwork.app`(Electron 42);`.env` 里 `NAMICLAW_EXE=/Applications/Namiwork.app/Contents/MacOS/Namiwork`。
+   - Windows(win-01)保留:`D:\Program Files\namiclaw\Application\namiclaw.exe`。
+   - 两台各用不同 `RUNNER_ID`、共用同一 `RUNNER_TOKEN`;平台入队时**在前端选哪台就派哪台**(kind 来自用例 exec_kind,平台不强绑定 kind↔机器)。
+   - **真实业务 UI 在跨域子 iframe(`<vm_id>.work.n.cn`),不是顶层 `work.n.cn/claw`。** gui-mcp 已做 iframe 自动下钻,
+     写 selector 时按业务页面(iframe 内)的 DOM 写即可,无需自己处理 frame。
 
 2. **Windows 专属实现已隔离**,搬到 Mac 不会报错(会走另一分支或跳过):
    - `runner.mjs` 的 `coldStartClient()`:`process.platform` 分 Windows(PowerShell)/ 其它(spawn)。
@@ -114,7 +124,10 @@ cd gui-mcp && npm install    # 装 MCP + playwright-core(不下载浏览器)
 - [x] ✅ **命令注入(HIGH)已修**:用例 payload(用户可控)改经 **stdin** 传给 claude,不进命令行 argv。
       Windows 下 `shell:true` 执行 claude.cmd 是必需的,但 argv 里已无用户数据可被 cmd 解释。
 - [ ] `--allowedTools "Bash mcp__gui__*"` 目前允许任意 Bash;按真实用例形态收敛成命令白名单(独立于上条注入修复,属纵深防御)。
-- [ ] GUI selector:样例用例只断言了 `body`;真实用例要按 work.n.cn 的 DOM 写具体 selector(可先用 CDP 连上后在 DevTools 里选)。
+- [ ] GUI selector:iframe 下钻已做(gui-mcp 自动进 `<vm_id>.work.n.cn`);真实用例要按业务页面 DOM 写具体 selector
+      (连上 CDP 后在 DevTools 里选;注意选的是 iframe 内的元素)。样例仍只断言了 `body` 含文本。
+- [x] ✅ MCP 隔离:runner 调 claude 加 `--mcp-config <abs>/.mcp.json --strict-mcp-config`,只加载 gui,屏蔽执行机全局 MCP。
+- [x] ✅ runClaude 硬超时(`CLAUDE_TIMEOUT_MS`,默认 240s):卡死用例不再让 run 永久 running。
 
 ## 8. 怎么搬
 

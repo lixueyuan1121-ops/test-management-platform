@@ -185,7 +185,7 @@ const EXEC_META = {
 }
 
 // 可下发的执行机 id（须与各目标机 runner 的 RUNNER_ID 一致）：
-// mac-01 只跑 cli/api 用例；win-01 有被测客户端 namiclaw，跑 gui 用例。
+// mac-01 与 win-01 都装了被测客户端（纳米Work/namiclaw），gui/api/cli 均可跑；按需选一台下发。
 const RUNNERS = ['mac-01', 'win-01']
 
 const auth = useAuthStore()

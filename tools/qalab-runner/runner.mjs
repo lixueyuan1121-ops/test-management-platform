@@ -43,6 +43,11 @@ const CLAUDE_BIN   = process.env.CLAUDE_BIN    || "claude";
 // 平台的固定路径,否则在没有该客户端的机器上会去 spawn 不存在的路径而崩溃)。
 const NAMICLAW_EXE = process.env.NAMICLAW_EXE  || "";
 const CDP_PORT     = Number(process.env.CDP_PORT || 9222);
+// claude 单次执行硬超时:卡在被测页/工具时杀掉并回写 fail,避免 run 永久卡 running(无人值守)。
+const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 240000);
+// 只加载本目录 .mcp.json 的 gui server,屏蔽执行机上用户全局 MCP(context7/figma/playwright…)。
+// 绝对路径(相对 runner.mjs),不依赖启动 cwd。
+const MCP_CONFIG   = join(dirname(fileURLToPath(import.meta.url)), ".mcp.json");
 const DRY          = process.argv.includes("--dry");
 
 const H = { "Content-Type": "application/json", "Authorization": `Bearer ${RUNNER_TOKEN}` };
@@ -127,7 +132,9 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 
 【执行规则】
 - 严格按 payload.steps 操作,对照 payload.expected 判定;禁止联网搜索,只在本地执行。
-- GUI 用例:用 Playwright connectOverCDP('http://127.0.0.1:9222') 操作 DOM 并断言(不要用鼠标坐标)。
+- GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect(会自动下钻到业务 iframe),再用 gui_wait_for /
+  gui_get_text / gui_assert_text 做断言、gui_screenshot 存证;禁止自己写 Playwright、禁止用鼠标坐标。
+  selector 直接按业务页面(iframe 内)的 DOM 写。
 - api 用例:用 curl / fetch 验证接口与响应。
 - cli 用例:起进程并校验退出码 / 输出。
 - 能用确定性断言就断言,不要"看一眼觉得对";判定不了或超时一律 verdict=fail。
@@ -148,15 +155,24 @@ function runClaude(payload) {
       // 只收到 "Bash"、另一个游离,约束失效→claude 回退到可用任意工具(含 WebSearch),
       // 导致跑偏、不聚焦执行、不输出结论 JSON(实测踩过)。
       "--allowedTools", "Bash mcp__gui__*",
+      // 只加载 gui 这一个 MCP server(见 MCP_CONFIG),屏蔽执行机上用户全局 MCP;否则 claude 启动会
+      // 连带 spawn 一堆无关 server(context7/figma/playwright…),拖慢启动甚至长挂(Mac 实测踩过)。
+      "--mcp-config", MCP_CONFIG,
+      "--strict-mcp-config",
       "--permission-mode", "acceptEdits",         // 无人值守:预授权,避免卡权限确认
     ];
     const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
-    let out = "", err = "";
+    let out = "", err = "", settled = false;
+    // 单次结算:error / close / 超时 三条路径只认第一个,并清理定时器(避免重复 resolve)。
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); resolve(r); };
+    // 无人值守硬超时:claude 卡在被测页/工具时杀掉并回写 fail,避免该 run 永久 running、后续全停摆。
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
+      done({ verdict: "fail", reason: `claude 执行超时(>${CLAUDE_TIMEOUT_MS}ms)已终止`, duration_ms: Date.now() - started });
+    }, CLAUDE_TIMEOUT_MS);
     // spawn 失败(claude 未安装/PATH 不对)走异步 'error' 事件,不监听会 crash 整个 runner。
     // 转成一次 fail 结论回写,而非拖垮进程。
-    child.on("error", (e) => {
-      resolve({ verdict: "fail", reason: `无法启动 claude(${CLAUDE_BIN}): ${e.message}`, duration_ms: Date.now() - started });
-    });
+    child.on("error", (e) => done({ verdict: "fail", reason: `无法启动 claude(${CLAUDE_BIN}): ${e.message}`, duration_ms: Date.now() - started }));
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("close", (code) => {
@@ -168,9 +184,9 @@ function runClaude(payload) {
         let diag = out;
         try { const j = JSON.parse(out); diag = j.result ?? j.text ?? out; } catch { /* 非信封,用裸输出 */ }
         const tail = String(diag || err || "").slice(-500);
-        return resolve({ verdict: "fail", reason: `无法解析Claude输出(exit ${code}): ${tail}`, duration_ms });
+        return done({ verdict: "fail", reason: `无法解析Claude输出(exit ${code}): ${tail}`, duration_ms });
       }
-      resolve({ ...verdict, duration_ms });
+      done({ ...verdict, duration_ms });
     });
     // 用例 payload 从 stdin 喂入(见上方安全说明);写完即关闭,claude 读到 EOF 开始执行。
     child.stdin.write(JSON.stringify(payload));
