@@ -40,7 +40,25 @@
                   <el-table-column prop="category" label="维度" width="80" />
                   <el-table-column label="结果" width="90">
                     <template #default="{ row: it }">
-                      <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
+                      <el-popover v-if="it.exec_reason" placement="left" :width="360" trigger="click">
+                        <template #reference>
+                          <el-tag :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light"
+                                  style="cursor:pointer" title="点击查看执行原因">
+                            {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
+                            <el-icon style="margin-left:2px"><InfoFilled /></el-icon>
+                          </el-tag>
+                        </template>
+                        <div class="exec-detail">
+                          <div class="exec-detail-head">
+                            <el-tag :type="it.exec_verdict === 'pass' ? 'success' : 'danger'" size="small">
+                              {{ it.exec_verdict === 'pass' ? '通过' : '失败' }}
+                            </el-tag>
+                            <span class="exec-meta">{{ it.exec_runner || '' }} · {{ fmtExecAt(it.exec_run_at) }}</span>
+                          </div>
+                          <div class="exec-reason">{{ it.exec_reason }}</div>
+                        </div>
+                      </el-popover>
+                      <el-tag v-else :type="EXEC_META[it.exec_status]?.type || 'info'" size="small" effect="light">
                         {{ EXEC_META[it.exec_status]?.label || it.exec_status }}
                       </el-tag>
                     </template>
@@ -147,7 +165,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { ArrowDown } from '@element-plus/icons-vue'
+import { ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 
 // 任务状态四态：待测 → 测试中 →(阻塞)→ 已上线；标签配色与首页 KPI 一致
 const STATUS_META = {
@@ -242,6 +260,11 @@ async function sendToRunner(row) {
   finally { row._enqueuing = false }
 }
 
+function fmtExecAt(s) {
+  if (!s) return ''
+  return String(s).replace('T', ' ').slice(0, 16)
+}
+
 function openCreate() {
   dialog.id = null
   Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: date.value, description: '', status: 'pending' })
@@ -298,4 +321,7 @@ async function onCopy() {
 .cl-empty { color: var(--tech-dim, #9aa3b2); font-size: 13px; padding: 4px 0; }
 .cl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cl-hint { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
+.exec-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.exec-meta { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
+.exec-reason { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; max-height: 240px; overflow: auto; }
 </style>

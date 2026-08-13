@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ChecklistStatus, IssueStatus, ProjectRole, ReviewStatus, TaskStatus
 from app.db.session import get_db
-from app.models import ChecklistItem, RemainingIssue, Task, TestCase, User
+from app.models import ChecklistItem, ExecRun, RemainingIssue, Task, TestCase, User
 from app.schemas.checklist import AttachChecklistIn, ChecklistToIssueIn, ChecklistTickIn
 from app.schemas.common import ok
 
@@ -31,6 +31,14 @@ def _user_name(db: Session, uid: int | None) -> str:
 
 def _to_out(db: Session, item: ChecklistItem) -> dict:
     tc = db.get(TestCase, item.test_case_id)
+    # 最近一次自动执行(exec_run)的回写结果——供前端在清单项上展示失败/通过原因。
+    # 按 id 倒序取最新一条(同一清单项可被多次下发执行,只关心最近结果)。
+    last_run = (
+        db.query(ExecRun)
+        .filter(ExecRun.checklist_item_id == item.id)
+        .order_by(ExecRun.id.desc())
+        .first()
+    )
     return {
         "id": item.id,
         "task_id": item.task_id,
@@ -47,6 +55,13 @@ def _to_out(db: Session, item: ChecklistItem) -> dict:
         "steps": tc.steps if tc else None,
         "expected": tc.expected if tc else None,
         "priority": tc.priority if tc else None,
+        # 最近一次自动执行的结果（无则为 None，前端据此显示"查看原因"）
+        "exec_run_id": last_run.id if last_run else None,
+        "exec_verdict": last_run.verdict if last_run else None,
+        "exec_reason": last_run.reason if last_run else None,
+        "exec_runner": last_run.runner if last_run else None,
+        "exec_run_status": last_run.status.value if last_run else None,
+        "exec_run_at": last_run.updated_at.isoformat() if last_run and last_run.updated_at else None,
     }
 
 
