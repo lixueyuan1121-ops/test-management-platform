@@ -251,6 +251,9 @@ async function sendToRunner(row) {
   const items = row._checked || []
   if (!items.length) return
   if (!row._runner) { ElMessage.warning('请选择执行机'); return }
+  // 人工(manual)用例不可自动化执行,不下发(后端也会 400 兜底;这里前置拦截更友好)
+  const manualItem = items.find((it) => (it.exec_kind || 'gui') === 'manual')
+  if (manualItem) { ElMessage.warning(`含人工(manual)用例「${manualItem.title || ''}」,不能下发到执行机;请取消勾选后重试`); return }
   row._enqueuing = true
   try {
     const res = await enqueueExec(pid.value, row._runner, items.map((it) => it.id))

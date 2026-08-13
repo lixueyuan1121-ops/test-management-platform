@@ -52,6 +52,7 @@ def _to_out(db: Session, item: ChecklistItem) -> dict:
         # 关联 test_case 展示字段（补挂/采纳的来源测试点）
         "title": tc.title if tc else "",
         "category": tc.category if tc else None,
+        "exec_kind": getattr(tc, "exec_kind", "gui") if tc else "gui",  # 前端据此禁止下发 manual 用例
         "steps": tc.steps if tc else None,
         "expected": tc.expected if tc else None,
         "priority": tc.priority if tc else None,

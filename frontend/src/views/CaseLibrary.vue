@@ -82,11 +82,14 @@ const CATEGORIES = ['功能', '边界', '异常', '兼容', '性能']
 // 采纳三态 → 配色/文案（采纳=success / 否决=danger / 待定=info）
 const RV_TYPE = { adopted: 'success', rejected: 'danger', pending: 'info' }
 const RV_LABEL = { adopted: '已采纳', rejected: '已否决', pending: '待定' }
-// 自动化执行类型：gui(客户端 UI) / api(接口) / cli(命令行)。下发到 runner 时决定 Claude Code 怎么跑。
+// 自动化执行类型：gui(客户端 UI) / api(接口) / cli(命令行) / e2e(多步端到端) / manual(人工，不下发)。
+// 下发到 runner 时决定 Claude Code 怎么跑；manual 不派发到执行机。
 const EXEC_KINDS = [
   { value: 'gui', label: 'GUI' },
   { value: 'api', label: 'API' },
   { value: 'cli', label: 'CLI' },
+  { value: 'e2e', label: 'E2E' },
+  { value: 'manual', label: '人工' },
 ]
 
 const projects = ref([])
