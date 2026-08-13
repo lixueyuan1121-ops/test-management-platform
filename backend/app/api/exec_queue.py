@@ -97,6 +97,11 @@ def enqueue(
     for cid in ids:
         it = found[cid]
         tc = db.get(TestCase, it.test_case_id)
+        if _kind_of(tc) == ExecKind.manual:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"清单项 {cid} 对应用例为『人工/不可自动化(manual)』,不能下发到执行机",
+            )
         row = ExecRun(
             checklist_item_id=it.id,
             test_case_id=it.test_case_id,
