@@ -11,6 +11,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createGuiCore } from "./gui-mcp/gui-core.mjs";
+import { runScript } from "./step-executor.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -52,6 +54,9 @@ const DRY          = process.argv.includes("--dry");
 
 const H = { "Content-Type": "application/json", "Authorization": `Bearer ${RUNNER_TOKEN}` };
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+// gui-core 单例:StepExecutor 用它确定性执行 gui/e2e 步骤(与 gui-mcp server 同一套定位引擎)。
+const guiCore = createGuiCore({ cdpUrl: `http://127.0.0.1:${CDP_PORT}` });
 
 // ---- 平台 API(契约见 app/routers/exec_queue.py:{code,msg,data} 信封)----
 async function api(method, path, body) {
@@ -280,9 +285,19 @@ async function tick() {
       let result;
       if (DRY) {
         result = { verdict: "pass", reason: "dry-run 握手验证", duration_ms: 1 };
+      } else if (item.kind === "gui" || item.kind === "e2e") {
+        await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
+        const script = item.payload?.script;
+        // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
+        if (Array.isArray(script) && script.length) {
+          const r = await runScript(guiCore, script, (m) => log(m));
+          if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
+          else result = r;
+        } else {
+          result = await runClaude(item.payload, item.kind);
+        }
       } else {
-        if (item.kind === "gui") await ensureNamiclaw();   // GUI 用例:先确保客户端带 CDP 在跑
-        result = await runClaude(item.payload, item.kind);
+        result = await runClaude(item.payload, item.kind);   // api/cli:走 claude(+Bash)
       }
 
       await report(item.run_id, {
