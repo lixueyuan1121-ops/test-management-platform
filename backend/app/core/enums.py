@@ -90,9 +90,11 @@ class ChecklistStatus(str, enum.Enum):
 
 class ExecKind(str, enum.Enum):
     """自动化执行类型（下发给 runner 时决定 Claude Code 怎么跑）。"""
-    gui = "gui"    # GUI 用例：Playwright connectOverCDP 操作被测客户端 DOM
-    api = "api"    # 接口用例：curl / fetch 验证接口与响应
-    cli = "cli"    # 命令行用例：起进程校验退出码 / 输出
+    gui = "gui"        # GUI 用例：gui-mcp 操作被测客户端 DOM
+    api = "api"        # 接口用例：curl / fetch 验证接口与响应
+    cli = "cli"        # 命令行用例：起进程校验退出码 / 输出
+    e2e = "e2e"        # 端到端：多步 + 等待策略（gui 工具为主，比单点 gui 长/慢）
+    manual = "manual"  # 不可自动化：纯人工/探索性/主观体验；平台不派发到执行机
 
 
 class ExecStatus(str, enum.Enum):
