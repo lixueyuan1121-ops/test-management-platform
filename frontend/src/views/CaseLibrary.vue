@@ -40,10 +40,12 @@
         </el-table-column>
         <el-table-column label="执行类型" width="110" align="center">
           <template #default="{ row }">
-            <el-select :model-value="row.exec_kind || 'gui'" size="small" style="width:90px"
-                       @change="(v) => onExecKindChange(row, v)">
-              <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
-            </el-select>
+            <el-tooltip :disabled="!row.kind_reason" :content="'AI 判定：' + (row.kind_reason || '')" placement="top">
+              <el-select :model-value="row.exec_kind || 'gui'" size="small" style="width:90px"
+                         @change="(v) => onExecKindChange(row, v)">
+                <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
+              </el-select>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
