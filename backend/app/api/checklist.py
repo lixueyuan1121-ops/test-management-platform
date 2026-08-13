@@ -6,11 +6,11 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
-from app.core.enums import ChecklistStatus, IssueStatus, ProjectRole, ReviewStatus
+from app.core.enums import ChecklistStatus, IssueStatus, ProjectRole, ReviewStatus, TaskStatus
 from app.db.session import get_db
 from app.models import ChecklistItem, RemainingIssue, Task, TestCase, User
 from app.schemas.checklist import AttachChecklistIn, ChecklistToIssueIn, ChecklistTickIn
@@ -61,12 +61,23 @@ def list_checklist_summary(
 
     返回 map：{ "<task_id>": {total, passed, failed, blocked, pending} }，
     只含有清单项的任务；无清单项的任务不出现（前端据此显示 —）。
+
+    顺延可见：与 list_tasks 口径一致——除当天派单的任务外，还带出更早日期但仍未完成
+    （status ∉ {online, closed}）的任务，否则顺延到次日的任务其清单/下发入口会消失。
     """
     assert_project_role(db, user, project_id, _ALL_ROLES)
     task_ids = [
         tid for (tid,) in
         db.query(Task.id)
-        .filter(Task.project_id == project_id, Task.assigned_date == on_date)
+        .filter(
+            Task.project_id == project_id,
+            or_(
+                Task.assigned_date == on_date,
+                (Task.assigned_date < on_date) & Task.status.notin_(
+                    [TaskStatus.online, TaskStatus.closed]
+                ),
+            ),
+        )
         .all()
     ]
     if not task_ids:
