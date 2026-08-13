@@ -2,37 +2,36 @@
 // 不经 LLM:assert_* 步直接算 pass/fail,快/稳/省/可复现。用 gui-core 做定位(与 claude 走同一套引擎)。
 //
 // script 形状(见设计稿 §5.1):[{ action, target?:{key|selector}, args?, desc? }, ...]
-//   - 定位/操作:connect / click / fill / wait_for / get_text / screenshot / goto
+//   - 定位/操作:connect / click / fill / wait_for / wait_response / get_text / screenshot / goto
 //   - 断言:assert_text(args:{expected,contains}) / assert_visible
-//   - 需降级 claude 的:judge(主观判定)/ wait_response(等 AI 生成)/ 未知 action
-//     → executor 不处理,返回 { needClaude:true, reason },由 runner 回退到 claude 兜底执行整条用例。
+//   - judge(主观判定):args:{question};喂前面步骤捕获的 context 给 claude,只回 {pass,reason}。
+//     需 runner 注入 judgeFn(question, context)=>{pass,reason};未注入时该步降级(整条退回 claude)。
+//   - 未知 action → needClaude,整条退回 claude 兜底。
 //
-// 判定:任一 assert_* 失败 → 整条 fail(附该步 desc+实际值);全部通过 → pass。
-// 证据:每步结果(命中候选 via、实际值、截图)累积进 steps[],回写时可读。
+// 判定:任一 assert_*/judge 失败 → 整条 fail;全部通过 → pass。
 
 const DETERMINISTIC = new Set([
   "connect", "click", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
-  "assert_text", "assert_visible",
+  "assert_text", "assert_visible", "judge",
 ]);
-// 这些 action 需要主观判断,确定性执行器不碰,退回 claude:
-const NEEDS_CLAUDE = new Set(["judge"]);
 
-// gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调(sec, msg)
-export async function runScript(gui, script, log = () => {}) {
+// gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
+export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   if (!Array.isArray(script) || script.length === 0) {
     return { needClaude: true, reason: "用例无结构化 script,退回 claude 执行" };
   }
-  // 预检:出现需降级的 action(或未知 action)→ 整条退回 claude(避免执行一半再切,状态不一致)
+  // 预检:未知 action → 整条退回 claude;judge 但没注入 judgeFn → 也退回(无法单步判定)
   for (const st of script) {
     const a = String(st?.action || "");
-    if (NEEDS_CLAUDE.has(a)) return { needClaude: true, reason: `step「${a}」需 claude 判定/等待,整条退回 claude` };
     if (!DETERMINISTIC.has(a)) return { needClaude: true, reason: `未知 step action「${a}」,退回 claude` };
+    if (a === "judge" && typeof judgeFn !== "function") return { needClaude: true, reason: "含 judge 步但未注入 judgeFn,整条退回 claude" };
   }
 
   const started = Date.now();
   const sec = () => ((Date.now() - started) / 1000).toFixed(1);
   const evidence = [];   // 证据链:每步一条
   const steps = [];      // 结构化步骤结果
+  const captured = [];   // judge 步的上下文素材(前面 get_text 文本 / screenshot 路径)
 
   for (let i = 0; i < script.length; i++) {
     const st = script[i];
@@ -52,8 +51,16 @@ export async function runScript(gui, script, log = () => {}) {
           if (!r.done) return fail(`step${i + 1} 等待 AI 回复未完成:${r.reason || ""}`, steps, evidence, started);
           break;
         }
-        case "get_text": { const r = await gui.getText(target); steps.push({ action, ok: true, ...r }); break; }
-        case "screenshot": { const r = await gui.screenshot(args.path || `evidence/step${i + 1}.png`); evidence.push(r.evidence); steps.push({ action, ok: true, ...r }); break; }
+        case "get_text": { const r = await gui.getText(target); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); break; }
+        case "screenshot": { const r = await gui.screenshot(args.path || `evidence/step${i + 1}.png`); evidence.push(r.evidence); captured.push(`[截图] ${r.evidence}`); steps.push({ action, ok: true, ...r }); break; }
+        case "judge": {
+          // 主观判定:把前面步骤捕获的 context 喂 claude,只判这一步(不整条降级)。
+          const context = captured.join("\n") || "(前面步骤未捕获文本/截图;请仅依据问题判断)";
+          const v = await judgeFn(args.question || desc, context);
+          steps.push({ action, ...v, question: args.question || desc, desc });
+          if (!v.pass) return fail(`step${i + 1} judge 判定不通过:${v.reason || ""}`, steps, evidence, started);
+          break;
+        }
         case "assert_visible": {
           const r = await gui.assertVisible(target);
           steps.push({ action, ...r, desc });
@@ -72,11 +79,11 @@ export async function runScript(gui, script, log = () => {}) {
       return fail(`step${i + 1}「${action}」执行出错:${e.message}`, steps, evidence, started);
     }
   }
-  // 所有步骤(含断言)通过
-  const asserts = steps.filter((s) => s.action.startsWith("assert")).length;
+  // 所有步骤(含断言/judge)通过
+  const checks = steps.filter((s) => s.action.startsWith("assert") || s.action === "judge").length;
   return {
     verdict: "pass",
-    reason: `结构化执行通过:${script.length} 步,${asserts} 处断言全部满足`,
+    reason: `结构化执行通过:${script.length} 步,${checks} 处判定全部满足`,
     evidence: evidence[evidence.length - 1] || null,
     duration_ms: Date.now() - started,
     steps,

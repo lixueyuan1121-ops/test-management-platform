@@ -247,6 +247,33 @@ function runClaude(payload, kind) {
   });
 }
 
+// judge 步专用:让 claude 只对**一个主观问题**做判定(如"AI 回复是否合理"),喂前面步骤捕获的 context。
+// 与 runClaude 不同:禁一切工具(纯文本判断)、短超时、只回 {pass,reason}。供 StepExecutor 的 judge 步调用。
+function judgeWithClaude(question, context) {
+  return new Promise((resolve) => {
+    const sys = "你是测试判定器。仅根据给出的问题与上下文做主观判定,不使用任何工具、不联网。"
+      + '你的**最后一行**必须是且只能是一个 JSON:{"verdict":"pass","reason":"简述依据"};verdict 只能 pass 或 fail。';
+    const input = `问题(判定点):${question}\n\n上下文(前面步骤捕获的页面文本/证据):\n${context || "(无)"}`;
+    // 禁所有可能让它跑偏的工具(judge 是纯判断,不需要任何工具)
+    const DENY = ["Bash", "BashOutput", "KillShell", "Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "TodoWrite"];
+    const args = ["-p", "--output-format", "json", "--append-system-prompt", sys,
+      "--disallowedTools", ...DENY, "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+      "--permission-mode", "acceptEdits"];
+    const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
+    let out = "", settled = false;
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); resolve(r); };
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} done({ pass: false, reason: "judge 超时" }); }, 90000);
+    child.on("error", (e) => done({ pass: false, reason: `judge 无法启动 claude: ${e.message}` }));
+    child.stdout.on("data", (d) => (out += d));
+    child.on("close", () => {
+      const v = parseVerdict(out);
+      done(v ? { pass: v.verdict === "pass", reason: v.reason || "" } : { pass: false, reason: "judge 未返回可解析结论" });
+    });
+    child.stdin.write(input);
+    child.stdin.end();
+  });
+}
+
 // Claude --output-format json 会把最终文本包在信封里;从中抽出我们约定的那条结论 JSON。
 function parseVerdict(raw) {
   let text = raw;
@@ -290,7 +317,7 @@ async function tick() {
         const script = item.payload?.script;
         // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
         if (Array.isArray(script) && script.length) {
-          const r = await runScript(guiCore, script, (m) => log(m));
+          const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
           if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
           else result = r;
         } else {
