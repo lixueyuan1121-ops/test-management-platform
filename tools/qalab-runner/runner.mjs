@@ -134,7 +134,8 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 - 严格按 payload.steps 操作,对照 payload.expected 判定;禁止联网搜索,只在本地执行。
 - GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect,再 gui_list_keys 看有哪些语义 key;
   定位元素**优先传 key**(gui_click/gui_fill/gui_get_text/gui_wait_for/gui_assert_text 都接 {key} 或 {selector}),
-  注册表没覆盖的元素才传原始 selector 兜底;gui_screenshot 存证。禁止自己写 Playwright、禁止用鼠标坐标。
+  注册表没覆盖的元素:先 gui_probe 探当前页拿候选选择器,再用其 best 当 {selector};gui_screenshot 存证。
+  禁止自己写 Playwright、禁止用鼠标坐标。
 - api 用例:用 curl / fetch 验证接口与响应。
 - cli 用例:起进程并校验退出码 / 输出。
 - 能用确定性断言就断言,不要"看一眼觉得对";判定不了或超时一律 verdict=fail。
@@ -143,13 +144,16 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 function runClaude(payload) {
   return new Promise((resolve) => {
     const started = Date.now();
+    const sec = () => ((Date.now() - started) / 1000).toFixed(1);   // 相对起始的秒数,标在每条进度前
     // 安全:用例 payload(用户可控 —— steps/expected 等自由文本,经平台入队流入)通过 stdin 传入,
     // **不进命令行 argv**。否则在 Windows(执行 claude.cmd 必须 shell:true)下,payload 里的
     // " & | % 等元字符会被 cmd.exe 解释导致命令注入(能编辑用例的成员即可在执行机上 RCE)。
     // 移到 stdin 后,argv 只剩固定 flag 与固定 SYSTEM_PROMPT(攻击者不可控),shell 引用不完美也无法被利用。
     const args = [
       "-p",                                       // 不带参数值:prompt 从 stdin 读取(已实测支持)
-      "--output-format", "json",
+      // 流式输出:claude 边执行边吐 JSON 事件,runner 逐条打进度(不再是"执行黑盒",能看到卡在哪步)。
+      "--output-format", "stream-json",
+      "--verbose",                                // stream-json 在 -p 下必须配 --verbose
       "--append-system-prompt", SYSTEM_PROMPT,
       // 白名单必须是**一个**空格分隔的值;写成 "Bash","mcp__gui__*" 两个 arg 会让 --allowedTools
       // 只收到 "Bash"、另一个游离,约束失效→claude 回退到可用任意工具(含 WebSearch),
@@ -162,7 +166,7 @@ function runClaude(payload) {
       "--permission-mode", "acceptEdits",         // 无人值守:预授权,避免卡权限确认
     ];
     const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
-    let out = "", err = "", settled = false;
+    let err = "", buf = "", finalText = "", lastText = "", settled = false;
     // 单次结算:error / close / 超时 三条路径只认第一个,并清理定时器(避免重复 resolve)。
     const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); resolve(r); };
     // 无人值守硬超时:claude 卡在被测页/工具时杀掉并回写 fail,避免该 run 永久 running、后续全停摆。
@@ -173,17 +177,44 @@ function runClaude(payload) {
     // spawn 失败(claude 未安装/PATH 不对)走异步 'error' 事件,不监听会 crash 整个 runner。
     // 转成一次 fail 结论回写,而非拖垮进程。
     child.on("error", (e) => done({ verdict: "fail", reason: `无法启动 claude(${CLAUDE_BIN}): ${e.message}`, duration_ms: Date.now() - started }));
-    child.stdout.on("data", (d) => (out += d));
+
+    // 逐个 stream 事件 → 实时进度日志(看清"执行到哪步、每步多久")。
+    const onEvent = (ev) => {
+      if (ev.type === "system" && ev.subtype === "init") {
+        log(`  [+${sec()}s] claude 就绪 MCP=${JSON.stringify((ev.mcp_servers || []).map((s) => s.name))}`);
+      } else if (ev.type === "assistant") {
+        for (const b of ev.message?.content || []) {
+          if (b.type === "tool_use") log(`  [+${sec()}s] → ${b.name} ${JSON.stringify(b.input || {}).slice(0, 160)}`);
+          else if (b.type === "text" && b.text?.trim()) { lastText = b.text; log(`  [+${sec()}s] 💭 ${b.text.trim().replace(/\s+/g, " ").slice(0, 120)}`); }
+        }
+      } else if (ev.type === "user") {
+        for (const b of ev.message?.content || []) {   // 工具返回只在出错时打(否则太吵)
+          if (b.type === "tool_result" && b.is_error) {
+            const tx = Array.isArray(b.content) ? b.content.map((c) => c.text || "").join(" ") : String(b.content || "");
+            log(`  [+${sec()}s] ⚠ 工具报错 ${tx.replace(/\s+/g, " ").slice(0, 160)}`);
+          }
+        }
+      } else if (ev.type === "result") {
+        finalText = ev.result ?? "";
+        log(`  [+${sec()}s] claude 结束 turns=${ev.num_turns} is_error=${ev.is_error}`);
+      }
+    };
+    // stdout 是按行的 JSON 事件;跨 chunk 缓冲,只处理完整行。
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (line.trim()) { try { onEvent(JSON.parse(line)); } catch { /* 半行/非 JSON,忽略 */ } }
+      }
+    });
     child.stderr.on("data", (d) => (err += d));
     child.on("close", (code) => {
       const duration_ms = Date.now() - started;
-      const verdict = parseVerdict(out);
+      // 结论取自 result 事件的最终文本(取不到再退到最后一段 assistant 文本);解析出约定的 verdict JSON。
+      const verdict = parseVerdict(finalText || lastText);
       if (!verdict) {
-        // 可观测性:提取 claude 最终文本(信封的 result 字段)记入 reason,而非截原始尾部
-        // (--output-format json 的尾部是 usage 统计,看不到结论);便于排查是「没按格式输出」还是「解析漏了」。
-        let diag = out;
-        try { const j = JSON.parse(out); diag = j.result ?? j.text ?? out; } catch { /* 非信封,用裸输出 */ }
-        const tail = String(diag || err || "").slice(-500);
+        const tail = String(finalText || lastText || err || "").replace(/\s+/g, " ").slice(-500);
         return done({ verdict: "fail", reason: `无法解析Claude输出(exit ${code}): ${tail}`, duration_ms });
       }
       done({ ...verdict, duration_ms });

@@ -14,6 +14,7 @@
 // 暴露工具(Claude 侧名字为 mcp__gui__<tool>):
 //   gui_connect                连接 CDP,返回顶层标题/URL + 内容 frame URL
 //   gui_list_keys              列出注册表所有语义 key(key/frame/desc),用例定位前先看有哪些
+//   gui_probe                  注册表没覆盖时:扫当前页可交互元素,返回按稳定性排序的候选选择器
 //   gui_goto(url)              导航顶层页
 //   gui_click({key|selector})  点击
 //   gui_fill({key|selector,text}) 填入文本
@@ -128,6 +129,68 @@ async function resolveTarget(args, { requireVisible = true } = {}) {
   throw new Error("需要提供 key(语义,优先)或 selector(原始 CSS)之一");
 }
 
+// ---- 页面探测(移植自 nami-work-test/lib/snapshot.js)----
+// 在浏览器 context 内跑:扫可见可交互元素,给每个生成按稳定性打分排序的候选选择器。
+// 用途:注册表没覆盖的新模块,claude 当场探一下,拿 best 候选直接用(或回报给人补进 selectors.json)。
+const DISCOVER_SCRIPT = function () {
+  const isVisible = (el) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none";
+  };
+  const isBEM = (cls) => /^[a-z][a-z0-9]*(?:[-_]{1,2}[a-z0-9]+)+$/i.test(cls);
+  const isHash = (cls) => /[A-Za-z0-9]{6,}$/.test(cls) && !/[-_]/.test(cls.slice(-8));
+  const genCandidates = (el) => {
+    const cands = [];
+    const testid = el.getAttribute("data-testid") || el.getAttribute("data-test");
+    if (testid) cands.push({ sel: `[data-testid="${testid}"]`, score: 100, by: "testid", value: testid });
+    if (el.id && !/^\d/.test(el.id) && el.id.length < 50) cands.push({ sel: `#${CSS.escape(el.id)}`, score: 90, by: "css", value: `#${el.id}` });
+    const aria = el.getAttribute("aria-label");
+    if (aria && aria.length < 60) cands.push({ sel: `[aria-label="${aria}"]`, score: 80, by: "label", value: aria });
+    const name = el.getAttribute("name");
+    if (name) cands.push({ sel: `[name="${name}"]`, score: 75, by: "css", value: `[name="${name}"]` });
+    const ph = el.getAttribute("placeholder");
+    if (ph) cands.push({ sel: `[placeholder="${ph}"]`, score: 70, by: "placeholder", value: ph });
+    const role = el.getAttribute("role") || el.tagName.toLowerCase();
+    if (role && aria) cands.push({ sel: `${role}[aria-label="${aria}"]`, score: 68, by: "role", value: role, name: aria });
+    const classes = Array.from(el.classList);
+    const bem = classes.filter(isBEM);
+    const stable = bem.length ? bem : classes.filter((c) => !isHash(c) && c.length > 3);
+    if (stable.length) { const sel = stable.map((c) => `.${CSS.escape(c)}`).join(""); cands.push({ sel, score: bem.length ? 60 : 45, by: "css", value: sel }); }
+    const txt = (el.innerText || el.textContent || "").trim().slice(0, 30);
+    if (txt && txt.length >= 2 && txt.length <= 20) cands.push({ sel: `text=${txt}`, score: 40, by: "text", value: txt });
+    const tag = el.tagName.toLowerCase();
+    const type = el.getAttribute("type");
+    if (type) cands.push({ sel: `${tag}[type="${type}"]`, score: 30, by: "css", value: `${tag}[type="${type}"]` });
+    return cands.sort((a, b) => b.score - a.score);
+  };
+  const sel = "a, button, [role=button], [role=tab], [role=menuitem], input, textarea, select, [contenteditable=true], [onclick], [class*=btn], [class*=action], [class*=nav__item], [class*=menu-item]";
+  const set = new Set(document.querySelectorAll(sel));
+  // 补 computed cursor:pointer 的元素:Vue/SPA 里大量可点击是无语义标签的 div/li(如导航项),
+  // 只靠标签选择器会漏。
+  for (const el of document.querySelectorAll("body *")) {
+    if (set.has(el)) continue;
+    try { if (getComputedStyle(el).cursor === "pointer") set.add(el); } catch { /* 忽略 */ }
+  }
+  // 去噪:内层元素若只是"外层同一可点击项的文本包装"(祖先在集合里且 innerText 完全相同)就丢掉,
+  // 只留最外层那个(它往往带更稳的 class,如导航 li.sidebar-nav__item)。空文本的 input 不受影响。
+  const elements = [...set].filter((el) => {
+    const t = (el.innerText || "").trim();
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      if (set.has(p) && (p.innerText || "").trim() === t) return false;
+    }
+    return true;
+  });
+  const out = [];
+  for (const el of elements) {
+    if (!isVisible(el)) continue;
+    const candidates = genCandidates(el);
+    if (!candidates.length) continue;
+    out.push({ tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.value || "").trim().slice(0, 40), candidates: candidates.slice(0, 4), best: candidates[0] });
+  }
+  return out;
+};
+
 // 工具定义(inputSchema 用 JSON Schema,Claude 据此调用)
 const TARGET_PROPS = {
   key: { type: "string", description: "语义 key(优先;可先用 gui_list_keys 查看所有 key)" },
@@ -136,6 +199,7 @@ const TARGET_PROPS = {
 const TOOLS = [
   { name: "gui_connect", description: "连接到 namiclaw 的 CDP 调试端口,返回顶层标题/URL 及自动下钻到的内容 frame URL(in_iframe=true 表示已进入 <vm_id>.work.n.cn 业务 iframe)。GUI 用例第一步必须先调它。", inputSchema: { type: "object", properties: {} } },
   { name: "gui_list_keys", description: "列出语义选择器注册表里的所有 key(含 frame 与描述)。定位元素前先调它,优先用语义 key 而不是猜 CSS。", inputSchema: { type: "object", properties: {} } },
+  { name: "gui_probe", description: "注册表没覆盖某元素时用:扫描当前页(顶层 shell + 业务 iframe)的可见可交互元素,返回每个元素的候选选择器(按稳定性打分排序,best 最优)。可用 contains 过滤文本。拿到候选后:一次性用就传给 gui_click 的 selector;要复用就把 best 回报给人补进 selectors.json。", inputSchema: { type: "object", properties: { contains: { type: "string", description: "只返回可见文本包含该串的元素(缩小结果)" }, limit: { type: "number", description: "每个 frame 最多返回几个(默认 40)" } } } },
   { name: "gui_goto", description: "把顶层页面导航到指定 URL。", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "gui_click", description: "点击元素(优先传语义 key,兜底传原始 selector,二选一)。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
   { name: "gui_fill", description: "向输入框填入文本(会先清空)。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, text: { type: "string" } }, required: ["text"] } },
@@ -159,6 +223,23 @@ async function dispatch(name, args) {
     case "gui_list_keys": {
       const keys = Object.entries(REGISTRY).map(([k, v]) => ({ key: k, frame: v.frame, desc: v.desc }));
       return ok(JSON.stringify({ count: keys.length, keys }));
+    }
+    case "gui_probe": {
+      await ensureConnected();
+      const limit = args.limit || 40;
+      const kw = (args.contains || "").trim();
+      const cf = contentFrame();
+      // 扫顶层 shell + 内容 iframe(若有);标注每组的 frame 归属,方便回填 selectors.json 时定 frame
+      const scopes = [{ frame: "shell", target: page.mainFrame() }];
+      if (cf !== page.mainFrame()) scopes.push({ frame: "vm", target: cf });
+      const groups = [];
+      for (const { frame, target } of scopes) {
+        let els = [];
+        try { els = await target.evaluate(DISCOVER_SCRIPT); } catch (e) { groups.push({ frame, url: target.url(), error: e.message, elements: [] }); continue; }
+        if (kw) els = els.filter((e) => (e.text || "").includes(kw));
+        groups.push({ frame, url: target.url(), total: els.length, elements: els.slice(0, limit) });
+      }
+      return ok(JSON.stringify({ hint: "best=最优候选;复用就把它按 {frame,by,value} 补进 selectors.json 的某个 key", groups }));
     }
     case "gui_goto":
       await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });

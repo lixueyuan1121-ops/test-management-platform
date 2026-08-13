@@ -38,6 +38,7 @@
 ```
 gui_connect                                  # 第一步,连 CDP 并下钻业务 iframe
 gui_list_keys                                # 列出所有语义 key(定位前先看有哪些)
+gui_probe      {contains:"连接器"}           # 库里没有该元素时:扫当前页,拿按稳定性排序的候选选择器
 gui_wait_for   {key:"navTasks"}              # 等可见
 gui_assert_text{key:"navTasks", expected:"任务", contains:true}
 gui_click      {key:"navExperts"}
@@ -49,10 +50,16 @@ gui_screenshot {path:"evidence/xxx.png"}     # 证据建议放 evidence/(已 git
 
 ## 怎么更新选择器(团队协作)
 
-1. 连上 CDP(namiclaw 带 `--remote-debugging-port=9222` 起),在 DevTools 里 Pick 到真实元素;
-2. 往 `selectors.json` 对应 key 的 `candidates` **头部**(更稳)或**尾部**(兜底)加一条,
-   或新增一个 key;不要动用例。
-3. git 提交/推送,各执行机 `git pull` 即拿到最新(v1 存储=随 runner 仓库走)。
+新功能模块 / 元素不在库里时:
+
+1. **发现选择器** —— 调 `gui_probe`(可带 `contains` 按文本过滤):它扫顶层 + 业务 iframe 的可交互元素
+   (含 Vue 里无标签语义、靠 `cursor:pointer` 的 div/li),每个给出按稳定性打分的候选,`best` 为最优。
+   > 也可传统方式:DevTools 里 Pick 元素看 class/role/文本。
+2. **决定用法**:
+   - **一次性**:直接把候选 `sel` 传给 `gui_click({selector})` 等,不改库;
+   - **要复用**:把 `best`(按 `{by, value}`)补进 `selectors.json` —— 对应 key 的 `candidates` **头部**
+     (更稳)或**尾部**(兜底),或**新增一个 key**;填对 `frame`(业务 UI 基本是 `vm`)。不要动用例。
+3. `git commit/push`,各执行机 `git pull` 即拿到最新(v1 存储=随 runner 仓库走)。
 
 > 引擎全不命中会抛**带诊断**的错(列出试过哪些候选 + 提示更新哪个 key),照提示补候选即可。
 
