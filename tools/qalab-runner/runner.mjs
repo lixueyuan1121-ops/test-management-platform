@@ -16,11 +16,17 @@ import { dirname, join } from "node:path";
 (function loadDotenv() {
   try {
     const envPath = join(dirname(fileURLToPath(import.meta.url)), ".env");
-    for (const line of readFileSync(envPath, "utf-8").split(/\r?\n/)) {
-      const m = line.match(/^\s*([\w.]+)\s*=\s*(.*)\s*$/);
-      if (m && !line.trim().startsWith("#") && process.env[m[1]] === undefined) {
-        process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-      }
+    let raw = readFileSync(envPath, "utf-8");
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);   // 去 UTF-8 BOM(Windows 编辑器常见)
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim() || line.trim().startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq < 0) continue;
+      const key = line.slice(0, eq).trim();
+      // trim 去首尾空白与残留的 \r;再剥一层引号。防 Windows CRLF/复制粘贴带隐藏字符
+      // 导致 token 末尾混入 \r → "Bearer xxx\r" → 平台 401(实测踩过)。
+      let val = line.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+      if (key && process.env[key] === undefined) process.env[key] = val;
     }
   } catch { /* 没有 .env 就用真实环境变量 / 默认值 */ }
 })();
