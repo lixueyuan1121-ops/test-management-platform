@@ -155,7 +155,10 @@ def gen_testcases(
         try:
             for evt in claude_runner.stream_generate(requirement):
                 etype = evt.get("type")
-                if etype == "delta":
+                if etype == "heartbeat":
+                    # SSE 注释帧:保持连接有字节流动,防网关空闲超时切断;前端解析忽略非 data: 行
+                    yield ": hb\n\n"
+                elif etype == "delta":
                     raw += evt["text"]
                     yield _sse({"type": "delta", "text": evt["text"]})
                 elif etype == "result":

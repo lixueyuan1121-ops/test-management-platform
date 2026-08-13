@@ -226,6 +226,9 @@ def stream_generate(requirement: str, timeout: int | None = None) -> Iterator[di
             except Empty:
                 if proc.poll() is not None and q.empty():
                     break
+                # 空转(claude 还在思考、未吐字):发心跳,避免反向代理/网关按"空闲"掐断长连接
+                # (SSE 一个字节没动 → 常见 60s 空闲超时 → 前端"读取流失败")。端点转成 SSE 注释帧。
+                yield {"type": "heartbeat"}
                 continue
             if line is None:
                 break
