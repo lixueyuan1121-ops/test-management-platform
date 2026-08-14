@@ -29,16 +29,18 @@ def _user_name(db: Session, uid: int | None) -> str:
     return u.name if u else ""
 
 
-def _to_out(db: Session, item: ChecklistItem) -> dict:
-    tc = db.get(TestCase, item.test_case_id)
-    # 最近一次自动执行(exec_run)的回写结果——供前端在清单项上展示失败/通过原因。
-    # 按 id 倒序取最新一条(同一清单项可被多次下发执行,只关心最近结果)。
-    last_run = (
-        db.query(ExecRun)
-        .filter(ExecRun.checklist_item_id == item.id)
-        .order_by(ExecRun.id.desc())
-        .first()
-    )
+def _to_out(db: Session, item: ChecklistItem, tc=None, last_run=None, executed_name=None) -> dict:
+    # 预取参数(批量场景)优先;缺省则逐个查(单条调用兜底)。消除列表 N+1。
+    if tc is None:
+        tc = db.get(TestCase, item.test_case_id)
+    if last_run is None:
+        last_run = (
+            db.query(ExecRun)
+            .filter(ExecRun.checklist_item_id == item.id)
+            .order_by(ExecRun.id.desc())
+            .first()
+        )
+    name = executed_name if executed_name is not None else _user_name(db, item.executed_by)
     return {
         "id": item.id,
         "task_id": item.task_id,
@@ -46,7 +48,7 @@ def _to_out(db: Session, item: ChecklistItem) -> dict:
         "project_id": item.project_id,
         "exec_status": item.exec_status.value,
         "executed_by": item.executed_by,
-        "executed_by_name": _user_name(db, item.executed_by),
+        "executed_by_name": name,
         "executed_at": item.executed_at.isoformat() if item.executed_at else None,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         # 关联 test_case 展示字段（补挂/采纳的来源测试点）
@@ -64,6 +66,26 @@ def _to_out(db: Session, item: ChecklistItem) -> dict:
         "exec_run_status": last_run.status.value if last_run else None,
         "exec_run_at": last_run.updated_at.isoformat() if last_run and last_run.updated_at else None,
     }
+
+
+def _to_out_list(db: Session, rows: list[ChecklistItem]) -> list[dict]:
+    """批量序列化清单项:一次预取 TestCase / 每项最近 exec_run / executed_by 名,消除逐行 N+1。"""
+    if not rows:
+        return []
+    item_ids = [it.id for it in rows]
+    tc_ids = {it.test_case_id for it in rows if it.test_case_id}
+    uids = {it.executed_by for it in rows if it.executed_by}
+    tc_map = {t.id: t for t in db.query(TestCase).filter(TestCase.id.in_(tc_ids))} if tc_ids else {}
+    name_map = dict(db.query(User.id, User.name).filter(User.id.in_(uids))) if uids else {}
+    # 一次取回这些清单项的所有 exec_run,按 id 升序 → 后写覆盖前写 = 每项最新一条
+    last_map: dict[int, ExecRun] = {}
+    for r in db.query(ExecRun).filter(ExecRun.checklist_item_id.in_(item_ids)).order_by(ExecRun.id).all():
+        last_map[r.checklist_item_id] = r
+    return [
+        _to_out(db, it, tc=tc_map.get(it.test_case_id), last_run=last_map.get(it.id),
+                executed_name=name_map.get(it.executed_by, ""))
+        for it in rows
+    ]
 
 
 @router.get("/tasks/checklist-summary")
@@ -132,7 +154,7 @@ def get_task_checklist(
         .order_by(ChecklistItem.id)
         .all()
     )
-    return ok([_to_out(db, it) for it in rows])
+    return ok(_to_out_list(db, rows))
 
 
 @router.post("/tasks/{tid}/checklist")
@@ -182,7 +204,7 @@ def attach_checklist(
         .order_by(ChecklistItem.id)
         .all()
     )
-    return ok([_to_out(db, it) for it in rows])
+    return ok(_to_out_list(db, rows))
 
 
 @router.patch("/checklist/{item_id}")

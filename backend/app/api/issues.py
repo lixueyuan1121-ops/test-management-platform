@@ -31,15 +31,22 @@ def _issue_task_title(db: Session, it: RemainingIssue) -> str:
     return ""
 
 
-def _to_out(db: Session, it: RemainingIssue) -> dict:
+def _name_map(db: Session, uids) -> dict:
+    ids = {u for u in uids if u}
+    return dict(db.query(User.id, User.name).filter(User.id.in_(ids)).all()) if ids else {}
+
+
+def _to_out(db: Session, it: RemainingIssue, names: dict | None = None, titles: dict | None = None) -> dict:
+    owner_name = names.get(it.owner, "") if names is not None else _user_name(db, it.owner)
+    task_title = titles.get(it.id, "") if titles is not None else _issue_task_title(db, it)
     return {
         "id": it.id, "report_id": it.report_id, "project_id": it.project_id,
         "task_id": it.task_id, "checklist_item_id": it.checklist_item_id,
         "title": it.title, "description": it.description,
         "severity": it.severity.value, "status": it.status.value,
-        "owner": it.owner, "owner_name": _user_name(db, it.owner),
+        "owner": it.owner, "owner_name": owner_name,
         "external_ref": it.external_ref,
-        "task_title": _issue_task_title(db, it),
+        "task_title": task_title,
         "created_at": it.created_at.isoformat() if it.created_at else None,
         "resolved_at": it.resolved_at.isoformat() if it.resolved_at else None,
     }
@@ -62,7 +69,15 @@ def list_issues(
         except ValueError:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="非法状态")
     rows = q.order_by(RemainingIssue.created_at.desc()).all()
-    return ok([_to_out(db, it) for it in rows])
+    # 批量预取 owner 名 + 任务标题(经 report→task 或直挂 task),消除逐行 N+1
+    names = _name_map(db, [it.owner for it in rows])
+    report_ids = {it.report_id for it in rows if it.report_id}
+    rep_task = dict(db.query(DailyReport.id, DailyReport.task_id).filter(DailyReport.id.in_(report_ids))) if report_ids else {}
+    tid_of = {it.id: (rep_task.get(it.report_id) if it.report_id else it.task_id) for it in rows}
+    task_ids = {t for t in tid_of.values() if t}
+    task_title = dict(db.query(Task.id, Task.title).filter(Task.id.in_(task_ids))) if task_ids else {}
+    titles = {iid: task_title.get(tid, "") for iid, tid in tid_of.items()}
+    return ok([_to_out(db, it, names=names, titles=titles) for it in rows])
 
 
 @router.patch("/{iid}")

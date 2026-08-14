@@ -19,14 +19,27 @@ def _user_name(db: Session, uid: int) -> str:
     return u.name if u else ""
 
 
-def _to_out(db: Session, t: Task, on_date: date | None = None) -> dict:
+def _name_map(db: Session, uids) -> dict[int, str]:
+    """批量取用户名 → {id: name},消除列表里逐行查库的 N+1。"""
+    ids = {u for u in uids if u}
+    if not ids:
+        return {}
+    return dict(db.query(User.id, User.name).filter(User.id.in_(ids)).all())
+
+
+def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | None = None) -> dict:
+    # names 提供时走批量映射(列表用);否则逐个查(单条端点用)
+    def nm(uid):
+        if names is not None:
+            return names.get(uid, "")
+        return _user_name(db, uid)
     return {
         "id": t.id,
         "project_id": t.project_id,
         "assigned_by": t.assigned_by,
-        "assigned_by_name": _user_name(db, t.assigned_by),
+        "assigned_by_name": nm(t.assigned_by),
         "assigned_to": t.assigned_to,
-        "assigned_to_name": _user_name(db, t.assigned_to),
+        "assigned_to_name": nm(t.assigned_to),
         "title": t.title,
         "description": t.description,
         "module": t.module,
@@ -67,7 +80,8 @@ def list_tasks(
     if mine and not user.is_platform_admin:
         q = q.filter(Task.assigned_to == user.id)
     rows = q.order_by(Task.assigned_date.desc(), Task.id.desc()).all()
-    return ok([_to_out(db, t, on_date=date) for t in rows])
+    names = _name_map(db, [uid for t in rows for uid in (t.assigned_by, t.assigned_to)])
+    return ok([_to_out(db, t, on_date=date, names=names) for t in rows])
 
 
 @router.post("")
