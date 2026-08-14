@@ -99,6 +99,12 @@ export const enqueueExec = (project_id, runner, checklistItemIds) =>
 export const listExecHistory = (params) => http.get('/exec-queue/history', { params })
 
 // 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
+export const listReleases = (params) => http.get('/releases', { params })
+export const releaseStats = (project_id) => http.get('/releases/stats', { params: { project_id } })
+export const getRelease = (id) => http.get(`/releases/${id}`)
+export const createRelease = (data) => http.post('/releases', data)
+export const updateRelease = (id, data) => http.patch(`/releases/${id}`, data)
+export const deleteRelease = (id) => http.delete(`/releases/${id}`)
 export const listMyDevices = () => http.get('/devices')
 export const registerDevice = (runner_id, name) => http.post('/devices', { runner_id, name })
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)

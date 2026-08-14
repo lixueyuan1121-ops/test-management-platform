@@ -303,6 +303,23 @@ CREATE TABLE `runner_device` (
   CONSTRAINT `fk_device_owner` FOREIGN KEY (`owner_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- release records
+CREATE TABLE `release_record` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `version` VARCHAR(64) NOT NULL,
+  `release_date` DATE NOT NULL,
+  `req_count` INT NOT NULL DEFAULT 0,
+  `content` TEXT,
+  `memo` TEXT,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_release_project_date` (`project_id`,`release_date`),
+  CONSTRAINT `fk_release_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_release_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

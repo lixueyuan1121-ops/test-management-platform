@@ -52,6 +52,9 @@
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
         </el-sub-menu>
 
+        <!-- 发版记录 -->
+        <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
+
         <!-- 测试工具广场 -->
         <el-sub-menu index="tools">
           <template #title><el-icon><Grid /></el-icon><span>测试工具广场</span></template>
@@ -105,7 +108,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Promotion,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 

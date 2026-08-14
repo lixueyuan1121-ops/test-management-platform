@@ -10,6 +10,7 @@ from app.models.ai import AiTask, TestCase
 from app.models.checklist import ChecklistItem
 from app.models.exec_queue import ExecRun
 from app.models.runner_device import RunnerDevice
+from app.models.release import ReleaseRecord
 
 __all__ = [
     "User",
@@ -29,4 +30,5 @@ __all__ = [
     "ChecklistItem",
     "ExecRun",
     "RunnerDevice",
+    "ReleaseRecord",
 ]
