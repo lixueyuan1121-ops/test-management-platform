@@ -50,6 +50,13 @@ def ensure_task_columns() -> None:
             conn.execute(text(
                 "ALTER TABLE task ADD COLUMN status_locked TINYINT(1) NOT NULL DEFAULT 0"
             ))
+        # 终态时间戳 + 关闭备注（P2 任务分配调整）：变为 online/closed 时刷新，供详情显示与「完成当天」列表口径。
+        if "online_at" not in cols:
+            conn.execute(text("ALTER TABLE task ADD COLUMN online_at DATETIME NULL"))
+        if "closed_at" not in cols:
+            conn.execute(text("ALTER TABLE task ADD COLUMN closed_at DATETIME NULL"))
+        if "close_note" not in cols:
+            conn.execute(text("ALTER TABLE task ADD COLUMN close_note TEXT NULL"))
 
 
 def ensure_testcase_columns() -> None:

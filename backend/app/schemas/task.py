@@ -27,6 +27,7 @@ class TaskUpdate(BaseModel):
     assigned_to: int | None = None
     assigned_date: date | None = None
     status: TaskStatus | None = None
+    close_note: str | None = None   # 关闭任务时的备注（通常与 status='closed' 一起提交）
 
 
 class TaskOut(BaseModel):
@@ -44,6 +45,9 @@ class TaskOut(BaseModel):
     priority: str
     assigned_date: date
     status: str
+    online_at: datetime | None = None
+    closed_at: datetime | None = None
+    close_note: str | None = None
     created_at: datetime
 
     class Config:

@@ -123,10 +123,11 @@
             <span v-else class="cl-dim">—</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="canManage" label="操作" width="140">
+        <el-table-column label="操作" :width="canManage ? 180 : 70">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" @click="onDel(row)">删除</el-button>
+            <el-button link type="info" @click="openDetail(row)">详情</el-button>
+            <el-button v-if="canManage" link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="canManage" link type="danger" @click="onDel(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -165,6 +166,38 @@
         <el-button type="primary" :loading="dialog.saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 任务详情抽屉（只读回溯）-->
+    <el-drawer v-model="detail.visible" :title="`任务详情 · ${detail.row?.title || ''}`" size="480px">
+      <div v-if="detail.row" class="detail">
+        <p class="d-row"><span class="d-k">任务名称</span> {{ detail.row.title || '—' }}</p>
+        <p class="d-row"><span class="d-k">状态</span>
+          <el-tag :type="STATUS_META[detail.row.status]?.type || 'info'" effect="light" size="small">
+            {{ STATUS_META[detail.row.status]?.label || detail.row.status }}
+          </el-tag>
+          <el-tag v-if="detail.row.is_carried" size="small" type="warning" effect="light" style="margin-left:6px">
+            顺延自 {{ (detail.row.assigned_date || '').slice(5) }}
+          </el-tag>
+        </p>
+        <p class="d-row"><span class="d-k">模块</span> {{ detail.row.module || '—' }}</p>
+        <p class="d-row"><span class="d-k">开发</span> {{ detail.row.developer || '—' }}</p>
+        <p class="d-row"><span class="d-k">优先级</span> {{ (detail.row.priority || '').toUpperCase() || '—' }}</p>
+        <p class="d-row"><span class="d-k">指派给</span> {{ detail.row.assigned_to_name || '—' }}</p>
+        <p class="d-row"><span class="d-k">分配日期</span> {{ detail.row.assigned_date || '—' }}</p>
+        <p class="d-row"><span class="d-k">上线时间</span> {{ fmtDetailTime(detail.row.online_at) }}</p>
+        <p v-if="detail.row.status === 'closed'" class="d-row"><span class="d-k">关闭时间</span> {{ fmtDetailTime(detail.row.closed_at) }}</p>
+        <p class="d-row"><span class="d-k">需求地址</span>
+          <el-link v-if="detail.row.requirement_url" :href="detail.row.requirement_url" target="_blank" type="primary" :underline="false">{{ detail.row.requirement_url }}</el-link>
+          <span v-else>—</span>
+        </p>
+        <p class="d-row"><span class="d-k">说明</span></p>
+        <pre class="d-pre">{{ detail.row.description || '—' }}</pre>
+        <template v-if="detail.row.status === 'closed'">
+          <p class="d-row"><span class="d-k">关闭备注</span></p>
+          <pre class="d-pre">{{ detail.row.close_note || '（未填写）' }}</pre>
+        </template>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -307,6 +340,14 @@ function openEdit(row) {
   })
   dialog.visible = true
 }
+
+// ---- 任务详情（只读）----
+const detail = reactive({ visible: false, row: null })
+function openDetail(row) { detail.row = row; detail.visible = true }
+function fmtDetailTime(s) {
+  if (!s) return '—'
+  return String(s).replace('T', ' ').slice(0, 16)
+}
 async function submit() {
   if (!form.title || !form.assigned_to || !form.assigned_date) { ElMessage.warning('任务名称/指派/日期必填'); return }
   dialog.saving = true
@@ -320,8 +361,20 @@ async function submit() {
 }
 async function changeStatus(row, s) {
   if (s === row.status) return
-  await updateTask(row.id, { status: s })
-  row.status = s
+  const payload = { status: s }
+  // 关闭任务时收集关闭备注（可选，允许留空）
+  if (s === 'closed') {
+    try {
+      const { value } = await ElMessageBox.prompt('请填写关闭备注（可选）', '关闭任务', {
+        confirmButtonText: '确认关闭', cancelButtonText: '取消',
+        inputType: 'textarea', inputPlaceholder: '例如：需求取消 / 合并到其他任务 / 不再跟进…',
+      })
+      payload.close_note = (value || '').trim()
+    } catch { return }   // 用户取消，不改状态
+  }
+  const updated = await updateTask(row.id, payload)
+  // 用后端返回回写整行（含 online_at/closed_at/close_note），使详情抽屉立即反映
+  Object.assign(row, updated)
   ElMessage.success(`状态已更新为「${STATUS_META[s].label}」`)
 }
 async function onDel(row) {
@@ -353,4 +406,8 @@ async function onCopy() {
 .exec-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .exec-meta { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
 .exec-reason { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; max-height: 240px; overflow: auto; }
+.detail { font-size: 13px; color: #334; }
+.detail .d-row { margin: 8px 0 2px; display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; flex-shrink: 0; }
+.detail .d-pre { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 220px; overflow: auto; margin: 2px 0 0; }
 </style>

@@ -34,6 +34,12 @@ class Task(Base):
     # 状态是否已被人工接管：人工（登录用户）改过 status 即置 True，
     # 此后派单同步（agent 的 PATCH）不再覆盖 status，只更新其它元信息。
     status_locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 终态时间戳：每次状态「变为」online/closed 时刷新为最新时刻（非首次固定）。
+    # 供任务详情显示上线时间，并作为「完成当天」列表带出的依据（见 tasks.list_tasks）。
+    online_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 关闭备注：关闭任务时填写的说明，任务详情可见。
+    close_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

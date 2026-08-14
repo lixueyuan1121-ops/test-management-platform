@@ -1,7 +1,7 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -51,8 +51,21 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "status_locked": bool(t.status_locked),
         # 顺延标记：派单日早于查询日即为顺延（仅 list 传 on_date 时有意义）
         "is_carried": on_date is not None and t.assigned_date < on_date,
+        # 终态时间戳（详情显示上线时间/关闭时间）+ 关闭备注
+        "online_at": t.online_at.isoformat() if t.online_at else None,
+        "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        "close_note": t.close_note,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
+
+
+def _stamp_terminal(t: Task, new_status: TaskStatus) -> None:
+    """状态「变为」终态时刷新对应时间戳为最新时刻（每次进入 online/closed 都刷新，非首次固定）。
+    调用前提：new_status != t.status（确为一次状态变更）。"""
+    if new_status == TaskStatus.online:
+        t.online_at = datetime.utcnow()
+    elif new_status == TaskStatus.closed:
+        t.closed_at = datetime.utcnow()
 
 
 @router.get("")
@@ -65,8 +78,11 @@ def list_tasks(
 ):
     """查项目任务。mine=1 时只看指派给我的；date 过滤分配日期。
 
-    顺延可见：传 date 时，除当天派单的任务外，还带出更早日期但仍未完成
-    （status ∉ {online, closed}）的任务，使未做完的任务不会因翻页到次日而消失。
+    传 date 时，某天列表带出以下三类，使任务在「派单当天」与「实际完成当天」都可见：
+    1. 当天派单的任务（assigned_date == date）；
+    2. 更早派单但仍未完成（status ∉ {online, closed}）的顺延任务——每天带出直到做完；
+    3. 在当天「变为完成」的任务：online_at 或 closed_at 落在 date 当天。
+       故一个昨天派单、今天上线/关闭的顺延任务会出现在今天（完成当天），符合按完成日归集。
     """
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     q = db.query(Task).filter(Task.project_id == project_id)
@@ -76,6 +92,8 @@ def list_tasks(
             (Task.assigned_date < date) & Task.status.notin_(
                 [TaskStatus.online, TaskStatus.closed]
             ),
+            func.date(Task.online_at) == date,
+            func.date(Task.closed_at) == date,
         ))
     if mine and not user.is_platform_admin:
         q = q.filter(Task.assigned_to == user.id)
@@ -136,11 +154,15 @@ def update_task(
         v = getattr(body, f, None)
         if v is not None:
             setattr(t, f, v)
+    # 关闭备注：可与 status→closed 一起提交，也可单独更新（传了才写，空串按清空处理）。
+    if body.close_note is not None:
+        t.close_note = body.close_note.strip() or None
     new_status = getattr(body, "status", None)
     # 人工端点：管理员可随时改状态（本端点仅前端 UI 调用，agent 走 /sync）。
     # 人工真正改变 status 即置锁，标记已被人工接管——此后 agent 的 /sync 不再覆盖，
     # 人工自己仍可继续经本端点修改。编辑任务带原状态值提交（未变）不置锁，避免误锁。
     if new_status is not None and new_status != t.status:
+        _stamp_terminal(t, new_status)   # 变为 online/closed 刷新对应时间戳
         t.status = new_status
         t.status_locked = True  # 人工接管标记
     db.commit()
@@ -165,7 +187,8 @@ def sync_task_status(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, t.project_id, (ProjectRole.admin,))
     new_status = getattr(body, "status", None)
-    if new_status is not None and not t.status_locked:
+    if new_status is not None and not t.status_locked and new_status != t.status:
+        _stamp_terminal(t, new_status)   # agent 自动同步到 online/closed 也刷新时间戳
         t.status = new_status
     db.commit()
     return ok(_to_out(db, t))
