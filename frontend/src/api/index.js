@@ -92,6 +92,8 @@ export const listAdoptableCases = (tid) => http.get(`/tasks/${tid}/adoptable-cas
 // 前端只调 enqueue；拉取/认领/回写由 runner 用独立 token 完成。回写后 checklist_item.exec_status 自动更新。
 export const enqueueExec = (project_id, runner, checklistItemIds) =>
   http.post('/exec-queue/enqueue', { project_id, runner, checklist_item_ids: checklistItemIds })
+// 执行历史(独立"执行结果"页):按项目/任务/设备/verdict/status 筛,最新在前,不覆盖。
+export const listExecHistory = (params) => http.get('/exec-queue/history', { params })
 
 // 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
 export const listMyDevices = () => http.get('/devices')

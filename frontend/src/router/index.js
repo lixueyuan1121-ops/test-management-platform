@@ -19,6 +19,7 @@ const routes = [
       { path: 'tasks', name: 'tasks', component: () => import('@/views/Tasks.vue'), meta: { platformAdmin: true } },
       { path: 'my-reports', name: 'my-reports', component: () => import('@/views/MyReports.vue') },
       { path: 'my-devices', name: 'my-devices', component: () => import('@/views/MyDevices.vue') },
+      { path: 'exec-results', name: 'exec-results', component: () => import('@/views/ExecResults.vue') },
       { path: 'stats', name: 'stats', component: () => import('@/views/DailyStats.vue') },
       { path: 'workload', name: 'workload', component: () => import('@/views/WorkloadStats.vue') },
       { path: 'ai-wall', name: 'ai-wall', component: () => import('@/views/AIWall.vue'), meta: { title: 'AI 战绩墙' } },
