@@ -15,6 +15,27 @@ def _columns(table: str) -> set[str]:
     return {c["name"] for c in insp.get_columns(table)}
 
 
+def _indexes(table: str) -> set[str]:
+    insp = inspect(engine)
+    if table not in insp.get_table_names():
+        return set()
+    return {ix["name"] for ix in insp.get_indexes(table)}
+
+
+def _ensure_index(table: str, name: str, cols: str) -> None:
+    """幂等建索引:不存在才建(MySQL/SQLite 通用 CREATE INDEX)。"""
+    if not _columns(table) or name in _indexes(table):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"CREATE INDEX {name} ON {table} ({cols})"))
+
+
+def ensure_perf_indexes() -> None:
+    """性能索引(高频筛选列):test_case 按项目+采纳态/按 reviewed_at(统计趋势)。"""
+    _ensure_index("test_case", "idx_testcase_proj_review", "project_id, review_status")
+    _ensure_index("test_case", "idx_testcase_reviewed", "reviewed_at")
+
+
 def ensure_task_columns() -> None:
     """task 表补列 requirement_url / developer（如缺失）。"""
     cols = _columns("task")

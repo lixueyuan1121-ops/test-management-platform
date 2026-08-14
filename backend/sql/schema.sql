@@ -242,6 +242,8 @@ CREATE TABLE `test_case` (
   KEY `idx_testcase_aitask` (`ai_task_id`),
   KEY `idx_testcase_project` (`project_id`),
   KEY `idx_testcase_task` (`task_id`),
+  KEY `idx_testcase_proj_review` (`project_id`,`review_status`),
+  KEY `idx_testcase_reviewed` (`reviewed_at`),
   CONSTRAINT `fk_testcase_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL
