@@ -82,16 +82,10 @@ def create_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
     if not db.get(User, body.assigned_to):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="指派用户不存在")
-    # 成员(非平台管理员、非项目 admin)只能派给"自己或同项目成员",防越权派单到组外；admin 不限。
+    # 成员(非平台管理员、非项目 admin)只能把任务指派给**自己**,不能派给他人;admin 不限。
     is_admin = user.is_platform_admin or member.role == ProjectRole.admin
-    if not is_admin:
-        target_in_project = (
-            db.query(ProjectMember)
-            .filter_by(user_id=body.assigned_to, project_id=body.project_id)
-            .first()
-        )
-        if not target_in_project:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="只能把任务指派给本项目的成员")
+    if not is_admin and body.assigned_to != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="成员只能把任务指派给自己")
     t = Task(
         project_id=body.project_id,
         assigned_by=user.id,

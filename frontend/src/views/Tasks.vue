@@ -145,9 +145,10 @@
           </el-select>
         </el-form-item>
         <el-form-item label="指派给" required>
-          <el-select v-model="form.assigned_to" filterable placeholder="选择项目成员" style="width:100%">
+          <el-select v-model="form.assigned_to" filterable placeholder="选择项目成员" style="width:100%" :disabled="!canManage && !dialog.id">
             <el-option v-for="m in members" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
+          <span v-if="!canManage && !dialog.id" class="assign-hint">成员新建任务默认指派给自己,不能派给他人</span>
         </el-form-item>
         <el-form-item label="分配日期" required>
           <el-date-picker v-model="form.assigned_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
@@ -289,7 +290,9 @@ function fmtExecAt(s) {
 
 function openCreate() {
   dialog.id = null
-  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: date.value, description: '', status: 'pending' })
+  // 普通成员:指派人默认填自己且锁死(不能派给别人);管理员可自由选。
+  const selfId = canManage.value ? null : (auth.user?.id ?? null)
+  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: selfId, assigned_date: date.value, description: '', status: 'pending' })
   dialog.visible = true
 }
 function openEdit(row) {
@@ -334,6 +337,7 @@ async function onCopy() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
+.assign-hint { color: #90a4ae; font-size: 12px; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .status-trigger { cursor: pointer; }
 .cl-prog { display: flex; align-items: center; gap: 8px; }
