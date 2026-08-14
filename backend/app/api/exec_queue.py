@@ -58,8 +58,10 @@ def _to_out(r: ExecRun) -> dict:
         "task_id": r.task_id,
         "project_id": r.project_id,
         "runner": r.runner,
-        "kind": r.kind.value,
-        "status": r.status.value,
+        # 防御:kind/status 正常是枚举(有 .value),但历史/脏数据可能是裸字符串;
+        # 用 getattr 兼容两者,避免一行坏数据让 runner 的 GET 轮询整个 500(实测踩过)。
+        "kind": getattr(r.kind, "value", r.kind),
+        "status": getattr(r.status, "value", r.status),
         "payload": json.loads(r.payload or "{}"),
         "verdict": r.verdict,
         "reason": r.reason,

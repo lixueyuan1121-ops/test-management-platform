@@ -100,6 +100,33 @@ def migrate_task_status() -> None:
             ))
 
 
+def ensure_exec_run_kind() -> None:
+    """exec_run.kind/status 的 MySQL 原生 ENUM 放宽到新枚举值(P1 加了 e2e/manual)。
+
+    根因:kind 原为 ENUM('gui','api','cli'),加 e2e/manual 后未同步 MySQL 列定义。
+    MySQL 原生 ENUM 遇范围外值**静默存成空串 ''**(不报错)→ runner GET 读回空串,
+    `r.kind.value` 抛 'str' object has no attribute 'value' → 整个轮询 500。
+    - MySQL:MODIFY 放宽 kind/status 为含新值的定义;并把已被写坏的 '' 行修回默认值。
+    - SQLite:非原生 ENUM,存的就是原字符串,无需 DDL;坏行修复同样执行(幂等)。
+    """
+    if not _columns("exec_run"):
+        return  # 表尚未建，交给 create_all
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "mysql":
+            conn.execute(text(
+                "ALTER TABLE exec_run MODIFY COLUMN `kind` "
+                "ENUM('gui','api','cli','e2e','manual') NOT NULL DEFAULT 'gui'"
+            ))
+            conn.execute(text(
+                "ALTER TABLE exec_run MODIFY COLUMN `status` "
+                "ENUM('pending','running','passed','failed') NOT NULL DEFAULT 'pending'"
+            ))
+        # 修复:此前 e2e/manual 被静默写成 '' 的坏行 → 归回 manual(不可自动化,不误派)。
+        # 两方言都执行(幂等:无坏行则 0 行受影响)。
+        conn.execute(text("UPDATE exec_run SET kind='manual' WHERE kind='' OR kind IS NULL"))
+
+
 def ensure_issue_columns() -> None:
     """remaining_issue 表补列 task_id / checklist_item_id（如缺失），并放宽 report_id 可空。
 

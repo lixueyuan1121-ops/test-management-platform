@@ -1,9 +1,13 @@
 """统一异常处理，保证响应都是 {code, msg, data} 格式。"""
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger("test_platform")
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -25,7 +29,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def global_exc(_: Request, exc: Exception):
+    async def global_exc(request: Request, exc: Exception):
+        # 打完整 traceback + 出错的方法/路径,否则线上只看到一句 msg、无法定位(实测踩过)。
+        logger.exception("未捕获异常 %s %s -> %r", request.method, request.url.path, exc)
         return JSONResponse(
             status_code=500,
             content={"code": 500, "msg": f"服务器内部错误: {exc}", "data": None},

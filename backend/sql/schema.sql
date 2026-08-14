@@ -258,7 +258,7 @@ CREATE TABLE `exec_run` (
   `task_id` BIGINT DEFAULT NULL,
   `project_id` BIGINT NOT NULL,
   `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
-  `kind` ENUM('gui','api','cli') NOT NULL DEFAULT 'gui',
+  `kind` ENUM('gui','api','cli','e2e','manual') NOT NULL DEFAULT 'gui',
   `status` ENUM('pending','running','passed','failed') NOT NULL DEFAULT 'pending',
   `payload` TEXT,
   `verdict` VARCHAR(16) DEFAULT NULL,
