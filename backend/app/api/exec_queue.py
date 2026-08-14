@@ -14,7 +14,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import assert_project_role, get_current_user, require_runner
+from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
 from app.db.session import get_db
 from app.models import ChecklistItem, ExecRun, TestCase, User
@@ -140,8 +140,14 @@ def list_pending(
     runner: str = Query("mac-01"),
     limit: int = Query(5, le=20),
     db: Session = Depends(get_db),
-    _: str = Depends(require_runner),
+    ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
+    # 设备 token:runner 锁定为该设备的 runner_id(忽略 query,防拿他人 token 冒充别的设备);
+    # 共享 token(兜底):沿用 query 的 runner。
+    if ctx.device is not None:
+        runner = ctx.device.runner_id
+        ctx.device.last_seen_at = datetime.utcnow()   # 记录设备活跃
+        db.commit()
     rows = (
         db.query(ExecRun)
         .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner)
@@ -158,13 +164,15 @@ def claim(
     run_id: int,
     runner: str = Query(...),
     db: Session = Depends(get_db),
-    _: str = Depends(require_runner),
+    ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
+    if ctx.device is not None:
+        runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
     r = db.get(ExecRun, run_id)
     if not r or r.status != ExecStatus.pending:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项不可认领")
-    # 归属校验：只能认领派给自己的执行项，避免多台 runner 共用 token 时串扰
-    # （如 win-01 认领了本该 mac-01 执行的用例）。
+    # 归属校验：只能认领派给自己的执行项，避免多台 runner 串扰
+    # （设备 token 下 runner 已锁定为设备 runner_id;共享 token 下靠 query runner 区分）。
     if r.runner != runner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
     r.status = ExecStatus.running
@@ -180,8 +188,10 @@ def report(
     body: ExecReportIn,
     runner: str = Query(...),
     db: Session = Depends(get_db),
-    _: str = Depends(require_runner),
+    ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
+    if ctx.device is not None:
+        runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
     r = db.get(ExecRun, run_id)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
