@@ -37,12 +37,15 @@
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
-        <span class="sel-hint">仅『已采纳且有关联任务』的用例可下发;人工(manual)用例不可下发</span>
+        <el-divider direction="vertical" />
+        <el-button size="small" @click="bulkReview('adopted')">批量采纳</el-button>
+        <el-button size="small" type="danger" plain @click="bulkDelete">批量删除</el-button>
+        <span class="sel-hint">下发仅对『已采纳+有关联任务+非人工』的选中项生效</span>
       </div>
 
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
                 @selection-change="(s) => (selected = s)">
-        <el-table-column type="selection" width="42" :selectable="canDispatch" />
+        <el-table-column type="selection" width="42" />
         <el-table-column label="维度" width="80" align="center">
           <template #default="{ row }">
             <el-tag :type="CAT_TYPE[row.category] || 'info'" effect="plain" size="small">{{ row.category || '—' }}</el-tag>
@@ -70,26 +73,72 @@
         <el-table-column label="预期结果" min-width="180">
           <template #default="{ row }"><span class="multiline">{{ row.expected || '—' }}</span></template>
         </el-table-column>
-        <el-table-column label="采纳状态" width="90" align="center">
+        <el-table-column label="采纳状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="RV_TYPE[row.review_status] || 'info'" size="small">{{ RV_LABEL[row.review_status] || '待定' }}</el-tag>
+            <el-select :model-value="row.review_status || 'pending'" size="small" style="width:80px"
+                       @change="(v) => onReviewChange(row, v)">
+              <el-option label="采纳" value="adopted" />
+              <el-option label="否决" value="rejected" />
+              <el-option label="待定" value="pending" />
+            </el-select>
           </template>
         </el-table-column>
-        <el-table-column label="关联任务" min-width="140" show-overflow-tooltip>
+        <el-table-column label="关联任务" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.task_title || '—' }}</template>
         </el-table-column>
-        <el-table-column label="生成时间" width="140">
-          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+        <el-table-column label="操作" width="160" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="info" size="small" @click="openDetail(row)">详情</el-button>
+            <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+          </template>
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- 编辑弹窗 -->
+    <el-dialog v-model="edit.visible" title="编辑用例" width="560px">
+      <el-form label-width="72px">
+        <el-form-item label="标题"><el-input v-model="edit.title" /></el-form-item>
+        <el-form-item label="维度">
+          <el-select v-model="edit.category" clearable style="width:140px">
+            <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
+          </el-select>
+          <el-select v-model="edit.priority" clearable style="width:100px;margin-left:8px" placeholder="优先级">
+            <el-option v-for="p in ['P0','P1','P2','P3']" :key="p" :label="p" :value="p" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="步骤"><el-input v-model="edit.steps" type="textarea" :rows="4" placeholder="可多步,换行分隔" /></el-form-item>
+        <el-form-item label="预期"><el-input v-model="edit.expected" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="edit.visible = false">取消</el-button>
+        <el-button type="primary" :loading="edit.saving" @click="doEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 详情抽屉 -->
+    <el-drawer v-model="detail.visible" title="用例详情" size="480px">
+      <div v-if="detail.row" class="detail">
+        <p><b>{{ detail.row.title }}</b></p>
+        <p class="d-row"><span class="d-k">执行类型</span> {{ (detail.row.exec_kind || 'gui').toUpperCase() }}</p>
+        <p v-if="detail.row.kind_reason" class="d-row"><span class="d-k">判定理由</span> {{ detail.row.kind_reason }}</p>
+        <p class="d-row"><span class="d-k">维度/优先级</span> {{ detail.row.category || '—' }} / {{ detail.row.priority || '—' }}</p>
+        <p class="d-row"><span class="d-k">步骤</span></p>
+        <pre class="d-pre">{{ detail.row.steps || '—' }}</pre>
+        <p class="d-row"><span class="d-k">预期</span></p>
+        <pre class="d-pre">{{ detail.row.expected || '—' }}</pre>
+        <p class="d-row"><span class="d-k">script</span></p>
+        <pre class="d-pre">{{ prettyScript(detail.row.script) }}</pre>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices } from '@/api'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -146,13 +195,12 @@ function canDispatch(row) {
 
 // 用例库下发:用例不一定挂清单项 → 先按任务分组 attachChecklist 建/取清单项,再 enqueue。
 async function dispatchSelected() {
-  const items = selected.value
-  if (!items.length) return
+  if (!selected.value.length) return
   if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
-  const manual = items.find((r) => (r.exec_kind || 'gui') === 'manual')
-  if (manual) { ElMessage.warning(`含人工(manual)用例「${manual.title || ''}」,不能下发`); return }
-  const noTask = items.find((r) => !r.task_id)
-  if (noTask) { ElMessage.warning(`用例「${noTask.title || ''}」无关联任务,无法下发(需先在任务里关联)`); return }
+  // selection 已放开(为支持批量采纳/删除),这里只取可下发的选中项
+  const items = selected.value.filter(canDispatch)
+  if (!items.length) { ElMessage.warning('选中项里没有可下发的用例(需:已采纳 + 有关联任务 + 非人工)'); return }
+  const skipped = selected.value.length - items.length
   dispatching.value = true
   try {
     // 按 task_id 分组:同一任务的用例一起 attachChecklist,拿回 checklist_item.id
@@ -171,7 +219,7 @@ async function dispatchSelected() {
     if (!itemIds.length) { ElMessage.warning('未能生成可下发的清单项'); return }
     const res = await enqueueExec(pid.value, runner.value, itemIds)
     const n = res?.run_ids?.length || itemIds.length
-    ElMessage.success(`已下发 ${n} 条到 ${runner.value},执行机跑完会自动回写结果`)
+    ElMessage.success(`已下发 ${n} 条到 ${runner.value}${skipped ? `(跳过 ${skipped} 条不可下发)` : ''},执行机跑完会自动回写结果`)
   } catch { /* http 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
@@ -226,6 +274,82 @@ async function onExecKindChange(row, val) {
     row.exec_kind = prev   // 失败回滚（http 拦截器已弹错）
   }
 }
+
+// 改采纳状态(乐观更新,失败回滚)
+async function onReviewChange(row, val) {
+  const prev = row.review_status || 'pending'
+  if (val === prev) return
+  row.review_status = val
+  try {
+    await reviewTestcase(row.id, val)
+    ElMessage.success('采纳状态已更新')
+  } catch { row.review_status = prev }
+}
+
+// ---- 编辑 ----
+const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, saving: false })
+function openEdit(row) {
+  edit.id = row.id
+  edit.title = row.title || ''
+  edit.steps = row.steps || ''
+  edit.expected = row.expected || ''
+  edit.category = row.category || null
+  edit.priority = (row.priority || '').toUpperCase() || null
+  edit.visible = true
+}
+async function doEdit() {
+  if (!edit.title.trim()) { ElMessage.warning('标题不能为空'); return }
+  edit.saving = true
+  try {
+    await updateTestcase(edit.id, {
+      title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
+      category: edit.category || '', priority: edit.priority || '',
+    })
+    edit.visible = false
+    ElMessage.success('已保存')
+    await load()
+  } catch { /* 已提示 */ }
+  finally { edit.saving = false }
+}
+
+// ---- 详情 ----
+const detail = reactive({ visible: false, row: null })
+function openDetail(row) { detail.row = row; detail.visible = true }
+function prettyScript(s) {
+  if (!s) return '(无 script,该用例由 claude 兜底执行或非结构化)'
+  try { return JSON.stringify(typeof s === 'string' ? JSON.parse(s) : s, null, 2) } catch { return String(s) }
+}
+
+// ---- 删除 ----
+async function onDelete(row) {
+  try {
+    await ElMessageBox.confirm(`删除用例「${row.title}」?其验收清单项会一并清理(执行历史保留)。`, '删除用例', { type: 'warning' })
+  } catch { return }
+  try { await deleteTestcase(row.id); ElMessage.success('已删除'); await load() } catch { /* 已提示 */ }
+}
+
+// ---- 批量 ----
+async function bulkReview(statusVal) {
+  const ids = selected.value.map((r) => r.id)
+  if (!ids.length) return
+  try {
+    for (const id of ids) await reviewTestcase(id, statusVal)
+    ElMessage.success(`已批量${statusVal === 'adopted' ? '采纳' : '更新'} ${ids.length} 条`)
+    await load()
+  } catch { /* 已提示 */ }
+}
+async function bulkDelete() {
+  const ids = selected.value.map((r) => r.id)
+  if (!ids.length) return
+  try {
+    await ElMessageBox.confirm(`删除选中的 ${ids.length} 条用例?其验收清单项会一并清理。`, '批量删除', { type: 'warning' })
+  } catch { return }
+  try {
+    for (const id of ids) await deleteTestcase(id)
+    ElMessage.success(`已删除 ${ids.length} 条`)
+    await load()
+  } catch { /* 已提示 */ }
+}
 </script>
 
 <style scoped>
@@ -235,4 +359,8 @@ async function onExecKindChange(row, val) {
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
+.detail { font-size: 13px; color: #334; }
+.detail .d-row { margin: 8px 0 2px; }
+.detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }
+.detail .d-pre { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 220px; overflow: auto; }
 </style>

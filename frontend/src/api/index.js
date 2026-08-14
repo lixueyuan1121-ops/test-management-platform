@@ -73,6 +73,10 @@ export const listCases = (params) => http.get('/ai/cases', { params })
 export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
 // 设置测试点的自动化执行类型：exec_kind ∈ 'gui' | 'api' | 'cli'（下发到 runner 时决定怎么跑）
 export const setCaseExecKind = (id, exec_kind) => http.patch(`/ai/testcases/${id}`, { exec_kind })
+// 编辑测试点正文（title/steps/expected/category/priority,任意子集）
+export const updateTestcase = (id, patch) => http.patch(`/ai/testcases/${id}`, patch)
+// 删除测试点(级联清其清单项)
+export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
 
 // ===== 验收清单（测试点回流任务）=====
 export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
