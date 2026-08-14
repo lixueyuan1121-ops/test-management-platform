@@ -31,8 +31,20 @@
           <span>版本列表<span v-if="!pid" class="dim"> · 请选择项目查看明细</span></span>
         </div>
       </template>
+      <div v-if="pid" class="sub-tabs">
+        <el-radio-group v-model="subProduct" size="small" @change="reload">
+          <el-radio-button :value="''">全部</el-radio-button>
+          <el-radio-button v-for="sp in SUB_PRODUCTS" :key="sp" :value="sp">{{ sp }}</el-radio-button>
+        </el-radio-group>
+      </div>
       <el-table v-if="pid" :data="rows" v-loading="loading" size="small" border stripe empty-text="该项目暂无发版记录">
         <el-table-column prop="version" label="版本号" width="140" />
+        <el-table-column label="子产品" width="150">
+          <template #default="{ row }">
+            <el-tag v-if="row.sub_product" type="success" size="small">{{ row.sub_product }}</el-tag>
+            <span v-else class="dim">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="release_date" label="发版日期" width="130" />
         <el-table-column prop="req_count" label="需求数" width="90" align="center" />
         <el-table-column label="上线内容" min-width="240">
@@ -60,6 +72,7 @@
     <el-drawer v-model="detail.visible" :title="`发版详情 · ${detail.row?.version || ''}`" size="560px">
       <div v-if="detail.row" class="detail">
         <p class="d-row"><span class="d-k">版本号</span> {{ detail.row.version }}</p>
+        <p class="d-row"><span class="d-k">子产品</span> {{ detail.row.sub_product || '—' }}</p>
         <p class="d-row"><span class="d-k">发版日期</span> {{ detail.row.release_date }}</p>
         <p class="d-row"><span class="d-k">需求数</span> {{ detail.row.req_count }}</p>
         <p class="d-row"><span class="d-k">登记人</span> {{ detail.row.created_by_name || '—' }}</p>
@@ -74,6 +87,11 @@
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑发版' : '登记发版'" width="640px">
       <el-form :model="form" label-width="90px">
         <el-form-item label="版本号" required><el-input v-model="form.version" placeholder="如 v2.3.0" /></el-form-item>
+        <el-form-item label="子产品">
+          <el-select v-model="form.sub_product" placeholder="（未指定）" clearable style="width:100%">
+            <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="发版日期" required>
           <el-date-picker v-model="form.release_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
         </el-form-item>
@@ -107,12 +125,16 @@ import { renderMarkdown } from '@/utils/markdown'
 
 echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
+// 子产品固定枚举（全平台统一）。须与后端 api/release.py 的 SUB_PRODUCTS 保持一致。
+const SUB_PRODUCTS = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
+
 const auth = useAuthStore()
 const app = useAppStore()
 const isAdmin = auth.isPlatformAdmin
 
 const projects = ref([])
 const pid = ref(null)
+const subProduct = ref('')
 const rows = ref([])
 const loading = ref(false)
 const stats = reactive({ total_releases: 0, total_reqs: 0, this_month: 0, latest_date: null, trend: [] })
@@ -143,6 +165,7 @@ function onResize() { chart?.resize() }
 
 async function onProjectChange() {
   if (pid.value) setLastProjectId(pid.value)
+  subProduct.value = ''
   await loadStats()
   await reload()
 }
@@ -180,7 +203,8 @@ async function load() {
   loading.value = true
   try {
     const { items, total: t } = await listReleases({
-      project_id: pid.value, limit: pageSize.value, offset: (page.value - 1) * pageSize.value,
+      project_id: pid.value, sub_product: subProduct.value || undefined,
+      limit: pageSize.value, offset: (page.value - 1) * pageSize.value,
     })
     rows.value = items || []
     total.value = t || 0
@@ -195,16 +219,16 @@ async function openDetail(row) {
 }
 
 const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ version: '', release_date: '', req_count: 0, content: '', memo: '' })
+const form = reactive({ version: '', sub_product: '', release_date: '', req_count: 0, content: '', memo: '' })
 function openCreate() {
   dialog.id = null
-  Object.assign(form, { version: '', release_date: new Date().toISOString().slice(0, 10), req_count: 0, content: '', memo: '' })
+  Object.assign(form, { version: '', sub_product: subProduct.value || '', release_date: new Date().toISOString().slice(0, 10), req_count: 0, content: '', memo: '' })
   dialog.visible = true
 }
 function openEdit(row) {
   dialog.id = row.id
   Object.assign(form, {
-    version: row.version, release_date: row.release_date, req_count: row.req_count || 0,
+    version: row.version, sub_product: row.sub_product || '', release_date: row.release_date, req_count: row.req_count || 0,
     content: row.content || '', memo: row.memo || '',
   })
   dialog.visible = true
@@ -247,6 +271,7 @@ async function onDel(row) {
 .chart-title { font-size: 13px; color: #bfcbd9; margin: 0 0 6px 8px; }
 .chart { height: 260px; }
 .list-head { display: flex; justify-content: space-between; align-items: center; }
+.sub-tabs { margin-bottom: 12px; }
 .dim { color: #90a4ae; font-weight: normal; font-size: 13px; }
 .one-line { color: #5a6b7b; font-size: 13px; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }

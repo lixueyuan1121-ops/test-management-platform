@@ -14,6 +14,8 @@ class ReleaseRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     version: Mapped[str] = mapped_column(String(64))
+    # 子产品：全平台固定枚举（纳米Work云端版/桌面版），可空=未指定（老记录）。校验白名单集中在 api/release.py。
+    sub_product: Mapped[str | None] = mapped_column(String(32), nullable=True)
     release_date: Mapped[date] = mapped_column(Date, index=True)
     req_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     content: Mapped[str | None] = mapped_column(Text, nullable=True)

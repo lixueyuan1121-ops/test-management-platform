@@ -308,6 +308,7 @@ CREATE TABLE `release_record` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `project_id` BIGINT NOT NULL,
   `version` VARCHAR(64) NOT NULL,
+  `sub_product` VARCHAR(32) DEFAULT NULL,
   `release_date` DATE NOT NULL,
   `req_count` INT NOT NULL DEFAULT 0,
   `content` TEXT,

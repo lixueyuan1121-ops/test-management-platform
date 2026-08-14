@@ -193,3 +193,13 @@ def ensure_issue_columns() -> None:
                         "ALTER TABLE remaining_issue ADD CONSTRAINT `fk_issue_report` "
                         "FOREIGN KEY (`report_id`) REFERENCES `daily_report`(`id`) ON DELETE CASCADE"
                     ))
+
+
+def ensure_release_columns() -> None:
+    """release_record 表补列 sub_product（如缺失）。子产品为全平台固定枚举，老库补列后老记录为 NULL=未指定。"""
+    cols = _columns("release_record")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "sub_product" not in cols:
+            conn.execute(text("ALTER TABLE release_record ADD COLUMN sub_product VARCHAR(32) NULL"))

@@ -16,10 +16,26 @@ router = APIRouter(prefix="/api/releases", tags=["releases"])
 
 _ALL_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 
+# 子产品固定枚举（全平台统一）。前端 ReleaseNotes.vue 的 SUB_PRODUCTS 常量须与此保持一致。
+SUB_PRODUCTS = ("纳米Work云端版", "纳米Work桌面版", "360安全龙虾云端版", "360安全龙虾WSL")
+
+
+def _norm_sub_product(v: str | None) -> str | None:
+    """校验并规整子产品：空/空串 → None（未指定）；非白名单值 → 400。"""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if v not in SUB_PRODUCTS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="子产品取值非法")
+    return v
+
 
 class ReleaseCreate(BaseModel):
     project_id: int
     version: str = Field(min_length=1, max_length=64)
+    sub_product: str | None = Field(default=None, max_length=32)
     release_date: date
     req_count: int = Field(default=0, ge=0)
     content: str | None = None
@@ -27,6 +43,7 @@ class ReleaseCreate(BaseModel):
 
 class ReleaseUpdate(BaseModel):
     version: str | None = Field(default=None, max_length=64)
+    sub_product: str | None = Field(default=None, max_length=32)
     release_date: date | None = None
     req_count: int | None = Field(default=None, ge=0)
     content: str | None = None
@@ -48,6 +65,7 @@ def _to_out(db: Session, r: ReleaseRecord, name_map: dict | None = None) -> dict
         name = u.name if u else ""
     return {
         "id": r.id, "project_id": r.project_id, "version": r.version,
+        "sub_product": r.sub_product,
         "release_date": str(r.release_date), "req_count": r.req_count,
         "content": r.content, "memo": r.memo,
         "created_by": r.created_by, "created_by_name": name,
@@ -58,6 +76,7 @@ def _to_out(db: Session, r: ReleaseRecord, name_map: dict | None = None) -> dict
 @router.get("")
 def list_releases(
     project_id: int = Query(...),
+    sub_product: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -65,6 +84,8 @@ def list_releases(
 ):
     assert_project_role(db, user, project_id, _ALL_ROLES)
     base = db.query(ReleaseRecord).filter(ReleaseRecord.project_id == project_id)
+    if sub_product:
+        base = base.filter(ReleaseRecord.sub_product == sub_product)
     total = base.with_entities(func.count(ReleaseRecord.id)).scalar() or 0
     rows = (base.order_by(ReleaseRecord.release_date.desc(), ReleaseRecord.id.desc())
             .limit(limit).offset(offset).all())
@@ -137,6 +158,7 @@ def create_release(body: ReleaseCreate, db: Session = Depends(get_db), user: Use
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
     r = ReleaseRecord(
         project_id=body.project_id, version=body.version.strip(), release_date=body.release_date,
+        sub_product=_norm_sub_product(body.sub_product),
         req_count=body.req_count or 0, content=body.content, memo=body.memo, created_by=user.id,
     )
     db.add(r)
@@ -152,6 +174,9 @@ def update_release(rid: int, body: ReleaseUpdate, db: Session = Depends(get_db),
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
     if body.version is not None:
         r.version = body.version.strip()
+    if "sub_product" in body.model_fields_set:
+        # 显式传入才更新：传值→校验白名单；传 null/空→清为未指定。未传则保持原值。
+        r.sub_product = _norm_sub_product(body.sub_product)
     if body.release_date is not None:
         r.release_date = body.release_date
     if body.req_count is not None:
