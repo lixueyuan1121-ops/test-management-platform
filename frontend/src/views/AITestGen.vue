@@ -81,10 +81,31 @@
 
       <div v-if="sourceInfo" class="source-info">
         <el-icon><Document /></el-icon>
-        <span>来源：{{ sourceInfo.label }} · 提取 {{ sourceInfo.chars }} 字（可在下方编辑后再生成）</span>
+        <span>来源：{{ sourceInfo.label }} · 提取 {{ sourceInfo.chars }} 字（可切「编辑」修改后再生成）</span>
       </div>
 
+      <div class="req-head">
+        <span class="req-label">需求内容</span>
+        <el-radio-group v-model="reqMode" size="small" :disabled="running">
+          <el-radio-button label="preview">预览</el-radio-button>
+          <el-radio-button label="edit">编辑</el-radio-button>
+        </el-radio-group>
+      </div>
+
+      <!-- 预览态：渲染 Markdown（默认）。空内容给引导提示，点后即可编辑。 -->
+      <div
+        v-if="reqMode === 'preview'"
+        v-loading="extracting"
+        class="req-preview"
+        @click="!requirement && (reqMode = 'edit')"
+      >
+        <div v-if="requirement" class="md-body" v-html="renderedReq" />
+        <div v-else class="req-empty">暂无需求内容 · 点上方「编辑」输入，或用上方链接/文件抓取</div>
+      </div>
+
+      <!-- 编辑态：原始 Markdown 源码，可改。 -->
       <el-input
+        v-else
         v-model="requirement"
         type="textarea"
         :autosize="{ minRows: 6, maxRows: 14 }"
@@ -203,6 +224,7 @@ import {
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { renderMarkdown } from '@/utils/markdown'
 import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色
@@ -233,6 +255,11 @@ const tasks = ref([])
 const taskId = ref(null)
 const requirement = ref('')
 const aiAvailable = ref(true)
+
+// 需求内容展示模式：'preview' 渲染 Markdown（默认，好看）/ 'edit' textarea 可编辑。
+// 抓取网页/飞书、上传文档、填充示例后自动切 preview 让用户先看渲染效果。
+const reqMode = ref('preview')
+const renderedReq = computed(() => renderMarkdown(requirement.value))
 
 const inputType = ref('text')
 const urlInput = ref('')
@@ -323,7 +350,7 @@ async function onTaskChange(id) {
   doExtractUrl(url)
 }
 
-function fillDemo() { requirement.value = DEMO; sourceInfo.value = null }
+function fillDemo() { requirement.value = DEMO; sourceInfo.value = null; reqMode.value = 'preview' }
 
 async function doExtractUrl(overrideUrl) {
   let url = (typeof overrideUrl === 'string' ? overrideUrl : urlInput.value).trim()
@@ -344,6 +371,7 @@ async function doExtractUrl(overrideUrl) {
     }
     requirement.value = r.text
     sourceInfo.value = { label: r.title || url, chars: r.chars }
+    reqMode.value = 'preview'   // 抓取后先看渲染效果
     ElMessage.success(`已提取 ${r.chars} 字`)
   } finally {
     extracting.value = false
@@ -359,6 +387,7 @@ async function onFilePick(uploadFile) {
     const r = await extractFile(raw)
     requirement.value = r.text
     sourceInfo.value = { label: r.filename, chars: r.chars }
+    reqMode.value = 'preview'   // 解析后先看渲染效果
     ElMessage.success(`已解析 ${r.chars} 字`)
   } finally {
     extracting.value = false
@@ -477,6 +506,43 @@ function fmtTime(s) {
 }
 .form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .req-input { font-size: 14px; }
+.req-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.req-label { font-size: 13px; font-weight: 600; color: #1a1d21; }
+.req-preview {
+  min-height: 140px; max-height: 340px; overflow: auto;
+  border: 1px solid #dcdfe6; border-radius: 4px; padding: 12px 14px;
+  background: #fff; font-size: 14px; line-height: 1.7; cursor: text;
+}
+.req-empty { color: #a8abb2; font-size: 13px; cursor: pointer; }
+/* Markdown 渲染正文排版 */
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3),
+.md-body :deep(h4) { margin: 12px 0 6px; font-weight: 600; line-height: 1.3; }
+.md-body :deep(h1) { font-size: 20px; }
+.md-body :deep(h2) { font-size: 17px; }
+.md-body :deep(h3) { font-size: 15px; }
+.md-body :deep(h4) { font-size: 14px; }
+.md-body :deep(p) { margin: 6px 0; }
+.md-body :deep(ul), .md-body :deep(ol) { margin: 6px 0; padding-left: 22px; }
+.md-body :deep(li) { margin: 2px 0; }
+.md-body :deep(a) { color: #00926e; text-decoration: none; }
+.md-body :deep(a:hover) { text-decoration: underline; }
+.md-body :deep(code) {
+  background: #f2f4f7; border-radius: 3px; padding: 1px 5px;
+  font-family: var(--tech-mono, monospace); font-size: 13px;
+}
+.md-body :deep(pre) {
+  background: #f5f7fa; border-radius: 6px; padding: 10px 12px; overflow: auto;
+}
+.md-body :deep(pre code) { background: none; padding: 0; }
+.md-body :deep(blockquote) {
+  margin: 8px 0; padding: 4px 12px; color: #5a6b7b;
+  border-left: 3px solid #d6e9e2; background: rgba(0,179,134,.04);
+}
+.md-body :deep(table) { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.md-body :deep(th), .md-body :deep(td) { border: 1px solid #dcdfe6; padding: 5px 9px; text-align: left; }
+.md-body :deep(th) { background: #f5f7fa; font-weight: 600; }
+.md-body :deep(img) { max-width: 100%; }
+.md-body :deep(hr) { border: none; border-top: 1px solid #e4e7ed; margin: 12px 0; }
 .actions { margin-top: 14px; display: flex; gap: 12px; }
 .btn-icon { margin-right: 4px; }
 
