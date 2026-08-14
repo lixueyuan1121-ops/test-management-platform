@@ -41,7 +41,7 @@
         <el-table-column prop="version" label="版本号" width="140" />
         <el-table-column label="子产品" width="150">
           <template #default="{ row }">
-            <el-tag v-if="row.sub_product" type="success" size="small">{{ row.sub_product }}</el-tag>
+            <el-tag v-if="row.sub_product" :type="spType(row.sub_product)" size="small">{{ row.sub_product }}</el-tag>
             <span v-else class="dim">—</span>
           </template>
         </el-table-column>
@@ -149,6 +149,16 @@ let chart = null
 function plain(md) {
   if (!md) return '—'
   return String(md).replace(/[#*`>_-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 120)
+}
+
+// 子产品标签配色：每个子产品一种 el-tag 预设色，同品牌成对（纳米=冷色、360龙虾=暖色）。
+function spType(sp) {
+  return {
+    '纳米Work云端版': 'success',
+    '纳米Work桌面版': 'primary',
+    '360安全龙虾云端版': 'warning',
+    '360安全龙虾WSL': 'danger',
+  }[sp] || 'info'
 }
 
 onMounted(async () => {
