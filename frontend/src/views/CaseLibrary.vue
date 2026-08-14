@@ -19,6 +19,9 @@
             <el-select v-model="category" placeholder="维度" size="small" clearable style="width:110px" @change="load">
               <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
             </el-select>
+            <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px">
+              <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
+            </el-select>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="load" @clear="load"
@@ -36,7 +39,7 @@
         <span class="sel-hint">仅『已采纳且有关联任务』的用例可下发;人工(manual)用例不可下发</span>
       </div>
 
-      <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
+      <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
                 @selection-change="(s) => (selected = s)">
         <el-table-column type="selection" width="42" :selectable="canDispatch" />
         <el-table-column label="维度" width="80" align="center">
@@ -83,7 +86,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -114,6 +117,19 @@ const category = ref(null)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
+const execKindFilter = ref(null)   // 执行类型筛选(null=全部)
+
+// 执行类型 → 标签配色 + 排序权重(同类聚拢,方便按类勾选)
+const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
+const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
+const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
+
+// 展示行:按执行类型筛选 + 按类型排序聚拢(同类相邻,方便"选某类全勾")
+const displayRows = computed(() => {
+  let rs = rows.value
+  if (execKindFilter.value) rs = rs.filter((r) => (r.exec_kind || 'gui') === execKindFilter.value)
+  return [...rs].sort((a, b) => (KIND_ORDER[a.exec_kind || 'gui'] ?? 9) - (KIND_ORDER[b.exec_kind || 'gui'] ?? 9))
+})
 
 // ---- 下发到执行机(用例库入口)----
 // 可下发的执行机 id(须与各目标机 runner 的 RUNNER_ID 一致);与 Tasks.vue 保持一致。

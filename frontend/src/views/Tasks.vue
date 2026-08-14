@@ -38,6 +38,13 @@
                   <el-table-column type="selection" width="40" />
                   <el-table-column prop="title" label="测试点" min-width="180" show-overflow-tooltip />
                   <el-table-column prop="category" label="维度" width="80" />
+                  <el-table-column label="类型" width="70" align="center">
+                    <template #default="{ row: it }">
+                      <el-tag :type="KIND_TYPE[it.exec_kind || 'gui'] || 'info'" size="small" effect="plain">
+                        {{ KIND_LABEL[it.exec_kind || 'gui'] || it.exec_kind }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
                   <el-table-column label="结果" width="90">
                     <template #default="{ row: it }">
                       <el-popover v-if="it.exec_reason" placement="left" :width="360" trigger="click">
@@ -183,6 +190,10 @@ const EXEC_META = {
   blocked: { label: '阻塞', type: 'warning' },
   pending: { label: '待测', type: 'info' },
 }
+// 执行类型 → 标签配色/文案 + 排序权重(清单项按类型聚拢,方便按类勾选)
+const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
+const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
+const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
 
 // 可下发的执行机 id（须与各目标机 runner 的 RUNNER_ID 一致）：
 // mac-01 与 win-01 都装了被测客户端（纳米Work/namiclaw），gui/api/cli 均可跑；按需选一台下发。
@@ -242,7 +253,11 @@ async function onExpandChange(row, expandedRows) {
   if (!row._summary && !row._summaryFailed) return  // 确定无清单：不请求；汇总失败则仍尝试拉明细
   if (row._items !== null) return    // 已缓存：不重复请求
   row._itemsLoading = true
-  try { row._items = await getTaskChecklist(row.id) }
+  try {
+    const items = await getTaskChecklist(row.id)
+    // 按执行类型聚拢,方便按类勾选
+    row._items = items.sort((a, b) => (KIND_ORDER[a.exec_kind || 'gui'] ?? 9) - (KIND_ORDER[b.exec_kind || 'gui'] ?? 9))
+  }
   catch { row._items = [] }
   finally { row._itemsLoading = false }
 }
