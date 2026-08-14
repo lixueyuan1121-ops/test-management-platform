@@ -21,8 +21,9 @@
               <div v-if="!row._summary && !row._summaryFailed" class="cl-empty">该任务暂无验收清单</div>
               <template v-else>
                 <div class="cl-toolbar">
-                  <el-select v-model="row._runner" size="small" style="width:120px" placeholder="执行机">
-                    <el-option v-for="rn in RUNNERS" :key="rn" :label="rn" :value="rn" />
+                  <el-select v-model="row._runner" size="small" style="width:160px"
+                             :placeholder="myDevices.length ? '选择我的设备' : '未登记设备'" no-data-text="去『我的设备』注册">
+                    <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
                   </el-select>
                   <el-button type="primary" size="small" plain
                              :loading="row._enqueuing"
@@ -170,7 +171,7 @@
 import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
-import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec } from '@/api'
+import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec, listMyDevices } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 
@@ -195,9 +196,8 @@ const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
 const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
 
-// 可下发的执行机 id（须与各目标机 runner 的 RUNNER_ID 一致）：
-// mac-01 与 win-01 都装了被测客户端（纳米Work/namiclaw），gui/api/cli 均可跑；按需选一台下发。
-const RUNNERS = ['mac-01', 'win-01']
+// 可下发的执行机 = 当前成员登记的"我的设备"(下发到自己的机器执行)。runner_id 为下发标识。
+const myDevices = ref([])
 
 const auth = useAuthStore()
 const projects = ref([])
@@ -210,6 +210,7 @@ const dialog = reactive({ visible: false, id: null, saving: false })
 const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: '', description: '', status: 'pending' })
 
 onMounted(async () => {
+  try { myDevices.value = await listMyDevices() } catch { myDevices.value = [] }
   projects.value = await listProjects()
   pid.value = pickDefaultProjectId(projects.value)
   if (pid.value) await load()
@@ -240,7 +241,7 @@ async function load() {
       _summaryFailed: summaryFailed,
       _items: null,
       _itemsLoading: false,
-      _runner: RUNNERS[0],   // 默认下发到第一台执行机
+      _runner: myDevices.value[0]?.runner_id || '',   // 默认下发到我的第一台设备
       _checked: [],          // 展开区勾选的清单项
       _enqueuing: false,
     }))

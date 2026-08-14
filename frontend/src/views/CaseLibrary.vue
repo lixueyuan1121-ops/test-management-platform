@@ -32,8 +32,9 @@
 
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
-        <el-select v-model="runner" size="small" style="width:120px" placeholder="执行机">
-          <el-option v-for="rn in RUNNERS" :key="rn" :label="rn" :value="rn" />
+        <el-select v-model="runner" size="small" style="width:180px"
+                   :placeholder="myDevices.length ? '选择我的设备' : '未登记设备'" no-data-text="去『我的设备』注册">
+          <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
         <span class="sel-hint">仅『已采纳且有关联任务』的用例可下发;人工(manual)用例不可下发</span>
@@ -88,7 +89,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec } from '@/api'
+import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -132,10 +133,10 @@ const displayRows = computed(() => {
 })
 
 // ---- 下发到执行机(用例库入口)----
-// 可下发的执行机 id(须与各目标机 runner 的 RUNNER_ID 一致);与 Tasks.vue 保持一致。
-const RUNNERS = ['mac-01', 'win-01']
+// 可下发的执行机 = 当前成员登记的"我的设备"(下发到自己机器执行)。
+const myDevices = ref([])
 const selected = ref([])
-const runner = ref(RUNNERS[0])
+const runner = ref('')
 const dispatching = ref(false)
 
 // 某行能否下发:必须已采纳(attachChecklist 要求)+ 有关联任务 + 非 manual。
@@ -147,6 +148,7 @@ function canDispatch(row) {
 async function dispatchSelected() {
   const items = selected.value
   if (!items.length) return
+  if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
   const manual = items.find((r) => (r.exec_kind || 'gui') === 'manual')
   if (manual) { ElMessage.warning(`含人工(manual)用例「${manual.title || ''}」,不能下发`); return }
   const noTask = items.find((r) => !r.task_id)
@@ -175,6 +177,10 @@ async function dispatchSelected() {
 }
 
 onMounted(async () => {
+  try {
+    myDevices.value = await listMyDevices()
+    if (myDevices.value.length) runner.value = myDevices.value[0].runner_id
+  } catch { myDevices.value = [] }
   projects.value = await listProjects()
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
