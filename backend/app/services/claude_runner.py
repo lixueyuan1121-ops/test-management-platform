@@ -141,6 +141,81 @@ def _build_cmd(prompt: str) -> list[str]:
     return cmd
 
 
+def build_script_prompt(kind: str, title: str, steps: str, expected: str) -> str:
+    """把单条(gui/e2e)用例转成"只产出该用例结构化 script"的指令(注入选择器 key 清单)。"""
+    keys = _load_selector_keys()
+    lines = "\n".join(f"   - {k['key']}({k['frame']}):{k['desc']}" for k in keys) if keys else "   (无可用 key)"
+    return f"""为下面这条 {kind} 测试用例设计**可执行的结构化步骤 script**。
+
+用例:
+- 标题:{title}
+- 步骤:{steps or '(无)'}
+- 预期:{expected or '(无)'}
+
+输出要求:
+1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
+2. 每步一个对象 {{action, target?, args?, desc}}:
+   - action 只能取:connect(第一步必须)、click、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、screenshot
+   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有的元素才用 {{"selector":"<CSS>"}}
+   - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}
+   - desc:该步人读说明
+   - **至少含一个 assert_text 或 assert_visible**(否则无判定依据)
+   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,2-4 步即可'}
+3. 只能用下方 key 清单里的 key,找不到合适的就用最接近的语义 key 或 selector:
+{lines}"""
+
+
+def generate_script(kind: str, title: str, steps: str, expected: str, timeout: int | None = None) -> tuple[list, str | None]:
+    """同步调 claude 为单条用例生成 script。返回 (script列表, 错误)。校验复用 _validate_script。"""
+    if not is_available():
+        return [], "AI 功能未启用或未找到 claude 可执行文件"
+    if kind not in ("gui", "e2e"):
+        return [], "仅 gui/e2e 用例支持生成 script"
+    timeout = timeout or settings.AI_TIMEOUT_SECONDS
+    prompt = build_script_prompt(kind, title, steps or "", expected or "")
+    cmd = [
+        _claude_bin(), "-p", prompt, "--output-format", "json",
+        "--append-system-prompt", _SYSTEM_PROMPT,
+        "--disallowedTools", *_DISALLOWED_TOOLS,
+        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    ]
+    if settings.AI_MODEL:
+        cmd += ["--model", settings.AI_MODEL]
+    if not _slots.acquire(blocking=False):
+        return [], "AI 生成繁忙(已达并发上限),请稍后重试"
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=tempfile.gettempdir())
+    except subprocess.TimeoutExpired:
+        return [], f"生成超时(>{timeout}s)"
+    except OSError as e:
+        return [], f"启动 claude 失败:{e}"
+    finally:
+        _slots.release()
+    # --output-format json:最终文本在信封的 result 字段
+    raw = proc.stdout or ""
+    try:
+        env = json.loads(raw)
+        text = env.get("result", "") if isinstance(env, dict) else raw
+    except (json.JSONDecodeError, ValueError):
+        text = raw
+    # 抽取 JSON 数组(容错 fence / 裸[])并校验
+    m = _FENCE_RE.search(text)
+    blob = m.group(1) if m else None
+    if blob is None:
+        s, e = text.find("["), text.rfind("]")
+        blob = text[s:e + 1] if (s != -1 and e > s) else None
+    if not blob:
+        return [], "未解析出 script 数组"
+    try:
+        arr = json.loads(blob)
+    except (json.JSONDecodeError, ValueError):
+        return [], "script JSON 解析失败"
+    script, err = _validate_script(arr)
+    if err:
+        return [], f"生成的 script 不合法:{err}"
+    return script, None
+
+
 def _parse_line(line: str) -> dict | None:
     """把一行 stream-json 解析为对外事件；非目标事件返回 None（跳过）。
 

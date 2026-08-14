@@ -400,3 +400,26 @@ def delete_testcase(
     db.delete(tc)
     db.commit()
     return ok({"deleted": cid})
+
+
+@router.post("/testcases/{cid}/gen-script")
+def gen_script(
+    cid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e)。同步调 claude,写回并返回。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
+    kind = getattr(tc, "exec_kind", "gui") or "gui"
+    if kind not in ("gui", "e2e"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"仅 gui/e2e 用例支持生成 script(当前 {kind})")
+    script, err = claude_runner.generate_script(kind, tc.title, tc.steps or "", tc.expected or "")
+    if err:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"生成 script 失败:{err}")
+    tc.script = json.dumps(script, ensure_ascii=False)
+    db.commit()
+    db.refresh(tc)
+    return ok(_to_case_out(tc))
