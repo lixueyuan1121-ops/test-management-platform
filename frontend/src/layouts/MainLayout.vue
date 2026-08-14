@@ -21,6 +21,9 @@
           <el-icon><Odometer /></el-icon><span>工作台</span>
         </el-menu-item>
 
+        <!-- 发版记录 -->
+        <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
+
         <!-- 测试设计:用例 生成 → 采纳 -->
         <el-sub-menu index="design">
           <template #title><el-icon><MagicStick /></el-icon><span>测试设计</span></template>
@@ -51,9 +54,6 @@
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
         </el-sub-menu>
-
-        <!-- 发版记录 -->
-        <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
 
         <!-- 测试工具广场 -->
         <el-sub-menu index="tools">
