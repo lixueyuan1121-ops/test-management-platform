@@ -312,6 +312,10 @@ async function tick() {
       let result;
       if (DRY) {
         result = { verdict: "pass", reason: "dry-run 握手验证", duration_ms: 1 };
+      } else if (item.kind === "manual") {
+        // 纵深防御:manual=不可自动化,平台本不该派发(enqueue 已拒);万一漏下发到这,
+        // 直接判 fail 说明,绝不塞给 claude 当 GUI 跑(否则空耗 + 误导)。
+        result = { verdict: "fail", reason: "该用例为人工/不可自动化(manual),不应下发到执行机;请在平台改判类型或取消下发", duration_ms: 1 };
       } else if (item.kind === "gui" || item.kind === "e2e") {
         await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
         const script = item.payload?.script;
@@ -323,8 +327,11 @@ async function tick() {
         } else {
           result = await runClaude(item.payload, item.kind);
         }
-      } else {
+      } else if (item.kind === "api" || item.kind === "cli") {
         result = await runClaude(item.payload, item.kind);   // api/cli:走 claude(+Bash)
+      } else {
+        // 未知 kind:不猜,直接 fail(避免又当 gui 塞给 claude)
+        result = { verdict: "fail", reason: `未知执行类型 kind=${item.kind},runner 不支持`, duration_ms: 1 };
       }
 
       await report(item.run_id, {
