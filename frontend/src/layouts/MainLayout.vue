@@ -192,8 +192,8 @@ function onCommand(cmd) {
 }
 /* 激活态图标也染青绿 */
 .menu :deep(.el-menu-item.is-active .el-icon) { color: #00e5a0; }
-/* AI 入口：微微高亮，暗示这是"秀肌肉"的能力位 */
-.menu :deep(.ai-entry span) {
+/* AI 入口：仅在选中当前项时亮出渐变色，未选中与普通菜单项一致 */
+.menu :deep(.ai-entry.is-active span) {
   background: linear-gradient(90deg, #00e5a0, #3b9ad9);
   -webkit-background-clip: text; background-clip: text; color: transparent;
   font-weight: 600;
