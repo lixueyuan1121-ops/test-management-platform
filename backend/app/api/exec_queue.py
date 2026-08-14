@@ -36,9 +36,20 @@ def _kind_of(tc: TestCase | None) -> ExecKind:
 
 
 def _payload_of(tc: TestCase | None) -> dict:
-    """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params）。"""
+    """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params + 结构化 script）。"""
     if not tc:
         return {}
+    # script 落库是 JSON 字符串;runner 的 StepExecutor 需要**数组**(Array.isArray 判定)。
+    # 解析回对象放进 payload;解析失败/无 script 则给 None(runner 回退 claude 兜底)。
+    script = None
+    raw = getattr(tc, "script", None)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list) and parsed:
+                script = parsed
+        except (json.JSONDecodeError, ValueError, TypeError):
+            script = None
     return {
         "test_case_id": tc.id,
         "title": tc.title,
@@ -46,6 +57,7 @@ def _payload_of(tc: TestCase | None) -> dict:
         "steps": tc.steps,
         "expected": tc.expected,
         "priority": tc.priority,
+        "script": script,
     }
 
 
