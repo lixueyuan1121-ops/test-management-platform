@@ -39,10 +39,11 @@
         </el-sub-menu>
 
         <!-- 任务执行 -->
-        <el-sub-menu v-if="auth.isPlatformAdmin || showMyReports" index="exec">
+        <el-sub-menu index="exec">
           <template #title><el-icon><Checked /></el-icon><span>任务执行</span></template>
           <el-menu-item v-if="auth.isPlatformAdmin" index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
           <el-menu-item v-if="showMyReports" index="/my-reports"><el-icon><EditPen /></el-icon><span>我的日报</span></el-menu-item>
+          <el-menu-item index="/my-devices"><el-icon><Monitor /></el-icon><span>我的设备</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 数据统计 -->

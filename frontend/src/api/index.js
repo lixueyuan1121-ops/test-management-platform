@@ -86,6 +86,12 @@ export const listAdoptableCases = (tid) => http.get(`/tasks/${tid}/adoptable-cas
 // 前端只调 enqueue；拉取/认领/回写由 runner 用独立 token 完成。回写后 checklist_item.exec_status 自动更新。
 export const enqueueExec = (project_id, runner, checklistItemIds) =>
   http.post('/exec-queue/enqueue', { project_id, runner, checklist_item_ids: checklistItemIds })
+
+// 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
+export const listMyDevices = () => http.get('/devices')
+export const registerDevice = (runner_id, name) => http.post('/devices', { runner_id, name })
+export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
+export const deleteDevice = (id) => http.delete(`/devices/${id}`)
 export const extractUrl = (url) => http.post('/ai/extract-url', { url })
 export const extractFile = (file) => {
   const fd = new FormData()
