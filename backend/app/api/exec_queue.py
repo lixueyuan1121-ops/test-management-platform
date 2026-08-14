@@ -134,6 +134,46 @@ def enqueue(
     return ok({"run_ids": created})
 
 
+# ---- 执行历史查询(用户侧,独立"执行结果"页用)----
+# exec_run 每次执行一行、不覆盖;这里按条件查全部历史,支持复测追溯。
+@router.get("/history")
+def list_history(
+    project_id: int = Query(...),
+    task_id: int | None = Query(None),
+    runner: str | None = Query(None),
+    verdict: str | None = Query(None),        # pass / fail
+    status_: str | None = Query(None, alias="status"),
+    limit: int = Query(100, le=500),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    q = db.query(ExecRun).filter(ExecRun.project_id == project_id)
+    if task_id is not None:
+        q = q.filter(ExecRun.task_id == task_id)
+    if runner:
+        q = q.filter(ExecRun.runner == runner)
+    if verdict:
+        q = q.filter(ExecRun.verdict == verdict)
+    if status_:
+        q = q.filter(ExecRun.status == status_)
+    rows = q.order_by(ExecRun.id.desc()).limit(limit).all()
+
+    # 批量补用例标题(payload 里有 title,优先用;缺失再查 test_case),避免 N+1
+    out = []
+    for r in rows:
+        title = None
+        try:
+            title = (json.loads(r.payload or "{}") or {}).get("title")
+        except (json.JSONDecodeError, ValueError):
+            title = None
+        d = _to_out(r)
+        d["title"] = title
+        d["enqueued_by"] = r.enqueued_by
+        out.append(d)
+    return ok(out)
+
+
 # ---- ② runner 拉取待执行 ----
 @router.get("")
 def list_pending(
