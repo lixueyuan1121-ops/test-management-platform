@@ -32,7 +32,7 @@
         <!-- 测试执行:派单 → 结果 → 问题 -->
         <el-sub-menu index="exec">
           <template #title><el-icon><Checked /></el-icon><span>测试执行</span></template>
-          <el-menu-item v-if="auth.isPlatformAdmin" index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
+          <el-menu-item index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
           <el-menu-item index="/exec-results"><el-icon><Finished /></el-icon><span>执行结果</span></el-menu-item>
           <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
         </el-sub-menu>

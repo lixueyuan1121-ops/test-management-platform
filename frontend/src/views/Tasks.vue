@@ -9,7 +9,7 @@
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
-            <el-button size="small" @click="onCopy" :disabled="!pid">复制昨日</el-button>
+            <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid">复制昨日</el-button>
             <el-button type="primary" size="small" @click="openCreate" :disabled="!pid">新建任务</el-button>
           </div>
         </div>
@@ -123,7 +123,7 @@
             <span v-else class="cl-dim">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140">
+        <el-table-column v-if="canManage" label="操作" width="140">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="onDel(row)">删除</el-button>
@@ -168,7 +168,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec, listMyDevices } from '@/api'
@@ -202,6 +202,9 @@ const myDevices = ref([])
 const auth = useAuthStore()
 const projects = ref([])
 const pid = ref(null)
+// 能否管理任务(编辑/删除/复制/派单等):平台管理员 或 当前项目的 admin。
+// 普通成员只读列表 + 只能用「新建任务」(方便自助加任务)。
+const canManage = computed(() => auth.isPlatformAdmin || auth.roleIn(pid.value) === 'admin')
 const date = ref(new Date().toISOString().slice(0, 10))
 const tasks = ref([])
 const members = ref([])
