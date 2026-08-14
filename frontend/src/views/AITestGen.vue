@@ -25,6 +25,24 @@
         </el-select>
       </div>
 
+      <el-alert
+        v-if="taskCases.length"
+        type="warning" :closable="false" show-icon class="task-cases-tip"
+      >
+        <template #title>
+          该任务已有 <b>{{ taskCases.length }}</b> 条历史用例，请确认是否需要重复生成。
+          <el-button link type="primary" size="small" @click="showTaskCases = !showTaskCases">
+            {{ showTaskCases ? '收起' : '查看' }}
+          </el-button>
+        </template>
+        <div v-if="showTaskCases" class="task-cases-list">
+          <div v-for="c in taskCases" :key="c.id" class="task-case-item">
+            <el-tag :type="KIND_TYPE[c.exec_kind || 'gui'] || 'info'" size="small" effect="plain">{{ KIND_LABEL[c.exec_kind || 'gui'] }}</el-tag>
+            <span class="tc-title">{{ c.title }}</span>
+          </div>
+        </div>
+      </el-alert>
+
       <div class="mode-row">
         <el-button
           v-for="m in MODES"
@@ -182,7 +200,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, UploadFilled, Document } from '@element-plus/icons-vue'
 import {
-  listProjects, listTasks, aiStatus, listAiTasks, listAiCases, reviewTestcase, streamTestcases,
+  listProjects, listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
   extractUrl, extractFile,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -228,6 +246,10 @@ const cases = ref([])
 const meta = ref(null)
 const history = ref([])
 const viewingId = ref(null)
+const taskCases = ref([])       // 选定关联任务后,该任务已有的历史用例(提示避免重复生成)
+const showTaskCases = ref(false)
+const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
+const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
 const reviewingId = ref(null)   // 正在提交评审的行 id，禁用该行控件避免连点
 
 let timer = null
@@ -280,7 +302,12 @@ function findFeishuUrl(text) {
 }
 
 // 选中任务：带入其需求地址并自动抓取正文
-function onTaskChange(id) {
+async function onTaskChange(id) {
+  // 选定关联任务:查该任务是否已有历史用例,有则提示避免重复生成
+  taskCases.value = []
+  if (id && pid.value) {
+    try { taskCases.value = await listCases({ project_id: pid.value, task_id: id }) } catch { taskCases.value = [] }
+  }
   const t = tasks.value.find((x) => x.id === id)
   const url = (t?.requirement_url || '').trim()
   if (!url) return
@@ -411,6 +438,10 @@ function fmtTime(s) {
 
 <style scoped>
 .ai-testgen { display: flex; flex-direction: column; gap: 16px; }
+.task-cases-tip { margin: 4px 0 12px; }
+.task-cases-list { margin-top: 6px; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.task-case-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5a6b7b; }
+.task-case-item .tc-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-head { display: flex; align-items: center; justify-content: space-between; }
 .title-wrap { display: flex; align-items: center; gap: 12px; }
 .title-icon {
