@@ -282,6 +282,22 @@ CREATE TABLE `exec_run` (
   CONSTRAINT `fk_execrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 执行设备:平台成员登记的自有执行机(runner);每设备独立 token,下发只选自己的设备。
+CREATE TABLE `runner_device` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `owner_id` BIGINT NOT NULL,
+  `runner_id` VARCHAR(64) NOT NULL,
+  `name` VARCHAR(128) NOT NULL,
+  `token` VARCHAR(128) NOT NULL,
+  `last_seen_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_owner_runner` (`owner_id`,`runner_id`),
+  UNIQUE KEY `uk_device_token` (`token`),
+  KEY `idx_device_owner` (`owner_id`),
+  CONSTRAINT `fk_device_owner` FOREIGN KEY (`owner_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

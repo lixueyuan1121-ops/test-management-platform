@@ -9,6 +9,7 @@ from app.models.tool import ToolCategory, TestTool
 from app.models.ai import AiTask, TestCase
 from app.models.checklist import ChecklistItem
 from app.models.exec_queue import ExecRun
+from app.models.runner_device import RunnerDevice
 
 __all__ = [
     "User",
@@ -27,4 +28,5 @@ __all__ = [
     "TestCase",
     "ChecklistItem",
     "ExecRun",
+    "RunnerDevice",
 ]
