@@ -151,9 +151,12 @@ function onCommand(cmd) {
 .aside {
   background: #1f2d3d; box-shadow: 2px 0 8px rgba(0,0,0,0.08);
   transition: width 0.25s ease;
+  height: 100vh;
+  display: flex; flex-direction: column;   /* logo 固定 + 菜单区占满可滚 */
   overflow: hidden;
 }
 .logo {
+  flex: none;                              /* logo 不参与滚动 */
   height: 60px; display: flex; align-items: center; gap: 8px;
   padding: 0 14px; color: #fff; white-space: nowrap;
   animation: fadeInUp 0.5s ease-out both;
@@ -167,7 +170,17 @@ function onCommand(cmd) {
   --tm-signal: #00e5a0;   /* 扫描环 + 对勾：信号青绿 */
   filter: drop-shadow(0 0 5px rgba(0, 229, 160, 0.35));
 }
-.menu { border-right: none; }
+.menu {
+  border-right: none;
+  flex: 1;                 /* 占满 logo 以下全部高度 */
+  overflow-y: auto;        /* 内容超高时纵向滚动 */
+  overflow-x: hidden;
+}
+/* 深色侧栏细滚动条(不占位、hover 才明显) */
+.menu::-webkit-scrollbar { width: 6px; }
+.menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+.menu:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.28); }
+.menu::-webkit-scrollbar-track { background: transparent; }
 /* 折叠态菜单宽度对齐 aside(64px)，消除默认 200px 造成的横向溢出 */
 .menu:not(.el-menu--collapse) { width: 226px; }
 .menu.el-menu--collapse { width: 64px; }
