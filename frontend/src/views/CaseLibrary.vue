@@ -27,7 +27,18 @@
         </div>
       </template>
 
-      <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例">
+      <div v-if="selected.length" class="dispatch-bar">
+        <span class="sel-info">已选 {{ selected.length }} 条</span>
+        <el-select v-model="runner" size="small" style="width:120px" placeholder="执行机">
+          <el-option v-for="rn in RUNNERS" :key="rn" :label="rn" :value="rn" />
+        </el-select>
+        <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
+        <span class="sel-hint">仅『已采纳且有关联任务』的用例可下发;人工(manual)用例不可下发</span>
+      </div>
+
+      <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
+                @selection-change="(s) => (selected = s)">
+        <el-table-column type="selection" width="42" :selectable="canDispatch" />
         <el-table-column label="维度" width="80" align="center">
           <template #default="{ row }">
             <el-tag :type="CAT_TYPE[row.category] || 'info'" effect="plain" size="small">{{ row.category || '—' }}</el-tag>
@@ -74,7 +85,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listProjects, listTasks, listCases, setCaseExecKind } from '@/api'
+import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -103,6 +114,49 @@ const category = ref(null)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
+
+// ---- 下发到执行机(用例库入口)----
+// 可下发的执行机 id(须与各目标机 runner 的 RUNNER_ID 一致);与 Tasks.vue 保持一致。
+const RUNNERS = ['mac-01', 'win-01']
+const selected = ref([])
+const runner = ref(RUNNERS[0])
+const dispatching = ref(false)
+
+// 某行能否下发:必须已采纳(attachChecklist 要求)+ 有关联任务 + 非 manual。
+function canDispatch(row) {
+  return row.review_status === 'adopted' && !!row.task_id && (row.exec_kind || 'gui') !== 'manual'
+}
+
+// 用例库下发:用例不一定挂清单项 → 先按任务分组 attachChecklist 建/取清单项,再 enqueue。
+async function dispatchSelected() {
+  const items = selected.value
+  if (!items.length) return
+  const manual = items.find((r) => (r.exec_kind || 'gui') === 'manual')
+  if (manual) { ElMessage.warning(`含人工(manual)用例「${manual.title || ''}」,不能下发`); return }
+  const noTask = items.find((r) => !r.task_id)
+  if (noTask) { ElMessage.warning(`用例「${noTask.title || ''}」无关联任务,无法下发(需先在任务里关联)`); return }
+  dispatching.value = true
+  try {
+    // 按 task_id 分组:同一任务的用例一起 attachChecklist,拿回 checklist_item.id
+    const byTask = new Map()
+    for (const r of items) {
+      if (!byTask.has(r.task_id)) byTask.set(r.task_id, [])
+      byTask.get(r.task_id).push(r.id)
+    }
+    const itemIds = []
+    for (const [tid, caseIds] of byTask) {
+      const checklist = await attachChecklist(tid, caseIds)   // 幂等:已存在则复用,返回这些用例对应的清单项
+      for (const it of checklist) {
+        if (caseIds.includes(it.test_case_id)) itemIds.push(it.id)
+      }
+    }
+    if (!itemIds.length) { ElMessage.warning('未能生成可下发的清单项'); return }
+    const res = await enqueueExec(pid.value, runner.value, itemIds)
+    const n = res?.run_ids?.length || itemIds.length
+    ElMessage.success(`已下发 ${n} 条到 ${runner.value},执行机跑完会自动回写结果`)
+  } catch { /* http 拦截器已提示 */ }
+  finally { dispatching.value = false }
+}
 
 onMounted(async () => {
   projects.value = await listProjects()
@@ -156,4 +210,7 @@ async function onExecKindChange(row, val) {
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
+.dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
+.sel-info { font-weight: 600; color: #00926e; }
+.sel-hint { color: #90a4ae; font-size: 12px; }
 </style>
