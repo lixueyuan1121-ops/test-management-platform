@@ -169,10 +169,11 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
-import { listProjects, listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec, listMyDevices } from '@/api'
+import { useAppStore } from '@/store/app'
+import { listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec, listMyDevices } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 
@@ -201,6 +202,7 @@ const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
 const myDevices = ref([])
 
 const auth = useAuthStore()
+const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 // 能否管理任务(编辑/删除/复制/派单等):平台管理员 或 当前项目的 admin。
@@ -214,8 +216,10 @@ const dialog = reactive({ visible: false, id: null, saving: false })
 const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: '', description: '', status: 'pending' })
 
 onMounted(async () => {
-  try { myDevices.value = await listMyDevices() } catch { myDevices.value = [] }
-  projects.value = await listProjects()
+  // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
+  const [devicesRes, projectsRes] = await Promise.allSettled([listMyDevices(), app.fetchProjects()])
+  myDevices.value = devicesRes.status === 'fulfilled' ? devicesRes.value : []
+  projects.value = projectsRes.status === 'fulfilled' ? projectsRes.value : []
   pid.value = pickDefaultProjectId(projects.value)
   if (pid.value) await load()
 })
@@ -224,7 +228,6 @@ async function loadMembers() {
   if (!pid.value) { members.value = []; return }
   members.value = await listMembers(pid.value)
 }
-watch(pid, loadMembers)
 
 async function load() {
   if (!pid.value) return

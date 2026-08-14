@@ -10,6 +10,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -36,8 +37,11 @@ def _sse(obj: dict) -> str:
     return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
 
-def _to_case_out(tc: TestCase, task_title: str | None = None) -> dict:
-    return {
+def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) -> dict:
+    # tc 可为 ORM TestCase 或 with_entities 的具名 Row(列表瘦身场景,不含 script)。
+    # review_status 两种来源都可能是枚举或裸字符串,统一取 .value 兜底。
+    rs = tc.review_status
+    out = {
         "id": tc.id,
         "ai_task_id": tc.ai_task_id,
         "project_id": tc.project_id,
@@ -49,13 +53,16 @@ def _to_case_out(tc: TestCase, task_title: str | None = None) -> dict:
         "priority": tc.priority,
         "exec_kind": getattr(tc, "exec_kind", "gui"),
         "kind_reason": getattr(tc, "kind_reason", None),
-        "script": getattr(tc, "script", None),
         "adopted": tc.adopted,
-        "review_status": tc.review_status.value,
+        "review_status": getattr(rs, "value", rs),
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
         "created_at": tc.created_at.isoformat() if tc.created_at else None,
         "task_title": task_title,
     }
+    if with_script:
+        # 单条/详情场景才带 script(结构化步骤 JSON,可达数 KB);列表瘦身时不查此列。
+        out["script"] = getattr(tc, "script", None)
+    return out
 
 
 def _to_task_out(db: Session, at: AiTask) -> dict:
@@ -291,31 +298,73 @@ def list_cases(
     task_id: int | None = Query(None),
     review_status: ReviewStatus | None = Query(None),
     category: str | None = Query(None),
+    exec_kind: str | None = Query(None),
     keyword: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """跨批次查询某项目的测试点（用例库 / 日报已采纳用例共用）。只读，支持多维过滤。"""
+    """跨批次查询某项目的测试点（用例库 / 日报已采纳用例共用）。只读，支持多维过滤 + 分页。
+
+    列表**不返回 script**(结构化步骤 JSON,可达数 KB);需要 script 走 GET /ai/testcases/{cid}。
+    返回 {items, total}:items 为当前页,total 为过滤后总数(供前端分页控件)。
+    """
     assert_project_role(db, user, project_id, _ALL_ROLES)
-    q = db.query(TestCase).filter(TestCase.project_id == project_id)
-    if task_id is not None:
-        q = q.filter(TestCase.task_id == task_id)
-    if review_status is not None:
-        q = q.filter(TestCase.review_status == review_status)
-    if category:
-        q = q.filter(TestCase.category == category)
-    if keyword:
-        q = q.filter(TestCase.title.ilike(f"%{keyword}%"))
-    rows = q.order_by(TestCase.id.desc()).all()
+
+    def _apply_filters(q):
+        q = q.filter(TestCase.project_id == project_id)
+        if task_id is not None:
+            q = q.filter(TestCase.task_id == task_id)
+        if review_status is not None:
+            q = q.filter(TestCase.review_status == review_status)
+        if category:
+            q = q.filter(TestCase.category == category)
+        if exec_kind:
+            q = q.filter(TestCase.exec_kind == exec_kind)
+        if keyword:
+            q = q.filter(TestCase.title.ilike(f"%{keyword}%"))
+        return q
+
+    total = _apply_filters(db.query(func.count(TestCase.id))).scalar() or 0
+    # 只 SELECT 列表展示所需列,刻意排除 script(大 TEXT,仅详情按需取),减小响应体与内存。
+    cols = _apply_filters(
+        db.query(
+            TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
+            TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
+            TestCase.priority, TestCase.exec_kind, TestCase.kind_reason,
+            TestCase.adopted, TestCase.review_status, TestCase.reviewed_at, TestCase.created_at,
+        )
+    )
+    rows = cols.order_by(TestCase.id.desc()).limit(limit).offset(offset).all()
 
     # 批量预取关联任务名，避免 N+1
-    task_ids = {tc.task_id for tc in rows if tc.task_id is not None}
+    task_ids = {r.task_id for r in rows if r.task_id is not None}
     title_map = {}
     if task_ids:
         title_map = dict(
             db.query(Task.id, Task.title).filter(Task.id.in_(task_ids)).all()
         )
-    return ok([_to_case_out(tc, task_title=title_map.get(tc.task_id)) for tc in rows])
+    items = [_to_case_out(r, task_title=title_map.get(r.task_id), with_script=False) for r in rows]
+    return ok({"items": items, "total": total})
+
+
+@router.get("/testcases/{cid}")
+def get_testcase(
+    cid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """取单条测试点完整信息(含 script)。列表已瘦身不含 script,详情/编辑按需调此接口。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _ALL_ROLES)
+    title = None
+    if tc.task_id is not None:
+        t = db.get(Task, tc.task_id)
+        title = t.title if t else None
+    return ok(_to_case_out(tc, task_title=title))
 
 
 @router.patch("/testcases/{cid}")

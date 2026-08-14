@@ -58,10 +58,12 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
-import { listMembers, addMember, updateMember, removeMember, listUsers, listProjects } from '@/api'
+import { useAppStore } from '@/store/app'
+import { listMembers, addMember, updateMember, removeMember, listUsers } from '@/api'
 
 const route = useRoute()
 const auth = useAuthStore()
+const app = useAppStore()
 const pid = computed(() => Number(route.params.id))
 
 const project = ref(null)
@@ -80,7 +82,7 @@ async function load() {
   try {
     members.value = await listMembers(pid.value)
     if (!project.value) {
-      const all = await listProjects()
+      const all = await app.fetchProjects()
       project.value = all.find((p) => p.id === pid.value) || null
     }
   } finally { loading.value = false }

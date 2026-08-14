@@ -65,7 +65,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
-import { listProjects, listTasks, listExecHistory } from '@/api'
+import { listTasks, listExecHistory } from '@/api'
+import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -82,12 +83,13 @@ const verdict = ref(null)
 const rows = ref([])
 const loading = ref(false)
 const ev = ref({ visible: false, path: '' })
+const app = useAppStore()
 
 // 设备筛选项:从当前结果集里已出现的 runner 去重(无需额外接口)
 const runners = computed(() => [...new Set(rows.value.map((r) => r.runner).filter(Boolean))])
 
 onMounted(async () => {
-  projects.value = await listProjects()
+  projects.value = await app.fetchProjects()
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()

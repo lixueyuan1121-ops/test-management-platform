@@ -1,8 +1,6 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import 'element-plus/dist/index.css'   // 全量样式:配合按需导入(vite.config),保证所有 el-* 样式都在
 import '@/styles/anim.css'
 import '@/styles/theme.css'   // 亮色科技风：须在 element-plus 样式之后，才能覆盖其 CSS 变量
 
@@ -12,7 +10,8 @@ import router from './router'
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
-app.use(ElementPlus, { locale: zhCn })
+// 注:不再 app.use(ElementPlus) 全量注册;组件/指令由 unplugin-vue-components 按需自动导入。
+// locale(中文)通过 App.vue 根部的 <el-config-provider :locale="zhCn"> 提供。
 app.mount('#app')
 
 // 动态注入输入框背景修复——必须在 Element Plus 组件样式之后

@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -152,9 +152,12 @@ def daily_stats(
     submitted_ids = sorted({r.user_id for r in submitted_rows})
     not_submitted_ids = [u for u in should_submit_ids if u not in submitted_ids]
 
+    # 一次预取本次涉及的所有用户名(应交 + 已交),消除 name() 的逐用户 N+1
+    all_uids = {u for u in should_submit_ids if u} | {r.user_id for r in submitted_rows if r.user_id}
+    name_map = dict(db.query(User.id, User.name).filter(User.id.in_(all_uids)).all()) if all_uids else {}
+
     def name(uid):
-        u = db.get(User, uid)
-        return u.name if u else ""
+        return name_map.get(uid, "")
 
     avg_progress = round(sum(r.progress_pct for r in submitted_rows) / len(submitted_rows), 1) if submitted_rows else 0
     online_cnt = sum(1 for r in submitted_rows if r.is_online)
@@ -222,41 +225,48 @@ def workload_stats(
     """
     assert_project_role(db, user, project_id,
                         (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
-    rows = (
-        db.query(Task)
-        .filter(Task.project_id == project_id,
-                Task.assigned_date >= from_date,
-                Task.assigned_date <= to_date)
+    # 聚合下推 SQL:不再全量拉 Task 到内存。online 用条件求和(status==online 计 1)。
+    online_sum = func.sum(case((Task.status == TaskStatus.online, 1), else_=0))
+    base = [Task.project_id == project_id,
+            Task.assigned_date >= from_date,
+            Task.assigned_date <= to_date]
+
+    # 按成员聚合:任务数 + 上线数
+    member_rows = (
+        db.query(Task.assigned_to, func.count(Task.id), online_sum)
+        .filter(*base)
+        .group_by(Task.assigned_to)
         .all()
     )
-    by_member: dict[int, dict] = {}
-    daily: dict[str, dict] = {}
-    for t in rows:
-        is_online = t.status == TaskStatus.online
-        m = by_member.setdefault(t.assigned_to, {"task_cnt": 0, "online": 0})
-        m["task_cnt"] += 1
-        m["online"] += 1 if is_online else 0
-        d = daily.setdefault(str(t.assigned_date), {"task_cnt": 0, "online": 0})
-        d["task_cnt"] += 1
-        d["online"] += 1 if is_online else 0
+    # 按天聚合:任务数 + 上线数
+    day_rows = (
+        db.query(Task.assigned_date, func.count(Task.id), online_sum)
+        .filter(*base)
+        .group_by(Task.assigned_date)
+        .all()
+    )
 
-    def _name(uid):
-        u = db.get(User, uid)
-        return u.name if u else ""
+    # 一次预取成员名,消除逐用户 N+1
+    uids = {uid for uid, _, _ in member_rows if uid is not None}
+    name_map = dict(db.query(User.id, User.name).filter(User.id.in_(uids)).all()) if uids else {}
 
     members = [{
-        "user_id": uid, "name": _name(uid),
-        "task_cnt": v["task_cnt"], "online_cnt": v["online"],
-    } for uid, v in by_member.items()]
+        "user_id": uid, "name": name_map.get(uid, ""),
+        "task_cnt": int(cnt), "online_cnt": int(online or 0),
+    } for uid, cnt, online in member_rows]
     members.sort(key=lambda x: x["task_cnt"], reverse=True)
 
-    daily_series = [{"date": d, "task_cnt": v["task_cnt"], "online_cnt": v["online"]}
-                     for d, v in sorted(daily.items())]
+    daily_series = [{"date": str(d), "task_cnt": int(cnt), "online_cnt": int(online or 0)}
+                    for d, cnt, online in day_rows]
+    daily_series.sort(key=lambda x: x["date"])
+
+    total_tasks = sum(m["task_cnt"] for m in members)
+    total_online = sum(m["online_cnt"] for m in members)
     return ok({
         "project_id": project_id,
         "from": str(from_date), "to": str(to_date),
-        "total_tasks": len(rows),
-        "total_online": sum(v["online"] for v in by_member.values()),
+        "total_tasks": total_tasks,
+        "total_online": total_online,
         "members": members,
         "daily": daily_series,
     })

@@ -66,10 +66,12 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
-import { listProjects, listIssues, updateIssue } from '@/api'
+import { useAppStore } from '@/store/app'
+import { listIssues, updateIssue } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const auth = useAuthStore()
+const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const statusFilter = ref('open')
@@ -79,7 +81,7 @@ const canManage = computed(() => auth.roleIn(pid.value) === 'admin')
 const dialog = reactive({ visible: false, id: null, title: '', external_ref: '', saving: false })
 
 onMounted(async () => {
-  projects.value = await listProjects()
+  projects.value = await app.fetchProjects()
   if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
 })
 

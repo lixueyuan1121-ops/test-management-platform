@@ -24,11 +24,11 @@
       </div>
 
       <el-alert
-        v-if="taskCases.length"
+        v-if="taskCasesTotal"
         type="warning" :closable="false" show-icon class="task-cases-tip"
       >
         <template #title>
-          该任务已有 <b>{{ taskCases.length }}</b> 条历史用例，请确认是否需要重复生成。
+          该任务已有 <b>{{ taskCasesTotal }}</b> 条历史用例，请确认是否需要重复生成。
           <el-button link type="primary" size="small" @click="showTaskCases = !showTaskCases">
             {{ showTaskCases ? '收起' : '查看' }}
           </el-button>
@@ -198,9 +198,10 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, UploadFilled, Document } from '@element-plus/icons-vue'
 import {
-  listProjects, listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
+  listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
   extractUrl, extractFile,
 } from '@/api'
+import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -225,6 +226,7 @@ const DEMO = `用户登录功能：
 4. 勾选"记住我"后登录态保持 30 天，否则关闭浏览器即失效。
 5. 登录成功跳转到工作台首页。`
 
+const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
@@ -246,6 +248,7 @@ const meta = ref(null)
 const history = ref([])
 const viewingId = ref(null)
 const taskCases = ref([])       // 选定关联任务后,该任务已有的历史用例(提示避免重复生成)
+const taskCasesTotal = ref(0)   // 该任务历史用例总数(以后端 total 为准,不受分页截断)
 const showTaskCases = ref(false)
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
@@ -259,11 +262,10 @@ const phaseText = computed(() => PHASES[Math.min(phaseIdx.value, PHASES.length -
 const reqPlaceholder = computed(() => PLACEHOLDERS[inputType.value] || PLACEHOLDERS.text)
 
 onMounted(async () => {
-  try {
-    const s = await aiStatus()
-    aiAvailable.value = !!s?.available
-  } catch { aiAvailable.value = false }
-  projects.value = await listProjects()
+  // aiStatus 与项目列表无依赖，并行拉取
+  const [aiRes, projRes] = await Promise.allSettled([aiStatus(), app.fetchProjects()])
+  aiAvailable.value = aiRes.status === 'fulfilled' ? !!aiRes.value?.available : false
+  projects.value = projRes.status === 'fulfilled' ? (projRes.value || []) : []
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()
@@ -304,8 +306,14 @@ function findFeishuUrl(text) {
 async function onTaskChange(id) {
   // 选定关联任务:查该任务是否已有历史用例,有则提示避免重复生成
   taskCases.value = []
+  taskCasesTotal.value = 0
   if (id && pid.value) {
-    try { taskCases.value = await listCases({ project_id: pid.value, task_id: id }) } catch { taskCases.value = [] }
+    try {
+      // 单任务用例量有限,取一页(上限 200)展示;数量以 total 为准(不受分页截断)
+      const { items, total } = await listCases({ project_id: pid.value, task_id: id, limit: 200 })
+      taskCases.value = items || []
+      taskCasesTotal.value = total || 0
+    } catch { taskCases.value = []; taskCasesTotal.value = 0 }
   }
   const t = tasks.value.find((x) => x.id === id)
   const url = (t?.requirement_url || '').trim()

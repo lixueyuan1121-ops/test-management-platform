@@ -44,8 +44,10 @@
 <script setup>
 import { reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listProjects, createProject, updateProject } from '@/api'
+import { createProject, updateProject } from '@/api'
+import { useAppStore } from '@/store/app'
 
+const app = useAppStore()
 const projects = ref([])
 const loading = ref(false)
 const dialog = reactive({ visible: false, id: null, saving: false })
@@ -53,7 +55,7 @@ const form = reactive({ name: '', code: '', description: '', status: 'active' })
 
 async function load() {
   loading.value = true
-  try { projects.value = await listProjects() } finally { loading.value = false }
+  try { projects.value = await app.fetchProjects(true) } finally { loading.value = false }
 }
 onMounted(load)
 
@@ -73,8 +75,10 @@ async function submit() {
   try {
     if (dialog.id) {
       await updateProject(dialog.id, { name: form.name, description: form.description, status: form.status })
+      app.invalidateProjects()
     } else {
       await createProject({ name: form.name, code: form.code, description: form.description })
+      app.invalidateProjects()
     }
     ElMessage.success('保存成功')
         await load()

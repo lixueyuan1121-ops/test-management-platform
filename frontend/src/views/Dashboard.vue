@@ -181,11 +181,13 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/store/auth'
-import { listProjects, overviewStats } from '@/api'
+import { useAppStore } from '@/store/app'
+import { overviewStats } from '@/api'
 import { Files, List, DataLine, TrendCharts } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
 const auth = useAuthStore()
+const app = useAppStore()
 const projects = ref([])
 const projectsLoading = ref(false)
 const overview = ref(null)
@@ -202,7 +204,7 @@ onUnmounted(stopClock)
 
 async function loadProjects() {
   projectsLoading.value = true
-  try { projects.value = await listProjects() }
+  try { projects.value = await app.fetchProjects() }
   finally { projectsLoading.value = false }
 }
 async function loadOverview() {

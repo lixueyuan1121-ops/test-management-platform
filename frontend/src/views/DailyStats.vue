@@ -58,9 +58,11 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { listProjects, dailyStats } from '@/api'
+import { dailyStats } from '@/api'
+import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
+const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const date = ref(new Date().toISOString().slice(0, 10))
@@ -68,7 +70,7 @@ const data = reactive({ should_submit: 0, submitted: 0, not_submitted: [], avg_p
 const loading = ref(false)
 
 onMounted(async () => {
-  projects.value = await listProjects()
+  projects.value = await app.fetchProjects()
   if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
 })
 

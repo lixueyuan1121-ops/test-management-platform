@@ -292,19 +292,22 @@ def list_adoptable_cases(
     if not task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, task.project_id, _ALL_ROLES)
-    attached = {
-        cid for (cid,) in
-        db.query(ChecklistItem.test_case_id).filter(ChecklistItem.task_id == tid).all()
-    }
+    # SQL 反连接:排除已进本任务清单的 test_case;只 SELECT 摘要列(不拉 steps/expected/script 大字段)。
+    attached_subq = (
+        db.query(ChecklistItem.test_case_id)
+        .filter(ChecklistItem.task_id == tid)
+        .subquery()
+    )
     rows = (
-        db.query(TestCase)
+        db.query(TestCase.id, TestCase.title, TestCase.category, TestCase.priority)
         .filter(TestCase.project_id == task.project_id,
-                TestCase.review_status == ReviewStatus.adopted)
+                TestCase.review_status == ReviewStatus.adopted,
+                TestCase.id.notin_(db.query(attached_subq.c.test_case_id)))
         .order_by(TestCase.id.desc())
         .all()
     )
     out = [
         {"id": tc.id, "title": tc.title, "category": tc.category, "priority": tc.priority}
-        for tc in rows if tc.id not in attached
+        for tc in rows
     ]
     return ok(out)

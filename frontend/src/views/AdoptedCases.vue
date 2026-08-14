@@ -8,11 +8,11 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="load" />
-            <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px">
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="reload" />
+            <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
-            <el-input v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px" @keyup.enter="load" @clear="load" />
+            <el-input v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px" @keyup.enter="reload" @clear="reload" />
           </div>
         </div>
       </template>
@@ -50,21 +50,35 @@
           <template #default="{ row }">{{ row.task_title || '—' }}</template>
         </el-table-column>
       </el-table>
+
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100, 200]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="load"
+          @size-change="reload"
+        />
+      </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listProjects, listTasks, listCases, attachChecklist, enqueueExec, listMyDevices } from '@/api'
+import { useAppStore } from '@/store/app'
+import { listTasks, listCases, attachChecklist, enqueueExec, listMyDevices } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
+const app = useAppStore()
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
-const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
 const EXEC_KINDS = [
   { value: 'gui', label: 'GUI' }, { value: 'api', label: 'API' }, { value: 'cli', label: 'CLI' },
   { value: 'e2e', label: 'E2E' }, { value: 'manual', label: '人工' },
@@ -74,7 +88,7 @@ const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
 const taskId = ref(null)
-const execKindFilter = ref(null)
+const execKindFilter = ref(null)   // 执行类型筛选,下推后端
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
@@ -83,18 +97,20 @@ const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
 
-const displayRows = computed(() => {
-  let rs = rows.value
-  if (execKindFilter.value) rs = rs.filter((r) => (r.exec_kind || 'gui') === execKindFilter.value)
-  return [...rs].sort((a, b) => (KIND_ORDER[a.exec_kind || 'gui'] ?? 9) - (KIND_ORDER[b.exec_kind || 'gui'] ?? 9))
-})
+// 分页(后端分页:total 为过滤后总数)
+const page = ref(1)
+const pageSize = ref(50)
+const total = ref(0)
+
+// 展示行直接用后端返回的当前页(排序/筛选均已下推后端)
+const displayRows = rows
 
 onMounted(async () => {
-  try {
-    myDevices.value = await listMyDevices()
-    if (myDevices.value.length) runner.value = myDevices.value[0].runner_id
-  } catch { myDevices.value = [] }
-  projects.value = await listProjects()
+  // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
+  const [devicesRes, projectsRes] = await Promise.allSettled([listMyDevices(), app.fetchProjects()])
+  myDevices.value = devicesRes.status === 'fulfilled' ? devicesRes.value : []
+  if (myDevices.value.length) runner.value = myDevices.value[0].runner_id
+  projects.value = projectsRes.status === 'fulfilled' ? projectsRes.value : []
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()
@@ -103,9 +119,15 @@ onMounted(async () => {
 
 async function onProjectChange() {
   taskId.value = null
-  if (!pid.value) { tasks.value = []; rows.value = []; return }
+  if (!pid.value) { tasks.value = []; rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
   tasks.value = await listTasks({ project_id: pid.value })
+  await reload()
+}
+
+// 筛选条件变化:回到第 1 页再查
+async function reload() {
+  page.value = 1
   await load()
 }
 
@@ -113,12 +135,17 @@ async function load() {
   if (!pid.value) return
   loading.value = true
   try {
-    rows.value = await listCases({
+    const { items, total: t } = await listCases({
       project_id: pid.value,
       task_id: taskId.value || undefined,
       review_status: 'adopted',          // 本页固定只看已采纳
+      exec_kind: execKindFilter.value || undefined,
       keyword: keyword.value.trim() || undefined,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
     })
+    rows.value = items || []
+    total.value = t || 0
   } finally { loading.value = false }
 }
 
@@ -156,6 +183,7 @@ async function dispatchSelected() {
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .intro { margin-bottom: 10px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }

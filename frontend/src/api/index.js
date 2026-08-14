@@ -67,8 +67,11 @@ export const toggleTool = (id) => http.patch(`/tools/${id}/toggle`)
 export const aiStatus = () => http.get('/ai/status')
 export const listAiTasks = (project_id, limit = 20) => http.get('/ai/tasks', { params: { project_id, limit } })
 export const listAiCases = (aid) => http.get(`/ai/tasks/${aid}/cases`)
-// 跨批次查询测试点（用例库 / 日报已采纳用例共用）；params: project_id, task_id?, review_status?, category?, keyword?
+// 跨批次查询测试点（用例库 / 日报已采纳用例共用）；params: project_id, task_id?, review_status?, category?, keyword?, limit?, offset?
+// 返回 { items, total }（列表不含 script，需 script 走 getTestcase）
 export const listCases = (params) => http.get('/ai/cases', { params })
+// 取单条测试点完整信息(含 script)——列表已瘦身不含 script,详情/编辑按需取
+export const getTestcase = (id) => http.get(`/ai/testcases/${id}`)
 // 评审测试点：review_status ∈ 'adopted' | 'rejected' | 'pending'（返回已解包的测试点 data）
 export const reviewTestcase = (id, review_status) => http.patch(`/ai/testcases/${id}`, { review_status })
 // 设置测试点的自动化执行类型：exec_kind ∈ 'gui' | 'api' | 'cli'（下发到 runner 时决定怎么跑）

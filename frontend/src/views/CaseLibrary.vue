@@ -8,21 +8,21 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-select v-model="reviewStatus" placeholder="采纳状态" size="small" clearable style="width:120px" @change="load">
+            <el-select v-model="reviewStatus" placeholder="采纳状态" size="small" clearable style="width:120px" @change="reload">
               <el-option label="已采纳" value="adopted" />
               <el-option label="已否决" value="rejected" />
               <el-option label="待定" value="pending" />
             </el-select>
-            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="load" />
-            <el-select v-model="category" placeholder="维度" size="small" clearable style="width:110px" @change="load">
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="reload" />
+            <el-select v-model="category" placeholder="维度" size="small" clearable style="width:110px" @change="reload">
               <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
             </el-select>
-            <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px">
+            <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
-              @keyup.enter="load" @clear="load"
+              @keyup.enter="reload" @clear="reload"
             />
           </div>
         </div>
@@ -92,6 +92,19 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100, 200]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="load"
+          @size-change="reload"
+        />
+      </div>
     </el-card>
 
     <!-- 编辑弹窗 -->
@@ -129,16 +142,17 @@
         <p class="d-row"><span class="d-k">预期</span></p>
         <pre class="d-pre">{{ detail.row.expected || '—' }}</pre>
         <p class="d-row"><span class="d-k">script</span></p>
-        <pre class="d-pre">{{ prettyScript(detail.row.script) }}</pre>
+        <pre class="d-pre">{{ detail.loading ? '加载中…' : prettyScript(detail.row.script) }}</pre>
       </div>
     </el-drawer>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript } from '@/api'
+import { useAppStore } from '@/store/app'
+import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -159,6 +173,7 @@ const EXEC_KINDS = [
   { value: 'manual', label: '人工' },
 ]
 
+const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
@@ -168,19 +183,15 @@ const category = ref(null)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
-const execKindFilter = ref(null)   // 执行类型筛选(null=全部)
+const execKindFilter = ref(null)   // 执行类型筛选(null=全部),下推后端
 
-// 执行类型 → 标签配色 + 排序权重(同类聚拢,方便按类勾选)
-const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
-const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
-const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
+// 分页(后端分页:total 为过滤后总数)
+const page = ref(1)
+const pageSize = ref(50)
+const total = ref(0)
 
-// 展示行:按执行类型筛选 + 按类型排序聚拢(同类相邻,方便"选某类全勾")
-const displayRows = computed(() => {
-  let rs = rows.value
-  if (execKindFilter.value) rs = rs.filter((r) => (r.exec_kind || 'gui') === execKindFilter.value)
-  return [...rs].sort((a, b) => (KIND_ORDER[a.exec_kind || 'gui'] ?? 9) - (KIND_ORDER[b.exec_kind || 'gui'] ?? 9))
-})
+// 展示行直接用后端返回的当前页(排序/筛选均已下推后端)
+const displayRows = rows
 
 // ---- 下发到执行机(用例库入口)----
 // 可下发的执行机 = 当前成员登记的"我的设备"(下发到自己机器执行)。
@@ -226,11 +237,11 @@ async function dispatchSelected() {
 }
 
 onMounted(async () => {
-  try {
-    myDevices.value = await listMyDevices()
-    if (myDevices.value.length) runner.value = myDevices.value[0].runner_id
-  } catch { myDevices.value = [] }
-  projects.value = await listProjects()
+  // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
+  const [devicesRes, projectsRes] = await Promise.allSettled([listMyDevices(), app.fetchProjects()])
+  myDevices.value = devicesRes.status === 'fulfilled' ? devicesRes.value : []
+  if (myDevices.value.length) runner.value = myDevices.value[0].runner_id
+  projects.value = projectsRes.status === 'fulfilled' ? projectsRes.value : []
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()
@@ -239,9 +250,15 @@ onMounted(async () => {
 
 async function onProjectChange() {
   taskId.value = null
-  if (!pid.value) { tasks.value = []; rows.value = []; return }
+  if (!pid.value) { tasks.value = []; rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
   tasks.value = await listTasks({ project_id: pid.value })
+  await reload()
+}
+
+// 筛选条件变化:回到第 1 页再查(翻页/改页大小则直接 load)
+async function reload() {
+  page.value = 1
   await load()
 }
 
@@ -249,13 +266,18 @@ async function load() {
   if (!pid.value) return
   loading.value = true
   try {
-    rows.value = await listCases({
+    const { items, total: t } = await listCases({
       project_id: pid.value,
       task_id: taskId.value || undefined,
       review_status: reviewStatus.value || undefined,
       category: category.value || undefined,
+      exec_kind: execKindFilter.value || undefined,
       keyword: keyword.value.trim() || undefined,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
     })
+    rows.value = items || []
+    total.value = t || 0
   } finally { loading.value = false }
 }
 
@@ -331,8 +353,18 @@ async function doEditAndRegen() {
 }
 
 // ---- 详情 ----
-const detail = reactive({ visible: false, row: null })
-function openDetail(row) { detail.row = row; detail.visible = true }
+// 列表行已瘦身不含 script,打开详情时按 id 单取完整用例补上 script。
+const detail = reactive({ visible: false, row: null, loading: false })
+async function openDetail(row) {
+  detail.row = { ...row }   // 先用列表行(含 steps/expected)即时展示
+  detail.visible = true
+  detail.loading = true
+  try {
+    const full = await getTestcase(row.id)
+    if (detail.row && detail.row.id === row.id) detail.row = full
+  } catch { /* http 拦截器已提示;steps/expected 仍可见,仅 script 缺 */ }
+  finally { detail.loading = false }
+}
 function prettyScript(s) {
   if (!s) return '(无 script,该用例由 claude 兜底执行或非结构化)'
   try { return JSON.stringify(typeof s === 'string' ? JSON.parse(s) : s, null, 2) } catch { return String(s) }
@@ -373,6 +405,7 @@ async function bulkDelete() {
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
 .sel-info { font-weight: 600; color: #00926e; }

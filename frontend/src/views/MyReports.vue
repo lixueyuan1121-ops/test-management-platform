@@ -170,11 +170,13 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  listProjects, listTasks, listReports, upsertReport,
+  listTasks, listReports, upsertReport,
   getTaskChecklist, attachChecklist, updateChecklistItem, checklistItemToIssue, listAdoptableCases, listCases,
 } from '@/api'
+import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
+const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const date = ref(new Date().toISOString().slice(0, 10))
@@ -204,7 +206,7 @@ const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼�
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 
 onMounted(async () => {
-  projects.value = await listProjects()
+  projects.value = await app.fetchProjects()
   if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
 })
 
@@ -271,7 +273,9 @@ async function openAdopted(row) {
   adopted.visible = true
   adopted.loading = true
   try {
-    adopted.items = await listCases({ project_id: pid.value, task_id: row.id, review_status: 'adopted' })
+    // 单任务的已采纳用例(只读回溯),量有限,取一页(上限 200)
+    const { items } = await listCases({ project_id: pid.value, task_id: row.id, review_status: 'adopted', limit: 200 })
+    adopted.items = items || []
   } finally { adopted.loading = false }
 }
 

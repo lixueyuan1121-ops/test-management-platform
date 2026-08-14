@@ -18,26 +18,50 @@ def _user_name(db: Session, uid: int) -> str:
     return u.name if u else ""
 
 
-def _issues_for(db: Session, report_id: int) -> list[dict]:
-    rows = db.query(RemainingIssue).filter_by(report_id=report_id).all()
-    return [{
+def _issue_out(r: RemainingIssue) -> dict:
+    return {
         "id": r.id, "title": r.title, "description": r.description,
         "severity": r.severity.value, "status": r.status.value,
         "owner": r.owner, "external_ref": r.external_ref,
-    } for r in rows]
+    }
 
 
-def _to_out(db: Session, r: DailyReport) -> dict:
+def _issues_for(db: Session, report_id: int) -> list[dict]:
+    rows = db.query(RemainingIssue).filter_by(report_id=report_id).all()
+    return [_issue_out(r) for r in rows]
+
+
+def _to_out(db: Session, r: DailyReport, user_name: str | None = None,
+            issues: list[dict] | None = None) -> dict:
+    # 预取参数(批量场景)优先;缺省则逐个查(单条 upsert 返回兜底)。消除列表 N+1。
+    name = user_name if user_name is not None else _user_name(db, r.user_id)
+    iss = issues if issues is not None else _issues_for(db, r.id)
     return {
         "id": r.id, "task_id": r.task_id, "user_id": r.user_id,
-        "user_name": _user_name(db, r.user_id),
+        "user_name": name,
         "project_id": r.project_id, "report_date": str(r.report_date),
         "progress_pct": r.progress_pct, "is_online": r.is_online,
         "online_time": r.online_time.isoformat() if r.online_time else None,
         "workload_hours": float(r.workload_hours or 0), "summary": r.summary,
-        "issues": _issues_for(db, r.id),
+        "issues": iss,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+def _to_out_list(db: Session, rows: list[DailyReport]) -> list[dict]:
+    """批量序列化日报:一次预取 user 名 + 一次取全部 issue 按 report_id 分组,消除逐行 N+1。"""
+    if not rows:
+        return []
+    report_ids = [r.id for r in rows]
+    uids = {r.user_id for r in rows if r.user_id}
+    name_map = dict(db.query(User.id, User.name).filter(User.id.in_(uids)).all()) if uids else {}
+    issues_map: dict[int, list[dict]] = {}
+    for iss in db.query(RemainingIssue).filter(RemainingIssue.report_id.in_(report_ids)).all():
+        issues_map.setdefault(iss.report_id, []).append(_issue_out(iss))
+    return [
+        _to_out(db, r, user_name=name_map.get(r.user_id, ""), issues=issues_map.get(r.id, []))
+        for r in rows
+    ]
 
 
 @router.post("")
@@ -108,4 +132,4 @@ def list_reports(
         .filter(DailyReport.project_id == project_id, DailyReport.report_date == date)
         .all()
     )
-    return ok([_to_out(db, r) for r in rows])
+    return ok(_to_out_list(db, rows))
