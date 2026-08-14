@@ -366,6 +366,37 @@ def review_testcase(
                 if existing is not None and existing.exec_status == ChecklistStatus.pending:
                     db.delete(existing)
 
+    # 正文字段人工修订(可选)。注:改了 steps/expected 后,已生成的 script 可能与新步骤失配,
+    # 不在此自动重生成(避免隐式改动);如需按新 steps 重建 script,走单独入口。
+    if body.title is not None:
+        tc.title = body.title.strip()[:512]
+    if body.steps is not None:
+        tc.steps = body.steps.strip() or None
+    if body.expected is not None:
+        tc.expected = body.expected.strip() or None
+    if body.category is not None:
+        tc.category = body.category.strip()[:32] or None
+    if body.priority is not None:
+        tc.priority = body.priority.strip()[:8] or None
+
     db.commit()
     db.refresh(tc)
     return ok(_to_case_out(tc))
+
+
+@router.delete("/testcases/{cid}")
+def delete_testcase(
+    cid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """删除一条测试点。级联清理其验收清单项(exec_run 有 SET NULL 外键,自动断开,留痕)。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
+    # 先删其清单项(checklist_item.test_case_id 无级联删,手动清;exec_run.test_case_id 是 SET NULL 自动断)
+    db.query(ChecklistItem).filter(ChecklistItem.test_case_id == cid).delete(synchronize_session=False)
+    db.delete(tc)
+    db.commit()
+    return ok({"deleted": cid})

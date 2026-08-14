@@ -11,19 +11,25 @@ class TestCaseGenIn(BaseModel):
 
 
 class TestCaseReviewIn(BaseModel):
-    """编辑一条测试点：评审三态 和/或 执行类型。两者都可选，但至少填一个。
+    """编辑一条测试点:评审三态 / 执行类型 / 正文字段,均可选,至少填一个。
 
-    - 只传 review_status：采纳/否决/置回待定（含清单回流副作用）。
-    - 只传 exec_kind：改自动化执行类型（gui/api/cli），不动评审态。
-    - 两者都传：一次改完。
+    - review_status:采纳/否决/置回待定（含清单回流副作用）。
+    - exec_kind:改自动化执行类型。
+    - title/steps/expected/category/priority:编辑用例正文（人工修订）。
     """
     review_status: ReviewStatus | None = None
     exec_kind: ExecKind | None = None
+    title: str | None = Field(None, min_length=1, max_length=512)
+    steps: str | None = None
+    expected: str | None = None
+    category: str | None = Field(None, max_length=32)
+    priority: str | None = Field(None, max_length=8)
 
     @model_validator(mode="after")
     def _at_least_one(self):
-        if self.review_status is None and self.exec_kind is None:
-            raise ValueError("review_status 与 exec_kind 至少提供一个")
+        if all(getattr(self, f) is None for f in
+               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority")):
+            raise ValueError("至少提供一个要修改的字段")
         return self
 
 
