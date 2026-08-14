@@ -18,37 +18,30 @@
       >
         <!-- 概览 -->
         <el-menu-item index="/dashboard">
-          <el-icon><Monitor /></el-icon><span>工作台</span>
+          <el-icon><Odometer /></el-icon><span>工作台</span>
         </el-menu-item>
 
-        <!-- QA Copilot：AI 测试助手（展示位，全员可见） -->
-        <el-menu-item index="/ai-testgen" class="ai-entry">
-          <el-icon><MagicStick /></el-icon><span>AI 测试助手</span>
-        </el-menu-item>
-
-        <!-- 用例库：跨批次回溯已生成 / 已采纳测试点（全员可见，只读） -->
-        <el-menu-item index="/case-library">
-          <el-icon><Collection /></el-icon><span>用例库</span>
-        </el-menu-item>
-
-        <el-menu-item index="/adopted-cases">
-          <el-icon><Select /></el-icon><span>已采纳用例</span>
-        </el-menu-item>
-
-        <!-- 组织管理 -->
-        <el-sub-menu v-if="auth.isPlatformAdmin" index="org">
-          <template #title><el-icon><OfficeBuilding /></el-icon><span>组织管理</span></template>
-          <el-menu-item index="/projects"><el-icon><Files /></el-icon><span>项目管理</span></el-menu-item>
-          <el-menu-item index="/users"><el-icon><User /></el-icon><span>用户管理</span></el-menu-item>
+        <!-- 测试设计:用例 生成 → 采纳 -->
+        <el-sub-menu index="design">
+          <template #title><el-icon><MagicStick /></el-icon><span>测试设计</span></template>
+          <el-menu-item index="/ai-testgen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>AI 测试助手</span></el-menu-item>
+          <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
+          <el-menu-item index="/adopted-cases"><el-icon><Select /></el-icon><span>已采纳用例</span></el-menu-item>
         </el-sub-menu>
 
-        <!-- 任务执行 -->
+        <!-- 测试执行:派单 → 结果 → 问题 -->
         <el-sub-menu index="exec">
-          <template #title><el-icon><Checked /></el-icon><span>任务执行</span></template>
+          <template #title><el-icon><Checked /></el-icon><span>测试执行</span></template>
           <el-menu-item v-if="auth.isPlatformAdmin" index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
+          <el-menu-item index="/exec-results"><el-icon><Finished /></el-icon><span>执行结果</span></el-menu-item>
+          <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
+        </el-sub-menu>
+
+        <!-- 我的工作台:个人相关 -->
+        <el-sub-menu index="mine">
+          <template #title><el-icon><User /></el-icon><span>我的工作台</span></template>
           <el-menu-item v-if="showMyReports" index="/my-reports"><el-icon><EditPen /></el-icon><span>我的日报</span></el-menu-item>
           <el-menu-item index="/my-devices"><el-icon><Monitor /></el-icon><span>我的设备</span></el-menu-item>
-          <el-menu-item index="/exec-results"><el-icon><Finished /></el-icon><span>执行结果</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 数据统计 -->
@@ -57,7 +50,6 @@
           <el-menu-item index="/stats"><el-icon><DataAnalysis /></el-icon><span>日报统计</span></el-menu-item>
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
-          <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 测试工具广场 -->
@@ -65,6 +57,13 @@
           <template #title><el-icon><Grid /></el-icon><span>测试工具广场</span></template>
           <el-menu-item index="/tool-plaza"><el-icon><Histogram /></el-icon><span>工具广场</span></el-menu-item>
           <el-menu-item v-if="auth.isPlatformAdmin" index="/tool-admin"><el-icon><Setting /></el-icon><span>工具配置</span></el-menu-item>
+        </el-sub-menu>
+
+        <!-- 组织管理(管理员,低频,置底) -->
+        <el-sub-menu v-if="auth.isPlatformAdmin" index="org">
+          <template #title><el-icon><OfficeBuilding /></el-icon><span>组织管理</span></template>
+          <el-menu-item index="/projects"><el-icon><Files /></el-icon><span>项目管理</span></el-menu-item>
+          <el-menu-item index="/users"><el-icon><User /></el-icon><span>用户管理</span></el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -106,7 +105,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
