@@ -112,7 +112,9 @@
         <el-form-item label="预期"><el-input v-model="edit.expected" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
+        <span class="edit-hint">改了步骤后,若该用例是 gui/e2e,建议重生 script 使执行步骤同步</span>
         <el-button @click="edit.visible = false">取消</el-button>
+        <el-button :loading="edit.regen" @click="doEditAndRegen">保存并重生 script</el-button>
         <el-button type="primary" :loading="edit.saving" @click="doEdit">保存</el-button>
       </template>
     </el-dialog>
@@ -138,7 +140,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase } from '@/api'
+import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -287,7 +289,7 @@ async function onReviewChange(row, val) {
 }
 
 // ---- 编辑 ----
-const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, saving: false })
+const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, saving: false, regen: false })
 function openEdit(row) {
   edit.id = row.id
   edit.title = row.title || ''
@@ -310,6 +312,23 @@ async function doEdit() {
     await load()
   } catch { /* 已提示 */ }
   finally { edit.saving = false }
+}
+
+// 保存正文后,按新 steps 重生 script(仅 gui/e2e;后端会校验类型)
+async function doEditAndRegen() {
+  if (!edit.title.trim()) { ElMessage.warning('标题不能为空'); return }
+  edit.regen = true
+  try {
+    await updateTestcase(edit.id, {
+      title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
+      category: edit.category || '', priority: edit.priority || '',
+    })
+    await genTestcaseScript(edit.id)   // 后端按最新 steps 重生并写回
+    edit.visible = false
+    ElMessage.success('已保存并重生 script')
+    await load()
+  } catch { /* http 拦截器已提示(如非 gui/e2e、生成失败)*/ }
+  finally { edit.regen = false }
 }
 
 // ---- 详情 ----
@@ -359,6 +378,7 @@ async function bulkDelete() {
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
+.edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
 .detail { font-size: 13px; color: #334; }
 .detail .d-row { margin: 8px 0 2px; }
 .detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }

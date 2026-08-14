@@ -77,6 +77,8 @@ export const setCaseExecKind = (id, exec_kind) => http.patch(`/ai/testcases/${id
 export const updateTestcase = (id, patch) => http.patch(`/ai/testcases/${id}`, patch)
 // 删除测试点(级联清其清单项)
 export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
+// 按用例当前 steps/expected 重新生成结构化 script(仅 gui/e2e)
+export const genTestcaseScript = (id) => http.post(`/ai/testcases/${id}/gen-script`)
 
 // ===== 验收清单（测试点回流任务）=====
 export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
