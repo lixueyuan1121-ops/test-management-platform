@@ -110,9 +110,17 @@ def build_testcase_prompt(requirement: str) -> str:
    - desc：该步人读说明
    - **每条 gui/e2e 至少有一个 assert_text 或 assert_visible**（否则没有判定依据，应改判 manual）
    - 只能用下方 key 清单里的 key；**找不到合适 key 表达该测试点 → 改判 kind=manual、script=[]**（不要瞎编 selector）
+5. 按 kind 的 script 编写偏重（**务必区分，别把 e2e 写成 gui**）：
+   - **gui**：单点/局部验证，**2–4 步**即可——connect → (最多一两个 click/fill/wait_for) → assert_*。聚焦"某一个元素/文案对不对"，不要串联整条业务流程。
+   - **e2e**：**端到端多步流程，通常 ≥5 步**，体现"从入口一路操作到结果"。必须串联多个界面动作（如 登录→导航→输入→提交），并在**关键节点分别断言**（不止最后断一次）。
+     · 若流程中触发了 AI 生成/异步加载（发消息、提交后等结果），**必须插入 wait_response 或 wait_for** 再断言，不能立刻断。
+     · 一条 e2e 的 script 明显比 gui 长、动作更丰富；若你发现某"e2e"只需 2–3 步就能验完，说明它其实是 gui，请改判 kind=gui。
+   - **判定自检**：kind=e2e 但 script 少于 5 步或无跨界面串联 → 要么补足步骤，要么改判 gui。
+   正例(gui,单点)：connect → wait_for(navTasks) → assert_visible(navTasks)
+   正例(e2e,多步)：connect → click(loginAccountTab) → fill(loginUserName) → fill(loginPassword) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle) → assert_text(homepageTitle,"早上好",contains)
 {keys_block}
-5. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
-6. 数量控制在 8-20 条，聚焦关键路径与高风险场景。
+6. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
+7. 数量控制在 8-20 条，聚焦关键路径与高风险场景。
 
 需求内容：
 <requirement>
@@ -296,6 +304,10 @@ def parse_testcases(raw: str) -> list[dict]:
             if err:
                 kind = "manual"  # script 不合法/缺失 → 保守降级,避免执行机拿到坏 script
             elif script:
+                # e2e 名不副实纠偏:e2e 应是多步端到端。若步数太少或只有 connect+断言(无实质交互),
+                # 说明它其实是单点 gui → 改判 gui,确保"勾选的用例按其真实类型执行"。
+                if kind == "e2e" and not _looks_like_e2e(script):
+                    kind = "gui"
                 script_json = json.dumps(script, ensure_ascii=False)
         out.append({
             "category": str(it.get("category") or "").strip()[:32],
@@ -341,3 +353,19 @@ def _validate_script(script) -> tuple[list, str | None]:
     if not has_assert:
         return [], "无任何断言步骤(assert_text/assert_visible)"
     return norm, None
+
+
+# e2e 应是"多步端到端":足够长 + 含实质交互动作(click/fill/wait_response),而非只有 connect+断言。
+_INTERACTION_ACTIONS = {"click", "fill", "wait_response"}
+
+
+def _looks_like_e2e(script: list) -> bool:
+    """判断 script 是否够格叫 e2e。不够则调用方改判 gui。
+
+    门槛:≥5 步 且 至少 2 个实质交互动作(click/fill/wait_response)。
+    只有 connect+wait_for+assert 这种"看一眼某元素"的,再长也算单点 gui。
+    """
+    if len(script) < 5:
+        return False
+    interactions = sum(1 for s in script if s.get("action") in _INTERACTION_ACTIONS)
+    return interactions >= 2
