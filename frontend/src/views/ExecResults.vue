@@ -8,9 +8,7 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-select v-model="taskId" placeholder="任务" size="small" clearable filterable fit-input-width style="width:220px" @change="load">
-              <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" :title="t.description || t.title" />
-            </el-select>
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="任务" width="220px" @change="load" />
             <el-select v-model="runner" placeholder="执行设备" size="small" clearable style="width:150px" @change="load">
               <el-option v-for="rn in runners" :key="rn" :label="rn" :value="rn" />
             </el-select>
@@ -69,6 +67,7 @@ import { ref, computed, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { listProjects, listTasks, listExecHistory } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import TaskPicker from '@/components/TaskPicker.vue'
 
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }

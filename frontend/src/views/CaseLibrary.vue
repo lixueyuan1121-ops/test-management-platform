@@ -13,9 +13,7 @@
               <el-option label="已否决" value="rejected" />
               <el-option label="待定" value="pending" />
             </el-select>
-            <el-select v-model="taskId" placeholder="关联任务" size="small" clearable filterable fit-input-width style="width:240px" @change="load">
-              <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" :title="t.description || t.title" />
-            </el-select>
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="load" />
             <el-select v-model="category" placeholder="维度" size="small" clearable style="width:110px" @change="load">
               <el-option v-for="c in CATEGORIES" :key="c" :label="c" :value="c" />
             </el-select>
@@ -142,6 +140,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listProjects, listTasks, listCases, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }

@@ -8,9 +8,7 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-select v-model="taskId" placeholder="关联任务" size="small" clearable filterable fit-input-width style="width:240px" @change="load">
-              <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" :title="t.description || t.title" />
-            </el-select>
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="load" />
             <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
@@ -61,6 +59,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listProjects, listTasks, listCases, attachChecklist, enqueueExec, listMyDevices } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import TaskPicker from '@/components/TaskPicker.vue'
 
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }

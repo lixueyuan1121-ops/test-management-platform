@@ -20,9 +20,7 @@
         <el-select v-model="pid" placeholder="选择项目" style="width:200px" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <el-select v-model="taskId" placeholder="关联任务（可选）" clearable filterable style="width:240px" @change="onTaskChange">
-          <el-option v-for="t in tasks" :key="t.id" :label="t.description || t.title" :value="t.id" />
-        </el-select>
+        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（可选）" @change="onTaskChange" />
       </div>
 
       <el-alert
@@ -204,6 +202,7 @@ import {
   extractUrl, extractFile,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
