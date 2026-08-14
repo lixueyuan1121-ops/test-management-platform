@@ -31,6 +31,10 @@
           <el-icon><Collection /></el-icon><span>用例库</span>
         </el-menu-item>
 
+        <el-menu-item index="/adopted-cases">
+          <el-icon><Select /></el-icon><span>已采纳用例</span>
+        </el-menu-item>
+
         <!-- 组织管理 -->
         <el-sub-menu v-if="auth.isPlatformAdmin" index="org">
           <template #title><el-icon><OfficeBuilding /></el-icon><span>组织管理</span></template>
@@ -101,7 +105,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection,
+  Fold, Expand, MagicStick, Trophy, Collection, Select,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
