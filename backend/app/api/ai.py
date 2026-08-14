@@ -188,7 +188,15 @@ def gen_testcases(
             cases = claude_runner.parse_testcases(raw)
             if not cases:
                 at2.status = AiTaskStatus.failed
-                at2.error = (err or "未解析出有效测试点")[:2000]
+                # 诊断:区分「claude 没输出/被切」(raw 短或空) vs「输出了但没解析出」(raw 长但格式不符)。
+                # 把 raw 长度+尾部带进 error,便于排查(完整 raw 已存 output_raw)。
+                if err:
+                    detail = err
+                elif not raw:
+                    detail = "未检测到有效测试点:claude 无任何输出(可能被网关/超时切断)"
+                else:
+                    detail = f"未检测到有效测试点:claude 输出 {len(raw)} 字但未解析出用例数组(尾部:…{raw[-200:]})"
+                at2.error = detail[:2000]
                 s.commit()
                 yield _sse({"type": "done", "ai_task_id": ai_task_id,
                             "status": "failed", "msg": at2.error, "cases": []})
