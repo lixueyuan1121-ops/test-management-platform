@@ -12,25 +12,19 @@
             </div>
           </div>
           <el-tag v-if="!aiAvailable" type="danger" effect="light" round>AI 服务不可用</el-tag>
-          <div v-else class="engine-picker">
+          <!-- 仅在有 2 个及以上可用引擎时才显示切换器;只有一个引擎无需切换,直接隐藏 -->
+          <div v-else-if="availProviders.length > 1" class="engine-picker">
             <span class="engine-label">生成引擎</span>
             <el-radio-group v-model="engine" size="small" :disabled="running" class="engine-seg">
               <el-radio-button
-                v-for="p in providers"
+                v-for="p in availProviders"
                 :key="p.id"
                 :value="p.id"
-                :disabled="!p.available"
               >
-                <el-tooltip
-                  :disabled="p.available"
-                  content="该引擎未配置，不可用"
-                  placement="top"
-                >
-                  <span class="eng-opt">
-                    <i class="eng-dot" :style="{ background: engineMeta(p.id).dot }"></i>
-                    {{ engineMeta(p.id).label }}
-                  </span>
-                </el-tooltip>
+                <span class="eng-opt">
+                  <i class="eng-dot" :style="{ background: engineMeta(p.id).dot }"></i>
+                  {{ engineMeta(p.id).label }}
+                </span>
               </el-radio-button>
             </el-radio-group>
           </div>
@@ -291,6 +285,9 @@ const requirement = ref('')
 const aiAvailable = ref(true)
 const providers = ref([])          // [{id, available}] 来自 /ai/status
 const engine = ref('claude')       // 当前选中的生成引擎
+// 只展示「可用」引擎:未启用/不可用的引擎(如未配置的 deepseek)对用户完全不可见,而非置灰。
+// 选择器仅在可用引擎 ≥2 个时才渲染(见模板);单引擎场景直接隐藏,界面更干净。
+const availProviders = computed(() => providers.value.filter((p) => p.available))
 
 // 需求内容展示模式：'preview' 渲染 Markdown（默认，好看）/ 'edit' textarea 可编辑。
 // 抓取网页/飞书、上传文档、填充示例后自动切 preview 让用户先看渲染效果。
