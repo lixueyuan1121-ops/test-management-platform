@@ -7,6 +7,7 @@ class TestCaseGenIn(BaseModel):
     project_id: int
     task_id: int | None = None
     input_type: AiInputType = AiInputType.text
+    provider: str | None = None  # 生成引擎 claude/deepseek/...；空/非法由后端 normalize 回落 claude
     requirement: str = Field(min_length=1, max_length=20000)  # M1：需求正文（url/file 由前端取文后填此字段）
 
 

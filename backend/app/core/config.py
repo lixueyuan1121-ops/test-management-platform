@@ -43,6 +43,23 @@ class Settings(BaseSettings):
     # 空则用默认：相对本仓库 tools/qalab-runner/gui-mcp/selectors.json。让 AI 只用库内 key 写 script。
     SELECTORS_PATH: str = ""
 
+    # ---- DeepSeek 引擎（QA Copilot 多引擎之一，基于 DeepSeek Harness SDK）----
+    # 与 claude 引擎并列，可在生成入口切换。经内网/OpenAI 兼容网关时设 BASE_URL。
+    # 注：llm-deepseek 适配器强制要求非空 API_KEY，网关不校验时也需给占位值。
+    #
+    # 【隔离部署】dsh SDK（含内嵌 runtime、pydantic 较新）装在一个**独立 venv**里，
+    # 由后端以**子进程**方式调用 dsh_worker.py（见 generators/dsh_worker.py），
+    # 与主环境依赖完全隔离——主环境 pydantic 等不受影响，dsh 崩溃也波及不到平台。
+    DEEPSEEK_ENABLED: bool = False
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_BASE_URL: str = ""            # 内网/自建/OpenAI 兼容端点，如 http://host/v1
+    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+    DEEPSEEK_MAX_TOKENS: int = 49152       # 推理模型输出量大，过小会 max-tokens 截断（POC 实测）
+    DEEPSEEK_SESSION_ROOT: str = ""        # dsh 会话日志目录；空则用 SDK 默认
+    # dsh 独立 venv 的 python 解释器路径；空则默认探测 ~/.dsh-venv/bin/python。
+    # 该 venv 里须 `pip install deepseek-harness-sdk`（部署脚本 deploy.sh 会建）。
+    DEEPSEEK_VENV_PYTHON: str = ""
+
     # ---- 飞书 OpenAPI（读取需求文档 docx/wiki/sheets/base）----
     FEISHU_APP_ID: str = ""
     FEISHU_APP_SECRET: str = ""

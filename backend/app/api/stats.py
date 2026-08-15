@@ -309,7 +309,8 @@ def ai_stats(
                    "total_generated": 0, "run_cnt": 0, "total_cost_usd": 0.0, "avg_duration_s": 0.0,
                    "dims": [{"name": n, "count": 0} for n in DIMS],
                    "total_reviewed": 0, "total_adopted": 0, "adopt_rate": 0.0,
-                   "prio": [{"p": p, "n": 0} for p in PRIOS], "trend": trend})
+                   "prio": [{"p": p, "n": 0} for p in PRIOS], "trend": trend,
+                   "by_provider": []})
 
     if not pids:
         return empty()
@@ -381,6 +382,44 @@ def ai_stats(
                       "generated": int(gen_day.get(ds, 0)),
                       "adopted": int(adopt_day.get(ds, 0))})
 
+    # ---- 按引擎(provider)对比:各引擎的 生成/采纳/成本/耗时 ----
+    # 生成数、采纳数按 test_case.provider 分组;成本/耗时/生成次数按 ai_task.provider 分组。
+    gen_by_prov = dict(db.query(TestCase.provider, func.count(TestCase.id))
+                       .filter(*gen_filter).group_by(TestCase.provider).all())
+    rev_by_prov = dict(db.query(TestCase.provider, func.count(TestCase.id))
+                       .filter(*rev_filter,
+                               TestCase.review_status.in_([ReviewStatus.adopted, ReviewStatus.rejected]))
+                       .group_by(TestCase.provider).all())
+    adopt_by_prov = dict(db.query(TestCase.provider, func.count(TestCase.id))
+                         .filter(*rev_filter, TestCase.review_status == ReviewStatus.adopted)
+                         .group_by(TestCase.provider).all())
+    cost_by_prov = dict(db.query(AiTask.provider, func.coalesce(func.sum(AiTask.cost_usd), 0))
+                        .filter(*at_filter).group_by(AiTask.provider).all())
+    run_by_prov = dict(db.query(AiTask.provider, func.count(AiTask.id))
+                       .filter(*at_filter, AiTask.status == AiTaskStatus.done)
+                       .group_by(AiTask.provider).all())
+    dur_by_prov = dict(db.query(AiTask.provider, func.avg(AiTask.duration_ms))
+                       .filter(*at_filter, AiTask.status == AiTaskStatus.done,
+                               AiTask.duration_ms.isnot(None))
+                       .group_by(AiTask.provider).all())
+    # 汇总所有出现过的 provider(生成侧或任务侧任一有记录即列出)
+    prov_ids = set(gen_by_prov) | set(rev_by_prov) | set(cost_by_prov) | set(run_by_prov)
+    by_provider = []
+    for p in sorted(prov_ids):
+        reviewed = int(rev_by_prov.get(p, 0))
+        adopted = int(adopt_by_prov.get(p, 0))
+        avg_ms_p = dur_by_prov.get(p)
+        by_provider.append({
+            "provider": p,
+            "generated": int(gen_by_prov.get(p, 0)),
+            "reviewed": reviewed,
+            "adopted": adopted,
+            "adopt_rate": round(adopted / reviewed, 3) if reviewed else 0.0,
+            "run_cnt": int(run_by_prov.get(p, 0)),
+            "cost_usd": round(float(cost_by_prov.get(p, 0) or 0), 2),
+            "avg_duration_s": round(float(avg_ms_p) / 1000, 1) if avg_ms_p else 0.0,
+        })
+
     return ok({
         "scope": scope, "project_cnt": len(pids), "from": str(from_d), "to": str(to_d),
         "total_generated": int(total_generated), "run_cnt": int(run_cnt),
@@ -388,4 +427,5 @@ def ai_stats(
         "dims": dims,
         "total_reviewed": int(total_reviewed), "total_adopted": int(total_adopted),
         "adopt_rate": adopt_rate, "prio": prio, "trend": trend,
+        "by_provider": by_provider,
     })

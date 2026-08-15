@@ -203,3 +203,25 @@ def ensure_release_columns() -> None:
     with engine.begin() as conn:
         if "sub_product" not in cols:
             conn.execute(text("ALTER TABLE release_record ADD COLUMN sub_product VARCHAR(32) NULL"))
+
+
+def ensure_ai_provider_columns() -> None:
+    """ai_task / test_case 补列 provider（生成引擎：claude/deepseek/...）。
+
+    老库补列后存量行默认 'claude'（历史用例都由 claude 生成，语义正确）。
+    DEFAULT 'claude' 保证新库/存量行都有初值；索引便于战绩墙按引擎分组聚合。
+    """
+    at_cols = _columns("ai_task")
+    if at_cols and "provider" not in at_cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE ai_task ADD COLUMN provider VARCHAR(16) NOT NULL DEFAULT 'claude'"
+            ))
+        _ensure_index("ai_task", "idx_aitask_provider", "provider")
+    tc_cols = _columns("test_case")
+    if tc_cols and "provider" not in tc_cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE test_case ADD COLUMN provider VARCHAR(16) NOT NULL DEFAULT 'claude'"
+            ))
+        _ensure_index("test_case", "idx_testcase_provider", "provider")

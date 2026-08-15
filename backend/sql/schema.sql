@@ -205,6 +205,7 @@ CREATE TABLE `ai_task` (
   `task_id` BIGINT DEFAULT NULL,
   `user_id` BIGINT NOT NULL,
   `kind` VARCHAR(32) NOT NULL DEFAULT 'testcase_gen',
+  `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
   `input_type` ENUM('text','url','file') NOT NULL DEFAULT 'text',
   `input_ref` TEXT,
   `status` ENUM('running','done','failed') NOT NULL DEFAULT 'running',
@@ -219,6 +220,7 @@ CREATE TABLE `ai_task` (
   KEY `idx_aitask_project` (`project_id`),
   KEY `idx_aitask_task` (`task_id`),
   KEY `idx_aitask_user` (`user_id`),
+  KEY `idx_aitask_provider` (`provider`),
   CONSTRAINT `fk_aitask_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_aitask_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_aitask_user` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
@@ -227,6 +229,7 @@ CREATE TABLE `ai_task` (
 CREATE TABLE `test_case` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `ai_task_id` BIGINT NOT NULL,
+  `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
   `project_id` BIGINT NOT NULL,
   `task_id` BIGINT DEFAULT NULL,
   `category` VARCHAR(32) DEFAULT NULL,
@@ -247,6 +250,7 @@ CREATE TABLE `test_case` (
   KEY `idx_testcase_task` (`task_id`),
   KEY `idx_testcase_proj_review` (`project_id`,`review_status`),
   KEY `idx_testcase_reviewed` (`reviewed_at`),
+  KEY `idx_testcase_provider` (`provider`),
   CONSTRAINT `fk_testcase_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL

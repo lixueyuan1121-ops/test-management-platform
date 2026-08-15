@@ -3,3 +3,6 @@ __pycache__
 *.pyc
 *.db
 .env
+
+# dsh 会话日志(deepseek 引擎运行时产物)
+.sessions/

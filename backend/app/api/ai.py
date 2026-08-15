@@ -6,6 +6,7 @@ running 记录拿到 id；SSE 生成器内部另开 SessionLocal 完成落库。
 """
 import json
 import logging
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -19,7 +20,7 @@ from app.db.session import SessionLocal, get_db
 from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
 from app.schemas.common import ok
-from app.services import claude_runner, extractors
+from app.services import claude_runner, extractors, generators
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -52,6 +53,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "expected": tc.expected,
         "priority": tc.priority,
         "exec_kind": getattr(tc, "exec_kind", "gui"),
+        "provider": getattr(tc, "provider", "claude"),
         "kind_reason": getattr(tc, "kind_reason", None),
         "adopted": tc.adopted,
         "review_status": getattr(rs, "value", rs),
@@ -73,6 +75,7 @@ def _to_task_out(db: Session, at: AiTask) -> dict:
         "user_id": at.user_id,
         "user_name": _user_name(db, at.user_id),
         "kind": at.kind,
+        "provider": getattr(at, "provider", "claude"),
         "input_type": at.input_type.value,
         "status": at.status.value,
         "case_count": at.case_count,
@@ -85,8 +88,16 @@ def _to_task_out(db: Session, at: AiTask) -> dict:
 
 @router.get("/status")
 def ai_status(user: User = Depends(get_current_user)):
-    """AI 是否可用（前端据此显隐入口 / 优雅降级）。"""
-    return ok({"available": claude_runner.is_available()})
+    """AI 是否可用 + 各生成引擎可用性（前端据此显隐入口、渲染引擎选择器）。
+
+    providers: [{id, available}, ...]；available: 任一引擎可用即为真（兼容旧前端字段）。
+    """
+    provs = generators.available_providers()
+    return ok({
+        "available": any(p["available"] for p in provs),
+        "providers": provs,
+        "default": generators.DEFAULT_PROVIDER,
+    })
 
 
 @router.post("/extract-url")
@@ -134,14 +145,19 @@ def gen_testcases(
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    if not claude_runner.is_available():
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="AI 功能未启用或不可用")
+    # 选择生成引擎(claude/deepseek/...);非法/空回落默认。可用性针对所选引擎判定。
+    provider_id = generators.normalize_provider(body.provider)
+    engine = generators.get_provider(provider_id)
+    if not engine.is_available():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"生成引擎「{provider_id}」未启用或不可用")
 
     at = AiTask(
         project_id=body.project_id,
         task_id=body.task_id,
         user_id=user.id,
         kind="testcase_gen",
+        provider=provider_id,
         input_type=body.input_type,
         input_ref=body.requirement[:20000],
         status=AiTaskStatus.running,
@@ -159,8 +175,9 @@ def gen_testcases(
         raw = ""
         meta: dict | None = None
         err: str | None = None
+        t0 = time.monotonic()
         try:
-            for evt in claude_runner.stream_generate(requirement):
+            for evt in engine.stream_generate(requirement):
                 etype = evt.get("type")
                 if etype == "heartbeat":
                     # SSE 注释帧:保持连接有字节流动,防网关空闲超时切断;前端解析忽略非 data: 行
@@ -187,12 +204,13 @@ def gen_testcases(
                 yield _sse({"type": "error", "msg": "任务记录丢失"})
                 return
             if meta:
-                at2.duration_ms = meta.get("duration_ms")
+                # duration_ms:引擎给了就用,没给(如 deepseek)用 wall-clock 兜底,保证战绩墙耗时可统计
+                at2.duration_ms = meta.get("duration_ms") or int((time.monotonic() - t0) * 1000)
                 at2.cost_usd = meta.get("cost_usd")
                 at2.output_tokens = meta.get("output_tokens")
             at2.output_raw = raw or None
 
-            cases = claude_runner.parse_testcases(raw)
+            cases = engine.parse_testcases(raw)
             if not cases:
                 at2.status = AiTaskStatus.failed
                 # 诊断:区分「claude 没输出/被切」(raw 短或空) vs「输出了但没解析出」(raw 长但格式不符)。
@@ -213,6 +231,7 @@ def gen_testcases(
             for c in cases:
                 tc = TestCase(
                     ai_task_id=ai_task_id,
+                    provider=provider_id,
                     project_id=project_id,
                     task_id=task_id,
                     category=c["category"] or None,
@@ -299,6 +318,7 @@ def list_cases(
     review_status: ReviewStatus | None = Query(None),
     category: str | None = Query(None),
     exec_kind: str | None = Query(None),
+    provider: str | None = Query(None),
     keyword: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -322,6 +342,8 @@ def list_cases(
             q = q.filter(TestCase.category == category)
         if exec_kind:
             q = q.filter(TestCase.exec_kind == exec_kind)
+        if provider:
+            q = q.filter(TestCase.provider == provider)
         if keyword:
             q = q.filter(TestCase.title.ilike(f"%{keyword}%"))
         return q
@@ -332,7 +354,7 @@ def list_cases(
         db.query(
             TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
             TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
-            TestCase.priority, TestCase.exec_kind, TestCase.kind_reason,
+            TestCase.priority, TestCase.exec_kind, TestCase.provider, TestCase.kind_reason,
             TestCase.adopted, TestCase.review_status, TestCase.reviewed_at, TestCase.created_at,
         )
     )
@@ -465,7 +487,11 @@ def gen_script(
     kind = getattr(tc, "exec_kind", "gui") or "gui"
     if kind not in ("gui", "e2e"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"仅 gui/e2e 用例支持生成 script(当前 {kind})")
-    script, err = claude_runner.generate_script(kind, tc.title, tc.steps or "", tc.expected or "")
+    # 用与该用例相同的引擎重生 script(保持一致);引擎不可用则回落默认。
+    engine = generators.get_provider(getattr(tc, "provider", None))
+    if not engine.is_available():
+        engine = generators.get_provider(generators.DEFAULT_PROVIDER)
+    script, err = engine.generate_script(kind, tc.title, tc.steps or "", tc.expected or "")
     if err:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"生成 script 失败:{err}")
     tc.script = json.dumps(script, ensure_ascii=False)

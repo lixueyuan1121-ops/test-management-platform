@@ -208,6 +208,30 @@
           </div>
         </div>
 
+        <!-- 引擎对比:各生成引擎的 生成/采纳率/成本/耗时 横向对比 -->
+        <div class="panel card engine-cmp" v-if="providerView.length">
+          <div class="grid-bg"></div>
+          <div style="position:relative;z-index:2">
+            <div class="row-head"><div class="row-title">生成引擎对比</div></div>
+            <table class="eng-table">
+              <thead>
+                <tr><th>引擎</th><th>生成</th><th>已评审</th><th>采纳率</th><th>生成次数</th><th>成本</th><th>平均耗时</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="p in providerView" :key="p.provider">
+                  <td><span class="eng-dot" :style="{ background: p.color }"></span>{{ p.provider }}</td>
+                  <td>{{ p.generated }}</td>
+                  <td>{{ p.reviewed }}</td>
+                  <td class="hi">{{ p.adoptPct }}%</td>
+                  <td>{{ p.run_cnt }}</td>
+                  <td>${{ p.cost_usd.toFixed(2) }}</td>
+                  <td>{{ p.avg_duration_s }}s</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="foot-note">// 数据源 ai_task / test_case · 配色经 dataviz 校验 · 折算系数可调（本地记忆）</div>
       </template>
     </div>
@@ -269,6 +293,16 @@ onMounted(load)
 const savedHours = computed(() => Math.round((stats.value?.total_adopted || 0) * factor.value))
 const savedDays = computed(() => Math.round(savedHours.value / 8))
 const adoptRatePct = computed(() => ((stats.value?.adopt_rate || 0) * 100).toFixed(1))
+
+// 引擎对比:把后端 by_provider 转成带配色与百分比的展示行
+const PROVIDER_COLOR = { claude: '#f59e0b', deepseek: '#3b82f6' }
+const providerView = computed(() =>
+  (stats.value?.by_provider || []).map((p) => ({
+    ...p,
+    adoptPct: ((p.adopt_rate || 0) * 100).toFixed(1),
+    color: PROVIDER_COLOR[p.provider] || '#94a3b8',
+  }))
+)
 const costPerRun = computed(() => {
   const runs = stats.value?.run_cnt || 0
   const cost = stats.value?.total_cost_usd || 0
@@ -518,6 +552,18 @@ const tv = computed(() => {
 .prio-legend i { width:9px; height:9px; border-radius:2px; }
 
 .foot-note { margin-top:6px; font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.5px; text-align:center; }
+
+/* 引擎对比表 */
+.engine-cmp { margin-top:16px; padding:18px 20px; }
+.eng-table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:13px; }
+.eng-table th { text-align:right; padding:6px 10px; color:var(--muted); font-weight:500;
+  border-bottom:1px solid var(--line-strong); font-size:12px; }
+.eng-table th:first-child { text-align:left; }
+.eng-table td { text-align:right; padding:8px 10px; color:var(--text-secondary);
+  border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+.eng-table td:first-child { text-align:left; color:var(--text-primary); }
+.eng-table td.hi { color:var(--signal); font-weight:600; }
+.eng-dot { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:8px; vertical-align:middle; }
 
 /* 空态卡（仿 Dashboard） */
 .empty-state { min-height:420px; display:flex; align-items:center; justify-content:center; padding:40px 24px; }

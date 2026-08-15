@@ -20,6 +20,9 @@
             <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
+            <el-select v-model="providerFilter" placeholder="引擎" size="small" clearable style="width:110px" @change="reload">
+              <el-option v-for="p in PROVIDERS" :key="p" :label="p" :value="p" />
+            </el-select>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="reload" @clear="reload"
@@ -62,6 +65,11 @@
                 <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
               </el-select>
             </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="引擎" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="PROVIDER_TYPE[row.provider] || 'info'" size="small" effect="plain">{{ row.provider || 'claude' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
@@ -158,6 +166,9 @@ import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
+// 生成引擎 → el-tag 配色 + 筛选选项（与 AITestGen 保持一致）
+const PROVIDER_TYPE = { claude: 'warning', deepseek: 'primary' }
+const PROVIDERS = ['claude', 'deepseek']
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 const CATEGORIES = ['功能', '边界', '异常', '兼容', '性能']
 // 采纳三态 → 配色/文案（采纳=success / 否决=danger / 待定=info）
@@ -180,6 +191,7 @@ const tasks = ref([])
 const taskId = ref(null)
 const reviewStatus = ref(null)
 const category = ref(null)
+const providerFilter = ref(null)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
@@ -272,6 +284,7 @@ async function load() {
       review_status: reviewStatus.value || undefined,
       category: category.value || undefined,
       exec_kind: execKindFilter.value || undefined,
+      provider: providerFilter.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,

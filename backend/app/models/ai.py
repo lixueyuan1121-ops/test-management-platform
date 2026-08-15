@@ -24,6 +24,8 @@ class AiTask(Base):
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(32), default="testcase_gen", server_default="testcase_gen")
+    # 生成引擎:claude / deepseek / ...（供「AI 战绩墙」按引擎对比）。老库由 migrate 补列，缺省 claude。
+    provider: Mapped[str] = mapped_column(String(16), default="claude", server_default="claude", index=True)
     input_type: Mapped[AiInputType] = mapped_column(
         Enum(AiInputType, length=8), default=AiInputType.text, server_default="text"
     )
@@ -47,6 +49,8 @@ class TestCase(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ai_task_id: Mapped[int] = mapped_column(ForeignKey("ai_task.id", ondelete="CASCADE"), index=True)
+    # 生成引擎:claude / deepseek / ...（冗余自 ai_task.provider，便于用例库/日报直接展示与筛选，免 join）。
+    provider: Mapped[str] = mapped_column(String(16), default="claude", server_default="claude", index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     task_id: Mapped[int | None] = mapped_column(
         ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True

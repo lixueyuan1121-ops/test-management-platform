@@ -12,7 +12,18 @@
             </div>
           </div>
           <el-tag v-if="!aiAvailable" type="danger" effect="light">AI 服务不可用</el-tag>
-          <el-tag v-else type="success" effect="light" class="mono">claude · ready</el-tag>
+          <div v-else class="engine-picker">
+            <span class="engine-label">生成引擎</span>
+            <el-select v-model="engine" size="small" style="width:150px" :disabled="running">
+              <el-option
+                v-for="p in providers"
+                :key="p.id"
+                :label="p.id + (p.available ? '' : '（不可用）')"
+                :value="p.id"
+                :disabled="!p.available"
+              />
+            </el-select>
+          </div>
         </div>
       </template>
 
@@ -187,6 +198,11 @@
             <el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="引擎" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="PROVIDER_TYPE[row.provider] || 'info'" size="small" effect="plain">{{ row.provider || 'claude' }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="title" label="测试点" min-width="200" />
         <el-table-column label="步骤" min-width="220">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
@@ -230,6 +246,8 @@ import TaskPicker from '@/components/TaskPicker.vue'
 // 维度 / 优先级 → el-tag 配色
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
+// 生成引擎 → el-tag 配色（claude 暖色、deepseek 冷色，便于一眼区分）
+const PROVIDER_TYPE = { claude: 'warning', deepseek: 'primary' }
 const PHASES = ['正在拆解需求要点…', '覆盖功能主流程…', '补充边界与异常场景…', '评估优先级并成稿…']
 const MODES = [
   { k: 'text', label: '粘贴文本' },
@@ -255,6 +273,8 @@ const tasks = ref([])
 const taskId = ref(null)
 const requirement = ref('')
 const aiAvailable = ref(true)
+const providers = ref([])          // [{id, available}] 来自 /ai/status
+const engine = ref('claude')       // 当前选中的生成引擎
 
 // 需求内容展示模式：'preview' 渲染 Markdown（默认，好看）/ 'edit' textarea 可编辑。
 // 抓取网页/飞书、上传文档、填充示例后自动切 preview 让用户先看渲染效果。
@@ -291,7 +311,13 @@ const reqPlaceholder = computed(() => PLACEHOLDERS[inputType.value] || PLACEHOLD
 onMounted(async () => {
   // aiStatus 与项目列表无依赖，并行拉取
   const [aiRes, projRes] = await Promise.allSettled([aiStatus(), app.fetchProjects()])
-  aiAvailable.value = aiRes.status === 'fulfilled' ? !!aiRes.value?.available : false
+  const aiData = aiRes.status === 'fulfilled' ? (aiRes.value || {}) : {}
+  aiAvailable.value = !!aiData.available
+  providers.value = aiData.providers || []
+  // 默认选中:后端 default 若可用则用它,否则第一个可用引擎,再兜底 claude
+  const firstAvail = providers.value.find((p) => p.available)
+  const dft = providers.value.find((p) => p.id === aiData.default && p.available)
+  engine.value = (dft || firstAvail || { id: 'claude' }).id
   projects.value = projRes.status === 'fulfilled' ? (projRes.value || []) : []
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
@@ -412,7 +438,7 @@ function generate() {
 
   ctrl = new AbortController()
   streamTestcases(
-    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, requirement: requirement.value },
+    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value },
     {
       signal: ctrl.signal,
       onDelta: (t) => { rawStream.value += t },
