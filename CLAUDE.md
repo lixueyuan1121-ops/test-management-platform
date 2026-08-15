@@ -78,9 +78,9 @@ docker compose up -d   # 前端 :80，后端 :8000，MySQL :3306
 
 ### 生成引擎抽象（多 provider：claude / deepseek）
 - AI 测试助手支持多引擎生成测试点。抽象层在 `app/services/generators/`：`__init__.py` 有 `PROVIDERS` 注册表 + `get_provider`/`normalize_provider`/`available_providers`；每个 provider 模块实现统一接口 `is_available` / `stream_generate`(yield `delta`/`result`/`error`/`heartbeat`) / `generate_script`，并**复用** `claude_runner` 的 `build_testcase_prompt`/`parse_testcases`（两引擎同一 prompt、同一解析降级，产出可比）。
-- **claude 引擎** = 原 `claude_runner.py`（subprocess 调 `claude` CLI）。**deepseek 引擎** = `generators/deepseek_runner.py`，但它**不在主环境 import dsh**：dsh SDK 装在**独立 venv**（`scripts/deploy-dsh.sh` 建，默认 `~/.dsh-venv`），deepseek_runner 以**子进程**调用 `generators/dsh_worker.py`（在该 venv 跑），通过 stdin 传参、读 stdout 行分隔 JSON 事件。好处：主环境依赖（pydantic 等）不受 dsh 影响、dsh 崩溃只杀子进程、未安装则前端置灰 claude 照常。
+- **claude 引擎** = 原 `claude_runner.py`（subprocess 调 `claude` CLI）。**deepseek 引擎** = `generators/deepseek_runner.py`，用 `requests` 直接调 `DEEPSEEK_BASE_URL` 的 `/chat/completions`（OpenAI 兼容端点，如内网 360 网关）——零平台依赖、无额外安装。只累积 `delta.content`（正文），丢弃 `delta.reasoning_content`（思维链）。未配置时前端置灰、claude 照常。
 - `ai_task.provider` / `test_case.provider` 两列记录生成引擎（老库由 `migrate.ensure_ai_provider_columns` 补，缺省 claude）；`/stats/ai` 的 `by_provider` 做引擎横向对比（战绩墙）。前端 `/ai/status` 返回 `providers` 列表供引擎选择器渲染。
-- **dsh 注意**：developer preview（锁 `0.1.0rc6`）；块级流式（非 token 级 delta）；推理模型输出量大，`DEEPSEEK_MAX_TOKENS` 须配大否则被 max-tokens 截断。
+- **deepseek 注意**：端点须 OpenAI 兼容；`DEEPSEEK_ENABLED` + `DEEPSEEK_BASE_URL`/`API_KEY`/`MODEL` 配好即用；推理模型 reasoning 占 token 多，`DEEPSEEK_MAX_TOKENS` 须配大否则正文被截断。
 
 ### tools 模块与其余模块风格不一致（留意）
 `api/tools.py` 把 Pydantic schema **内联定义在路由文件里**（不像其他模块放 `app/schemas/`），且用了 `class Config: pass`、单行 `if ...: ...` 等紧凑写法。改这个文件时沿用它自己的风格即可；新增**其他**模块仍应把 schema 放 `app/schemas/`。
