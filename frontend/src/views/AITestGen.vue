@@ -8,21 +8,31 @@
             <el-icon class="title-icon"><MagicStick /></el-icon>
             <div>
               <div class="title">AI 测试助手 · QA Copilot</div>
-              <div class="subtitle">粘贴需求，Claude 秒级拆解出结构化、可执行的测试点清单</div>
+              <div class="subtitle">粘贴需求，AI 秒级拆解出结构化、可执行的测试点清单</div>
             </div>
           </div>
-          <el-tag v-if="!aiAvailable" type="danger" effect="light">AI 服务不可用</el-tag>
+          <el-tag v-if="!aiAvailable" type="danger" effect="light" round>AI 服务不可用</el-tag>
           <div v-else class="engine-picker">
             <span class="engine-label">生成引擎</span>
-            <el-select v-model="engine" size="small" style="width:150px" :disabled="running">
-              <el-option
+            <el-radio-group v-model="engine" size="small" :disabled="running" class="engine-seg">
+              <el-radio-button
                 v-for="p in providers"
                 :key="p.id"
-                :label="p.id + (p.available ? '' : '（不可用）')"
                 :value="p.id"
                 :disabled="!p.available"
-              />
-            </el-select>
+              >
+                <el-tooltip
+                  :disabled="p.available"
+                  content="该引擎未配置，不可用"
+                  placement="top"
+                >
+                  <span class="eng-opt">
+                    <i class="eng-dot" :style="{ background: engineMeta(p.id).dot }"></i>
+                    {{ engineMeta(p.id).label }}
+                  </span>
+                </el-tooltip>
+              </el-radio-button>
+            </el-radio-group>
           </div>
         </div>
       </template>
@@ -248,6 +258,12 @@ const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼�
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 // 生成引擎 → el-tag 配色（claude 暖色、deepseek 冷色，便于一眼区分）
 const PROVIDER_TYPE = { claude: 'warning', deepseek: 'primary' }
+// 引擎在选择器里的友好名 + 圆点色（圆点色与用例引擎 tag 呼应）；未知引擎回落 id + 灰点
+const ENGINE_META = {
+  claude: { label: 'Claude', dot: '#f59e0b' },
+  deepseek: { label: 'DeepSeek', dot: '#3b82f6' },
+}
+const engineMeta = (id) => ENGINE_META[id] || { label: id, dot: '#94a3b8' }
 const PHASES = ['正在拆解需求要点…', '覆盖功能主流程…', '补充边界与异常场景…', '评估优先级并成稿…']
 const MODES = [
   { k: 'text', label: '粘贴文本' },
@@ -512,6 +528,30 @@ function fmtTime(s) {
 }
 .title { font-size: 16px; font-weight: 600; color: #1f2d3d; }
 .subtitle { font-size: 12px; color: #8a94a6; margin-top: 2px; }
+
+/* 生成引擎分段切换 */
+.engine-picker { display: flex; align-items: center; gap: 10px; }
+.engine-label { font-size: 12px; color: #8a94a6; white-space: nowrap; }
+.eng-opt { display: inline-flex; align-items: center; gap: 6px; }
+.eng-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none;
+  box-shadow: 0 0 0 2px rgba(255,255,255,.6); }
+/* 分段整体：圆角胶囊、细边、浅底 */
+.engine-seg :deep(.el-radio-button__inner) {
+  border: none; background: transparent; color: #5b6472; font-weight: 500;
+  padding: 5px 14px; box-shadow: none; transition: all .15s ease;
+}
+.engine-seg { background: #f0f2f5; border: 1px solid #e3e8ef; border-radius: 16px; padding: 2px; }
+.engine-seg :deep(.el-radio-button:first-child .el-radio-button__inner),
+.engine-seg :deep(.el-radio-button:last-child .el-radio-button__inner) { border-radius: 14px; }
+.engine-seg :deep(.el-radio-button__inner:hover) { color: #1f2d3d; }
+/* 选中态：signal-green 填充 + 白字 + 柔和阴影 */
+.engine-seg :deep(.el-radio-button.is-active .el-radio-button__inner) {
+  background: #00b386; color: #fff; border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(0,179,134,.35);
+}
+.engine-seg :deep(.el-radio-button.is-active .eng-dot) { box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
+/* 不可用引擎：降透明度 + 禁用光标 */
+.engine-seg :deep(.el-radio-button.is-disabled .el-radio-button__inner) { opacity: .45; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
 .mode-row { display: flex; gap: 8px; margin-bottom: 12px; }
