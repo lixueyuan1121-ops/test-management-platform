@@ -104,16 +104,31 @@
       <template v-else-if="probe.mode === 'discover' && probe.result">
         <div v-if="!enrichedGroups.length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
         <template v-else>
-          <div v-if="probe.screenshotUrl && shotBoxes.length" class="shot-wrap">
-            <img :src="probe.screenshotUrl" class="shot-img" alt="页面截图" />
-            <div class="shot-overlay">
-              <div
-                v-for="box in shotBoxes" :key="box.uid"
-                class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid }]"
-                :style="box.style" :title="box.label"
-                @mouseenter="hoverKey = box.uid" @mouseleave="hoverKey = ''"
-                @click="openAddAsKey(box.el, box.frameMatch)"
-              ></div>
+          <div v-if="probe.screenshotUrl && shotBoxes.length" class="shot-panel">
+            <div class="shot-bar">
+              <span class="form-hint">页面截图（{{ shotBoxes.length }}/{{ boxTotal }} 个元素已框选{{ approxCount ? `，其中 ${approxCount} 个位置近似（虚线）` : '' }}）</span>
+              <div class="shot-zoom">
+                <el-button-group size="small">
+                  <el-button :disabled="zoom <= 0.25" @click="zoom = Math.max(0.25, +(zoom - 0.25).toFixed(2))">－</el-button>
+                  <el-button @click="zoom = 1">适应</el-button>
+                  <el-button :disabled="zoom >= 3" @click="zoom = Math.min(3, +(zoom + 0.25).toFixed(2))">＋</el-button>
+                </el-button-group>
+                <span class="form-hint zoom-val">{{ Math.round(zoom * 100) }}%</span>
+              </div>
+            </div>
+            <div class="shot-viewport">
+              <div class="shot-wrap" :style="{ width: (zoom * 100) + '%' }">
+                <img :src="probe.screenshotUrl" class="shot-img" alt="页面截图" />
+                <div class="shot-overlay">
+                  <div
+                    v-for="box in shotBoxes" :key="box.uid"
+                    class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx }]"
+                    :style="box.style" :title="box.label"
+                    @mouseenter="hoverKey = box.uid" @mouseleave="hoverKey = ''"
+                    @click="openAddAsKey(box.el, box.frameMatch)"
+                  ></div>
+                </div>
+              </div>
             </div>
           </div>
           <div class="probe-toolbar">
@@ -576,6 +591,8 @@ const totalCounts = computed(() => {
 // ---- 截图叠框（元素框选）----
 // hoverKey：当前高亮的元素 uid，驱动「截图框 ↔ 表格行」双向高亮。
 const hoverKey = ref('')
+// zoom：截图显示缩放（1=适应视口宽度）；框用百分比定位，随 wrap 宽度自动缩放。
+const zoom = ref(1)
 
 // 截图上的框：每个有 absRect 的元素按 absRect/pageSize 归一化成百分比定位（响应式，自动消 dpr）。
 // 基于 enrichedGroups（已按 hideExists 过滤/排序），故隐藏已存在时框也同步减少。
@@ -587,8 +604,8 @@ const shotBoxes = computed(() => {
     for (const el of g.elements) {
       if (!el.absRect) continue
       boxes.push({
-        uid: el._uid, el, frameMatch: el._frameMatch, type: el._status.type,
-        label: `${el.text || el.tag}${el.best ? ` · ${el.best.by}=${el.best.value}` : ''}`,
+        uid: el._uid, el, frameMatch: el._frameMatch, type: el._status.type, approx: !!el.absApprox,
+        label: `${el.text || el.tag}${el.best ? ` · ${el.best.by}=${el.best.value}` : ''}${el.absApprox ? '（位置近似）' : ''}`,
         style: {
           left: `${(el.absRect.x / ps.w) * 100}%`, top: `${(el.absRect.y / ps.h) * 100}%`,
           width: `${(el.absRect.w / ps.w) * 100}%`, height: `${(el.absRect.h / ps.h) * 100}%`,
@@ -602,6 +619,10 @@ const shotBoxes = computed(() => {
 // 表格行 class 高亮当前 hover 的元素；cell hover 设 hoverKey（框↔行双向联动）。
 const rowClass = ({ row }) => (row._uid && row._uid === hoverKey.value ? 'row-hi' : '')
 const onCellEnter = (row) => { hoverKey.value = row._uid || '' }
+
+// 框覆盖统计：boxTotal=当前列表元素总数（含无坐标者），approxCount=位置近似（虚线）的框数。
+const boxTotal = computed(() => enrichedGroups.value.reduce((n, g) => n + g.elements.length, 0))
+const approxCount = computed(() => shotBoxes.value.filter((b) => b.approx).length)
 
 // verify 结果 {key:bool} → 表格行；失效(false)排前面便于处理。
 const verifyRows = computed(() => {
@@ -701,12 +722,18 @@ async function submitAddAsKey() {
 .add-deep-hint { margin-top: 8px; line-height: 1.5; }
 .match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .probe-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
-.shot-wrap { position: relative; display: inline-block; max-width: 100%; margin-bottom: 12px; border: 1px solid #e4e7ed; border-radius: 4px; overflow: hidden; }
-.shot-img { display: block; max-width: 100%; height: auto; }
-.shot-overlay { position: absolute; inset: 0; pointer-events: none; }
+.shot-panel { margin-bottom: 12px; }
+.shot-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
+.shot-zoom { display: flex; align-items: center; gap: 8px; }
+.zoom-val { min-width: 40px; text-align: right; }
+.shot-viewport { max-height: 60vh; overflow: auto; border: 1px solid #e4e7ed; border-radius: 4px; background: #fafafa; }
+.shot-wrap { position: relative; }
+.shot-img { display: block; width: 100%; height: auto; }
+.shot-overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .el-box { position: absolute; box-sizing: border-box; border: 1.5px solid rgba(64,158,255,.55); background: rgba(64,158,255,.07); cursor: pointer; pointer-events: auto; transition: box-shadow .1s, background .1s; }
 .el-box.box-update { border-color: rgba(230,162,60,.75); background: rgba(230,162,60,.1); }
 .el-box.box-exists { border-color: rgba(103,194,58,.5); background: rgba(103,194,58,.06); }
+.el-box.approx { border-style: dashed; }
 .el-box.active { border-width: 2px; box-shadow: 0 0 0 2px rgba(64,158,255,.35); background: rgba(64,158,255,.18); z-index: 2; }
 :deep(.el-table .row-hi) { background: #ecf5ff; }
 .status-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; cursor: help; }
