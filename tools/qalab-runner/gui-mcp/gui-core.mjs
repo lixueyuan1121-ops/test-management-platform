@@ -193,15 +193,28 @@ export function createGuiCore(opts = {}) {
     },
     async probe({ contains = "", limit = 40 } = {}) {
       await ensureConnected();
-      const cf = contentFrame();
-      const scopes = [{ frame: "shell", target: page.mainFrame() }];
-      if (cf !== page.mainFrame()) scopes.push({ frame: "vm", target: cf });
+      // 多级页面:遍历页面所有 frame(Playwright 的 page.frames() 已含任意深度的嵌套 iframe),
+      // 逐 frame 跑发现脚本。主框架标 shell;主 vm iframe(.work.n.cn)标 vm;其余嵌套 iframe 标
+      // iframe(靠 url 区分)。注意:执行侧 resolveKey 目前仅解析 shell + 主 vm,更深 frame 的元素
+      // 能探到/加为 key,但执行定位待执行侧补深层 frame 支持(见 SelectorAdmin「加为 key」提示)。
+      const main = page.mainFrame();
+      const vm = contentFrame();   // 主内容 iframe(与执行侧 contentFrame 同源)
+      const frameLabel = (f) =>
+        f === main ? "shell" : f === vm ? "vm" : "iframe";
       const groups = [];
-      for (const { frame, target } of scopes) {
+      for (const target of page.frames()) {
+        const frame = frameLabel(target);
         let els = [];
-        try { els = await target.evaluate(DISCOVER_SCRIPT); } catch (e) { groups.push({ frame, url: target.url(), error: e.message, elements: [] }); continue; }
+        try {
+          els = await target.evaluate(DISCOVER_SCRIPT);
+        } catch (e) {
+          // 跨域/已卸载的 frame evaluate 会抛错;记为一组错误、跳过,不中断其它 frame。
+          groups.push({ frame, url: target.url(), error: e.message, elements: [] });
+          continue;
+        }
         if (contains) els = els.filter((e) => (e.text || "").includes(contains));
-        groups.push({ frame, url: target.url(), total: els.length, elements: els.slice(0, limit) });
+        // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
+        if (els.length) groups.push({ frame, url: target.url(), total: els.length, elements: els.slice(0, limit) });
       }
       return { groups };
     },
