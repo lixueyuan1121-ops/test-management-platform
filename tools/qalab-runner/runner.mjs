@@ -74,8 +74,9 @@ const fetchPending = () => api("GET", `/api/exec-queue?runner=${encodeURICompone
 const claim        = (id) => api("POST", `/api/exec-queue/${id}/claim?runner=${encodeURIComponent(RUNNER_ID)}`);
 const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
 
-// 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。拉取失败→用缓存(有则),
-// 无缓存返回 null;调用方 null 时不换表,gui-core 沿用启动时载入的内置 selectors.json(回落)。
+// 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。三种情形都不清空内置兜底:
+//   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 跳过 setRegistry、保留内置 57 key;
+//   ② API 不可达(异常)→ 用缓存或 null;③ 拿到非空注册表 → 缓存并返回。
 // data 取法:api() 已解包 {code,msg,data} 返回 data 本身(见 fetchPending);`res?.data || res` 仅为防御。
 const _regCache = new Map();  // `${project_id}|${sub}` -> {version, registry, vmIframe}
 async function fetchRegistry(projectId, sub = "") {
@@ -84,6 +85,10 @@ async function fetchRegistry(projectId, sub = "") {
   try {
     const res = await api("GET", `/api/selectors?project_id=${projectId}&sub_product=${encodeURIComponent(sub)}`);
     const data = res?.data || res;   // api() 已解包则直接是 data
+    // 空 DB(registry 为空/无 key)→ 保留内置兜底或旧缓存,绝不用 {} 覆盖(否则该项目所有 key 定位全 fail)。
+    if (!data || !data.registry || !Object.keys(data.registry).length) {
+      return _regCache.get(ck) || null;
+    }
     _regCache.set(ck, data);
     return data;
   } catch (e) {
