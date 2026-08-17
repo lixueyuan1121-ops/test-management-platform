@@ -42,3 +42,24 @@ class SelectorScope(Base):
     sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
     vm_iframe: Mapped[str] = mapped_column(String(255), default="", server_default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ProbeRequest(Base):
+    """设备探测请求：平台侧下发一次探测，runner 拉取执行并回写 result/error。
+
+    params/result 用 TEXT 存 JSON 字符串（兼容 MySQL 5.6 无原生 JSON）。
+    status: pending → running → done/failed。runner 列标识目标执行机。
+    """
+
+    __tablename__ = "probe_request"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    runner: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
+    params: Mapped[str] = mapped_column(Text, default="{}")
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

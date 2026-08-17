@@ -353,6 +353,26 @@ CREATE TABLE IF NOT EXISTS `selector_scope` (
   UNIQUE KEY `uq_selscope` (`project_id`,`sub_product`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 设备探测请求：平台下发探测 → runner 拉取执行 → 回写 result/error
+-- params/result 用 TEXT 存 JSON 字符串（MySQL 5.6 无原生 JSON）
+CREATE TABLE IF NOT EXISTS `probe_request` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `runner` VARCHAR(64) NOT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `params` TEXT,
+  `result` TEXT,
+  `error` VARCHAR(500) DEFAULT NULL,
+  `created_by` INT DEFAULT NULL,
+  `created_at` DATETIME DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_probe_project` (`project_id`),
+  KEY `idx_probe_runner` (`runner`),
+  KEY `idx_probe_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

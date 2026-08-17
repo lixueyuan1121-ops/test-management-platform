@@ -235,7 +235,8 @@ def ensure_selector_tables(engine=None) -> None:
     显式传入便于脚本/冒烟测试复用。
     """
     from app.db.session import engine as _default_engine
-    from app.models.selector import SelectorKey, SelectorScope
+    from app.models.selector import SelectorKey, SelectorScope, ProbeRequest
     eng = engine if engine is not None else _default_engine
     SelectorKey.__table__.create(bind=eng, checkfirst=True)
     SelectorScope.__table__.create(bind=eng, checkfirst=True)
+    ProbeRequest.__table__.create(bind=eng, checkfirst=True)
