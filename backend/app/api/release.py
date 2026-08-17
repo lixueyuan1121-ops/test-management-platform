@@ -19,7 +19,7 @@ _ALL_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 # 子产品固定枚举：按项目平台类型分两套。前端 ReleaseNotes.vue 的常量须与此保持一致。
 SUB_PRODUCTS_BY_TYPE = {
     "pc": ("纳米Work云端版", "纳米Work桌面版", "360安全龙虾云端版", "360安全龙虾WSL"),
-    "app": ("360安全龙虾Android端", "360安全龙虾iOS端", "纳米Work Android端", "纳米Work iOS端"),
+    "app": ("纳米Work Android端", "纳米Work iOS端", "360安全龙虾Android端", "360安全龙虾iOS端"),
 }
 
 # 全部子产品合集（两套并集），供 selectors 等仅按"值是否合法"校验的模块复用。

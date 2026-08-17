@@ -1,1 +1,0 @@
-import{cV as o}from"./index-CtqF7ghi.js";const e="update:modelValue",s="change",n="input",c=t=>o?window.requestAnimationFrame(t):setTimeout(t,16),i=t=>o?window.cancelAnimationFrame(t):clearTimeout(t);export{s as C,n as I,e as U,i as c,c as r};

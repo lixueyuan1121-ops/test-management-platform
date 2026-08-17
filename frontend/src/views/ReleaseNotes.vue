@@ -41,14 +41,14 @@
         <el-table-column prop="version" label="版本号" width="140" />
         <el-table-column label="子产品" width="150">
           <template #default="{ row }">
-            <el-tag v-if="row.sub_product" :type="spType(row.sub_product)" size="small">{{ row.sub_product }}</el-tag>
+            <el-tag v-if="row.sub_product" :type="spType(row.sub_product)" size="small" disable-transitions>{{ row.sub_product }}</el-tag>
             <span v-else class="dim">—</span>
           </template>
         </el-table-column>
         <el-table-column v-if="isApp" label="发版渠道" width="190" align="left" header-align="left">
           <template #default="{ row }">
             <template v-if="row.channel && row.channel.length">
-              <el-tag v-for="c in row.channel" :key="c" size="small" class="chan-tag">{{ c }}</el-tag>
+              <el-tag v-for="c in row.channel" :key="c" size="small" class="chan-tag" disable-transitions>{{ c }}</el-tag>
             </template>
             <span v-else class="dim">—</span>
           </template>
@@ -143,7 +143,7 @@ echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendCompone
 
 // 子产品固定枚举：按项目平台类型分两套。须与后端 api/release.py 的 SUB_PRODUCTS_BY_TYPE 保持一致。
 const SUB_PRODUCTS_PC = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
-const SUB_PRODUCTS_APP = ['360安全龙虾Android端', '360安全龙虾iOS端', '纳米Work Android端', '纳米Work iOS端']
+const SUB_PRODUCTS_APP = ['纳米Work Android端', '纳米Work iOS端', '360安全龙虾Android端', '360安全龙虾iOS端']
 // 发版渠道候选（仅 APP 端）：按子产品所属平台(iOS/Android)给建议值，登记时支持手填。
 const CHANNELS_IOS = ['App Store', '内测']
 const CHANNELS_ANDROID = ['官网', '自升级', '全渠道']
