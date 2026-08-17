@@ -115,6 +115,14 @@ export const setSelectorScope = (body) => http.put('/selectors/scope', body)
 // 导入内置纳米Work注册表（仅项目 admin）；返回 { imported, skipped }
 export const importLegacySelectors = (project_id) => http.post('/selectors/import-legacy', null, { params: { project_id } })
 
+// 设备探测：网页发起一次探测（discover/verify）→ 轮询查状态/结果。
+// startProbe body: { project_id, sub_product, runner, params:{contains?, mode?} } → { id }
+// getProbe(id) → { id, status(pending/running/done/failed), params, result, error, ... }
+//   discover result: { groups:[{frame,url,total,elements:[{tag,type,text,candidates,best}]}] }
+//   verify   result: { verify:{ key:bool } }
+export const startProbe = (body) => http.post('/probe', body)
+export const getProbe = (id) => http.get(`/probe/${id}`)
+
 export const listMyDevices = () => http.get('/devices')
 export const registerDevice = (runner_id, name) => http.post('/devices', { runner_id, name })
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
