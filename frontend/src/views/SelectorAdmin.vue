@@ -95,21 +95,38 @@
             <span class="form-hint">共 {{ g.total ?? (g.elements || []).length }} 个{{ g.error ? `（错误：${g.error}）` : '' }}</span>
           </div>
           <el-table :data="g.elements || []" size="small" border empty-text="该 frame 无元素">
-            <el-table-column label="元素" min-width="200" show-overflow-tooltip>
+            <el-table-column label="元素" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">
                 <el-tag size="small" type="info" effect="plain">{{ row.tag }}{{ row.type ? `[${row.type}]` : '' }}</el-tag>
                 <span class="probe-el-text">{{ row.text || '（无文本）' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="best 候选" min-width="220" show-overflow-tooltip>
+            <el-table-column label="best 候选" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">
                 <code v-if="row.best">{{ row.best.by }}={{ row.best.value }}</code>
                 <span v-else class="form-hint">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="100" align="center">
+            <el-table-column label="标识" width="130" align="center">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frame)">加为 key</el-button>
+                <template v-if="row.best">
+                  <el-tag :type="STATUS_META[matchStatus(row).type].tag" size="small" effect="plain">
+                    {{ STATUS_META[matchStatus(row).type].label }}
+                  </el-tag>
+                  <div v-if="matchStatus(row).key" class="form-hint match-key" :title="matchStatus(row).key">{{ matchStatus(row).key }}</div>
+                </template>
+                <span v-else class="form-hint">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="110" align="center">
+              <template #default="{ row }">
+                <el-button
+                  v-if="matchStatus(row).type === 'exists'" link type="info" size="small" disabled
+                >已存在</el-button>
+                <el-button
+                  v-else link type="primary" size="small"
+                  :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frame)"
+                >{{ matchStatus(row).type === 'update' ? '更新已有' : '加为 key' }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -166,6 +183,13 @@
         <div class="form-hint">来源元素（{{ add.frame }} frame）</div>
         <div><el-tag size="small" type="info" effect="plain">{{ add.tag }}{{ add.type ? `[${add.type}]` : '' }}</el-tag> <span class="probe-el-text">{{ add.text || '（无文本）' }}</span></div>
         <div class="add-cand">best 候选：<code>{{ add.cand ? `${add.cand.by}=${add.cand.value}` : '—' }}</code></div>
+        <div v-if="add.status && add.status.type !== 'new'" class="add-status">
+          <el-tag :type="STATUS_META[add.status.type].tag" size="small" effect="plain">{{ STATUS_META[add.status.type].label }}</el-tag>
+          <span class="form-hint">已匹配库中 key「{{ add.status.key }}」，{{ add.status.type === 'exists' ? '该候选已登记' : '建议更新已有以补充候选' }}</span>
+        </div>
+        <div v-if="add.frame !== 'shell' && add.frame !== 'vm'" class="form-hint add-deep-warn">
+          ⚠ 该元素在更深的嵌套 iframe，可探测/登记，但执行侧目前仅解析 shell 与主 vm iframe，深层 frame 的执行定位待后续完善。
+        </div>
       </div>
       <el-form label-width="90px" style="margin-top:12px">
         <el-form-item label="模式">
@@ -174,9 +198,14 @@
             <el-radio value="update" :disabled="!rows.length">更新已有 key</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item v-if="add.mode === 'create'" label="key 名" required>
-          <el-input v-model="add.key" placeholder="语义 key，如 login_button" />
-        </el-form-item>
+        <template v-if="add.mode === 'create'">
+          <el-form-item label="key 名" required>
+            <el-input v-model="add.key" placeholder="语义 key，如 login_button" />
+          </el-form-item>
+          <el-form-item label="说明">
+            <el-input v-model="add.desc" placeholder="可选：这个 key 找的是什么元素" />
+          </el-form-item>
+        </template>
         <el-form-item v-else label="目标 key" required>
           <el-select v-model="add.targetId" placeholder="选择当前作用域的已有 key" filterable style="width:100%">
             <el-option v-for="r in rows" :key="r.id" :value="r.id" :label="`${r.key}（${(r.candidates || []).length} 候选）`" />
@@ -370,6 +399,45 @@ async function runProbe(mode, extraParams = {}) {
 function onDiscover() { probe.updateTarget = ''; runProbe('discover') }
 function onVerify() { runProbe('verify', { mode: 'verify' }) }
 
+// ---- 探测元素 vs 已入库对比标识(#3)----
+// 口径:按候选定位器 by+value 重叠判定。对当前作用域已登记的 key 建索引:
+//   candKey(c) = `${by} ${value}` → 该候选属于哪个 key。
+// 元素标识:
+//   已存在(exists):元素 best 候选已在某 key 里(该 key 已能定位到它,无需再加)。
+//   更新(update):元素与某 key 有共同候选、但 best 是新的(可把 best 补进该 key)。
+//   新增(new):元素所有候选与所有 key 均无重叠。
+const candKey = (c) => `${c.by} ${c.value}`
+
+// 当前作用域 rows 的候选反查索引:candKey → key 名(取第一个命中的 key)。
+const candIndex = computed(() => {
+  const idx = new Map()
+  for (const r of rows.value) {
+    for (const c of (r.candidates || [])) {
+      const k = candKey(c)
+      if (!idx.has(k)) idx.set(k, r.key)
+    }
+  }
+  return idx
+})
+
+// 给一个探测元素算标识:{ type:'exists'|'update'|'new', key?:命中的已有 key }
+function matchStatus(el) {
+  const idx = candIndex.value
+  const best = el.best
+  if (best && idx.has(candKey(best))) return { type: 'exists', key: idx.get(candKey(best)) }
+  // best 不在库里,但元素其它候选若与某 key 重叠 → 该 key 存在、可用 best 更新它
+  for (const c of (el.candidates || [])) {
+    if (idx.has(candKey(c))) return { type: 'update', key: idx.get(candKey(c)) }
+  }
+  return { type: 'new' }
+}
+
+const STATUS_META = {
+  exists: { label: '已存在', tag: 'success' },
+  update: { label: '更新', tag: 'warning' },
+  new: { label: '新增', tag: 'primary' },
+}
+
 // verify 结果 {key:bool} → 表格行；失效(false)排前面便于处理。
 const verifyRows = computed(() => {
   const v = probe.result?.verify || {}
@@ -385,7 +453,7 @@ function reprobeForKey(key) {
 }
 
 // ---- 加为 key 弹窗（新建 / 更新已有）----
-const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, key: '', targetId: null, saving: false })
+const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, allCands: [], key: '', desc: '', targetId: null, saving: false, status: null })
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
 function toCand(c) {
@@ -394,13 +462,18 @@ function toCand(c) {
 
 function openAddAsKey(el, frame) {
   const cand = toCand(el.best)
-  // 若有预置更新目标（来自 verify 的「重新探测更新」）且该 key 仍在当前作用域，默认切到更新已有模式。
-  const preset = probe.updateTarget && rows.value.find((r) => r.key === probe.updateTarget)
+  const status = matchStatus(el)   // #3 标识:exists/update/new
+  // 预置更新目标优先级:verify 的「重新探测更新」预置 > 对比标识命中的已有 key。
+  const presetByVerify = probe.updateTarget && rows.value.find((r) => r.key === probe.updateTarget)
+  const presetByMatch = status.key && rows.value.find((r) => r.key === status.key)
+  const preset = presetByVerify || presetByMatch
   Object.assign(add, {
-    visible: true, saving: false,
-    tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto', cand,
+    visible: true, saving: false, status,
+    tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
+    cand, allCands: (el.candidates || []).map(toCand),
+    // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
-    key: '',
+    key: '', desc: '',
     targetId: preset ? preset.id : null,
   })
 }
@@ -414,7 +487,7 @@ async function submitAddAsKey() {
     if (add.mode === 'create') {
       await createSelector({
         project_id: pid.value, sub_product: subProduct.value, key: add.key.trim(),
-        frame: add.frame || 'auto', desc: '', candidates: [add.cand],
+        frame: add.frame || 'auto', desc: add.desc.trim(), candidates: [add.cand],
       })
       ElMessage.success('已新建 key')
     } else {
@@ -445,5 +518,8 @@ async function submitAddAsKey() {
 .probe-el-text { margin-left: 6px; }
 .add-preview { background: #f5f7fa; border-radius: 4px; padding: 10px 12px; }
 .add-cand { margin-top: 6px; }
+.add-status { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
+.add-deep-warn { margin-top: 8px; color: #e6a23c; line-height: 1.5; }
+.match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 code { background: #f0f2f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 </style>
