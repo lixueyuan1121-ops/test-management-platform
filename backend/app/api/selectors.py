@@ -9,17 +9,19 @@ SUB_PRODUCTS 白名单。candidates 以 JSON 字符串落库（兼容 MySQL 5.6 
 后续 Task 4 会在本文件“追加区”末尾续加只读路由（GET resolved + import-legacy）。
 """
 import json
+import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import assert_project_role, get_current_user
+from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import SelectorKey, SelectorScope, User
 from app.schemas.common import ok
 from app.schemas.selector import SelectorKeyIn, SelectorKeyPatch, SelectorScopeIn
+from app.services.selectors import resolved_registry
 from app.api.release import SUB_PRODUCTS  # 复用子产品白名单
 
 router = APIRouter(prefix="/api/selectors", tags=["selectors"])
@@ -112,3 +114,49 @@ def set_scope(body: SelectorScopeIn, db: Session = Depends(get_db),
 
 
 # ---- Task 4 追加区：GET /resolved（合并解析）+ POST /import-legacy（迁移旧常量）----
+
+
+@router.get("")
+def resolved(project_id: int = Query(...), sub_product: str = Query(""),
+             db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
+    """runner 拉合并后有效注册表(runner token 鉴权)。"""
+    return ok(resolved_registry(db, project_id, _valid_sub(sub_product)))
+
+
+# 内置旧注册表路径(仓库内 selectors.json),供一次性导入
+_LEGACY = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "tools", "qalab-runner", "gui-mcp", "selectors.json"))
+
+
+@router.post("/import-legacy")
+def import_legacy(project_id: int = Query(...), db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """把内置 selectors.json 导入为该项目【项目级共享】。幂等:同名 key 跳过。仅项目 admin。"""
+    assert_project_role(db, user, project_id, (ProjectRole.admin,))
+    try:
+        with open(_LEGACY, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"读取内置注册表失败:{e}")
+    reg = data.get("registry", {})
+    have = {k[0] for k in db.query(SelectorKey.key).filter(
+        SelectorKey.project_id == project_id, SelectorKey.sub_product == "").all()}
+    imported = skipped = 0
+    for k, v in reg.items():
+        if k in have:
+            skipped += 1; continue
+        db.add(SelectorKey(project_id=project_id, sub_product="", key=k,
+                           frame=v.get("frame", "auto"), desc=v.get("desc", ""),
+                           candidates=json.dumps(v.get("candidates", []), ensure_ascii=False),
+                           updated_by=user.id, updated_at=datetime.utcnow()))
+        imported += 1
+    # vmIframe 写入共享 scope
+    vm = data.get("vmIframe", "")
+    if vm:
+        sc = (db.query(SelectorScope).filter(SelectorScope.project_id == project_id,
+                                             SelectorScope.sub_product == "").first())
+        if not sc:
+            sc = SelectorScope(project_id=project_id, sub_product=""); db.add(sc)
+        sc.vm_iframe = vm; sc.updated_at = datetime.utcnow()
+    db.commit()
+    return ok({"imported": imported, "skipped": skipped})
