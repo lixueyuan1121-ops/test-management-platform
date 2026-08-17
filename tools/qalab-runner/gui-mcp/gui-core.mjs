@@ -128,6 +128,15 @@ export function createGuiCore(opts = {}) {
     const vm = { name: "vm", scope: page.frameLocator(VM_IFRAME) };
     if (frame === "shell") return [shell];
     if (frame === "vm") return [vm];
+    // url:<子串> —— 从 page.frames() 扁平列表(含任意深度嵌套)找 url 含该子串的首个 Frame,
+    // 直接作为定位 scope(Frame 与 Page/FrameLocator 同一套定位 API,byToLocator 无需分支)。
+    // 找不到(目标 frame 未加载/页面结构变)→ 回退 [shell, vm] 再试一遍(与 auto 一致的容错)。
+    if (typeof frame === "string" && frame.startsWith("url:")) {
+      const pat = frame.slice(4);
+      const f = pat && page.frames().find((fr) => (fr.url() || "").includes(pat));
+      if (f) return [{ name: "urlframe", scope: f }];
+      return [shell, vm];
+    }
     return [shell, vm];
   }
 
@@ -201,20 +210,31 @@ export function createGuiCore(opts = {}) {
       const vm = contentFrame();   // 主内容 iframe(与执行侧 contentFrame 同源)
       const frameLabel = (f) =>
         f === main ? "shell" : f === vm ? "vm" : "iframe";
+      // frameMatch:加为 key 时写入 selector_key.frame 的值。shell/vm 沿用旧语义;深层 iframe
+      // 取 url:<hostname>——执行侧 scopesFor 据此从 page.frames() 扁平查找该 Frame 定位。
+      // hostname 取不到(about:blank/相对 url)则退回整段 url 前 80 字符。
+      const frameMatch = (f) => {
+        if (f === main) return "shell";
+        if (f === vm) return "vm";
+        const u = f.url() || "";
+        try { const h = new URL(u).hostname; if (h) return `url:${h}`; } catch { /* 非法/相对 url,退回截断 */ }
+        return `url:${u.slice(0, 80)}`;
+      };
       const groups = [];
       for (const target of page.frames()) {
         const frame = frameLabel(target);
+        const fmatch = frameMatch(target);
         let els = [];
         try {
           els = await target.evaluate(DISCOVER_SCRIPT);
         } catch (e) {
           // 跨域/已卸载的 frame evaluate 会抛错;记为一组错误、跳过,不中断其它 frame。
-          groups.push({ frame, url: target.url(), error: e.message, elements: [] });
+          groups.push({ frame, frameMatch: fmatch, url: target.url(), error: e.message, elements: [] });
           continue;
         }
         if (contains) els = els.filter((e) => (e.text || "").includes(contains));
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
-        if (els.length) groups.push({ frame, url: target.url(), total: els.length, elements: els.slice(0, limit) });
+        if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, limit) });
       }
       return { groups };
     },
