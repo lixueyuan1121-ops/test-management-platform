@@ -34,7 +34,7 @@
       <div v-if="pid" class="sub-tabs">
         <el-radio-group v-model="subProduct" size="small" @change="reload">
           <el-radio-button :value="''">全部</el-radio-button>
-          <el-radio-button v-for="sp in SUB_PRODUCTS" :key="sp" :value="sp">{{ sp }}</el-radio-button>
+          <el-radio-button v-for="sp in subProducts" :key="sp" :value="sp">{{ sp }}</el-radio-button>
         </el-radio-group>
       </div>
       <el-table v-if="pid" :data="rows" v-loading="loading" size="small" border stripe empty-text="该项目暂无发版记录">
@@ -42,6 +42,14 @@
         <el-table-column label="子产品" width="150">
           <template #default="{ row }">
             <el-tag v-if="row.sub_product" :type="spType(row.sub_product)" size="small">{{ row.sub_product }}</el-tag>
+            <span v-else class="dim">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="isApp" label="发版渠道" width="190">
+          <template #default="{ row }">
+            <template v-if="row.channel && row.channel.length">
+              <el-tag v-for="c in row.channel" :key="c" size="small" class="chan-tag">{{ c }}</el-tag>
+            </template>
             <span v-else class="dim">—</span>
           </template>
         </el-table-column>
@@ -73,6 +81,7 @@
       <div v-if="detail.row" class="detail">
         <p class="d-row"><span class="d-k">版本号</span> {{ detail.row.version }}</p>
         <p class="d-row"><span class="d-k">子产品</span> {{ detail.row.sub_product || '—' }}</p>
+        <p v-if="isApp" class="d-row"><span class="d-k">发版渠道</span> {{ (detail.row.channel && detail.row.channel.length) ? detail.row.channel.join('、') : '—' }}</p>
         <p class="d-row"><span class="d-k">发版日期</span> {{ detail.row.release_date }}</p>
         <p class="d-row"><span class="d-k">需求数</span> {{ detail.row.req_count }}</p>
         <p class="d-row"><span class="d-k">登记人</span> {{ detail.row.created_by_name || '—' }}</p>
@@ -88,9 +97,16 @@
       <el-form :model="form" label-width="90px">
         <el-form-item label="版本号" required><el-input v-model="form.version" placeholder="如 v2.3.0" /></el-form-item>
         <el-form-item label="子产品">
-          <el-select v-model="form.sub_product" placeholder="（未指定）" clearable style="width:100%">
-            <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
+          <el-select v-model="form.sub_product" placeholder="（未指定）" clearable style="width:100%" @change="form.channel = []">
+            <el-option v-for="sp in subProducts" :key="sp" :label="sp" :value="sp" />
           </el-select>
+        </el-form-item>
+        <el-form-item v-if="isApp" label="发版渠道">
+          <el-select v-model="form.channel" multiple filterable allow-create default-first-option
+                     placeholder="选择或手填渠道" style="width:100%">
+            <el-option v-for="c in channelOptions(form.sub_product)" :key="c" :label="c" :value="c" />
+          </el-select>
+          <div class="form-hint">按所选子产品给出建议渠道，可多选，也可手动输入</div>
         </el-form-item>
         <el-form-item label="发版日期" required>
           <el-date-picker v-model="form.release_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
@@ -111,7 +127,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
@@ -125,8 +141,12 @@ import { renderMarkdown } from '@/utils/markdown'
 
 echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
-// 子产品固定枚举（全平台统一）。须与后端 api/release.py 的 SUB_PRODUCTS 保持一致。
-const SUB_PRODUCTS = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
+// 子产品固定枚举：按项目平台类型分两套。须与后端 api/release.py 的 SUB_PRODUCTS_BY_TYPE 保持一致。
+const SUB_PRODUCTS_PC = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
+const SUB_PRODUCTS_APP = ['360安全龙虾Android端', '360安全龙虾iOS端', '纳米Work Android端', '纳米Work iOS端']
+// 发版渠道候选（仅 APP 端）：按子产品所属平台(iOS/Android)给建议值，登记时支持手填。
+const CHANNELS_IOS = ['App Store', '内测']
+const CHANNELS_ANDROID = ['官网', '自升级', '全渠道']
 
 const auth = useAuthStore()
 const app = useAppStore()
@@ -136,6 +156,17 @@ const projects = ref([])
 const pid = ref(null)
 const subProduct = ref('')
 const rows = ref([])
+
+// 当前项目平台类型 → 决定子产品枚举、是否显示渠道列（从已缓存的 projects 里按 pid 取）
+const currentPlatform = computed(() => projects.value.find((p) => p.id === pid.value)?.platform_type || '')
+const isApp = computed(() => currentPlatform.value === 'app')
+const subProducts = computed(() => (isApp.value ? SUB_PRODUCTS_APP : SUB_PRODUCTS_PC))
+// 渠道候选随所选子产品的平台(iOS/Android)联动；无法判断时给全部候选。手填仍可任意输入。
+function channelOptions(sub) {
+  if (sub && sub.includes('iOS')) return CHANNELS_IOS
+  if (sub && sub.includes('Android')) return CHANNELS_ANDROID
+  return [...CHANNELS_IOS, ...CHANNELS_ANDROID]
+}
 const loading = ref(false)
 const stats = reactive({ total_releases: 0, total_reqs: 0, this_month: 0, latest_date: null, trend: [] })
 
@@ -151,13 +182,14 @@ function plain(md) {
   return String(md).replace(/[#*`>_-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 120)
 }
 
-// 子产品标签配色：每个子产品一种 el-tag 预设色，同品牌成对（纳米=冷色、360龙虾=暖色）。
+// 子产品标签配色：el-tag 预设色，同品牌成对（纳米=冷色 success/primary、360龙虾=暖色 warning/danger）。
+// PC/APP 各 4 个；同一项目只展示其中一套，故颜色在两套间复用不冲突。
 function spType(sp) {
   return {
-    '纳米Work云端版': 'success',
-    '纳米Work桌面版': 'primary',
-    '360安全龙虾云端版': 'warning',
-    '360安全龙虾WSL': 'danger',
+    '纳米Work云端版': 'success', '纳米Work桌面版': 'primary',
+    '360安全龙虾云端版': 'warning', '360安全龙虾WSL': 'danger',
+    '纳米Work Android端': 'success', '纳米Work iOS端': 'primary',
+    '360安全龙虾Android端': 'warning', '360安全龙虾iOS端': 'danger',
   }[sp] || 'info'
 }
 
@@ -229,16 +261,17 @@ async function openDetail(row) {
 }
 
 const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ version: '', sub_product: '', release_date: '', req_count: 0, content: '', memo: '' })
+const form = reactive({ version: '', sub_product: '', channel: [], release_date: '', req_count: 0, content: '', memo: '' })
 function openCreate() {
   dialog.id = null
-  Object.assign(form, { version: '', sub_product: subProduct.value || '', release_date: new Date().toISOString().slice(0, 10), req_count: 0, content: '', memo: '' })
+  Object.assign(form, { version: '', sub_product: subProduct.value || '', channel: [], release_date: new Date().toISOString().slice(0, 10), req_count: 0, content: '', memo: '' })
   dialog.visible = true
 }
 function openEdit(row) {
   dialog.id = row.id
   Object.assign(form, {
-    version: row.version, sub_product: row.sub_product || '', release_date: row.release_date, req_count: row.req_count || 0,
+    version: row.version, sub_product: row.sub_product || '', channel: Array.isArray(row.channel) ? [...row.channel] : [],
+    release_date: row.release_date, req_count: row.req_count || 0,
     content: row.content || '', memo: row.memo || '',
   })
   dialog.visible = true
@@ -282,6 +315,7 @@ async function onDel(row) {
 .chart { height: 260px; }
 .list-head { display: flex; justify-content: space-between; align-items: center; }
 .sub-tabs { margin-bottom: 12px; }
+.chan-tag { margin: 0 4px 2px 0; }
 .dim { color: #90a4ae; font-weight: normal; font-size: 13px; }
 .one-line { color: #5a6b7b; font-size: 13px; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }

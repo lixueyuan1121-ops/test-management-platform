@@ -9,12 +9,14 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     description: str | None = None
+    platform_type: str | None = None  # pc / app / None(未分类)
 
 
 class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     status: str | None = None  # active / archived
+    platform_type: str | None = None  # pc / app / None(未分类)
 
 
 class ProjectOut(BaseModel):
@@ -22,6 +24,7 @@ class ProjectOut(BaseModel):
     name: str
     code: str
     description: str | None = None
+    platform_type: str | None = None
     status: str
     created_at: datetime
 

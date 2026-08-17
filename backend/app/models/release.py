@@ -14,8 +14,10 @@ class ReleaseRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     version: Mapped[str] = mapped_column(String(64))
-    # 子产品：全平台固定枚举（纳米Work云端版/桌面版），可空=未指定（老记录）。校验白名单集中在 api/release.py。
+    # 子产品：按项目平台类型分两套固定枚举（PC/APP），可空=未指定。校验白名单集中在 api/release.py。
     sub_product: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 发版渠道：仅 APP 端项目使用，多渠道逗号分隔存储(MySQL5.6 无 JSON)；API 层收发数组。
+    channel: Mapped[str | None] = mapped_column(String(255), nullable=True)
     release_date: Mapped[date] = mapped_column(Date, index=True)
     req_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     content: Mapped[str | None] = mapped_column(Text, nullable=True)

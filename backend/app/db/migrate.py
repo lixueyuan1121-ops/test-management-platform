@@ -195,14 +195,30 @@ def ensure_issue_columns() -> None:
                     ))
 
 
+def ensure_project_columns() -> None:
+    """project 表补列 platform_type（如缺失）。pc/app，控制发版页子产品枚举与渠道列；NULL=未分类。"""
+    cols = _columns("project")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "platform_type" not in cols:
+            conn.execute(text("ALTER TABLE project ADD COLUMN platform_type VARCHAR(16) NULL"))
+
+
 def ensure_release_columns() -> None:
-    """release_record 表补列 sub_product（如缺失）。子产品为全平台固定枚举，老库补列后老记录为 NULL=未指定。"""
+    """release_record 表补列 sub_product / channel（如缺失）。
+
+    sub_product：按项目平台类型分两套固定枚举，老库补列后老记录 NULL=未指定。
+    channel：仅 APP 端项目用，多渠道逗号分隔存储(MySQL5.6 无 JSON)。
+    """
     cols = _columns("release_record")
     if not cols:
         return  # 表尚未建，交给 create_all
     with engine.begin() as conn:
         if "sub_product" not in cols:
             conn.execute(text("ALTER TABLE release_record ADD COLUMN sub_product VARCHAR(32) NULL"))
+        if "channel" not in cols:
+            conn.execute(text("ALTER TABLE release_record ADD COLUMN channel VARCHAR(255) NULL"))
 
 
 def ensure_ai_provider_columns() -> None:
