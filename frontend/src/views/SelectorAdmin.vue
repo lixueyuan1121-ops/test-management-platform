@@ -85,52 +85,73 @@
       <el-empty v-if="!probe.done && !probe.running" description="选择在线设备后点「探测」，会扫描该设备当前页面的可交互元素" :image-size="80" />
       <div v-else-if="probe.running" class="probe-loading" v-loading="true" element-loading-text="探测中，请在设备上停留在目标页面…" style="min-height:120px" />
 
-      <!-- discover 结果：按 shell/vm 分组，列元素文本 + best 候选，逐个「加为 key」 -->
+      <!-- discover 结果：按 shell/vm/iframe 分组；组内 新增/可更新 排前、已存在垫底，可一键隐藏已存在 -->
       <template v-else-if="probe.mode === 'discover' && probe.result">
-        <div v-if="!(probe.result.groups || []).length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
-        <div v-for="(g, gi) in (probe.result.groups || [])" :key="gi" class="probe-group">
-          <div class="probe-group-head">
-            <el-tag size="small" :type="g.frame === 'vm' ? 'success' : 'info'">{{ g.frame }}</el-tag>
-            <span class="probe-group-url" :title="g.url">{{ g.url || '' }}</span>
-            <span class="form-hint">共 {{ g.total ?? (g.elements || []).length }} 个{{ g.error ? `（错误：${g.error}）` : '' }}</span>
+        <div v-if="!enrichedGroups.length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
+        <template v-else>
+          <div class="probe-toolbar">
+            <el-checkbox v-model="probe.hideExists" size="small">隐藏「已存在」（{{ totalCounts.exists }}）</el-checkbox>
+            <span class="form-hint">新增 {{ totalCounts.new }} · 可更新 {{ totalCounts.update }} · 已存在 {{ totalCounts.exists }}</span>
           </div>
-          <el-table :data="g.elements || []" size="small" border empty-text="该 frame 无元素">
-            <el-table-column label="元素" min-width="180" show-overflow-tooltip>
-              <template #default="{ row }">
-                <el-tag size="small" type="info" effect="plain">{{ row.tag }}{{ row.type ? `[${row.type}]` : '' }}</el-tag>
-                <span class="probe-el-text">{{ row.text || '（无文本）' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="best 候选" min-width="200" show-overflow-tooltip>
-              <template #default="{ row }">
-                <code v-if="row.best">{{ row.best.by }}={{ row.best.value }}</code>
-                <span v-else class="form-hint">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="标识" width="130" align="center">
-              <template #default="{ row }">
-                <template v-if="row.best">
-                  <el-tag :type="STATUS_META[matchStatus(row).type].tag" size="small" effect="plain">
-                    {{ STATUS_META[matchStatus(row).type].label }}
-                  </el-tag>
-                  <div v-if="matchStatus(row).key" class="form-hint match-key" :title="matchStatus(row).key">{{ matchStatus(row).key }}</div>
+          <div v-for="(g, gi) in enrichedGroups" :key="gi" class="probe-group">
+            <div class="probe-group-head">
+              <el-tag size="small" :type="g.frame === 'vm' ? 'success' : 'info'">{{ g.frame }}</el-tag>
+              <span class="probe-group-url" :title="g.url">{{ g.url || '' }}</span>
+              <span class="form-hint">共 {{ g.total ?? (g.elements || []).length }} 个 · 新增 {{ g.counts.new }}／可更新 {{ g.counts.update }}／已存在 {{ g.counts.exists }}{{ g.error ? `（错误：${g.error}）` : '' }}</span>
+            </div>
+            <el-table :data="g.elements" size="small" border empty-text="该 frame 无待显示元素（或已隐藏「已存在」）">
+              <el-table-column label="元素" min-width="180" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <el-tag size="small" type="info" effect="plain">{{ row.tag }}{{ row.type ? `[${row.type}]` : '' }}</el-tag>
+                  <span class="probe-el-text">{{ row.text || '（无文本）' }}</span>
                 </template>
-                <span v-else class="form-hint">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="110" align="center">
-              <template #default="{ row }">
-                <el-button
-                  v-if="matchStatus(row).type === 'exists'" link type="info" size="small" disabled
-                >已存在</el-button>
-                <el-button
-                  v-else link type="primary" size="small"
-                  :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frame)"
-                >{{ matchStatus(row).type === 'update' ? '更新已有' : '加为 key' }}</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
+              </el-table-column>
+              <el-table-column label="best 候选" min-width="200" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <code v-if="row.best">{{ row.best.by }}={{ row.best.value }}</code>
+                  <span v-else class="form-hint">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="标识" width="120" align="center">
+                <template #default="{ row }">
+                  <template v-if="row.best">
+                    <el-popover placement="left" :width="340" trigger="hover" :disabled="!row._status.key">
+                      <template #reference>
+                        <span class="status-cell">
+                          <el-tag :type="STATUS_META[row._status.type].tag" size="small" effect="plain">{{ STATUS_META[row._status.type].label }}</el-tag>
+                          <div v-if="row._status.key" class="form-hint match-key" :title="row._status.key">{{ row._status.key }}</div>
+                        </span>
+                      </template>
+                      <div class="cand-preview">
+                        <div class="cand-preview-title">命中库 key「{{ row._status.key }}」<span v-if="row._hitFrame" class="form-hint">（{{ row._hitFrame }}）</span></div>
+                        <div class="form-hint">现有候选（{{ row._hitCands.length }}）</div>
+                        <ul class="cand-list">
+                          <li v-for="(c, ci) in row._hitCands" :key="ci"><code>{{ c.by }} = {{ c.value }}</code></li>
+                        </ul>
+                        <div class="cand-preview-best">
+                          本次 best：<code>{{ row.best.by }} = {{ row.best.value }}</code>
+                          <div class="form-hint" :class="row._status.type === 'exists' ? 'hint-ok' : 'hint-warn'">{{ row._status.type === 'exists' ? '→ 已在库中，无需再加' : '→ 新候选，加为 key 时将追加到头部' }}</div>
+                        </div>
+                      </div>
+                    </el-popover>
+                  </template>
+                  <span v-else class="form-hint">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="110" align="center">
+                <template #default="{ row }">
+                  <el-button
+                    v-if="row._status.type === 'exists'" link type="info" size="small" disabled
+                  >已存在</el-button>
+                  <el-button
+                    v-else link type="primary" size="small"
+                    :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frame)"
+                  >{{ row._status.type === 'update' ? '更新已有' : '加为 key' }}</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </template>
       </template>
 
       <!-- verify 结果：命中/失效逐 key 展示，失效标红并给「重新探测更新」 -->
@@ -211,6 +232,17 @@
             <el-option v-for="r in rows" :key="r.id" :value="r.id" :label="`${r.key}（${(r.candidates || []).length} 候选）`" />
           </el-select>
           <div class="form-hint">best 候选将追加到该 key 候选列表的<b>头部</b>（优先尝试）</div>
+          <div v-if="addTarget" class="add-compare">
+            <div class="form-hint">「{{ addTarget.key }}」现有候选（{{ (addTarget.candidates || []).length }}）</div>
+            <ul class="cand-list">
+              <li v-for="(c, ci) in (addTarget.candidates || [])" :key="ci"><code>{{ c.by }} = {{ c.value }}</code></li>
+              <li v-if="!(addTarget.candidates || []).length" class="form-hint">（空）</li>
+            </ul>
+            <div class="form-hint">合并后顺序（best 追加到头部，优先尝试）</div>
+            <ol class="cand-list merged">
+              <li v-for="(c, ci) in addMergedPreview" :key="ci"><code>{{ c.by }} = {{ c.value }}</code> <el-tag v-if="c._new" type="warning" size="small" effect="plain">新</el-tag></li>
+            </ol>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -353,7 +385,7 @@ async function onImport() {
 // updateTarget：verify 里点「重新探测更新」预置的目标 key，下次「加为 key」默认选它（更新已有）。
 const probe = reactive({
   runner: '', contains: '', mode: 'discover',
-  running: false, done: false, result: null, updateTarget: '',
+  running: false, done: false, result: null, updateTarget: '', hideExists: false,
 })
 let pollTimer = null
 
@@ -438,6 +470,39 @@ const STATUS_META = {
   new: { label: '新增', tag: 'primary' },
 }
 
+// key 名 → 当前作用域该 key 的 row（供标识 popover 展示命中 key 的现有候选/frame）。
+const keyIndex = computed(() => {
+  const idx = new Map()
+  for (const r of rows.value) if (!idx.has(r.key)) idx.set(r.key, r)
+  return idx
+})
+
+// discover 结果按标识增强：每元素附 _status/_hitCands/_hitFrame；组内计数；排序 新增→可更新→已存在；可隐藏已存在。
+const STATUS_ORDER = { new: 0, update: 1, exists: 2, none: 3 }
+const enrichedGroups = computed(() => {
+  if (probe.mode !== 'discover' || !probe.result) return []
+  const kIdx = keyIndex.value
+  return (probe.result.groups || []).map((g) => {
+    let els = (g.elements || []).map((el) => {
+      const status = el.best ? matchStatus(el) : { type: 'none' }
+      const hit = status.key ? kIdx.get(status.key) : null
+      return { ...el, _status: status, _hitCands: hit ? (hit.candidates || []) : [], _hitFrame: hit ? (hit.frame || '') : '' }
+    })
+    const counts = { new: 0, update: 0, exists: 0 }
+    for (const e of els) if (counts[e._status.type] !== undefined) counts[e._status.type] += 1
+    if (probe.hideExists) els = els.filter((e) => e._status.type !== 'exists')
+    els.sort((a, b) => STATUS_ORDER[a._status.type] - STATUS_ORDER[b._status.type])
+    return { ...g, elements: els, counts }
+  })
+})
+
+// 汇总各组计数（开关标签/总览用），基于过滤前的全量。
+const totalCounts = computed(() => {
+  const t = { new: 0, update: 0, exists: 0 }
+  for (const g of enrichedGroups.value) { t.new += g.counts.new; t.update += g.counts.update; t.exists += g.counts.exists }
+  return t
+})
+
 // verify 结果 {key:bool} → 表格行；失效(false)排前面便于处理。
 const verifyRows = computed(() => {
   const v = probe.result?.verify || {}
@@ -454,6 +519,18 @@ function reprobeForKey(key) {
 
 // ---- 加为 key 弹窗（新建 / 更新已有）----
 const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, key: '', desc: '', targetId: null, saving: false, status: null })
+
+// 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
+const addTarget = computed(() => (add.mode === 'update' && add.targetId ? rows.value.find((r) => r.id === add.targetId) || null : null))
+
+// 合并后候选顺序预览：best 追加到头部 + 去重（与 submitAddAsKey 的 merged 逻辑一致），标记哪条是新增。
+const addMergedPreview = computed(() => {
+  if (!add.cand || !addTarget.value) return []
+  const existing = addTarget.value.candidates || []
+  const isDup = (c) => c.by === add.cand.by && c.value === add.cand.value
+  const dup = existing.some(isDup)
+  return [{ ...add.cand, _new: !dup }, ...existing.filter((c) => !isDup(c)).map((c) => ({ ...c, _new: false }))]
+})
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
 function toCand(c) {
@@ -521,5 +598,15 @@ async function submitAddAsKey() {
 .add-status { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
 .add-deep-warn { margin-top: 8px; color: #e6a23c; line-height: 1.5; }
 .match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.probe-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.status-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; cursor: help; }
+.cand-preview-title { font-weight: 600; margin-bottom: 4px; }
+.cand-list { margin: 4px 0 8px; padding-left: 18px; }
+.cand-list li { line-height: 1.7; }
+.cand-list.merged { background: #f5f7fa; border-radius: 4px; padding: 6px 6px 6px 22px; }
+.cand-preview-best { border-top: 1px dashed #dcdfe6; padding-top: 6px; }
+.hint-ok { color: #67c23a; }
+.hint-warn { color: #e6a23c; }
+.add-compare { margin-top: 10px; border-top: 1px dashed #dcdfe6; padding-top: 8px; }
 code { background: #f0f2f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 </style>
