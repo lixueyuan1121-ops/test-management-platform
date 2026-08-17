@@ -36,7 +36,7 @@ def _valid_sub(v: str) -> str:
 
 def _key_out(r: SelectorKey) -> dict:
     return {"id": r.id, "project_id": r.project_id, "sub_product": r.sub_product,
-            "key": r.key, "frame": r.frame, "desc": r.desc,
+            "key": r.key, "frame": r.frame, "page": r.page, "desc": r.desc,
             "candidates": json.loads(r.candidates or "[]"),
             "updated_by": r.updated_by,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None}
@@ -64,7 +64,7 @@ def create_key(body: SelectorKeyIn, db: Session = Depends(get_db),
     if exists:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=f"该作用域下 key「{body.key}」已存在")
     r = SelectorKey(project_id=body.project_id, sub_product=sub, key=body.key.strip(),
-                    frame=body.frame or "auto", desc=body.desc or "",
+                    frame=body.frame or "auto", page=body.page or "", desc=body.desc or "",
                     candidates=json.dumps(body.candidates, ensure_ascii=False),
                     updated_by=user.id, updated_at=datetime.utcnow())
     db.add(r); db.commit(); db.refresh(r)
@@ -79,6 +79,7 @@ def patch_key(kid: int, body: SelectorKeyPatch, db: Session = Depends(get_db),
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key 不存在")
     assert_project_role(db, user, r.project_id, _RW)
     if body.frame is not None: r.frame = body.frame
+    if body.page is not None: r.page = body.page
     if body.desc is not None: r.desc = body.desc
     if body.candidates is not None: r.candidates = json.dumps(body.candidates, ensure_ascii=False)
     r.updated_by = user.id; r.updated_at = datetime.utcnow()

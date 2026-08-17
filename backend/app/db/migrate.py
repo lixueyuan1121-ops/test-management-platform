@@ -243,6 +243,20 @@ def ensure_ai_provider_columns() -> None:
         _ensure_index("test_case", "idx_testcase_provider", "provider")
 
 
+def ensure_selector_page_column() -> None:
+    """selector_key 表补列 page（页面分组维度，纯组织用，不参与定位）。
+
+    老库补列后存量行 page=''（未分类）；新库由 ensure_selector_tables 依模型建表即含 page。
+    幂等：ADD 前先探列。
+    """
+    cols = _columns("selector_key")
+    if not cols:
+        return  # 表尚未建，交给 ensure_selector_tables
+    if "page" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE selector_key ADD COLUMN page VARCHAR(64) NOT NULL DEFAULT ''"))
+
+
 def ensure_selector_tables(engine=None) -> None:
     """建 selector_key / selector_scope(幂等)。
 

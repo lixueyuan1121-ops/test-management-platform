@@ -20,27 +20,36 @@
         </div>
       </template>
 
-      <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="该作用域暂无选择器 key">
-        <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="frame" label="frame" width="120">
-          <template #default="{ row }">{{ row.frame || 'auto' }}</template>
-        </el-table-column>
-        <el-table-column prop="desc" label="说明" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.desc || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="候选数" width="90" align="center">
-          <template #default="{ row }">{{ (row.candidates || []).length }}</template>
-        </el-table-column>
-        <el-table-column label="更新时间" width="150">
-          <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="130" align="center" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+      <el-empty v-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
+      <el-collapse v-else v-model="activePages" v-loading="loading">
+        <el-collapse-item v-for="grp in groupedRows" :key="grp.name" :name="grp.name">
+          <template #title>
+            <span class="page-title">{{ grp.pageLabel }}</span>
+            <el-tag size="small" type="info" effect="plain" class="page-count">{{ grp.keys.length }}</el-tag>
           </template>
-        </el-table-column>
-      </el-table>
+          <el-table :data="grp.keys" size="small" border stripe>
+            <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="frame" label="frame" width="110">
+              <template #default="{ row }">{{ row.frame || 'auto' }}</template>
+            </el-table-column>
+            <el-table-column prop="desc" label="说明" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.desc || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="候选数" width="80" align="center">
+              <template #default="{ row }">{{ (row.candidates || []).length }}</template>
+            </el-table-column>
+            <el-table-column label="更新时间" width="150">
+              <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" align="center">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+                <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
     </el-card>
 
     <!-- 设备探测面板：选在线设备，扫当前页元素产候选 → 加为 key(新建/更新已有)；或校验现有 key 是否失效 -->
@@ -62,6 +71,12 @@
               v-model="probe.contains" placeholder="关键词过滤(可选，按文本 contains)" size="small"
               clearable style="width:220px"
             />
+            <el-select
+              v-model="probe.page" filterable allow-create default-first-option clearable
+              placeholder="当前页面(可选，加 key 默认归属)" size="small" style="width:200px"
+            >
+              <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+            </el-select>
             <el-button
               type="primary" size="small" :loading="probe.running && probe.mode === 'discover'"
               :disabled="!pid || !probe.runner || probe.running" @click="onDiscover"
@@ -181,6 +196,11 @@
         <el-form-item label="frame">
           <el-input v-model="dialog.frame" placeholder="auto / main / iframe 名，缺省 auto" />
         </el-form-item>
+        <el-form-item label="页面">
+          <el-select v-model="dialog.page" filterable allow-create default-first-option clearable placeholder="所属页面，可选已有或直接输入新页面；留空=未分类" style="width:100%">
+            <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="说明">
           <el-input v-model="dialog.desc" type="textarea" :rows="2" placeholder="这个 key 找的是什么元素" />
         </el-form-item>
@@ -222,6 +242,11 @@
         <template v-if="add.mode === 'create'">
           <el-form-item label="key 名" required>
             <el-input v-model="add.key" placeholder="语义 key，如 login_button" />
+          </el-form-item>
+          <el-form-item label="页面">
+            <el-select v-model="add.page" filterable allow-create default-first-option clearable placeholder="所属页面，默认取上方「当前页面」；留空=未分类" style="width:100%">
+              <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+            </el-select>
           </el-form-item>
           <el-form-item label="说明">
             <el-input v-model="add.desc" placeholder="可选：这个 key 找的是什么元素" />
@@ -277,6 +302,33 @@ const rows = ref([])
 const loading = ref(false)
 const importing = ref(false)
 const devices = ref([])   // 我的在线设备（探测目标）
+const activePages = ref([])   // 管理页展开的分组(page name 列表)
+
+// 页面历史建议:当前作用域 rows 的非空 page 去重(供新增/编辑/探测/加 key 的下拉建议)。
+const pageOptions = computed(() => {
+  const set = new Set()
+  for (const r of rows.value) if (r.page) set.add(r.page)
+  return [...set].sort()
+})
+
+// 管理页按 page 分组:每组 {name, pageLabel, keys};page 为空归"(未分类)"并置底。
+const UNGROUPED_NAME = '__ungrouped__'
+const groupedRows = computed(() => {
+  const map = new Map()
+  for (const r of rows.value) {
+    const p = r.page || ''
+    if (!map.has(p)) map.set(p, [])
+    map.get(p).push(r)
+  }
+  const entries = [...map.entries()].sort((a, b) => {
+    if (a[0] === '') return 1
+    if (b[0] === '') return -1
+    return a[0].localeCompare(b[0])
+  })
+  return entries.map(([page, keys]) => ({
+    name: page || UNGROUPED_NAME, pageLabel: page || '（未分类）', keys,
+  }))
+})
 
 // 导入旧注册表仅项目 admin（后端 import-legacy 要求 admin）；平台管理员在任何项目都视为 admin。
 const canImport = computed(() => !!pid.value && auth.roleIn(pid.value) === 'admin')
@@ -299,11 +351,12 @@ async function onProjectChange() {
 
 // 按当前 (项目, 子产品) 取列表：'' 取 shared，否则取 by_sub[子产品]。
 async function reload() {
-  if (!pid.value) { rows.value = []; return }
+  if (!pid.value) { rows.value = []; activePages.value = []; return }
   loading.value = true
   try {
     const data = await listSelectors(pid.value)
     rows.value = subProduct.value ? (data.by_sub?.[subProduct.value] || []) : (data.shared || [])
+    activePages.value = groupedRows.value.map((g) => g.name)   // 默认全部展开
   } finally { loading.value = false }
 }
 
@@ -313,14 +366,14 @@ function fmtTime(s) {
 }
 
 // ---- 新增 / 编辑 ----
-const dialog = reactive({ visible: false, id: null, key: '', frame: '', desc: '', candidatesText: '[]', saving: false })
+const dialog = reactive({ visible: false, id: null, key: '', frame: '', page: '', desc: '', candidatesText: '[]', saving: false })
 
 function openCreate() {
-  Object.assign(dialog, { id: null, key: '', frame: 'auto', desc: '', candidatesText: '[]', saving: false, visible: true })
+  Object.assign(dialog, { id: null, key: '', frame: 'auto', page: '', desc: '', candidatesText: '[]', saving: false, visible: true })
 }
 function openEdit(row) {
   Object.assign(dialog, {
-    id: row.id, key: row.key, frame: row.frame || 'auto', desc: row.desc || '',
+    id: row.id, key: row.key, frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
     candidatesText: JSON.stringify(row.candidates || [], null, 2), saving: false, visible: true,
   })
 }
@@ -340,11 +393,11 @@ async function submit() {
   dialog.saving = true
   try {
     if (dialog.id) {
-      await patchSelector(dialog.id, { frame: dialog.frame || 'auto', desc: dialog.desc || '', candidates })
+      await patchSelector(dialog.id, { frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
     } else {
       await createSelector({
         project_id: pid.value, sub_product: subProduct.value, key: dialog.key.trim(),
-        frame: dialog.frame || 'auto', desc: dialog.desc || '', candidates,
+        frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates,
       })
     }
     ElMessage.success('已保存')
@@ -384,7 +437,7 @@ async function onImport() {
 // probe.result 存最近一次探测结果；mode 记录当前展示的是 discover 还是 verify。
 // updateTarget：verify 里点「重新探测更新」预置的目标 key，下次「加为 key」默认选它（更新已有）。
 const probe = reactive({
-  runner: '', contains: '', mode: 'discover',
+  runner: '', contains: '', mode: 'discover', page: '',
   running: false, done: false, result: null, updateTarget: '', hideExists: false,
 })
 let pollTimer = null
@@ -518,7 +571,7 @@ function reprobeForKey(key) {
 }
 
 // ---- 加为 key 弹窗（新建 / 更新已有）----
-const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, key: '', desc: '', targetId: null, saving: false, status: null })
+const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, key: '', page: '', desc: '', targetId: null, saving: false, status: null })
 
 // 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
 const addTarget = computed(() => (add.mode === 'update' && add.targetId ? rows.value.find((r) => r.id === add.targetId) || null : null))
@@ -550,7 +603,7 @@ function openAddAsKey(el, frame) {
     cand,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
-    key: '', desc: '',
+    key: '', page: probe.page || '', desc: '',
     targetId: preset ? preset.id : null,
   })
 }
@@ -564,7 +617,7 @@ async function submitAddAsKey() {
     if (add.mode === 'create') {
       await createSelector({
         project_id: pid.value, sub_product: subProduct.value, key: add.key.trim(),
-        frame: add.frame || 'auto', desc: add.desc.trim(), candidates: [add.cand],
+        frame: add.frame || 'auto', page: add.page || '', desc: add.desc.trim(), candidates: [add.cand],
       })
       ElMessage.success('已新建 key')
     } else {
@@ -585,6 +638,8 @@ async function submitAddAsKey() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
+.page-title { font-weight: 600; margin-right: 8px; }
+.page-count { vertical-align: middle; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .form-hint { color: #90a4ae; font-size: 12px; }
 .probe-card { margin-top: 16px; }
