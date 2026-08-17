@@ -88,7 +88,7 @@
       <!-- discover 结果：按 shell/vm 分组，列元素文本 + best 候选，逐个「加为 key」 -->
       <template v-else-if="probe.mode === 'discover' && probe.result">
         <div v-if="!(probe.result.groups || []).length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
-        <div v-for="g in (probe.result.groups || [])" :key="g.frame" class="probe-group">
+        <div v-for="(g, gi) in (probe.result.groups || [])" :key="gi" class="probe-group">
           <div class="probe-group-head">
             <el-tag size="small" :type="g.frame === 'vm' ? 'success' : 'info'">{{ g.frame }}</el-tag>
             <span class="probe-group-url" :title="g.url">{{ g.url || '' }}</span>
@@ -453,7 +453,7 @@ function reprobeForKey(key) {
 }
 
 // ---- 加为 key 弹窗（新建 / 更新已有）----
-const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, allCands: [], key: '', desc: '', targetId: null, saving: false, status: null })
+const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, key: '', desc: '', targetId: null, saving: false, status: null })
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
 function toCand(c) {
@@ -470,7 +470,7 @@ function openAddAsKey(el, frame) {
   Object.assign(add, {
     visible: true, saving: false, status,
     tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
-    cand, allCands: (el.candidates || []).map(toCand),
+    cand,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
     key: '', desc: '',
