@@ -105,6 +105,16 @@ export const getRelease = (id) => http.get(`/releases/${id}`)
 export const createRelease = (data) => http.post('/releases', data)
 export const updateRelease = (id, data) => http.patch(`/releases/${id}`, data)
 export const deleteRelease = (id) => http.delete(`/releases/${id}`)
+// ===== 选择器注册表（语义选择器单源）=====
+// listSelectors 返回 { shared:[...], by_sub:{ 子产品: [...] } }；每个 key_out 含 candidates(数组)。
+export const listSelectors = (project_id) => http.get('/selectors/manage', { params: { project_id } })
+export const createSelector = (body) => http.post('/selectors', body)
+export const patchSelector = (id, body) => http.patch(`/selectors/${id}`, body)
+export const deleteSelector = (id) => http.delete(`/selectors/${id}`)
+export const setSelectorScope = (body) => http.put('/selectors/scope', body)
+// 导入内置纳米Work注册表（仅项目 admin）；返回 { imported, skipped }
+export const importLegacySelectors = (project_id) => http.post('/selectors/import-legacy', null, { params: { project_id } })
+
 export const listMyDevices = () => http.get('/devices')
 export const registerDevice = (runner_id, name) => http.post('/devices', { runner_id, name })
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
