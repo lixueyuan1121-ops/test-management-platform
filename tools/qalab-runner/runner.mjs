@@ -359,6 +359,12 @@ async function handleProbes() {
   log(`拉到 ${list.length} 条待探测`);
   for (const p of list) {
     try {
+      // 探测同样需要被测客户端带 CDP 在跑(与 exec 主循环的 gui/e2e 分支一致):没启动则冷启动并等 CDP 就绪。
+      // 未配 NAMICLAW_EXE / CDP 超时会抛错 → 走下方 catch 回写 error,网页立即显示具体原因(而非干等 60s 超时)。
+      await ensureNamiclaw();
+      // 冷启动后页面还在加载:connect() = ensureConnected + waitForContentFrame(等业务 iframe 出现,≤8s),
+      // 加载完再扫元素,避免探到空白页/加载中元素。客户端已开着时 iframe 早就绪,首轮即命中、几乎零等待。
+      await guiCore.connect();
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
       if ((p.params || {}).mode === "verify") {
