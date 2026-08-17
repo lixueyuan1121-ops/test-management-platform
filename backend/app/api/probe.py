@@ -11,6 +11,7 @@ params/result 以 TEXT 存 JSON 字符串（兼容 MySQL 5.6），出参 json.lo
 """
 import json
 import os
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -164,6 +165,31 @@ _UPLOADS_DIR = os.path.join(
 _PROBE_SHOT_DIR = os.path.join(_UPLOADS_DIR, "probes")
 _MAX_SHOT_BYTES = 10 * 1024 * 1024  # 10MB
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# 探测截图保留天数(惰性清理):超过此天数的旧截图在下次有新探测上传时被删。
+# 可用环境变量 PROBE_SHOT_RETENTION_DAYS 覆盖;≤0 视为不清理(保留全部)。
+_SHOT_RETENTION_DAYS = int(os.getenv("PROBE_SHOT_RETENTION_DAYS", "7"))
+
+
+def _cleanup_old_shots() -> None:
+    """删掉超过保留期的探测截图(惰性清理:仅清磁盘文件,不动 DB 的 screenshot_path)。
+
+    在 upload_screenshot 写完新图后调一次:没新探测就不触发(那时目录也不再增长)。
+    只删磁盘,历史探测记录的元素/坐标数据仍在;过期截图前端显示裂图但记录不丢。
+    整个函数吞掉异常——清理是尽力而为,绝不影响上传主流程。
+    """
+    if _SHOT_RETENTION_DAYS <= 0:
+        return
+    try:
+        cutoff = time.time() - _SHOT_RETENTION_DAYS * 86400
+        for name in os.listdir(_PROBE_SHOT_DIR):
+            path = os.path.join(_PROBE_SHOT_DIR, name)
+            try:
+                if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                continue   # 单个文件删失败(权限/占用)不影响其余
+    except OSError:
+        pass   # 目录不存在等：无所谓，本就没有可清理的截图
 
 
 @router.post("/{probe_id}/screenshot")
@@ -196,4 +222,5 @@ async def upload_screenshot(
         f.write(data)
     r.screenshot_path = rel
     db.commit()
+    _cleanup_old_shots()   # 顺手清理过期旧截图(惰性:只在有新探测时触发)
     return ok({"screenshot_url": f"/uploads/{rel}"})
