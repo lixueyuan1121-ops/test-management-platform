@@ -104,6 +104,18 @@
       <template v-else-if="probe.mode === 'discover' && probe.result">
         <div v-if="!enrichedGroups.length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
         <template v-else>
+          <div v-if="probe.screenshotUrl && shotBoxes.length" class="shot-wrap">
+            <img :src="probe.screenshotUrl" class="shot-img" alt="页面截图" />
+            <div class="shot-overlay">
+              <div
+                v-for="box in shotBoxes" :key="box.uid"
+                class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid }]"
+                :style="box.style" :title="box.label"
+                @mouseenter="hoverKey = box.uid" @mouseleave="hoverKey = ''"
+                @click="openAddAsKey(box.el, box.frameMatch)"
+              ></div>
+            </div>
+          </div>
           <div class="probe-toolbar">
             <el-checkbox v-model="probe.hideExists" size="small">隐藏「已存在」（{{ totalCounts.exists }}）</el-checkbox>
             <span class="form-hint">新增 {{ totalCounts.new }} · 可更新 {{ totalCounts.update }} · 已存在 {{ totalCounts.exists }}</span>
@@ -114,7 +126,10 @@
               <span class="probe-group-url" :title="g.url">{{ g.url || '' }}</span>
               <span class="form-hint">共 {{ g.total ?? (g.elements || []).length }} 个 · 新增 {{ g.counts.new }}／可更新 {{ g.counts.update }}／已存在 {{ g.counts.exists }}{{ g.error ? `（错误：${g.error}）` : '' }}</span>
             </div>
-            <el-table :data="g.elements" size="small" border empty-text="该 frame 无待显示元素（或已隐藏「已存在」）">
+            <el-table
+              :data="g.elements" size="small" border empty-text="该 frame 无待显示元素（或已隐藏「已存在」）"
+              :row-class-name="rowClass" @cell-mouse-enter="onCellEnter" @cell-mouse-leave="() => hoverKey = ''"
+            >
               <el-table-column label="元素" min-width="180" show-overflow-tooltip>
                 <template #default="{ row }">
                   <el-tag size="small" type="info" effect="plain">{{ row.tag }}{{ row.type ? `[${row.type}]` : '' }}</el-tag>
@@ -438,7 +453,7 @@ async function onImport() {
 // updateTarget：verify 里点「重新探测更新」预置的目标 key，下次「加为 key」默认选它（更新已有）。
 const probe = reactive({
   runner: '', contains: '', mode: 'discover', page: '',
-  running: false, done: false, result: null, updateTarget: '', hideExists: false,
+  running: false, done: false, result: null, updateTarget: '', hideExists: false, screenshotUrl: '',
 })
 let pollTimer = null
 
@@ -454,6 +469,7 @@ async function runProbe(mode, extraParams = {}) {
   probe.running = true
   probe.done = false
   probe.result = null
+  probe.screenshotUrl = ''
   let id
   try {
     const params = { contains: probe.contains || '', ...extraParams }
@@ -469,6 +485,7 @@ async function runProbe(mode, extraParams = {}) {
     if (r.status === 'done') {
       stopPoll()
       probe.running = false; probe.done = true; probe.result = r.result || {}
+      probe.screenshotUrl = r.screenshot_url || ''
     } else if (r.status === 'failed') {
       stopPoll()
       probe.running = false; probe.done = true; probe.result = null
@@ -535,11 +552,11 @@ const STATUS_ORDER = { new: 0, update: 1, exists: 2, none: 3 }
 const enrichedGroups = computed(() => {
   if (probe.mode !== 'discover' || !probe.result) return []
   const kIdx = keyIndex.value
-  return (probe.result.groups || []).map((g) => {
-    let els = (g.elements || []).map((el) => {
+  return (probe.result.groups || []).map((g, gi) => {
+    let els = (g.elements || []).map((el, ei) => {
       const status = el.best ? matchStatus(el) : { type: 'none' }
       const hit = status.key ? kIdx.get(status.key) : null
-      return { ...el, _status: status, _hitCands: hit ? (hit.candidates || []) : [], _hitFrame: hit ? (hit.frame || '') : '' }
+      return { ...el, _uid: `${gi}-${ei}`, _frameMatch: g.frameMatch || g.frame || 'auto', _status: status, _hitCands: hit ? (hit.candidates || []) : [], _hitFrame: hit ? (hit.frame || '') : '' }
     })
     const counts = { new: 0, update: 0, exists: 0 }
     for (const e of els) if (counts[e._status.type] !== undefined) counts[e._status.type] += 1
@@ -555,6 +572,36 @@ const totalCounts = computed(() => {
   for (const g of enrichedGroups.value) { t.new += g.counts.new; t.update += g.counts.update; t.exists += g.counts.exists }
   return t
 })
+
+// ---- 截图叠框（元素框选）----
+// hoverKey：当前高亮的元素 uid，驱动「截图框 ↔ 表格行」双向高亮。
+const hoverKey = ref('')
+
+// 截图上的框：每个有 absRect 的元素按 absRect/pageSize 归一化成百分比定位（响应式，自动消 dpr）。
+// 基于 enrichedGroups（已按 hideExists 过滤/排序），故隐藏已存在时框也同步减少。
+const shotBoxes = computed(() => {
+  const ps = probe.result?.pageSize
+  if (!probe.screenshotUrl || !ps || !ps.w || !ps.h) return []
+  const boxes = []
+  for (const g of enrichedGroups.value) {
+    for (const el of g.elements) {
+      if (!el.absRect) continue
+      boxes.push({
+        uid: el._uid, el, frameMatch: el._frameMatch, type: el._status.type,
+        label: `${el.text || el.tag}${el.best ? ` · ${el.best.by}=${el.best.value}` : ''}`,
+        style: {
+          left: `${(el.absRect.x / ps.w) * 100}%`, top: `${(el.absRect.y / ps.h) * 100}%`,
+          width: `${(el.absRect.w / ps.w) * 100}%`, height: `${(el.absRect.h / ps.h) * 100}%`,
+        },
+      })
+    }
+  }
+  return boxes
+})
+
+// 表格行 class 高亮当前 hover 的元素；cell hover 设 hoverKey（框↔行双向联动）。
+const rowClass = ({ row }) => (row._uid && row._uid === hoverKey.value ? 'row-hi' : '')
+const onCellEnter = (row) => { hoverKey.value = row._uid || '' }
 
 // verify 结果 {key:bool} → 表格行；失效(false)排前面便于处理。
 const verifyRows = computed(() => {
@@ -654,6 +701,14 @@ async function submitAddAsKey() {
 .add-deep-hint { margin-top: 8px; line-height: 1.5; }
 .match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .probe-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.shot-wrap { position: relative; display: inline-block; max-width: 100%; margin-bottom: 12px; border: 1px solid #e4e7ed; border-radius: 4px; overflow: hidden; }
+.shot-img { display: block; max-width: 100%; height: auto; }
+.shot-overlay { position: absolute; inset: 0; pointer-events: none; }
+.el-box { position: absolute; box-sizing: border-box; border: 1.5px solid rgba(64,158,255,.55); background: rgba(64,158,255,.07); cursor: pointer; pointer-events: auto; transition: box-shadow .1s, background .1s; }
+.el-box.box-update { border-color: rgba(230,162,60,.75); background: rgba(230,162,60,.1); }
+.el-box.box-exists { border-color: rgba(103,194,58,.5); background: rgba(103,194,58,.06); }
+.el-box.active { border-width: 2px; box-shadow: 0 0 0 2px rgba(64,158,255,.35); background: rgba(64,158,255,.18); z-index: 2; }
+:deep(.el-table .row-hi) { background: #ecf5ff; }
 .status-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; cursor: help; }
 .cand-preview-title { font-weight: 600; margin-bottom: 4px; }
 .cand-list { margin: 4px 0 8px; padding-left: 18px; }

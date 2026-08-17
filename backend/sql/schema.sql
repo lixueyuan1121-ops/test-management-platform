@@ -367,6 +367,7 @@ CREATE TABLE IF NOT EXISTS `probe_request` (
   `params` TEXT,
   `result` TEXT,
   `error` VARCHAR(500) DEFAULT NULL,
+  `screenshot_path` VARCHAR(255) DEFAULT NULL,
   `created_by` INT DEFAULT NULL,
   `created_at` DATETIME DEFAULT NULL,
   `updated_at` DATETIME DEFAULT NULL,

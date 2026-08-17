@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.db.migrate import ensure_exec_run_kind, ensure_issue_columns, ensure_perf_indexes, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width
+from app.db.migrate import ensure_exec_run_kind, ensure_issue_columns, ensure_perf_indexes, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column
 from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
@@ -39,6 +39,7 @@ def init_db() -> None:
     ensure_selector_tables()
     ensure_selector_page_column()
     ensure_selector_frame_width()
+    ensure_probe_screenshot_column()
     ensure_perf_indexes()
     db = SessionLocal()
     try:
@@ -79,8 +80,23 @@ def create_app() -> FastAPI:
     def _startup():
         init_db()
 
+    _mount_uploads(app)
     _mount_frontend(app)
     return app
+
+
+def _mount_uploads(app: FastAPI) -> None:
+    """托管运行时上传文件（探测截图 uploads/probes/<id>.png 等）。
+
+    与 /assets 同款静态托管，但目录是运行时数据（不入 git，见 .gitignore）。目录不存在
+    先建，避免 StaticFiles 因缺目录启动报错。必须在 SPA catch-all 之前挂载
+    （create_app 里先于 _mount_frontend 调用），否则 /uploads/* 会被前端路由吞掉。
+    """
+    uploads_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads",
+    )
+    os.makedirs(uploads_dir, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
 def _mount_frontend(app: FastAPI) -> None:
