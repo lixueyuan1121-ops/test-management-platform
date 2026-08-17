@@ -257,6 +257,19 @@ def ensure_selector_page_column() -> None:
             conn.execute(text("ALTER TABLE selector_key ADD COLUMN page VARCHAR(64) NOT NULL DEFAULT ''"))
 
 
+def ensure_selector_frame_width() -> None:
+    """selector_key.frame 列宽放宽到 128（容纳 url:<hostname> 深层 frame 定位）。
+
+    老库 frame 原为 VARCHAR(8)（仅存 shell/vm/auto）。MySQL 需 MODIFY 放宽；SQLite 声明长度
+    不强制、写入不截断，无需 DDL（仅 MySQL 执行）。幂等：重复 MODIFY 安全。
+    """
+    if not _columns("selector_key"):
+        return  # 表尚未建
+    if engine.dialect.name == "mysql":
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE selector_key MODIFY COLUMN `frame` VARCHAR(128) NOT NULL DEFAULT 'auto'"))
+
+
 def ensure_selector_tables(engine=None) -> None:
     """建 selector_key / selector_scope(幂等)。
 

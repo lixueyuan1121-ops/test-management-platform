@@ -160,7 +160,7 @@
                   >已存在</el-button>
                   <el-button
                     v-else link type="primary" size="small"
-                    :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frame)"
+                    :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frameMatch)"
                   >{{ row._status.type === 'update' ? '更新已有' : '加为 key' }}</el-button>
                 </template>
               </el-table-column>
@@ -194,7 +194,7 @@
           <el-input v-model="dialog.key" :disabled="!!dialog.id" placeholder="语义 key，如 login_button" />
         </el-form-item>
         <el-form-item label="frame">
-          <el-input v-model="dialog.frame" placeholder="auto / main / iframe 名，缺省 auto" />
+          <el-input v-model="dialog.frame" placeholder="shell / vm / auto / url:<iframe host>，缺省 auto" />
         </el-form-item>
         <el-form-item label="页面">
           <el-select v-model="dialog.page" filterable allow-create default-first-option clearable placeholder="所属页面，可选已有或直接输入新页面；留空=未分类" style="width:100%">
@@ -228,8 +228,8 @@
           <el-tag :type="STATUS_META[add.status.type].tag" size="small" effect="plain">{{ STATUS_META[add.status.type].label }}</el-tag>
           <span class="form-hint">已匹配库中 key「{{ add.status.key }}」，{{ add.status.type === 'exists' ? '该候选已登记' : '建议更新已有以补充候选' }}</span>
         </div>
-        <div v-if="add.frame !== 'shell' && add.frame !== 'vm'" class="form-hint add-deep-warn">
-          ⚠ 该元素在更深的嵌套 iframe，可探测/登记，但执行侧目前仅解析 shell 与主 vm iframe，深层 frame 的执行定位待后续完善。
+        <div v-if="add.frame && add.frame.startsWith('url:')" class="form-hint add-deep-hint">
+          该元素在嵌套 iframe，将按 frame url 定位：<code>{{ add.frame }}</code>（执行时从页面所有 frame 按此 url 匹配，找不到回退 shell/vm）
         </div>
       </div>
       <el-form label-width="90px" style="margin-top:12px">
@@ -651,7 +651,7 @@ async function submitAddAsKey() {
 .add-preview { background: #f5f7fa; border-radius: 4px; padding: 10px 12px; }
 .add-cand { margin-top: 6px; }
 .add-status { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
-.add-deep-warn { margin-top: 8px; color: #e6a23c; line-height: 1.5; }
+.add-deep-hint { margin-top: 8px; line-height: 1.5; }
 .match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .probe-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
 .status-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; cursor: help; }
