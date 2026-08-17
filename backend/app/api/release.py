@@ -16,26 +16,63 @@ router = APIRouter(prefix="/api/releases", tags=["releases"])
 
 _ALL_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 
-# 子产品固定枚举（全平台统一）。前端 ReleaseNotes.vue 的 SUB_PRODUCTS 常量须与此保持一致。
-SUB_PRODUCTS = ("纳米Work云端版", "纳米Work桌面版", "360安全龙虾云端版", "360安全龙虾WSL")
+# 子产品固定枚举：按项目平台类型分两套。前端 ReleaseNotes.vue 的常量须与此保持一致。
+SUB_PRODUCTS_BY_TYPE = {
+    "pc": ("纳米Work云端版", "纳米Work桌面版", "360安全龙虾云端版", "360安全龙虾WSL"),
+    "app": ("360安全龙虾Android端", "360安全龙虾iOS端", "纳米Work Android端", "纳米Work iOS端"),
+}
+
+# 全部子产品合集（两套并集），供 selectors 等仅按"值是否合法"校验的模块复用。
+SUB_PRODUCTS = SUB_PRODUCTS_BY_TYPE["pc"] + SUB_PRODUCTS_BY_TYPE["app"]
+
+# 渠道拼接后的最大存储长度，与 release_record.channel 列宽一致。
+_CHANNEL_MAXLEN = 255
 
 
-def _norm_sub_product(v: str | None) -> str | None:
-    """校验并规整子产品：空/空串 → None（未指定）；非白名单值 → 400。"""
+def _sub_products_for(platform_type: str | None) -> tuple[str, ...]:
+    """取某项目类型对应的子产品白名单；未分类(None/其它)按 PC 端处理。"""
+    return SUB_PRODUCTS_BY_TYPE["app"] if platform_type == "app" else SUB_PRODUCTS_BY_TYPE["pc"]
+
+
+def _norm_sub_product(v: str | None, platform_type: str | None) -> str | None:
+    """校验并规整子产品：空/空串 → None；非该项目类型白名单值 → 400。"""
     if v is None:
         return None
     v = v.strip()
     if not v:
         return None
-    if v not in SUB_PRODUCTS:
+    if v not in _sub_products_for(platform_type):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="子产品取值非法")
     return v
+
+
+def _norm_channel(items: list[str] | None, platform_type: str | None) -> str | None:
+    """规整发版渠道（多选，支持手填，不做白名单校验）。
+
+    仅 APP 端项目保留渠道；其它类型一律清空（PC 端不展示渠道）。清洗：去首尾空白、
+    丢空项、按序去重；半角逗号是存储分隔符，手填值里的半角逗号替换为全角避免破坏。
+    逗号拼接后超列宽 → 400。
+    """
+    if platform_type != "app" or not items:
+        return None
+    seen: list[str] = []
+    for it in items:
+        s = (it or "").strip().replace(",", "，")
+        if s and s not in seen:
+            seen.append(s)
+    if not seen:
+        return None
+    joined = ",".join(seen)
+    if len(joined) > _CHANNEL_MAXLEN:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="发版渠道过长")
+    return joined
 
 
 class ReleaseCreate(BaseModel):
     project_id: int
     version: str = Field(min_length=1, max_length=64)
     sub_product: str | None = Field(default=None, max_length=32)
+    channel: list[str] | None = None
     release_date: date
     req_count: int = Field(default=0, ge=0)
     content: str | None = None
@@ -44,6 +81,7 @@ class ReleaseCreate(BaseModel):
 class ReleaseUpdate(BaseModel):
     version: str | None = Field(default=None, max_length=64)
     sub_product: str | None = Field(default=None, max_length=32)
+    channel: list[str] | None = None
     release_date: date | None = None
     req_count: int | None = Field(default=None, ge=0)
     content: str | None = None
@@ -66,6 +104,7 @@ def _to_out(db: Session, r: ReleaseRecord, name_map: dict | None = None) -> dict
     return {
         "id": r.id, "project_id": r.project_id, "version": r.version,
         "sub_product": r.sub_product,
+        "channel": r.channel.split(",") if r.channel else [],
         "release_date": str(r.release_date), "req_count": r.req_count,
         "content": r.content, "memo": r.memo,
         "created_by": r.created_by, "created_by_name": name,
@@ -154,11 +193,13 @@ def get_release(rid: int, db: Session = Depends(get_db), user: User = Depends(ge
 
 @router.post("")
 def create_release(body: ReleaseCreate, db: Session = Depends(get_db), user: User = Depends(require_platform_admin)):
-    if not db.get(Project, body.project_id):
+    proj = db.get(Project, body.project_id)
+    if not proj:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
     r = ReleaseRecord(
         project_id=body.project_id, version=body.version.strip(), release_date=body.release_date,
-        sub_product=_norm_sub_product(body.sub_product),
+        sub_product=_norm_sub_product(body.sub_product, proj.platform_type),
+        channel=_norm_channel(body.channel, proj.platform_type),
         req_count=body.req_count or 0, content=body.content, memo=body.memo, created_by=user.id,
     )
     db.add(r)
@@ -172,11 +213,16 @@ def update_release(rid: int, body: ReleaseUpdate, db: Session = Depends(get_db),
     r = db.get(ReleaseRecord, rid)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
+    proj = db.get(Project, r.project_id)
+    ptype = proj.platform_type if proj else None
     if body.version is not None:
         r.version = body.version.strip()
     if "sub_product" in body.model_fields_set:
-        # 显式传入才更新：传值→校验白名单；传 null/空→清为未指定。未传则保持原值。
-        r.sub_product = _norm_sub_product(body.sub_product)
+        # 显式传入才更新：传值→按项目类型校验白名单；传 null/空→清为未指定。未传则保持原值。
+        r.sub_product = _norm_sub_product(body.sub_product, ptype)
+    if "channel" in body.model_fields_set:
+        # 显式传入才更新：APP 端项目规整存储；非 APP 端一律清空；未传则保持原值。
+        r.channel = _norm_channel(body.channel, ptype)
     if body.release_date is not None:
         r.release_date = body.release_date
     if body.req_count is not None:

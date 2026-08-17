@@ -10,6 +10,20 @@ from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectOut
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
+_PLATFORM_TYPES = ("pc", "app")
+
+
+def _norm_platform(v: str | None) -> str | None:
+    """校验项目平台类型：空→None(未分类)；非 pc/app→400。"""
+    if v is None:
+        return None
+    v = v.strip().lower()
+    if not v:
+        return None
+    if v not in _PLATFORM_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="非法平台类型")
+    return v
+
 
 @router.get("")
 def list_projects(
@@ -40,7 +54,8 @@ def create_project(
 ):
     if db.query(Project).filter_by(code=body.code).first():
         raise HTTPException(status.HTTP_409_CONFLICT, detail="项目编码已存在")
-    p = Project(name=body.name, code=body.code, description=body.description)
+    p = Project(name=body.name, code=body.code, description=body.description,
+                platform_type=_norm_platform(body.platform_type))
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -66,5 +81,7 @@ def update_project(
             p.status = ProjectStatus(body.status)
         except ValueError:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="非法状态")
+    if "platform_type" in body.model_fields_set:
+        p.platform_type = _norm_platform(body.platform_type)
     db.commit()
     return ok(ProjectOut.model_validate(p).model_dump())

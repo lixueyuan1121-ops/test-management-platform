@@ -10,6 +10,9 @@
       <el-table :data="projects" v-loading="loading" size="small">
         <el-table-column prop="code" label="编码" width="160" />
         <el-table-column prop="name" label="名称" />
+        <el-table-column label="平台类型" width="100">
+          <template #default="{ row }">{{ platformLabel(row.platform_type) }}</template>
+        </el-table-column>
         <el-table-column prop="description" label="描述" />
         <el-table-column prop="status" label="状态" width="100" />
         <el-table-column label="操作" width="160">
@@ -26,6 +29,12 @@
         <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="编码"><el-input v-model="form.code" :disabled="!!dialog.id" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" /></el-form-item>
+        <el-form-item label="平台类型">
+          <el-select v-model="form.platform_type" placeholder="未分类" clearable style="width:100%">
+            <el-option label="PC端" value="pc" />
+            <el-option label="APP端" value="app" />
+          </el-select>
+        </el-form-item>
         <el-form-item v-if="dialog.id" label="状态">
           <el-select v-model="form.status" style="width:100%">
             <el-option label="活跃" value="active" />
@@ -51,7 +60,10 @@ const app = useAppStore()
 const projects = ref([])
 const loading = ref(false)
 const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ name: '', code: '', description: '', status: 'active' })
+const form = reactive({ name: '', code: '', description: '', status: 'active', platform_type: '' })
+
+// 平台类型展示：pc→PC端 / app→APP端 / 空→—
+function platformLabel(v) { return { pc: 'PC端', app: 'APP端' }[v] || '—' }
 
 async function load() {
   loading.value = true
@@ -61,12 +73,12 @@ onMounted(load)
 
 function openCreate() {
   dialog.id = null
-  Object.assign(form, { name: '', code: '', description: '', status: 'active' })
+  Object.assign(form, { name: '', code: '', description: '', status: 'active', platform_type: '' })
   dialog.visible = true
 }
 function openEdit(row) {
   dialog.id = row.id
-  Object.assign(form, { name: row.name, code: row.code, description: row.description || '', status: row.status })
+  Object.assign(form, { name: row.name, code: row.code, description: row.description || '', status: row.status, platform_type: row.platform_type || '' })
   dialog.visible = true
 }
 async function submit() {
@@ -74,10 +86,10 @@ async function submit() {
   dialog.saving = true
   try {
     if (dialog.id) {
-      await updateProject(dialog.id, { name: form.name, description: form.description, status: form.status })
+      await updateProject(dialog.id, { name: form.name, description: form.description, status: form.status, platform_type: form.platform_type || null })
       app.invalidateProjects()
     } else {
-      await createProject({ name: form.name, code: form.code, description: form.description })
+      await createProject({ name: form.name, code: form.code, description: form.description, platform_type: form.platform_type || null })
       app.invalidateProjects()
     }
     ElMessage.success('保存成功')

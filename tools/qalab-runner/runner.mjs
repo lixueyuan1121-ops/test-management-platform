@@ -74,6 +74,35 @@ const fetchPending = () => api("GET", `/api/exec-queue?runner=${encodeURICompone
 const claim        = (id) => api("POST", `/api/exec-queue/${id}/claim?runner=${encodeURIComponent(RUNNER_ID)}`);
 const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
 
+// ---- 设备探测队列(与 exec 队列并列,同一 runner token/契约)----
+// GET /api/probe/pending?runner= 拉本机 pending 探测(平台侧拉取即置 running);
+// PATCH /api/probe/{id}?runner= 回写 {result} 或 {error}。镜像上面的 exec 封装。
+const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
+const reportProbe  = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
+
+// 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。三种情形都不清空内置兜底:
+//   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 跳过 setRegistry、保留内置 57 key;
+//   ② API 不可达(异常)→ 用缓存或 null;③ 拿到非空注册表 → 缓存并返回。
+// data 取法:api() 已解包 {code,msg,data} 返回 data 本身(见 fetchPending);`res?.data || res` 仅为防御。
+const _regCache = new Map();  // `${project_id}|${sub}` -> {version, registry, vmIframe}
+async function fetchRegistry(projectId, sub = "") {
+  if (!projectId) return null;
+  const ck = `${projectId}|${sub}`;
+  try {
+    const res = await api("GET", `/api/selectors?project_id=${projectId}&sub_product=${encodeURIComponent(sub)}`);
+    const data = res?.data || res;   // api() 已解包则直接是 data
+    // 空 DB(registry 为空/无 key)→ 保留内置兜底或旧缓存,绝不用 {} 覆盖(否则该项目所有 key 定位全 fail)。
+    if (!data || !data.registry || !Object.keys(data.registry).length) {
+      return _regCache.get(ck) || null;
+    }
+    _regCache.set(ck, data);
+    return data;
+  } catch (e) {
+    log(`拉注册表失败(${ck}):${e.message};回落${_regCache.has(ck) ? "缓存" : "内置文件"}`);
+    return _regCache.get(ck) || null;   // 有缓存用缓存,否则 null→gui-core 用内置文件
+  }
+}
+
 // ---- 确保 namiclaw 带 CDP 调试端口在跑(GUI 用例前置)----
 // namiclaw 有单实例锁:必须先杀光旧实例,再带 --remote-debugging-port 冷启动,否则端口不开。
 // Windows 用 PowerShell Start-Process(脱离 git-bash fork 问题);Mac/Linux 用 spawn detached。
@@ -299,6 +328,44 @@ function parseVerdict(raw) {
   return null;
 }
 
+// ---- 设备探测处理(与 exec 主循环并列)----
+// 每轮拉本机 pending 探测,按 params.mode 分派:
+//   discover → guiCore.probe(扫当前页元素,产候选选择器);
+//   verify   → guiCore.verifyKeys(校验当前作用域已登记的 key 是否还命中当前页)。
+// 探测前先按 project_id/sub_product 拉合并注册表换入 gui-core(空 DB→null 则保留内置兜底,不换)。
+// 单条探测抛错(无真实设备/CDP 未起时 gui.probe/verifyKeys 会抛)→ 回写 error,不影响其余探测与主循环。
+async function handleProbes() {
+  let list = [];
+  try {
+    const res = await fetchProbes();
+    list = res?.data || res || [];   // api() 已解包 data;res?.data 仅为防御(见 fetchRegistry)
+  } catch (e) {
+    log("拉探测队列失败:", e.message);
+    return;
+  }
+  if (!list.length) return;
+  log(`拉到 ${list.length} 条待探测`);
+  for (const p of list) {
+    try {
+      const reg = await fetchRegistry(p.project_id, p.sub_product || "");
+      if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
+      let out;
+      if ((p.params || {}).mode === "verify") {
+        // verify:校验当前作用域已有 key 是否还命中当前页(空 DB→reg 为 null→[]→{verify:{}})
+        const keys = Object.keys((reg && reg.registry) || {});
+        out = await guiCore.verifyKeys(keys);
+      } else {
+        out = await guiCore.probe(p.params || {});   // discover:扫当前页元素拿候选选择器
+      }
+      await reportProbe(p.id, { result: out });
+      log(`回写探测 id=${p.id} mode=${(p.params || {}).mode || "discover"} -> done`);
+    } catch (e) {
+      log(`探测 id=${p.id} 异常:`, e.message);
+      try { await reportProbe(p.id, { error: String(e.message || e) }); } catch {}
+    }
+  }
+}
+
 // ---- 主循环 ----
 async function tick() {
   const pending = await fetchPending();
@@ -318,6 +385,9 @@ async function tick() {
         result = { verdict: "fail", reason: "该用例为人工/不可自动化(manual),不应下发到执行机;请在平台改判类型或取消下发", duration_ms: 1 };
       } else if (item.kind === "gui" || item.kind === "e2e") {
         await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
+        // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则不换,沿用内置文件(回落)。
+        const reg = await fetchRegistry(item.payload?.project_id, "");
+        if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
         const script = item.payload?.script;
         // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
         if (Array.isArray(script) && script.length) {
@@ -355,6 +425,8 @@ async function main() {
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   for (;;) {
     try { await tick(); } catch (e) { log("轮询异常:", e.message); }
+    // exec 轮询之后并列处理设备探测队列(独立 try,探测异常不影响下一轮 exec 轮询)。
+    try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
     await sleep(POLL_MS);
   }
 }

@@ -29,6 +29,7 @@ CREATE TABLE `project` (
   `name` VARCHAR(128) NOT NULL,
   `code` VARCHAR(64) NOT NULL,
   `description` VARCHAR(512) DEFAULT NULL,
+  `platform_type` VARCHAR(16) DEFAULT NULL,
   `status` ENUM('active','archived') NOT NULL DEFAULT 'active',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -313,6 +314,7 @@ CREATE TABLE `release_record` (
   `project_id` BIGINT NOT NULL,
   `version` VARCHAR(64) NOT NULL,
   `sub_product` VARCHAR(32) DEFAULT NULL,
+  `channel` VARCHAR(255) DEFAULT NULL,
   `release_date` DATE NOT NULL,
   `req_count` INT NOT NULL DEFAULT 0,
   `content` TEXT,
@@ -323,6 +325,54 @@ CREATE TABLE `release_record` (
   KEY `idx_release_project_date` (`project_id`,`release_date`),
   CONSTRAINT `fk_release_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_release_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 语义选择器注册表（单一事实源）：按 project_id + sub_product 分域
+-- candidates 用 TEXT 存 JSON 字符串（MySQL 5.6 无原生 JSON）
+CREATE TABLE IF NOT EXISTS `selector_key` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `key` VARCHAR(64) NOT NULL,
+  `frame` VARCHAR(8) NOT NULL DEFAULT 'auto',
+  `desc` VARCHAR(255) NOT NULL DEFAULT '',
+  `candidates` TEXT,
+  `updated_by` INT DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_selkey_scope_key` (`project_id`,`sub_product`,`key`),
+  KEY `idx_selkey_scope` (`project_id`,`sub_product`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 每个 (project_id, sub_product) 域的 vm_iframe 配置
+CREATE TABLE IF NOT EXISTS `selector_scope` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `vm_iframe` VARCHAR(255) NOT NULL DEFAULT '',
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_selscope` (`project_id`,`sub_product`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 设备探测请求：平台下发探测 → runner 拉取执行 → 回写 result/error
+-- params/result 用 TEXT 存 JSON 字符串（MySQL 5.6 无原生 JSON）
+CREATE TABLE IF NOT EXISTS `probe_request` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `runner` VARCHAR(64) NOT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `params` TEXT,
+  `result` TEXT,
+  `error` VARCHAR(500) DEFAULT NULL,
+  `created_by` INT DEFAULT NULL,
+  `created_at` DATETIME DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_probe_project` (`project_id`),
+  KEY `idx_probe_runner` (`runner`),
+  KEY `idx_probe_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================

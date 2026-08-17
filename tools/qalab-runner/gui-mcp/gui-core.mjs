@@ -68,11 +68,19 @@ export const DISCOVER_SCRIPT = function () {
 };
 
 // 工厂:创建一个 gui-core 实例(持有 browser/page 连接态)。
-// opts: { cdpUrl, timeout, selectorsPath }
+// opts: { cdpUrl, timeout, selectorsPath, registry, vmIframe }
+// registry/vmIframe 若传入则直接用之(runner 从 API 拉的注册表),否则 readFileSync 内置 selectors.json。
 export function createGuiCore(opts = {}) {
   const CDP_URL = opts.cdpUrl || process.env.CDP_URL || "http://127.0.0.1:9222";
   const DEFAULT_TIMEOUT = Number(opts.timeout || process.env.GUI_TIMEOUT_MS || 10000);
-  const { registry: REGISTRY, vmIframe: VM_IFRAME } = JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8"));
+  // let(非 const):setRegistry 就地换表后,闭包引用它的 resolveKey/isKeyVisible/scopesFor/contentFrame 立即生效。
+  let REGISTRY, VM_IFRAME;
+  if (opts.registry) {
+    REGISTRY = opts.registry; VM_IFRAME = opts.vmIframe || "";
+  } else {
+    const j = JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8"));
+    REGISTRY = j.registry; VM_IFRAME = j.vmIframe;
+  }
 
   let browser = null;
   let page = null;
@@ -169,6 +177,9 @@ export function createGuiCore(opts = {}) {
   // ---- 对外操作(server 和 StepExecutor 共用)----
   return {
     get registry() { return REGISTRY; },
+    // 就地换注册表(runner 每条 gui/e2e 用例执行前按 project_id 从 API 拉后调):只换 REGISTRY/VM_IFRAME,
+    // 不动 browser/page 连接态。闭包引用它俩的 resolveKey/isKeyVisible/scopesFor/contentFrame 随即生效。
+    setRegistry(registry, vmIframe) { REGISTRY = registry || {}; VM_IFRAME = vmIframe || VM_IFRAME; },
     ensureConnected,
     contentFrame,
 
@@ -193,6 +204,14 @@ export function createGuiCore(opts = {}) {
         groups.push({ frame, url: target.url(), total: els.length, elements: els.slice(0, limit) });
       }
       return { groups };
+    },
+    // 校验一批语义 key 是否在当前页命中(逐个 isKeyVisible,复用同一定位引擎)。
+    // 供 runner 的 probe verify 模式用:回归确认某作用域已登记的 key 仍能在页面上定位到。
+    async verifyKeys(keys) {
+      await ensureConnected();
+      const out = {};
+      for (const k of (keys || [])) out[k] = await isKeyVisible(k);
+      return { verify: out };
     },
     async goto(url) {
       await ensureConnected();

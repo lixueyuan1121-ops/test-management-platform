@@ -14,6 +14,8 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(128))
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 平台类型：pc/app，控制发版记录页的子产品枚举与是否显示发版渠道列；NULL=未分类(按 PC 端展示)。
+    platform_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus, length=16), default=ProjectStatus.active, server_default="active"
     )
