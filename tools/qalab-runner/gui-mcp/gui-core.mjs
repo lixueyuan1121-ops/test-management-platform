@@ -205,6 +205,14 @@ export function createGuiCore(opts = {}) {
       }
       return { groups };
     },
+    // 校验一批语义 key 是否在当前页命中(逐个 isKeyVisible,复用同一定位引擎)。
+    // 供 runner 的 probe verify 模式用:回归确认某作用域已登记的 key 仍能在页面上定位到。
+    async verifyKeys(keys) {
+      await ensureConnected();
+      const out = {};
+      for (const k of (keys || [])) out[k] = await isKeyVisible(k);
+      return { verify: out };
+    },
     async goto(url) {
       await ensureConnected();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
