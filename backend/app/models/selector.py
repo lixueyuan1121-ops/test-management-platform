@@ -24,6 +24,7 @@ class SelectorKey(Base):
     sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
     key: Mapped[str] = mapped_column(String(64))
     frame: Mapped[str] = mapped_column(String(8), default="auto", server_default="auto")
+    page: Mapped[str] = mapped_column(String(64), default="", server_default="")
     desc: Mapped[str] = mapped_column(String(255), default="", server_default="")
     candidates: Mapped[str] = mapped_column(Text, default="[]")  # JSON 字符串
     updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)

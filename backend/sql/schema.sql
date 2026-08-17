@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS `selector_key` (
   `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
   `key` VARCHAR(64) NOT NULL,
   `frame` VARCHAR(8) NOT NULL DEFAULT 'auto',
+  `page` VARCHAR(64) NOT NULL DEFAULT '',
   `desc` VARCHAR(255) NOT NULL DEFAULT '',
   `candidates` TEXT,
   `updated_by` INT DEFAULT NULL,

@@ -1,0 +1,1 @@
+import{cY as o}from"./index-B1l_2p2_.js";const e="update:modelValue",s="change",n="input",c=t=>o?window.requestAnimationFrame(t):setTimeout(t,16),i=t=>o?window.cancelAnimationFrame(t):clearTimeout(t);export{s as C,n as I,e as U,i as c,c as r};

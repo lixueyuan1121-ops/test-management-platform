@@ -7,12 +7,14 @@ class SelectorKeyIn(BaseModel):
     sub_product: str = ""
     key: str = Field(min_length=1, max_length=64)
     frame: str = "auto"
+    page: str = ""
     desc: str = ""
     candidates: list[dict[str, Any]] = []
 
 
 class SelectorKeyPatch(BaseModel):
     frame: str | None = None
+    page: str | None = None
     desc: str | None = None
     candidates: list[dict[str, Any]] | None = None
 
