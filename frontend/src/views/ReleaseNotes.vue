@@ -45,7 +45,7 @@
             <span v-else class="dim">—</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="isApp" label="发版渠道" width="190">
+        <el-table-column v-if="isApp" label="发版渠道" width="190" align="left" header-align="left">
           <template #default="{ row }">
             <template v-if="row.channel && row.channel.length">
               <el-tag v-for="c in row.channel" :key="c" size="small" class="chan-tag">{{ c }}</el-tag>
