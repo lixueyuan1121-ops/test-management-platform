@@ -45,6 +45,15 @@ def _load_selector_keys() -> list[dict]:
         logger.warning("读取选择器注册表失败,gui script 生成将不注入 key 清单: %s", path)
         return []
 
+
+def _registered_keys() -> set[str]:
+    """当前注册表里所有合法语义 key 的集合(供生成侧校验 script.target.key)。
+
+    读不到注册表(文件缺失/损坏)→ 返回空集。空集时校验放行(见 _validate_script),
+    避免"读不到注册表就把所有 gui/e2e 全降 manual"这种因环境问题误伤生成结果。
+    """
+    return {k["key"] for k in _load_selector_keys()}
+
 # 禁用的内置工具：覆盖执行/改文件/联网/子代理，纯生成任务一个都用不到
 _DISALLOWED_TOOLS = [
     "Bash", "BashOutput", "KillShell",
@@ -93,24 +102,29 @@ def build_testcase_prompt(requirement: str) -> str:
    - title：一句话标题
    - steps：操作步骤（可多步，用换行分隔；给人读）
    - expected：预期结果
-   - priority：优先级（P0/P1/P2/P3）
+   - priority：优先级（P0/P1/P2/P3，判定标准见下）
    - kind：自动化执行类型，只能是 gui/api/cli/e2e/manual 之一（判定规则见下）
    - kind_reason：一句话说明为何判该 kind
    - script：**仅 gui/e2e 需要**，结构化可执行步骤数组（schema 见下）；api/cli/manual 一律给 []
-3. kind 判定规则：
+3. priority 判定规则（按"失败后果的严重性"定级，不要随意打分）：
+   - P0：核心主流程 / 一旦失败即阻断使用或造成数据错误（如登录、支付、下单、提交保存主数据）。
+   - P1：重要功能 / 常见路径上的异常与校验（如必填校验、关键按钮不可用、主功能的边界）。
+   - P2：次要功能、一般边界场景，以及**文案、样式、提示语、界面美观**类问题（文案/样式一律 P2）。
+   - P3：极端罕见场景 / 影响面很小的细节。
+4. kind 判定规则：
    - gui：在被测客户端界面上点击/输入/断言某元素或文案（单点、一两步）
    - api：调接口、校验响应码/响应体
    - cli：跑命令行、校验退出码/输出
    - e2e：跨多个界面步骤的端到端流程（如登录→进入某页→操作→验证结果），比单点 gui 长
    - manual：**无法用上述自动化方式表达**的——纯人工体验/探索性/主观判断（如"页面美观""交互流畅""某功能是否符合需求预期"这类描述性、无明确可断言元素的）。拿不准是否可自动化时，优先判 manual。
-4. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
+5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
    - action 只能取：connect（第一步必须，连接客户端）、click、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、screenshot
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
    - args：assert_text 用 {{"expected":"...","contains":true}}；fill 用 {{"text":"..."}}；wait_for 用 {{"timeout_ms":6000}}
    - desc：该步人读说明
    - **每条 gui/e2e 至少有一个 assert_text 或 assert_visible**（否则没有判定依据，应改判 manual）
    - 只能用下方 key 清单里的 key；**找不到合适 key 表达该测试点 → 改判 kind=manual、script=[]**（不要瞎编 selector）
-5. 按 kind 的 script 编写偏重（**务必区分，别把 e2e 写成 gui**）：
+6. 按 kind 的 script 编写偏重（**务必区分，别把 e2e 写成 gui**）：
    - **gui**：单点/局部验证，**2–4 步**即可——connect → (最多一两个 click/fill/wait_for) → assert_*。聚焦"某一个元素/文案对不对"，不要串联整条业务流程。
    - **e2e**：**端到端多步流程，通常 ≥5 步**，体现"从入口一路操作到结果"。必须串联多个界面动作（如 登录→导航→输入→提交），并在**关键节点分别断言**（不止最后断一次）。
      · 若流程中触发了 AI 生成/异步加载（发消息、提交后等结果），**必须插入 wait_response 或 wait_for** 再断言，不能立刻断。
@@ -119,8 +133,10 @@ def build_testcase_prompt(requirement: str) -> str:
    正例(gui,单点)：connect → wait_for(navTasks) → assert_visible(navTasks)
    正例(e2e,多步)：connect → click(loginAccountTab) → fill(loginUserName) → fill(loginPassword) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle) → assert_text(homepageTitle,"早上好",contains)
 {keys_block}
-6. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
-7. 数量控制在 8-20 条，聚焦关键路径与高风险场景。
+7. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
+8. 数量随需求复杂度伸缩：一般 8-20 条；简单需求可少于 8 条，复杂需求可到 30 条。聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。
+9. 各测试点应相互正交：不同用例覆盖不同的验证点，不要用不同措辞重复验证同一件事。
+10. 边界/异常类用例的 steps 要给出**具体示例数据**（如手机号填 "13800138000"、金额填 "-1"、超长字符串给出长度），不要只写"输入无效值"这类空泛描述。
 
 需求内容：
 <requirement>
@@ -210,7 +226,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str, timeout: i
         arr = json.loads(blob)
     except (json.JSONDecodeError, ValueError):
         return [], "script JSON 解析失败"
-    script, err = _validate_script(arr)
+    script, err = _validate_script(arr, _registered_keys())
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None
@@ -362,6 +378,7 @@ def parse_testcases(raw: str) -> list[dict]:
         return []
     out = []
     _VALID_KINDS = {"gui", "api", "cli", "e2e", "manual"}
+    valid_keys = _registered_keys()   # 读一次注册表,供本批所有 gui/e2e 校验 target.key
     for it in arr:
         if not isinstance(it, dict):
             continue
@@ -372,12 +389,12 @@ def parse_testcases(raw: str) -> list[dict]:
         kind = str(it.get("kind") or "").strip().lower()
         if kind not in _VALID_KINDS:
             kind = "manual"
-        # script:仅 gui/e2e 保留;校验结构,非法则该用例降级 manual(不派坏 script 给执行机)
+        # script:仅 gui/e2e 保留;校验结构 + key 合法性,非法则该用例降级 manual(不派坏 script 给执行机)
         script_json = None
         if kind in ("gui", "e2e"):
-            script, err = _validate_script(it.get("script"))
+            script, err = _validate_script(it.get("script"), valid_keys)
             if err:
-                kind = "manual"  # script 不合法/缺失 → 保守降级,避免执行机拿到坏 script
+                kind = "manual"  # script 不合法/缺失/含未注册 key → 保守降级,避免执行机拿到坏 script
             elif script:
                 # e2e 名不副实纠偏:e2e 应是多步端到端。若步数太少或只有 connect+断言(无实质交互),
                 # 说明它其实是单点 gui → 改判 gui,确保"勾选的用例按其真实类型执行"。
@@ -400,11 +417,15 @@ def parse_testcases(raw: str) -> list[dict]:
 _VALID_ACTIONS = {"connect", "click", "fill", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "screenshot"}
 
 
-def _validate_script(script) -> tuple[list, str | None]:
+def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, str | None]:
     """校验 gui/e2e 的 script。返回 (规范化步骤列表, 错误说明)。
 
     规则:必须是非空数组;每步 action 合法;定位类步骤要有 target.key 或 target.selector;
     至少含一个 assert_text/assert_visible(否则无判定依据)。任一不满足 → 返回错误(调用方降级 manual)。
+
+    valid_keys:注册表里的合法 key 集合。传入且非空时,校验每个 target.key 必须在其中
+    (拦截模型瞎编的 key,把问题挡在生成阶段,而非等下发到设备执行才 fail)。
+    传 None 或空集则跳过 key 校验(注册表读不到时不误伤)。
     """
     if not isinstance(script, list) or not script:
         return [], "script 缺失或非数组"
@@ -420,6 +441,10 @@ def _validate_script(script) -> tuple[list, str | None]:
         if action in ("click", "fill", "wait_for", "get_text", "assert_text", "assert_visible"):
             if not (isinstance(target, dict) and (target.get("key") or target.get("selector"))):
                 return [], f"step「{action}」缺 target.key/selector"
+            # key 必须在注册表内(仅当提供了 valid_keys 且非空);selector(裸 CSS)不校验
+            k = isinstance(target, dict) and target.get("key")
+            if k and valid_keys and k not in valid_keys:
+                return [], f"step「{action}」用了未注册的 key「{k}」(不在 selectors.json 注册表内)"
         if action == "assert_text" and not (st.get("args") or {}).get("expected"):
             return [], "assert_text 缺 args.expected"
         if action in ("assert_text", "assert_visible"):

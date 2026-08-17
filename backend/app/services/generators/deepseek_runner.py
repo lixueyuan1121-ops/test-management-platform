@@ -32,6 +32,7 @@ from app.services.claude_runner import (  # noqa: F401
     build_script_prompt,
     parse_testcases,
     _validate_script,
+    _registered_keys,
     _FENCE_RE,
 )
 
@@ -195,7 +196,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
         arr = json.loads(blob)
     except (json.JSONDecodeError, ValueError):
         return [], "script JSON 解析失败"
-    script, err = _validate_script(arr)
+    script, err = _validate_script(arr, _registered_keys())
     if err:
         return [], f"生成的 script 不合法：{err}"
     return script, None
