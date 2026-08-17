@@ -74,6 +74,24 @@ const fetchPending = () => api("GET", `/api/exec-queue?runner=${encodeURICompone
 const claim        = (id) => api("POST", `/api/exec-queue/${id}/claim?runner=${encodeURIComponent(RUNNER_ID)}`);
 const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
 
+// 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。拉取失败→用缓存(有则),
+// 无缓存返回 null;调用方 null 时不换表,gui-core 沿用启动时载入的内置 selectors.json(回落)。
+// data 取法:api() 已解包 {code,msg,data} 返回 data 本身(见 fetchPending);`res?.data || res` 仅为防御。
+const _regCache = new Map();  // `${project_id}|${sub}` -> {version, registry, vmIframe}
+async function fetchRegistry(projectId, sub = "") {
+  if (!projectId) return null;
+  const ck = `${projectId}|${sub}`;
+  try {
+    const res = await api("GET", `/api/selectors?project_id=${projectId}&sub_product=${encodeURIComponent(sub)}`);
+    const data = res?.data || res;   // api() 已解包则直接是 data
+    _regCache.set(ck, data);
+    return data;
+  } catch (e) {
+    log(`拉注册表失败(${ck}):${e.message};回落${_regCache.has(ck) ? "缓存" : "内置文件"}`);
+    return _regCache.get(ck) || null;   // 有缓存用缓存,否则 null→gui-core 用内置文件
+  }
+}
+
 // ---- 确保 namiclaw 带 CDP 调试端口在跑(GUI 用例前置)----
 // namiclaw 有单实例锁:必须先杀光旧实例,再带 --remote-debugging-port 冷启动,否则端口不开。
 // Windows 用 PowerShell Start-Process(脱离 git-bash fork 问题);Mac/Linux 用 spawn detached。
@@ -318,6 +336,9 @@ async function tick() {
         result = { verdict: "fail", reason: "该用例为人工/不可自动化(manual),不应下发到执行机;请在平台改判类型或取消下发", duration_ms: 1 };
       } else if (item.kind === "gui" || item.kind === "e2e") {
         await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
+        // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则不换,沿用内置文件(回落)。
+        const reg = await fetchRegistry(item.payload?.project_id, "");
+        if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
         const script = item.payload?.script;
         // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
         if (Array.isArray(script) && script.length) {

@@ -58,6 +58,7 @@ def _payload_of(tc: TestCase | None) -> dict:
         "expected": tc.expected,
         "priority": tc.priority,
         "script": script,
+        "project_id": tc.project_id,   # runner 按此拉该项目的合并选择器注册表(DB 单源)
     }
 
 
