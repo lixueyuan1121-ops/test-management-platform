@@ -325,6 +325,34 @@ CREATE TABLE `release_record` (
   CONSTRAINT `fk_release_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 语义选择器注册表（单一事实源）：按 project_id + sub_product 分域
+-- candidates 用 TEXT 存 JSON 字符串（MySQL 5.6 无原生 JSON）
+CREATE TABLE IF NOT EXISTS `selector_key` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `key` VARCHAR(64) NOT NULL,
+  `frame` VARCHAR(8) NOT NULL DEFAULT 'auto',
+  `desc` VARCHAR(255) NOT NULL DEFAULT '',
+  `candidates` TEXT,
+  `updated_by` INT DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_selkey_scope_key` (`project_id`,`sub_product`,`key`),
+  KEY `idx_selkey_scope` (`project_id`,`sub_product`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 每个 (project_id, sub_product) 域的 vm_iframe 配置
+CREATE TABLE IF NOT EXISTS `selector_scope` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `vm_iframe` VARCHAR(255) NOT NULL DEFAULT '',
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_selscope` (`project_id`,`sub_product`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

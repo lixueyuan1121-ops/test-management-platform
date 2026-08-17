@@ -225,3 +225,17 @@ def ensure_ai_provider_columns() -> None:
                 "ALTER TABLE test_case ADD COLUMN provider VARCHAR(16) NOT NULL DEFAULT 'claude'"
             ))
         _ensure_index("test_case", "idx_testcase_provider", "provider")
+
+
+def ensure_selector_tables(engine=None) -> None:
+    """建 selector_key / selector_scope(幂等)。
+
+    create_all 已能建新表；此处显式 CREATE(checkfirst) 保证老库无需依赖模型 import
+    时机也能补出这两张表。engine 缺省用模块级 engine（与其它 ensure_* 一致），
+    显式传入便于脚本/冒烟测试复用。
+    """
+    from app.db.session import engine as _default_engine
+    from app.models.selector import SelectorKey, SelectorScope
+    eng = engine if engine is not None else _default_engine
+    SelectorKey.__table__.create(bind=eng, checkfirst=True)
+    SelectorScope.__table__.create(bind=eng, checkfirst=True)
