@@ -234,11 +234,14 @@ export function createGuiCore(opts = {}) {
         const frame = frameLabel(target);
         const fmatch = frameMatch(target);
         // 该 frame 视口左上在 main viewport 的位置(main=0,0;iframe 用 frameElement 的 box,
-        // Playwright 的 boundingBox 任意深度都相对 main viewport,单层取值即可)。null=取不到→不算 absRect。
+        // Playwright 的 boundingBox 任意深度都相对 main viewport,单层取值即可)。
+        // 取不到(跨域/时序)→ 兜底用 {0,0} 近似(标 approx),保证元素仍有 absRect(前端画虚线框),
+        // 而不是整组无框。近似框位置可能偏(缺 iframe 偏移),但比完全不显示强。
         let frameBox = { x: 0, y: 0 };
+        let approx = false;
         if (target !== main) {
-          try { const fe = await target.frameElement(); const b = await fe.boundingBox(); frameBox = b ? { x: b.x, y: b.y } : null; }
-          catch { frameBox = null; }
+          try { const fe = await target.frameElement(); const b = await fe.boundingBox(); if (b) frameBox = { x: b.x, y: b.y }; else { approx = true; } }
+          catch { approx = true; }
         }
         let els = [];
         try {
@@ -249,11 +252,10 @@ export function createGuiCore(opts = {}) {
           continue;
         }
         if (contains) els = els.filter((e) => (e.text || "").includes(contains));
-        // 整页绝对坐标 absRect = frameBox + rect(frame 视口相对) + mainScroll(frameBox 为 null 时不算,前端无框但列表照常)。
-        if (frameBox) {
-          for (const el of els) {
-            if (el.rect) el.absRect = { x: frameBox.x + el.rect.x + mainScroll.x, y: frameBox.y + el.rect.y + mainScroll.y, w: el.rect.w, h: el.rect.h };
-          }
+        // 整页绝对坐标 absRect = frameBox + rect(frame 视口相对) + mainScroll。frameBox 兜底为 {0,0}
+        // 时标 absApprox=true(前端虚线提示位置近似)。这样列表里每个元素都有框,不再漏。
+        for (const el of els) {
+          if (el.rect) { el.absRect = { x: frameBox.x + el.rect.x + mainScroll.x, y: frameBox.y + el.rect.y + mainScroll.y, w: el.rect.w, h: el.rect.h }; if (approx) el.absApprox = true; }
         }
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
         if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, limit) });
