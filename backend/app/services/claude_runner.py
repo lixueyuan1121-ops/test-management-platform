@@ -13,7 +13,6 @@
 """
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -28,31 +27,44 @@ from app.core.config import settings
 
 logger = logging.getLogger("test_platform")
 
-# 默认选择器注册表路径:相对本文件回到仓库根,再进 tools/qalab-runner/gui-mcp/selectors.json
-_DEFAULT_SELECTORS = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "tools", "qalab-runner", "gui-mcp", "selectors.json")
-)
 
+def _load_selector_keys(project_id: int | None = None) -> list[dict]:
+    """项目级共享 key 清单(供 prompt 注入),返回 [{key, frame, desc}, ...]。
 
-def _load_selector_keys() -> list[dict]:
-    """读注册表,返回 [{key, frame, desc}, ...];读不到返回空(prompt 里就不注入 key 清单)。"""
-    path = settings.SELECTORS_PATH or _DEFAULT_SELECTORS
-    try:
-        with open(path, encoding="utf-8") as f:
-            reg = json.load(f).get("registry", {})
-        return [{"key": k, "frame": v.get("frame"), "desc": v.get("desc", "")} for k, v in reg.items()]
-    except (OSError, ValueError, json.JSONDecodeError):
-        logger.warning("读取选择器注册表失败,gui script 生成将不注入 key 清单: %s", path)
-        return []
-
-
-def _registered_keys() -> set[str]:
-    """当前注册表里所有合法语义 key 的集合(供生成侧校验 script.target.key)。
-
-    读不到注册表(文件缺失/损坏)→ 返回空集。空集时校验放行(见 _validate_script),
-    避免"读不到注册表就把所有 gui/e2e 全降 manual"这种因环境问题误伤生成结果。
+    DB 是唯一事实来源:走服务层读项目共享 key(sub_product='')。生成器脱离请求 db,
+    故内部自开 SessionLocal 并关闭。project_id 为空或读不到 → 空列表(prompt 不注入 key 清单)。
     """
-    return {k["key"] for k in _load_selector_keys()}
+    if not project_id:
+        return []
+    from app.db.session import SessionLocal
+    from app.services.selectors import shared_key_dicts
+    s = SessionLocal()
+    try:
+        return shared_key_dicts(s, project_id)
+    except Exception:
+        logger.warning("读注册表失败(project_id=%s),prompt 不注入 key 清单", project_id)
+        return []
+    finally:
+        s.close()
+
+
+def _registered_keys(project_id: int | None = None) -> set[str]:
+    """项目级共享 key 的合法集合(供生成侧校验 script.target.key)。
+
+    project_id 为空或读不到 → 返回空集。空集时校验放行(见 _validate_script),
+    避免"读不到注册表就把所有 gui/e2e 全降 manual"这种误伤生成结果。
+    """
+    if not project_id:
+        return set()
+    from app.db.session import SessionLocal
+    from app.services.selectors import shared_key_set
+    s = SessionLocal()
+    try:
+        return shared_key_set(s, project_id)
+    except Exception:
+        return set()
+    finally:
+        s.close()
 
 # 禁用的内置工具：覆盖执行/改文件/联网/子代理，纯生成任务一个都用不到
 _DISALLOWED_TOOLS = [
@@ -80,14 +92,15 @@ def is_available() -> bool:
     return bool(settings.AI_ENABLED and _claude_bin())
 
 
-def build_testcase_prompt(requirement: str) -> str:
+def build_testcase_prompt(requirement: str, project_id: int | None = None) -> str:
     """把需求文本包装成「生成结构化测试点」的指令。
 
     用 <requirement> 标签包裹用户输入（而非引号），避免内容里的引号破坏边界。
     强约束只输出 JSON 数组；即便模型仍包了 markdown fence，解析层也能兜底剥离。
+    project_id:注入该项目共享 key 清单;为空则不注入(见 _load_selector_keys)。
     """
     # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
-    keys = _load_selector_keys()
+    keys = _load_selector_keys(project_id)
     if keys:
         lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
         keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
@@ -157,9 +170,9 @@ def _build_cmd(prompt: str) -> list[str]:
     return cmd
 
 
-def build_script_prompt(kind: str, title: str, steps: str, expected: str) -> str:
+def build_script_prompt(kind: str, title: str, steps: str, expected: str, project_id: int | None = None) -> str:
     """把单条(gui/e2e)用例转成"只产出该用例结构化 script"的指令(注入选择器 key 清单)。"""
-    keys = _load_selector_keys()
+    keys = _load_selector_keys(project_id)
     lines = "\n".join(f"   - {k['key']}({k['frame']}):{k['desc']}" for k in keys) if keys else "   (无可用 key)"
     return f"""为下面这条 {kind} 测试用例设计**可执行的结构化步骤 script**。
 
@@ -181,14 +194,14 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str) -> str
 {lines}"""
 
 
-def generate_script(kind: str, title: str, steps: str, expected: str, timeout: int | None = None) -> tuple[list, str | None]:
+def generate_script(kind: str, title: str, steps: str, expected: str, project_id: int | None = None, timeout: int | None = None) -> tuple[list, str | None]:
     """同步调 claude 为单条用例生成 script。返回 (script列表, 错误)。校验复用 _validate_script。"""
     if not is_available():
         return [], "AI 功能未启用或未找到 claude 可执行文件"
     if kind not in ("gui", "e2e"):
         return [], "仅 gui/e2e 用例支持生成 script"
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
-    prompt = build_script_prompt(kind, title, steps or "", expected or "")
+    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
     cmd = [
         _claude_bin(), "-p", prompt, "--output-format", "json",
         "--append-system-prompt", _SYSTEM_PROMPT,
@@ -226,7 +239,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str, timeout: i
         arr = json.loads(blob)
     except (json.JSONDecodeError, ValueError):
         return [], "script JSON 解析失败"
-    script, err = _validate_script(arr, _registered_keys())
+    script, err = _validate_script(arr, _registered_keys(project_id))
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None
@@ -268,16 +281,17 @@ def _parse_line(line: str) -> dict | None:
     return None
 
 
-def stream_generate(requirement: str, timeout: int | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
+    project_id 透传给 prompt 构造,决定注入哪个项目的 key 清单。
     """
     if not is_available():
         yield {"type": "error", "msg": "AI 功能未启用或未找到 claude 可执行文件"}
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
-    cmd = _build_cmd(build_testcase_prompt(requirement))
+    cmd = _build_cmd(build_testcase_prompt(requirement, project_id))
 
     if not _slots.acquire(blocking=False):
         yield {"type": "error", "msg": "AI 生成繁忙（已达并发上限），请稍后重试"}
@@ -355,11 +369,12 @@ def stream_generate(requirement: str, timeout: int | None = None) -> Iterator[di
 _FENCE_RE = re.compile(r"```(?:json)?\s*(\[.*?\])\s*```", re.S)
 
 
-def parse_testcases(raw: str) -> list[dict]:
+def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     """从模型输出全文中提取结构化测试点数组。
 
     容错顺序：markdown ```json fence → 裸 [ ... ]。字段缺失给空串，超长截断，
     丢弃无 title 的条目。解析失败返回空列表（api 层据此判定，但仍保留 output_raw）。
+    project_id:决定用哪个项目的注册表校验 script.target.key(空则不校验)。
     """
     if not raw:
         return []
@@ -378,7 +393,7 @@ def parse_testcases(raw: str) -> list[dict]:
         return []
     out = []
     _VALID_KINDS = {"gui", "api", "cli", "e2e", "manual"}
-    valid_keys = _registered_keys()   # 读一次注册表,供本批所有 gui/e2e 校验 target.key
+    valid_keys = _registered_keys(project_id)   # 读一次注册表,供本批所有 gui/e2e 校验 target.key
     for it in arr:
         if not isinstance(it, dict):
             continue

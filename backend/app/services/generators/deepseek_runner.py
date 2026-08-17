@@ -76,10 +76,11 @@ def _body(prompt: str, stream: bool) -> dict:
     }
 
 
-def stream_generate(requirement: str, timeout: int | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None) -> Iterator[dict]:
     """流式生成测试点。yield delta/result/error/heartbeat，契约与 claude_runner 对齐。
 
     只累积 delta.content（正文）为 raw；delta.reasoning_content（思维链）丢弃。
+    project_id 透传给 build_testcase_prompt,决定注入哪个项目的 key 清单。
     """
     if not is_available():
         yield {"type": "error", "msg": "DeepSeek 引擎未启用或未配置（检查 DEEPSEEK_ENABLED / BASE_URL / KEY）"}
@@ -97,7 +98,7 @@ def stream_generate(requirement: str, timeout: int | None = None) -> Iterator[di
     last_beat = time.monotonic()
     try:
         resp = requests.post(
-            _endpoint(), headers=_headers(), json=_body(build_testcase_prompt(requirement), stream=True),
+            _endpoint(), headers=_headers(), json=_body(build_testcase_prompt(requirement, project_id), stream=True),
             stream=True, timeout=(10, timeout),
         )
         if resp.status_code != 200:
@@ -156,7 +157,7 @@ def stream_generate(requirement: str, timeout: int | None = None) -> Iterator[di
 
 
 def generate_script(kind: str, title: str, steps: str, expected: str,
-                    timeout: int | None = None) -> tuple[list, str | None]:
+                    project_id: int | None = None, timeout: int | None = None) -> tuple[list, str | None]:
     """同步为单条 gui/e2e 用例生成结构化 script。返回 (script列表, 错误)。"""
     if not is_available():
         return [], "DeepSeek 引擎未启用或未配置"
@@ -166,7 +167,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
     if not _slots.acquire(blocking=False):
         return [], "DeepSeek 生成繁忙（已达并发上限），请稍后重试"
 
-    prompt = build_script_prompt(kind, title, steps or "", expected or "")
+    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
     try:
         resp = requests.post(_endpoint(), headers=_headers(),
                              json=_body(prompt, stream=False), timeout=(10, timeout))
@@ -196,7 +197,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
         arr = json.loads(blob)
     except (json.JSONDecodeError, ValueError):
         return [], "script JSON 解析失败"
-    script, err = _validate_script(arr, _registered_keys())
+    script, err = _validate_script(arr, _registered_keys(project_id))
     if err:
         return [], f"生成的 script 不合法：{err}"
     return script, None

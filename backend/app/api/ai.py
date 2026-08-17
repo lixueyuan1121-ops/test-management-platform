@@ -177,7 +177,7 @@ def gen_testcases(
         err: str | None = None
         t0 = time.monotonic()
         try:
-            for evt in engine.stream_generate(requirement):
+            for evt in engine.stream_generate(requirement, project_id=project_id):
                 etype = evt.get("type")
                 if etype == "heartbeat":
                     # SSE 注释帧:保持连接有字节流动,防网关空闲超时切断;前端解析忽略非 data: 行
@@ -210,7 +210,7 @@ def gen_testcases(
                 at2.output_tokens = meta.get("output_tokens")
             at2.output_raw = raw or None
 
-            cases = engine.parse_testcases(raw)
+            cases = engine.parse_testcases(raw, project_id=project_id)
             if not cases:
                 at2.status = AiTaskStatus.failed
                 # 诊断:区分「claude 没输出/被切」(raw 短或空) vs「输出了但没解析出」(raw 长但格式不符)。
@@ -491,7 +491,7 @@ def gen_script(
     engine = generators.get_provider(getattr(tc, "provider", None))
     if not engine.is_available():
         engine = generators.get_provider(generators.DEFAULT_PROVIDER)
-    script, err = engine.generate_script(kind, tc.title, tc.steps or "", tc.expected or "")
+    script, err = engine.generate_script(kind, tc.title, tc.steps or "", tc.expected or "", project_id=tc.project_id)
     if err:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"生成 script 失败:{err}")
     tc.script = json.dumps(script, ensure_ascii=False)
