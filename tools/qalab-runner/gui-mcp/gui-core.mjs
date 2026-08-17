@@ -128,7 +128,11 @@ export function createGuiCore(opts = {}) {
     const shell = { name: "shell", scope: page };
     const vm = { name: "vm", scope: page.frameLocator(VM_IFRAME) };
     if (frame === "shell") return [shell];
-    if (frame === "vm") return [vm];
+    // vm:业务 iframe(现状 <vm_id>.work.n.cn 嵌在顶层 work.n.cn/claw 里)。兼容"子域名扁平化"——
+    // 若客户端改成顶层直接加载 <vm_id>.work.n.cn(业务上顶层、无内嵌 iframe),vm iframe 不存在时
+    // 回退 shell(顶层 page)兜底,vm key 照常定位,无需改 selectors.json 的 frame 归属。
+    // 现状(业务在 iframe)零副作用:iframe 里能命中就不会走到 shell。
+    if (frame === "vm") return [vm, shell];
     // url:<子串> —— 从 page.frames() 扁平列表(含任意深度嵌套)找 url 含该子串的首个 Frame,
     // 直接作为定位 scope(Frame 与 Page/FrameLocator 同一套定位 API,byToLocator 无需分支)。
     // 找不到(目标 frame 未加载/页面结构变)→ 回退 [shell, vm] 再试一遍(与 auto 一致的容错)。
