@@ -79,6 +79,18 @@ const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${enc
 // PATCH /api/probe/{id}?runner= 回写 {result} 或 {error}。镜像上面的 exec 封装。
 const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
 const reportProbe  = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
+// 上传探测整页截图(PNG 二进制)到独立端点:multipart/form-data(不用 api() 封装——那是 JSON)。
+// 只带 Authorization,不设 Content-Type——让 fetch 按 FormData 自动补 multipart boundary。
+// Node 18+ 内置 FormData/Blob/fetch。截图不塞 result TEXT(MySQL 5.6 TEXT 64KB 会截断 base64)。
+async function uploadProbeShot(id, buffer) {
+  const fd = new FormData();
+  fd.append("file", new Blob([buffer], { type: "image/png" }), `probe-${id}.png`);
+  const res = await fetch(`${BASE_URL}/api/probe/${id}/screenshot?runner=${encodeURIComponent(RUNNER_ID)}`, {
+    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json().catch(() => ({}));
+}
 
 // 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。三种情形都不清空内置兜底:
 //   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 跳过 setRegistry、保留内置 57 key;
@@ -349,15 +361,22 @@ async function handleProbes() {
     try {
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
-      let out;
       if ((p.params || {}).mode === "verify") {
         // verify:校验当前作用域已有 key 是否还命中当前页(空 DB→reg 为 null→[]→{verify:{}})
         const keys = Object.keys((reg && reg.registry) || {});
-        out = await guiCore.verifyKeys(keys);
+        const out = await guiCore.verifyKeys(keys);
+        await reportProbe(p.id, { result: out });
       } else {
-        out = await guiCore.probe(p.params || {});   // discover:扫当前页元素拿候选选择器
+        // discover:扫当前页元素拿候选选择器 + 整页截图(供网页叠框标注)。
+        const out = await guiCore.probe({ ...(p.params || {}), screenshot: true });
+        // 坐标数据(小)进 result TEXT;截图(大)走独立二进制端点,不塞 result(避免撑爆 MySQL 5.6 的 64KB)。
+        await reportProbe(p.id, { result: { groups: out.groups, pageSize: out.pageSize } });
+        const shot = out.screenshotBuffer;
+        if (shot && shot.length) {
+          try { await uploadProbeShot(p.id, shot); log(`  截图已上传 id=${p.id} (${(shot.length / 1024).toFixed(0)}KB)`); }
+          catch (e) { log(`  截图上传失败 id=${p.id}: ${e.message}`); }
+        }
       }
-      await reportProbe(p.id, { result: out });
       log(`回写探测 id=${p.id} mode=${(p.params || {}).mode || "discover"} -> done`);
     } catch (e) {
       log(`探测 id=${p.id} 异常:`, e.message);

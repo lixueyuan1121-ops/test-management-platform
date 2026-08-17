@@ -62,7 +62,8 @@ export const DISCOVER_SCRIPT = function () {
     if (!isVisible(el)) continue;
     const candidates = genCandidates(el);
     if (!candidates.length) continue;
-    out.push({ tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.value || "").trim().slice(0, 40), candidates: candidates.slice(0, 4), best: candidates[0] });
+    const r = el.getBoundingClientRect();
+    out.push({ tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.value || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 4), best: candidates[0] });
   }
   return out;
 };
@@ -200,19 +201,16 @@ export function createGuiCore(opts = {}) {
     listKeys() {
       return { count: Object.keys(REGISTRY).length, keys: Object.entries(REGISTRY).map(([k, v]) => ({ key: k, frame: v.frame, desc: v.desc })) };
     },
-    async probe({ contains = "", limit = 40 } = {}) {
+    async probe({ contains = "", limit = 40, screenshot = false } = {}) {
       await ensureConnected();
       // 多级页面:遍历页面所有 frame(Playwright 的 page.frames() 已含任意深度的嵌套 iframe),
-      // 逐 frame 跑发现脚本。主框架标 shell;主 vm iframe(.work.n.cn)标 vm;其余嵌套 iframe 标
-      // iframe(靠 url 区分)。注意:执行侧 resolveKey 目前仅解析 shell + 主 vm,更深 frame 的元素
-      // 能探到/加为 key,但执行定位待执行侧补深层 frame 支持(见 SelectorAdmin「加为 key」提示)。
+      // 逐 frame 跑发现脚本。主框架标 shell;主 vm iframe(.work.n.cn)标 vm;其余嵌套 iframe 标 iframe。
       const main = page.mainFrame();
       const vm = contentFrame();   // 主内容 iframe(与执行侧 contentFrame 同源)
       const frameLabel = (f) =>
         f === main ? "shell" : f === vm ? "vm" : "iframe";
       // frameMatch:加为 key 时写入 selector_key.frame 的值。shell/vm 沿用旧语义;深层 iframe
       // 取 url:<hostname>——执行侧 scopesFor 据此从 page.frames() 扁平查找该 Frame 定位。
-      // hostname 取不到(about:blank/相对 url)则退回整段 url 前 80 字符。
       const frameMatch = (f) => {
         if (f === main) return "shell";
         if (f === vm) return "vm";
@@ -220,10 +218,28 @@ export function createGuiCore(opts = {}) {
         try { const h = new URL(u).hostname; if (h) return `url:${h}`; } catch { /* 非法/相对 url,退回截断 */ }
         return `url:${u.slice(0, 80)}`;
       };
+      // 整页截图(可选,discover 用):fullPage 展开主文档滚动区,坐标系=主文档内容左上(0,0)。
+      // 注:iframe 内部滚动区不随 fullPage 展开——iframe 内滚出可视区的元素框可能不准(已知限制)。
+      let screenshotBuffer = null;
+      if (screenshot) {
+        try { screenshotBuffer = await page.screenshot({ fullPage: true, type: "png" }); }
+        catch { screenshotBuffer = null; }   // 截图失败不阻断探测,降级为无底图
+      }
+      // 主文档滚动量 + CSS 尺寸:元素 rect 是各 frame 视口相对,+ mainScroll 转主文档内容绝对
+      // (对齐 fullPage 图);pageSize 供前端把 absRect 归一化到截图展示尺寸(自动消 devicePixelRatio)。
+      const mainScroll = await main.evaluate(() => ({ x: window.scrollX, y: window.scrollY })).catch(() => ({ x: 0, y: 0 }));
+      const pageSize = await main.evaluate(() => ({ w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight })).catch(() => ({ w: 0, h: 0 }));
       const groups = [];
       for (const target of page.frames()) {
         const frame = frameLabel(target);
         const fmatch = frameMatch(target);
+        // 该 frame 视口左上在 main viewport 的位置(main=0,0;iframe 用 frameElement 的 box,
+        // Playwright 的 boundingBox 任意深度都相对 main viewport,单层取值即可)。null=取不到→不算 absRect。
+        let frameBox = { x: 0, y: 0 };
+        if (target !== main) {
+          try { const fe = await target.frameElement(); const b = await fe.boundingBox(); frameBox = b ? { x: b.x, y: b.y } : null; }
+          catch { frameBox = null; }
+        }
         let els = [];
         try {
           els = await target.evaluate(DISCOVER_SCRIPT);
@@ -233,10 +249,16 @@ export function createGuiCore(opts = {}) {
           continue;
         }
         if (contains) els = els.filter((e) => (e.text || "").includes(contains));
+        // 整页绝对坐标 absRect = frameBox + rect(frame 视口相对) + mainScroll(frameBox 为 null 时不算,前端无框但列表照常)。
+        if (frameBox) {
+          for (const el of els) {
+            if (el.rect) el.absRect = { x: frameBox.x + el.rect.x + mainScroll.x, y: frameBox.y + el.rect.y + mainScroll.y, w: el.rect.w, h: el.rect.h };
+          }
+        }
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
         if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, limit) });
       }
-      return { groups };
+      return { groups, pageSize, screenshotBuffer };
     },
     // 校验一批语义 key 是否在当前页命中(逐个 isKeyVisible,复用同一定位引擎)。
     // 供 runner 的 probe verify 模式用:回归确认某作用域已登记的 key 仍能在页面上定位到。

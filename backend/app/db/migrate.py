@@ -270,6 +270,20 @@ def ensure_selector_frame_width() -> None:
             conn.execute(text("ALTER TABLE selector_key MODIFY COLUMN `frame` VARCHAR(128) NOT NULL DEFAULT 'auto'"))
 
 
+def ensure_probe_screenshot_column() -> None:
+    """probe_request 补列 screenshot_path（探测整页截图的相对路径，存 uploads/ 下）。
+
+    截图走独立文件通道（不进 result TEXT，MySQL 5.6 TEXT 上限 64KB 会截断 base64）。
+    幂等：ADD 前先探列。
+    """
+    cols = _columns("probe_request")
+    if not cols:
+        return  # 表尚未建
+    if "screenshot_path" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE probe_request ADD COLUMN screenshot_path VARCHAR(255) NULL"))
+
+
 def ensure_selector_tables(engine=None) -> None:
     """建 selector_key / selector_scope(幂等)。
 

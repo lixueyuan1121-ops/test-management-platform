@@ -10,9 +10,10 @@
 params/result 以 TEXT 存 JSON 字符串（兼容 MySQL 5.6），出参 json.loads 还原。
 """
 import json
+import os
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
@@ -49,6 +50,7 @@ def _to_out(r: ProbeRequest) -> dict:
         "params": _loads(r.params) or {},
         "result": _loads(r.result),
         "error": r.error,
+        "screenshot_url": f"/uploads/{r.screenshot_path}" if r.screenshot_path else None,
         "created_by": r.created_by,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
@@ -152,3 +154,46 @@ def report_probe(
     db.commit()
     db.refresh(r)
     return ok(_to_out(r))
+
+
+# ---- ⑤ runner 上传探测整页截图（二进制，独立于 result TEXT 通道）----
+# 截图大（几百 KB~几 MB），base64 塞 result TEXT 会撑爆 MySQL 5.6 的 64KB 上限（静默截断）。
+# 故走独立 multipart 通道，存服务器文件系统，DB 只记相对路径。
+_UPLOADS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
+_PROBE_SHOT_DIR = os.path.join(_UPLOADS_DIR, "probes")
+_MAX_SHOT_BYTES = 10 * 1024 * 1024  # 10MB
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+@router.post("/{probe_id}/screenshot")
+async def upload_screenshot(
+    probe_id: int,
+    file: UploadFile = File(...),
+    runner: str = Query("mac-01"),
+    db: Session = Depends(get_db),
+    ctx: RunnerCtx = Depends(require_runner_ctx),
+):
+    """runner 上传探测整页截图（PNG）。存 uploads/probes/<id>.png，写 screenshot_path。
+
+    runner token 鉴权 + 归属校验（只能给派给自己的探测传图）；仅 PNG；≤10MB。
+    """
+    if ctx.device is not None:
+        runner = ctx.device.runner_id   # 设备 token：以设备身份为准，防冒充
+    r = db.get(ProbeRequest, probe_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="探测请求不存在")
+    if r.runner != runner:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该探测未派给此执行机")
+    data = await file.read()
+    if len(data) > _MAX_SHOT_BYTES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"截图过大（>{_MAX_SHOT_BYTES // 1024 // 1024}MB）")
+    if not data.startswith(_PNG_MAGIC):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅支持 PNG 截图")
+    os.makedirs(_PROBE_SHOT_DIR, exist_ok=True)
+    rel = f"probes/{probe_id}.png"
+    with open(os.path.join(_UPLOADS_DIR, rel), "wb") as f:
+        f.write(data)
+    r.screenshot_path = rel
+    db.commit()
+    return ok({"screenshot_url": f"/uploads/{rel}"})
