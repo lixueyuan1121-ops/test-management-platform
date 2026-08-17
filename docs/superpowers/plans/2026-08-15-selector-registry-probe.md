@@ -892,15 +892,30 @@ class ProbeReportIn(BaseModel):
 
 ---
 
-## Task 10: runner 探测循环
+## Task 10: runner 探测循环(discover + verify 两模式)
 
 **Files:**
-- Modify: `tools/qalab-runner/runner.mjs`(主循环并列轮询 probe)
+- Modify: `tools/qalab-runner/gui-mcp/gui-core.mjs`(加 `verifyKeys`)
+- Modify: `tools/qalab-runner/runner.mjs`(主循环并列轮询 probe,按 mode 分派)
 
 **Interfaces:**
 - Consumes: Task 9 接口;`fetchRegistry`(Task 6);`guiCore.probe`/`setRegistry`
+- Produces:
+  - `guiCore.verifyKeys(keys:string[]) -> {key: boolean}` — 逐个 `isKeyVisible`,当前页命中为 true
 
-- [ ] **Step 1: probe 拉取/回写封装 + 循环**（靠近 exec 轮询处）:
+- [ ] **Step 1: gui-core 加 verifyKeys**
+
+`tools/qalab-runner/gui-mcp/gui-core.mjs` 返回对象里加(复用已有的 `isKeyVisible`):
+```javascript
+async verifyKeys(keys) {
+  await ensureConnected();
+  const out = {};
+  for (const k of (keys || [])) out[k] = await isKeyVisible(k);
+  return { verify: out };
+},
+```
+
+- [ ] **Step 2: probe 拉取/回写封装 + 循环(按 mode 分派)**（靠近 exec 轮询处）:
 ```javascript
 const fetchProbes = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
 const reportProbe = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
@@ -912,7 +927,14 @@ async function handleProbes() {
     try {
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
-      const out = await guiCore.probe(p.params || {});
+      let out;
+      if ((p.params || {}).mode === "verify") {
+        // verify:校验当前作用域已有 key 是否还命中当前页
+        const keys = Object.keys((reg && reg.registry) || {});
+        out = await guiCore.verifyKeys(keys);
+      } else {
+        out = await guiCore.probe(p.params || {});   // discover:扫当前页元素
+      }
       await reportProbe(p.id, { result: out });
     } catch (e) {
       await reportProbe(p.id, { error: String(e.message || e) });
@@ -922,9 +944,9 @@ async function handleProbes() {
 ```
 在主循环里 exec 轮询之后调用 `await handleProbes();`。
 
-- [ ] **Step 2: 冒烟**:`--dry` 或本地起 runner + 后端,POST 一个 probe,确认 runner 回写(需真实设备连 CDP 才有 groups;无设备时 gui.probe 抛错→回写 error,链路仍验证通)。
+- [ ] **Step 3: 冒烟**:`--dry` 或本地起 runner + 后端,POST 一个 discover probe + 一个 verify probe,确认 runner 回写(无真实设备时 gui.probe/verifyKeys 抛错→回写 error,链路仍验证通)。
 
-- [ ] **Step 3: Commit** `feat(probe): runner 探测循环(setRegistry + gui.probe 回写)`
+- [ ] **Step 4: Commit** `feat(probe): runner 探测循环(discover + verify 两模式)`
 
 ---
 
@@ -935,7 +957,7 @@ async function handleProbes() {
 - Modify: `frontend/src/api/index.js`(probe 封装)
 
 **Interfaces:**
-- Consumes: Task 9 接口;`listMyDevices`(现有)
+- Consumes: Task 9 接口;`listMyDevices`(现有);`createSelector`/`patchSelector`(Task 7)
 
 - [ ] **Step 1: api 封装**
 ```javascript
@@ -943,13 +965,21 @@ export const startProbe = (body) => http.post('/probe', body)
 export const getProbe = (id) => http.get(`/probe/${id}`)
 ```
 
-- [ ] **Step 2: 面板**:选在线设备(`listMyDevices`)+ 可选关键词 → 「探测」调 `startProbe` 拿 id → `setInterval` 轮询 `getProbe(id)` 直到 status done/failed(设 60s 超时提示)→ 渲染 `result.groups`(按 shell/vm 分组,列元素 text + best 候选 by/value)→ 每个元素「加为 key」弹窗预填(key 名待填、frame=组名、candidates=[best])→ 调 `createSelector`(落当前所选作用域)→ 成功刷新左侧列表。
+- [ ] **Step 2: 探测(discover)面板 + 新建/更新已有(E1)**:选在线设备(`listMyDevices`)+ 可选关键词 → 「探测」调 `startProbe({project_id, sub_product, runner, params:{contains}})` 拿 id → `setInterval` 轮询 `getProbe(id)` 直到 status done/failed(设 60s 超时提示)→ 渲染 `result.groups`(按 shell/vm 分组,列元素 text + best 候选 by/value)→ 每个元素「加为 key」弹窗,**两种模式**:
+  - **新建**:填 key 名、frame=组名、candidates=[best] → `createSelector(...)`(落当前作用域);
+  - **更新已有(E1)**:下拉选当前作用域一个已有 key → 把 best 候选**追加到头部**(或替换)到该 key 的 candidates → `patchSelector(id, { candidates })`。
+  成功后刷新左侧列表。
 
-- [ ] **Step 3: 构建校验** `npm run build`。
+- [ ] **Step 3: 校验失效 key(verify,E2)**:面板加「校验失效 key」按钮 → `startProbe({..., params:{mode:'verify'}})` → 轮询 → 拿到 `result.verify`(`{key:bool}`)→ 列表展示每个 key 命中/失效(失效标红);失效行提供「重新探测更新」按钮:切到 discover 模式、并把该 key 预置为「更新已有」目标,方便探到新候选后一键更新。
 
-- [ ] **Step 4: 手动端到端**:真实设备打开被测客户端(CDP 端口)→ 网页选该设备探测 → 看到当前页元素 → 加为 key → 左侧出现 → 生成用例可用。
+- [ ] **Step 4: 构建校验** `npm run build`。
 
-- [ ] **Step 5: Commit** `feat(probe): 前端探测面板(选设备→探测→加为 key)`
+- [ ] **Step 5: 手动端到端**:
+  - discover:真实设备打开被测客户端(CDP 端口)→ 网页选该设备探测 → 看到当前页元素 → 加为 key(新建)→ 左侧出现 → 生成用例可用。
+  - E1:改动某功能后,导到该屏 → 探测 → 对已有失效 key 选「更新已有」→ 候选更新 → 执行不再 fail。
+  - E2:点「校验失效 key」→ 列出当前作用域哪些 key 已失效。
+
+- [ ] **Step 6: Commit** `feat(probe): 前端探测面板(discover/verify + 新建/更新已有 key)`
 
 ---
 

@@ -123,8 +123,11 @@
 
 runner 归属校验同 exec-queue:设备 token 锁定 `runner_id`,防冒充。
 
-### 6.3 runner 探测循环
-主循环在拉 exec-queue 之外,并列拉 `/api/probe/pending`:认领→`guiCore.setRegistry(该作用域注册表)`→`guiCore.probe(params)`→PATCH 回写 `{groups}`。设备离线则该 probe_request 停在 pending(网页轮询超时提示"设备未响应")。
+### 6.3 runner 探测循环(两种模式)
+主循环在拉 exec-queue 之外,并列拉 `/api/probe/pending`:认领→`guiCore.setRegistry(该作用域注册表)`→按 `params.mode` 分派→PATCH 回写。设备离线则该 probe_request 停在 pending(网页轮询超时提示"设备未响应")。
+
+- **discover(缺省)**:`guiCore.probe(params)` 扫当前页可交互元素,回写 `{groups:[...]}`。用于**新增/定向探测**(配 `params.contains` 关键词过滤锁定某新功能区域)。
+- **verify(E2)**:`guiCore.verifyKeys(keys)` 批量校验——对当前作用域**已有的每个 key** 跑 `isKeyVisible`,回写 `{verify:{key: true|false}}`。用于**改完某功能后,一键定位哪些 key 已失效**、需要更新。
 
 ## 7. runner 改造(从 API 拉注册表,回落内置文件)
 
@@ -152,7 +155,11 @@ AITestGen 生成页维持"项目 + 任务",**不加子产品下拉**。生成/�
 - 布局:
   - 顶部:项目选择 + 子产品选择(含「项目级共享」项)。
   - 左:注册表浏览——分层展示「共享」与「当前子产品专属」,列 key/desc/frame/候选;可编辑/删除。
-  - 右:探测面板——选在线设备(复用 `listMyDevices` / 设备在线状态)+ 可选关键词过滤 → 点「探测」→ 轮询 `GET /api/probe/{id}` → 展示 `groups`(shell/vm 分组的元素及 best 候选)→ 每个元素「加为 key」弹表单(预填 best 候选、frame)→ 存 `POST /api/selectors`(落到当前所选作用域)。
+  - 右:探测面板——选在线设备(复用 `listMyDevices` / 设备在线状态)。两种动作:
+    - **探测(discover)**:可选关键词过滤 → 点「探测」→ 轮询 `GET /api/probe/{id}` → 展示 `groups`(shell/vm 分组的元素及 best 候选)→ 每个元素「加为 key」弹表单:
+      - **新建**(预填 best 候选、frame)→ `POST /api/selectors`(落当前作用域);
+      - **更新已有(E1)**:选当前作用域一个已有 key → 把 best 候选**追加到头部或替换** → `PATCH /api/selectors/{id}`。用于功能改动后更新失效 key。
+    - **校验失效 key(verify,E2)**:点「校验」→ probe `mode=verify` → 展示当前作用域每个 key 的命中/失效;失效项就地提供「重新探测更新」入口(切到 discover + 该 key 的更新模式)。
   - 顶部动作:「导入内置纳米Work注册表到当前项目」(`POST /api/selectors/import-legacy`,项目 admin)。
 - `api/index.js` 增薄封装函数;沿用响应拦截解包。
 
