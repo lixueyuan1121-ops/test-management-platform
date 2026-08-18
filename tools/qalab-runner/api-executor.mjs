@@ -132,6 +132,7 @@ export async function run(script, apiEnv, log = () => {}, fetchImpl = fetch) {
 
   const duration_ms = Date.now() - started;
   if (failed) return { verdict: "fail", reason: failed, evidence: null, duration_ms, steps };
-  const checks = script.reduce((n, s) => n + ((s.asserts || []).length), 0);
+  // 只计普通步断言(cleanup 尽力而为、不计入判定,避免"全部满足"虚高)。
+  const checks = normals.reduce((n, { st }) => n + ((st.asserts || []).length), 0);
   return { verdict: "pass", reason: `api 确定性执行通过: ${normals.length} 步, ${checks} 处断言全部满足`, evidence: null, duration_ms, steps };
 }
