@@ -35,8 +35,12 @@ def _kind_of(tc: TestCase | None) -> ExecKind:
         return ExecKind.gui
 
 
-def _payload_of(tc: TestCase | None) -> dict:
-    """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params + 结构化 script）。"""
+def _payload_of(tc: TestCase | None, db: Session) -> dict:
+    """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params + 结构化 script）。
+
+    api 用例额外带 api_env 快照（base_url/auth）——执行器确定性执行需要，
+    且用"下发那一刻的配置快照"避免执行时配置漂移（见设计稿 §6.4）。
+    """
     if not tc:
         return {}
     # script 落库是 JSON 字符串;runner 的 StepExecutor 需要**数组**(Array.isArray 判定)。
@@ -50,7 +54,7 @@ def _payload_of(tc: TestCase | None) -> dict:
                 script = parsed
         except (json.JSONDecodeError, ValueError, TypeError):
             script = None
-    return {
+    payload = {
         "test_case_id": tc.id,
         "title": tc.title,
         "category": tc.category,
@@ -60,6 +64,16 @@ def _payload_of(tc: TestCase | None) -> dict:
         "script": script,
         "project_id": tc.project_id,   # runner 按此拉该项目的合并选择器注册表(DB 单源)
     }
+    # 仅 api 用例注入 api_env 快照（省 payload 体积;执行不需要 contract）。
+    if _kind_of(tc) == ExecKind.api:
+        from app.services.api_env import get_api_env
+        env = get_api_env(db, tc.project_id) or {}
+        payload["api_env"] = {
+            "base_url": env.get("base_url", ""),
+            "auth_type": env.get("auth_type", "fixed"),
+            "auth": env.get("auth", {}),
+        }
+    return payload
 
 
 def _to_out(r: ExecRun) -> dict:
@@ -125,7 +139,7 @@ def enqueue(
             runner=body.runner,
             kind=_kind_of(tc),
             status=ExecStatus.pending,
-            payload=json.dumps(_payload_of(tc), ensure_ascii=False),
+            payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
             enqueued_by=user.id,
         )
         db.add(row)
