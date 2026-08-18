@@ -141,7 +141,7 @@
         <el-form-item label="预期"><el-input v-model="edit.expected" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
-        <span class="edit-hint">改了步骤后,若该用例是 gui/e2e,建议重生 script 使执行步骤同步</span>
+        <span class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
         <el-button @click="edit.visible = false">取消</el-button>
         <el-button :loading="edit.regen" @click="doEditAndRegen">保存并重生 script</el-button>
         <el-button type="primary" :loading="edit.saving" @click="doEdit">保存</el-button>
@@ -363,7 +363,7 @@ async function doEdit() {
   finally { edit.saving = false }
 }
 
-// 保存正文后,按新 steps 重生 script(仅 gui/e2e;后端会校验类型)
+// 保存正文后重生 script。gui/e2e 按最新 steps 重生;「待补选择器」降级的 manual 用例后端会一键按原意图恢复。
 async function doEditAndRegen() {
   if (!edit.title.trim()) { ElMessage.warning('标题不能为空'); return }
   edit.regen = true

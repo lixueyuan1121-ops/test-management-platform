@@ -7,17 +7,17 @@ from app.api.ai import _to_case_out
 
 
 def main():
-    # ---- selector_fix_info:两种格式都能抽出 key ----
-    ok1, k1 = selector_fix_info("[选择器待补] 补齐选择器 key:navTasks, submitBtn 后即可执行 gui")
-    assert ok1 and k1 == ["navTasks", "submitBtn"], (ok1, k1)
-    ok2, k2 = selector_fix_info("[选择器待补] 缺选择器 key:onlyKey(补齐后仍需修其它问题)")
-    assert ok2 and k2 == ["onlyKey"], (ok2, k2)
+    # ---- selector_fix_info:两种格式都能抽出 key + 原意图类型 ----
+    ok1, k1, kind1 = selector_fix_info("[选择器待补] 补齐选择器 key:navTasks, submitBtn 后即可执行 gui")
+    assert ok1 and k1 == ["navTasks", "submitBtn"] and kind1 == "gui", (ok1, k1, kind1)
+    ok2, k2, kind2 = selector_fix_info("[选择器待补] 缺选择器 key:onlyKey(补齐后仍需修其它问题,目标 e2e)")
+    assert ok2 and k2 == ["onlyKey"] and kind2 == "e2e", (ok2, k2, kind2)
     # 中文逗号/顿号分隔也支持
-    _, k3 = selector_fix_info("[选择器待补] 补齐选择器 key:a，b、c 后即可执行 e2e")
+    _, k3, _ = selector_fix_info("[选择器待补] 补齐选择器 key:a，b、c 后即可执行 e2e")
     assert k3 == ["a", "b", "c"], k3
-    # 非该标识 → (False, [])
-    assert selector_fix_info("界面验证") == (False, [])
-    assert selector_fix_info(None) == (False, [])
+    # 非该标识 → (False, [], None)
+    assert selector_fix_info("界面验证") == (False, [], None)
+    assert selector_fix_info(None) == (False, [], None)
 
     # ---- _to_case_out:带 selector_fix / selector_fix_keys 字段 ----
     tc = SimpleNamespace(

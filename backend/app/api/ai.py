@@ -44,7 +44,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
     # review_status 两种来源都可能是枚举或裸字符串,统一取 .value 兜底。
     rs = tc.review_status
     kind_reason = getattr(tc, "kind_reason", None)
-    sel_fix, sel_fix_keys = selector_fix_info(kind_reason)   # 仅因选择器缺失降级?缺哪些 key
+    sel_fix, sel_fix_keys, _sel_fix_kind = selector_fix_info(kind_reason)   # 仅因选择器缺失降级?缺哪些 key
     out = {
         "id": tc.id,
         "ai_task_id": tc.ai_task_id,
@@ -488,12 +488,19 @@ def gen_script(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e/api)。同步调引擎,写回并返回。"""
+    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e/api)。同步调引擎,写回并返回。
+
+    对「选择器待补」降级(exec_kind=manual)的用例:补齐 key 后点此可**一键按原意图重生**——
+    自动用降级前的 gui/e2e 类型生成,成功则恢复 exec_kind 并清除待补标识(闭环回到可执行)。
+    """
     tc = db.get(TestCase, cid)
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
     assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
     kind = getattr(tc, "exec_kind", "gui") or "gui"
+    sel_fix, _keys, intended = selector_fix_info(getattr(tc, "kind_reason", None))
+    if kind == "manual" and sel_fix and intended:
+        kind = intended   # 选择器待补的降级用例:按降级前意图(gui/e2e)重生
     if kind not in ("gui", "e2e", "api"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"仅 gui/e2e/api 用例支持生成 script(当前 {kind})")
     # 用与该用例相同的引擎重生 script(保持一致);引擎不可用则回落默认。
@@ -504,6 +511,10 @@ def gen_script(
     if err:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"生成 script 失败:{err}")
     tc.script = json.dumps(script, ensure_ascii=False)
+    if kind in ("gui", "e2e"):
+        tc.exec_kind = kind          # 降级用例重生成功 → 恢复为可执行类型
+    if sel_fix:
+        tc.kind_reason = None        # 已成功重生,清除「选择器待补」标识(前端 badge 随之消失)
     db.commit()
     db.refresh(tc)
     return ok(_to_case_out(tc))

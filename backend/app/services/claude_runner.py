@@ -572,7 +572,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
                     if _validate_script(it.get("script"), (valid_keys or set()) | set(missing))[1] is None:
                         kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {intended}"[:500]
                     else:
-                        kind_reason = f"{_SELECTOR_FIX_MARK} 缺选择器 key:{keys_txt}(补齐后仍需修其它问题)"[:500]
+                        kind_reason = f"{_SELECTOR_FIX_MARK} 缺选择器 key:{keys_txt}(补齐后仍需修其它问题,目标 {intended})"[:500]
             elif script:
                 # e2e 名不副实纠偏:e2e 应是多步端到端。若步数太少或只有 connect+断言(无实质交互),
                 # 说明它其实是单点 gui → 改判 gui,确保"勾选的用例按其真实类型执行"。
@@ -625,21 +625,24 @@ def _unregistered_keys(script, valid_keys) -> list[str]:
     return missing
 
 
-# 从 kind_reason 抽"缺哪些 key"的正则(与 parse_testcases 写入格式配套:"key:a, b 后即可"/"key:a(...")。
+# 从 kind_reason 抽"缺哪些 key"/"原意图类型"的正则(与 parse_testcases 写入格式配套)。
 _SEL_FIX_KEYS_RE = re.compile(r"key[:：]\s*(.*?)(?:后即可|[（(]|$)")
+_SEL_FIX_KIND_RE = re.compile(r"(?:执行|目标)\s*(gui|e2e)")
 
 
-def selector_fix_info(kind_reason: str | None) -> tuple[bool, list[str]]:
-    """解析 kind_reason 是否为「选择器待补」降级 + 抽出缺的 key 列表(供前端标识/筛选)。
+def selector_fix_info(kind_reason: str | None) -> tuple[bool, list[str], str | None]:
+    """解析 kind_reason 是否为「选择器待补」降级 + 缺的 key 列表 + 原意图类型(gui/e2e)。
 
     与 parse_testcases 写入的 _SELECTOR_FIX_MARK 格式配套(单一事实来源,改格式两处同步)。
-    非该标识 → (False, [])。
+    非该标识 → (False, [], None)。intended 供 gen-script 一键按原意图重生。
     """
     if not kind_reason or not str(kind_reason).startswith(_SELECTOR_FIX_MARK):
-        return False, []
-    m = _SEL_FIX_KEYS_RE.search(str(kind_reason))
+        return False, [], None
+    text = str(kind_reason)
+    m = _SEL_FIX_KEYS_RE.search(text)
     keys = [k.strip() for k in re.split(r"[,，、]", m.group(1))] if m else []
-    return True, [k for k in keys if k]
+    km = _SEL_FIX_KIND_RE.search(text)
+    return True, [k for k in keys if k], (km.group(1) if km else None)
 
 
 def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, str | None]:
