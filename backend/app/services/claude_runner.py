@@ -66,6 +66,48 @@ def _registered_keys(project_id: int | None = None) -> set[str]:
     finally:
         s.close()
 
+
+def _load_api_contract(project_id: int | None = None) -> dict | None:
+    """项目级 api 契约(供 prompt 注入):{base_url, contract}。类比 _load_selector_keys。
+
+    DB 单源,走 api_env 服务层(生成器脱离请求 db,自开 SessionLocal 并关闭)。
+    project_id 空 / 项目未配 / base_url 与 contract 皆空 → None(prompt 注入"无契约"提示)。
+    """
+    if not project_id:
+        return None
+    from app.db.session import SessionLocal
+    from app.services.api_env import get_api_env
+    s = SessionLocal()
+    try:
+        env = get_api_env(s, project_id)
+    except Exception:
+        logger.warning("读 api 契约失败(project_id=%s),prompt 不注入契约", project_id)
+        return None
+    finally:
+        s.close()
+    if not env:
+        return None
+    base_url = (env.get("base_url") or "").strip()
+    contract = (env.get("contract") or "").strip()
+    if not base_url and not contract:
+        return None
+    return {"base_url": base_url, "contract": contract}
+
+
+def _api_contract_block(project_id: int | None = None) -> str:
+    """api 契约注入块:有契约给 base_url+接口清单;无契约提示"改判 manual、勿臆造接口"。"""
+    c = _load_api_contract(project_id)
+    if c:
+        return (
+            "   项目 api 契约(api 用例的 path 只能来自此清单;鉴权由执行器按项目配置统一注入,勿在 script 写死 token):\n"
+            f"   - base_url:{c['base_url'] or '(未配置,执行器下发时补)'}\n"
+            f"   - 接口清单:\n{c['contract'] or '(空)'}"
+        )
+    return (
+        "   (当前项目无 api 契约:若需求本身未自带接口信息(method/path/参数/成功响应结构),"
+        "api 用例请改判 kind=manual、script=[],不要臆造接口 path)"
+    )
+
 # 禁用的内置工具：覆盖执行/改文件/联网/子代理，纯生成任务一个都用不到
 _DISALLOWED_TOOLS = [
     "Bash", "BashOutput", "KillShell",
@@ -92,6 +134,29 @@ def is_available() -> bool:
     return bool(settings.AI_ENABLED and _claude_bin())
 
 
+# api script 编写规范段(注入 build_testcase_prompt / build_script_prompt)。
+# **普通字符串(非 f-string)**:内含 {{变量}} 模板与 {字段} JSON 示例,避免 f-string 花括号转义地狱。
+# 由调用方 f-string 以 {_API_SCRIPT_SPEC} 原样插入(f-string 不会二次解释被插值变量的花括号)。
+_API_SCRIPT_SPEC = """7. api script(当 kind=api)——请求-断言-提取原子的有序数组,每步一个对象 {name, request, asserts, extract?, cleanup?}:
+   - request:{method(GET/POST/PUT/PATCH/DELETE), path(相对路径,如 /api/projects,可含 {{变量}}), headers?, query?, body?}
+   - path 只能来自下方「项目 api 契约」的接口清单;契约里没有的接口 → 改判 kind=manual、script=[](不要臆造 path)
+   - asserts:至少 1 个,每个 {type, path?, op, value?}:
+     · type=status 断言 HTTP 状态码;type=jsonpath 断言响应体字段(path 用点路径,如 data.id、data.list.0.id)
+     · op ∈ eq/neq/exists/contains/gt/lt/regex/type;除 exists 外都需 value
+     · 优先带业务成功断言 {"type":"jsonpath","path":"code","op":"eq","value":0}(平台统一 {code,msg,data} 信封)
+   - extract?:从本步响应体按点路径取值存入变量,如 {"pid":"data.id"};后续步骤用 {{pid}} 引用
+   - 变量必须先提取后引用:任何 {{变量}} 必须在之前某步的 extract 里定义过(固定鉴权 token 由执行器按项目配置注入,无需在 script 写死;仅当契约要求登录换 token 时才写登录步 extract token)
+   - cleanup?:true 表示清理步骤(无论前面成败都执行、多个逆序执行、其断言失败不算用例失败)
+   - 含写操作(POST/PUT/PATCH/DELETE)的 script 必须在末尾补 cleanup:true 的删除步、用已提取的 id 定位删除,否则改判 manual
+   - 边界/异常用例给具体示例值(如超长名、缺必填、越权 id),不要只写"传非法参数"
+   - 正例(创建→查询→清理):
+     [
+       {"name":"创建项目","request":{"method":"POST","path":"/api/projects","body":{"name":"自动化项目"}},"asserts":[{"type":"status","op":"eq","value":200},{"type":"jsonpath","path":"code","op":"eq","value":0},{"type":"jsonpath","path":"data.id","op":"exists"}],"extract":{"pid":"data.id"}},
+       {"name":"查询项目","request":{"method":"GET","path":"/api/projects/{{pid}}"},"asserts":[{"type":"jsonpath","path":"code","op":"eq","value":0}]},
+       {"name":"清理-删除项目","cleanup":true,"request":{"method":"DELETE","path":"/api/projects/{{pid}}"},"asserts":[{"type":"status","op":"eq","value":200}]}
+     ]"""
+
+
 def build_testcase_prompt(requirement: str, project_id: int | None = None) -> str:
     """把需求文本包装成「生成结构化测试点」的指令。
 
@@ -106,6 +171,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None) -> st
         keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
     else:
         keys_block = "\n   （当前无可用语义 key 清单：gui/e2e 若无法用 key 表达，请改判 manual）"
+    api_contract_block = _api_contract_block(project_id)  # api 用例的接口清单/无契约提示
     return f"""请基于以下需求，设计一份结构化测试点清单。
 
 输出要求：
@@ -118,7 +184,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None) -> st
    - priority：优先级（P0/P1/P2/P3，判定标准见下）
    - kind：自动化执行类型，只能是 gui/api/cli/e2e/manual 之一（判定规则见下）
    - kind_reason：一句话说明为何判该 kind
-   - script：**仅 gui/e2e 需要**，结构化可执行步骤数组（schema 见下）；api/cli/manual 一律给 []
+   - script:**gui/e2e 给界面步骤数组、api 给请求-断言-提取数组**(schema 各见下);cli/manual 一律给 []
 3. priority 判定规则（按"失败后果的严重性"定级，不要随意打分）：
    - P0：核心主流程 / 一旦失败即阻断使用或造成数据错误（如登录、支付、下单、提交保存主数据）。
    - P1：重要功能 / 常见路径上的异常与校验（如必填校验、关键按钮不可用、主功能的边界）。
@@ -146,10 +212,12 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None) -> st
    正例(gui,单点)：connect → wait_for(navTasks) → assert_visible(navTasks)
    正例(e2e,多步)：connect → click(loginAccountTab) → fill(loginUserName) → fill(loginPassword) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle) → assert_text(homepageTitle,"早上好",contains)
 {keys_block}
-7. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
-8. 数量随需求复杂度伸缩：一般 8-20 条；简单需求可少于 8 条，复杂需求可到 30 条。聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。
-9. 各测试点应相互正交：不同用例覆盖不同的验证点，不要用不同措辞重复验证同一件事。
-10. 边界/异常类用例的 steps 要给出**具体示例数据**（如手机号填 "13800138000"、金额填 "-1"、超长字符串给出长度），不要只写"输入无效值"这类空泛描述。
+{_API_SCRIPT_SPEC}
+{api_contract_block}
+8. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
+9. 数量随需求复杂度伸缩：一般 8-20 条；简单需求可少于 8 条，复杂需求可到 30 条。聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。
+10. 各测试点应相互正交：不同用例覆盖不同的验证点，不要用不同措辞重复验证同一件事。
+11. 边界/异常类用例的 steps 要给出**具体示例数据**（如手机号填 "13800138000"、金额填 "-1"、超长字符串给出长度），不要只写"输入无效值"这类空泛描述。
 
 需求内容：
 <requirement>
