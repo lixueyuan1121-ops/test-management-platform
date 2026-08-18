@@ -60,6 +60,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "kind_reason": kind_reason,
         "selector_fix": sel_fix,            # True=仅补选择器即可自动化(前端据此显标签/筛选)
         "selector_fix_keys": sel_fix_keys,  # 待补的选择器 key 列表(直接展示,免 hover)
+        "last_gen_error": getattr(tc, "last_gen_error", None),  # 上次重生 script 失败原因(成功清空;列表瘦身 Row 无此列→None)
         "adopted": tc.adopted,
         "review_status": getattr(rs, "value", rs),
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
@@ -522,7 +523,17 @@ def gen_script(
     # ---- 调 AI 引擎（阻塞,可能数十秒~数分钟）----
     script, err = engine.generate_script(kind, tc_title, tc_steps, tc_expected, project_id=tc_project_id)
     if err:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"生成 script 失败:{err}")
+        detail = f"生成 script 失败:{err}"
+        # db 已在调 AI 前关闭,另开 session 落库失败原因(供事后逐条回看修复),再 raise。
+        es = SessionLocal()
+        try:
+            etc = es.get(TestCase, cid)
+            if etc:
+                etc.last_gen_error = detail[:2000]
+                es.commit()
+        finally:
+            es.close()
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=detail)
     # ---- 新 session 写回结果 ----
     s = SessionLocal()
     try:
@@ -534,6 +545,7 @@ def gen_script(
             tc2.exec_kind = kind          # 降级用例重生成功 → 恢复为可执行类型
         if sel_fix:
             tc2.kind_reason = None        # 已成功重生,清除「选择器待补」标识(前端 badge 随之消失)
+        tc2.last_gen_error = None         # 重生成功 → 清除上次失败原因
         s.commit()
         s.refresh(tc2)
         return ok(_to_case_out(tc2))

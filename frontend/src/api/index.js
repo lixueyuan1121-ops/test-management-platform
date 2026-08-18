@@ -82,7 +82,10 @@ export const updateTestcase = (id, patch) => http.patch(`/ai/testcases/${id}`, p
 export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
 // 按用例当前 steps/expected 重新生成结构化 script(仅 gui/e2e)
 // 重生单条 script:同步调 AI 生成,较慢(常 30-60s),单独放宽超时到 60s(覆盖全局 15s 默认)。
-export const genTestcaseScript = (id) => http.post(`/ai/testcases/${id}/gen-script`, null, { timeout: 60000 })
+// 重生 script：单条同步调 AI，前端放宽超时到 60s。
+// opts.silent=true 时抑制 http 拦截器的错误 toast（批量重生逐条调用时用，改由汇总清单展示）。
+export const genTestcaseScript = (id, opts = {}) =>
+  http.post(`/ai/testcases/${id}/gen-script`, null, { timeout: 60000, silent: !!opts.silent })
 
 // ===== 验收清单（测试点回流任务）=====
 export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })

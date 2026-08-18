@@ -89,6 +89,9 @@ def ensure_testcase_columns() -> None:
             conn.execute(text("ALTER TABLE test_case ADD COLUMN kind_reason TEXT NULL"))
         if "script" not in cols:
             conn.execute(text("ALTER TABLE test_case ADD COLUMN script TEXT NULL"))
+        if "last_gen_error" not in cols:
+            # 上次「重生 script」失败原因（成功清空），供事后回看逐条修复。
+            conn.execute(text("ALTER TABLE test_case ADD COLUMN last_gen_error TEXT NULL"))
         # 回填：仅把仍为 pending 且 adopted=1 的老行标记为已采纳（幂等）。
         conn.execute(text(
             "UPDATE test_case SET review_status='adopted', reviewed_at=created_at "

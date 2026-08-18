@@ -46,7 +46,7 @@ http.interceptors.response.use(
     const body = resp.data
     if (body && typeof body === 'object' && 'code' in body) {
       if (body.code === 0) return body.data
-      ElMessage.error(body.msg || '请求失败')
+      if (!resp.config?.silent) ElMessage.error(body.msg || '请求失败')
       return Promise.reject(new Error(body.msg || '请求失败'))
     }
     return body
@@ -76,7 +76,7 @@ http.interceptors.response.use(
       router.push('/login')
     } else {
       const msg = error.response?.data?.msg || error.message
-      ElMessage.error(msg || '网络错误')
+      if (!error.config?.silent) ElMessage.error(msg || '网络错误')
     }
     return Promise.reject(error)
   }

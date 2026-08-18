@@ -20,6 +20,10 @@ from app.services import generators
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 Base.metadata.create_all(_engine)
 _Session = sessionmaker(bind=_engine)
+# gen_script 已改为「关闭注入 session、AI 完成后另开 SessionLocal 写回」(连接释放修复)。
+# 测试里把 SessionLocal 也指向内存库,使写回命中同一 DB(StaticPool 共享连接)。
+from app.api import ai as _ai_mod
+_ai_mod.SessionLocal = _Session
 _s = _Session()
 _s.add(Project(id=1, name="P", code="P1", status="active"))
 _s.add(AiTask(id=1, project_id=1, user_id=1, input_type="text", status="done"))

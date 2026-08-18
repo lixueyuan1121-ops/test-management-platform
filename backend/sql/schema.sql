@@ -244,6 +244,7 @@ CREATE TABLE `test_case` (
   `exec_kind` VARCHAR(8) NOT NULL DEFAULT 'gui',
   `kind_reason` TEXT NULL,
   `script` TEXT NULL,
+  `last_gen_error` TEXT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_testcase_aitask` (`ai_task_id`),

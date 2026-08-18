@@ -67,6 +67,8 @@ class TestCase(Base):
     kind_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 结构化可执行步骤 JSON（步骤 DSL；P3 由生成侧填充，runner 确定性执行）。存 Text-JSON 兼容 MySQL 5.6。
     script: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 上次「重生 script」失败原因（缺哪个 key / 哪步没断言等）；重生成功即清空。供事后回看逐条修复。
+    last_gen_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     adopted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 三态评审：pending/adopted/rejected（adopted 布尔保留做兼容，见 migrate.ensure_testcase_columns）
     review_status: Mapped[ReviewStatus] = mapped_column(
