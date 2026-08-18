@@ -28,6 +28,7 @@ const routes = [
       { path: 'tool-admin', name: 'tool-admin', component: () => import('@/views/ToolAdmin.vue'), meta: { platformAdmin: true } },
       { path: 'releases', name: 'releases', component: () => import('@/views/ReleaseNotes.vue'), meta: { title: '发版记录' } },
       { path: 'selectors', name: 'selectors', component: () => import('@/views/SelectorAdmin.vue'), meta: { title: '选择器管理' } },
+      { path: 'api-env', name: 'api-env', component: () => import('@/views/ApiEnvAdmin.vue'), meta: { title: 'api 环境' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

@@ -115,6 +115,16 @@ export const setSelectorScope = (body) => http.put('/selectors/scope', body)
 // 导入内置纳米Work注册表（仅项目 admin）；返回 { imported, skipped }
 export const importLegacySelectors = (project_id) => http.post('/selectors/import-legacy', null, { params: { project_id } })
 
+// ===== 项目级 api 测试环境（base_url/鉴权/接口契约，供 api 用例生成与执行）=====
+// readApiEnv 返回 { base_url, auth_type, auth, contract } 或 null（仅项目 admin，含被测系统凭据）。
+export const readApiEnv = (project_id) => http.get('/api-env', { params: { project_id } })
+// upsertApiEnv body: { project_id, base_url?, auth_type?, auth?(对象), contract?(字符串) }
+export const upsertApiEnv = (body) => http.put('/api-env', body)
+// parseCurl body: { curl } → { parsed, contract_line, script_seed }（鉴权头已剥离，不回真实 token）
+export const parseCurl = (curl) => http.post('/api-env/parse-curl', { curl })
+// importOpenapi body: { project_id, spec(对象或JSON串) } → { base_url, contract, count }（仅粘贴，不服务端拉 URL）
+export const importOpenapi = (project_id, spec) => http.post('/api-env/import-openapi', { project_id, spec })
+
 // 设备探测：网页发起一次探测（discover/verify）→ 轮询查状态/结果。
 // startProbe body: { project_id, sub_product, runner, params:{contains?, mode?} } → { id }
 // getProbe(id) → { id, status(pending/running/done/failed), params, result, error, ... }
