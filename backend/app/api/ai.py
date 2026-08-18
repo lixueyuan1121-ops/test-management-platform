@@ -21,6 +21,7 @@ from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, generators
+from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -42,6 +43,8 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
     # tc 可为 ORM TestCase 或 with_entities 的具名 Row(列表瘦身场景,不含 script)。
     # review_status 两种来源都可能是枚举或裸字符串,统一取 .value 兜底。
     rs = tc.review_status
+    kind_reason = getattr(tc, "kind_reason", None)
+    sel_fix, sel_fix_keys = selector_fix_info(kind_reason)   # 仅因选择器缺失降级?缺哪些 key
     out = {
         "id": tc.id,
         "ai_task_id": tc.ai_task_id,
@@ -54,7 +57,9 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "priority": tc.priority,
         "exec_kind": getattr(tc, "exec_kind", "gui"),
         "provider": getattr(tc, "provider", "claude"),
-        "kind_reason": getattr(tc, "kind_reason", None),
+        "kind_reason": kind_reason,
+        "selector_fix": sel_fix,            # True=仅补选择器即可自动化(前端据此显标签/筛选)
+        "selector_fix_keys": sel_fix_keys,  # 待补的选择器 key 列表(直接展示,免 hover)
         "adopted": tc.adopted,
         "review_status": getattr(rs, "value", rs),
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
@@ -319,6 +324,7 @@ def list_cases(
     category: str | None = Query(None),
     exec_kind: str | None = Query(None),
     provider: str | None = Query(None),
+    selector_fix: bool | None = Query(None),
     keyword: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -344,6 +350,9 @@ def list_cases(
             q = q.filter(TestCase.exec_kind == exec_kind)
         if provider:
             q = q.filter(TestCase.provider == provider)
+        if selector_fix:
+            # 「仅补选择器即可自动化」= kind_reason 以标识前缀开头(SQL 下推,不全量捞)。
+            q = q.filter(TestCase.kind_reason.like(f"{_SELECTOR_FIX_MARK}%"))
         if keyword:
             q = q.filter(TestCase.title.ilike(f"%{keyword}%"))
         return q

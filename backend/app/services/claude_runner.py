@@ -625,6 +625,23 @@ def _unregistered_keys(script, valid_keys) -> list[str]:
     return missing
 
 
+# 从 kind_reason 抽"缺哪些 key"的正则(与 parse_testcases 写入格式配套:"key:a, b 后即可"/"key:a(...")。
+_SEL_FIX_KEYS_RE = re.compile(r"key[:：]\s*(.*?)(?:后即可|[（(]|$)")
+
+
+def selector_fix_info(kind_reason: str | None) -> tuple[bool, list[str]]:
+    """解析 kind_reason 是否为「选择器待补」降级 + 抽出缺的 key 列表(供前端标识/筛选)。
+
+    与 parse_testcases 写入的 _SELECTOR_FIX_MARK 格式配套(单一事实来源,改格式两处同步)。
+    非该标识 → (False, [])。
+    """
+    if not kind_reason or not str(kind_reason).startswith(_SELECTOR_FIX_MARK):
+        return False, []
+    m = _SEL_FIX_KEYS_RE.search(str(kind_reason))
+    keys = [k.strip() for k in re.split(r"[,，、]", m.group(1))] if m else []
+    return True, [k for k in keys if k]
+
+
 def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, str | None]:
     """校验 gui/e2e 的 script。返回 (规范化步骤列表, 错误说明)。
 

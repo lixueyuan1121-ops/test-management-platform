@@ -235,7 +235,16 @@
             <el-tag :type="PROVIDER_TYPE[row.provider] || 'info'" size="small" effect="plain">{{ row.provider || 'claude' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="测试点" min-width="200" />
+        <el-table-column label="测试点" min-width="200">
+          <template #default="{ row }">
+            <div>{{ row.title }}</div>
+            <el-tooltip v-if="row.selector_fix" :content="row.kind_reason" placement="top">
+              <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">
+                补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"> · 补: {{ row.selector_fix_keys.join(', ') }}</template>
+              </el-tag>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column label="步骤" min-width="220">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
         </el-table-column>
@@ -733,6 +742,7 @@ function fmtTime(s) {
 
 .result-title { font-weight: 600; color: #1f2d3d; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
+.sel-fix-tag { margin-top: 4px; cursor: help; display: inline-block; height: auto; line-height: 1.5; white-space: normal; padding: 2px 6px; }
 .case-table { margin-top: 4px; }
 
 /* 三态评审控件：采纳=青绿 / 否决=danger / 待定=灰，与 Dashboard .dtag 配色一致 */
