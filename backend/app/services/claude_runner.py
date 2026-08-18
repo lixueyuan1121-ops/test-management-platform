@@ -484,3 +484,122 @@ def _looks_like_e2e(script: list) -> bool:
         return False
     interactions = sum(1 for s in script if s.get("action") in _INTERACTION_ACTIONS)
     return interactions >= 2
+
+
+# ---- api script 校验(请求-断言-提取原子;镜像 api-executor.mjs 的执行契约)----
+_API_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_API_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_API_ASSERT_TYPES = {"status", "jsonpath"}
+_API_OPS = {"eq", "neq", "exists", "contains", "gt", "lt", "regex", "type"}
+# 除 exists 外都需要 value(exists 只判字段在不在,无参照值)
+_API_OPS_NEED_VALUE = _API_OPS - {"exists"}
+_VAR_REF_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _collect_var_refs(value) -> set[str]:
+    """递归收集一个值(str/dict/list)里所有 {{var}} 引用名(用于变量闭环校验)。"""
+    refs: set[str] = set()
+    if isinstance(value, str):
+        refs.update(_VAR_REF_RE.findall(value))
+    elif isinstance(value, dict):
+        for v in value.values():
+            refs |= _collect_var_refs(v)
+    elif isinstance(value, list):
+        for v in value:
+            refs |= _collect_var_refs(v)
+    return refs
+
+
+def _validate_api_script(script, auth_vars: set[str] | None = None) -> tuple[list, str | None]:
+    """校验 api 用例的 script(请求-断言-提取原子)。返回 (规范化步骤, 错误说明)。
+
+    规则(设计稿 §7.2):
+    - 非空数组;每步是对象;request.method 合法、request.path 非空;
+    - 每步 asserts 非空;每断言 type∈{status,jsonpath}、op 合法;jsonpath 必须有 path;
+      需值的 op(除 exists)必须有 value;
+    - **变量引用闭环**:request 里任何 {{var}} 必须在**之前某步的 extract** 里定义过
+      (或来自 auth_vars 固定注入);引用未定义变量 → 非法(把 api 版"未注册 key"挡在生成阶段);
+    - **写操作清理**:含写方法(POST/PUT/PATCH/DELETE)的非清理步,但整段无任何 cleanup:true 步 → 非法。
+    任一不满足返回错误,调用方降级 manual(不派坏 script 到执行机)。
+
+    auth_vars:执行器在开跑前已可用的变量名(如登录预置);当前 fixed 鉴权靠预置 header
+    而非变量,login 鉴权靠用例内登录步 extract,故默认空集即可。
+    """
+    if not isinstance(script, list) or not script:
+        return [], "script 缺失或非数组"
+    defined: set[str] = set(auth_vars or set())   # 已定义变量(先 extract / 鉴权注入)
+    has_write = False
+    has_cleanup = False
+    norm = []
+    for idx, st in enumerate(script):
+        pos = idx + 1
+        if not isinstance(st, dict):
+            return [], f"第 {pos} 步非对象"
+        req = st.get("request")
+        if not isinstance(req, dict):
+            return [], f"第 {pos} 步缺 request 对象"
+        method = str(req.get("method") or "").strip().upper()
+        if method not in _API_METHODS:
+            return [], f"第 {pos} 步非法 method「{req.get('method')}」"
+        path = str(req.get("path") or "").strip()
+        if not path:
+            return [], f"第 {pos} 步 request.path 为空"
+        is_cleanup = bool(st.get("cleanup"))
+        if is_cleanup:
+            has_cleanup = True
+        elif method in _API_WRITE_METHODS:
+            has_write = True
+        # 变量引用闭环:本步 request 引用的 {{var}} 必须已定义(extract 在发请求后,故检查在登记前)
+        undefined = _collect_var_refs(req) - defined
+        if undefined:
+            return [], f"第 {pos} 步引用未定义变量 {sorted(undefined)}(须在之前步骤 extract 或鉴权注入)"
+        # asserts 校验
+        asserts = st.get("asserts")
+        if not isinstance(asserts, list) or not asserts:
+            return [], f"第 {pos} 步 asserts 为空(无判定依据)"
+        norm_asserts = []
+        for a in asserts:
+            if not isinstance(a, dict):
+                return [], f"第 {pos} 步 assert 非对象"
+            atype = str(a.get("type") or "").strip()
+            if atype not in _API_ASSERT_TYPES:
+                return [], f"第 {pos} 步非法断言 type「{atype}」"
+            op = str(a.get("op") or "").strip()
+            if op not in _API_OPS:
+                return [], f"第 {pos} 步非法断言 op「{op}」"
+            if atype == "jsonpath" and not str(a.get("path") or "").strip():
+                return [], f"第 {pos} 步 jsonpath 断言缺 path"
+            if op in _API_OPS_NEED_VALUE and a.get("value") is None:
+                return [], f"第 {pos} 步 op「{op}」缺 value"
+            na = {"type": atype, "op": op}
+            if atype == "jsonpath":
+                na["path"] = str(a.get("path")).strip()
+            if "value" in a:
+                na["value"] = a.get("value")
+            norm_asserts.append(na)
+        # extract:登记新变量(供后续步骤引用)
+        norm_extract = None
+        extract = st.get("extract")
+        if extract is not None:
+            if not isinstance(extract, dict):
+                return [], f"第 {pos} 步 extract 非对象"
+            norm_extract = {}
+            for k, p in extract.items():
+                if not str(p or "").strip():
+                    return [], f"第 {pos} 步 extract「{k}」路径为空"
+                defined.add(str(k))
+                norm_extract[str(k)] = str(p).strip()
+        # 规范化步骤(只保留执行器认得的字段)
+        nreq = {"method": method, "path": path}
+        for opt in ("headers", "query", "body"):
+            if req.get(opt) is not None:
+                nreq[opt] = req.get(opt)
+        step = {"name": str(st.get("name") or f"step{pos}")[:200], "request": nreq, "asserts": norm_asserts}
+        if norm_extract:
+            step["extract"] = norm_extract
+        if is_cleanup:
+            step["cleanup"] = True
+        norm.append(step)
+    if has_write and not has_cleanup:
+        return [], "含写操作(POST/PUT/PATCH/DELETE)但无 cleanup 清理步骤(避免残留脏数据,应补末尾删除步)"
+    return norm, None
