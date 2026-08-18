@@ -81,7 +81,8 @@ export const updateTestcase = (id, patch) => http.patch(`/ai/testcases/${id}`, p
 // 删除测试点(级联清其清单项)
 export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
 // 按用例当前 steps/expected 重新生成结构化 script(仅 gui/e2e)
-export const genTestcaseScript = (id) => http.post(`/ai/testcases/${id}/gen-script`)
+// 重生单条 script:同步调 AI 生成,较慢(常 30-60s),单独放宽超时到 60s(覆盖全局 15s 默认)。
+export const genTestcaseScript = (id) => http.post(`/ai/testcases/${id}/gen-script`, null, { timeout: 60000 })
 
 // ===== 验收清单（测试点回流任务）=====
 export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
