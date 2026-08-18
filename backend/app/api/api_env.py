@@ -12,6 +12,8 @@ from app.db.session import get_db
 from app.models import ApiEnv, User
 from app.schemas.common import ok
 from app.services.api_env import get_api_env
+from app.services.curl_parser import parse_curl, curl_to_script_seed, curl_to_contract_line
+from app.services.openapi_import import openapi_to_contract
 
 router = APIRouter(prefix="/api/api-env", tags=["api-env"])
 
@@ -63,3 +65,48 @@ def upsert_env(
         db.add(row)
     db.commit()
     return ok(get_api_env(db, project_id))
+
+
+@router.post("/parse-curl")
+def parse_curl_endpoint(
+    body: dict,
+    user: User = Depends(get_current_user),
+):
+    """解析一段 curl(纯函数,无 DB):返回 {parsed, contract_line, script_seed}。
+
+    鉴权头在 parser 内已剥离(不回真实 token)。前端据此「并入契约」或「转单步 script 种子」。
+    任何登录用户可用(不写库、不涉项目数据)。
+    """
+    parsed = parse_curl(str(body.get("curl") or ""))
+    if parsed.get("error"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=parsed["error"])
+    return ok({
+        "parsed": parsed,
+        "contract_line": curl_to_contract_line(parsed),
+        "script_seed": curl_to_script_seed(parsed),
+    })
+
+
+@router.post("/import-openapi")
+def import_openapi_endpoint(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把粘贴的 OpenAPI/Swagger 内容精简成契约清单(项目 admin)。
+
+    仅吃前端粘贴/上传的 spec(不在服务端拉 URL,避免 SSRF)。返回 {base_url, contract, count},
+    由前端预览后决定是否写入(走 PUT /api/api-env),本端点不落库。
+    """
+    project_id = int(body.get("project_id") or 0)
+    assert_project_role(db, user, project_id, (ProjectRole.admin,))
+    spec = body.get("spec")
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="openapi 内容不是合法 JSON")
+    result = openapi_to_contract(spec)
+    if result.get("error"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=result["error"])
+    return ok(result)
