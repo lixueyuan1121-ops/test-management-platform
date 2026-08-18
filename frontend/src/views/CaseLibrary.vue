@@ -57,13 +57,16 @@
             <el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="执行类型" width="110" align="center">
+        <el-table-column label="执行类型" width="120" align="center">
           <template #default="{ row }">
             <el-tooltip :disabled="!row.kind_reason" :content="'AI 判定：' + (row.kind_reason || '')" placement="top">
               <el-select :model-value="row.exec_kind || 'gui'" size="small" style="width:90px"
                          @change="(v) => onExecKindChange(row, v)">
                 <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
               </el-select>
+            </el-tooltip>
+            <el-tooltip v-if="needSelectorFix(row)" :content="row.kind_reason" placement="top">
+              <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">补选择器可自动化</el-tag>
             </el-tooltip>
           </template>
         </el-table-column>
@@ -215,6 +218,16 @@ const dispatching = ref(false)
 // 某行能否下发:必须已采纳(attachChecklist 要求)+ 有关联任务 + 非 manual。
 function canDispatch(row) {
   return row.review_status === 'adopted' && !!row.task_id && (row.exec_kind || 'gui') !== 'manual'
+}
+
+// 是否"仅因选择器缺失而降级 manual"——后端在 kind_reason 打了「[选择器待补]」前缀
+// (须与后端 claude_runner._SELECTOR_FIX_MARK 一致)。据此显示「补选择器可自动化」标签,
+// 悬停即见缺哪几个 key,补齐后该用例即可执行 gui/e2e。
+const SELECTOR_FIX_MARK = '[选择器待补]'
+function needSelectorFix(row) {
+  return (row.exec_kind || '') === 'manual'
+    && typeof row.kind_reason === 'string'
+    && row.kind_reason.startsWith(SELECTOR_FIX_MARK)
 }
 
 // 用例库下发:用例不一定挂清单项 → 先按任务分组 attachChecklist 建/取清单项,再 enqueue。
@@ -424,6 +437,7 @@ async function bulkDelete() {
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
+.sel-fix-tag { margin-top: 4px; cursor: help; display: block; line-height: 1.4; }
 .detail { font-size: 13px; color: #334; }
 .detail .d-row { margin: 8px 0 2px; }
 .detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }

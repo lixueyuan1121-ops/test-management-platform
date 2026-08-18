@@ -502,11 +502,22 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
             kind = "manual"
         # script:gui/e2e 校验界面步骤 + key 合法性;api 校验请求-断言-提取原子。
         # 非法则该用例降级 manual(不派坏 script 给执行机)。
+        kind_reason = str(it.get("kind_reason") or "").strip()[:500]
         script_json = None
         if kind in ("gui", "e2e"):
+            intended = kind   # 记住原意图(gui/e2e),供"选择器待补"提示
             script, err = _validate_script(it.get("script"), valid_keys)
             if err:
                 kind = "manual"  # script 不合法/缺失/含未注册 key → 保守降级,避免执行机拿到坏 script
+                # 标识"仅因选择器缺失而降级":收集脚本引用但未注册的 key。
+                # 若补齐这些 key 后能通过校验 → 明确告知"补齐即可执行",否则注明仍有其它问题。
+                missing = _unregistered_keys(it.get("script"), valid_keys)
+                if missing:
+                    keys_txt = ", ".join(missing)
+                    if _validate_script(it.get("script"), (valid_keys or set()) | set(missing))[1] is None:
+                        kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {intended}"[:500]
+                    else:
+                        kind_reason = f"{_SELECTOR_FIX_MARK} 缺选择器 key:{keys_txt}(补齐后仍需修其它问题)"[:500]
             elif script:
                 # e2e 名不副实纠偏:e2e 应是多步端到端。若步数太少或只有 connect+断言(无实质交互),
                 # 说明它其实是单点 gui → 改判 gui,确保"勾选的用例按其真实类型执行"。
@@ -526,13 +537,37 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
             "expected": str(it.get("expected") or "").strip(),
             "priority": str(it.get("priority") or "").strip()[:8],
             "kind": kind,
-            "kind_reason": str(it.get("kind_reason") or "").strip()[:500],
+            "kind_reason": kind_reason,
             "script": script_json,
         })
     return out
 
 
 _VALID_ACTIONS = {"connect", "click", "fill", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "screenshot"}
+
+# gui/e2e 因"选择器未注册"降级 manual 时的 kind_reason 前缀标识。
+# 前端据此前缀渲染「补选择器可自动化」标签(见 CaseLibrary.vue),故改此串须同步前端。
+_SELECTOR_FIX_MARK = "[选择器待补]"
+
+
+def _unregistered_keys(script, valid_keys) -> list[str]:
+    """收集 script 里引用了、但不在 valid_keys 注册表内的 target.key(去重保序)。
+
+    供"选择器待补"标识:知道补哪几个 key 就能把该用例救成可执行 gui/e2e。
+    valid_keys 为空(注册表读不到)时返回 []——此时 _validate_script 本就跳过 key 校验,
+    不会因 key 降级,故不构成"选择器待补"。
+    """
+    if not valid_keys or not isinstance(script, list):
+        return []
+    missing: list[str] = []
+    for st in script:
+        if not isinstance(st, dict):
+            continue
+        tgt = st.get("target")
+        k = tgt.get("key") if isinstance(tgt, dict) else None
+        if k and k not in valid_keys and k not in missing:
+            missing.append(k)
+    return missing
 
 
 def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, str | None]:
