@@ -479,7 +479,12 @@ def gen_script(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e/api)。同步调引擎,写回并返回。"""
+    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e/api)。同步调引擎,写回并返回。
+
+    注意：generate_script 可能阻塞数十秒~数分钟（调 claude CLI），若整个过程持有同一
+    DB connection，连接会因 MySQL/中间层空闲超时被断开，commit 时报 2013 Lost connection。
+    因此先提取所需字段、关闭原 session，AI 完成后再新开 session 写入。
+    """
     tc = db.get(TestCase, cid)
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
@@ -491,10 +496,28 @@ def gen_script(
     engine = generators.get_provider(getattr(tc, "provider", None))
     if not engine.is_available():
         engine = generators.get_provider(generators.DEFAULT_PROVIDER)
-    script, err = engine.generate_script(kind, tc.title, tc.steps or "", tc.expected or "", project_id=tc.project_id)
+
+    # ---- 提取 AI 生成所需字段后，关闭原 DB session，避免长阻塞期间连接被断 ----
+    tc_title = tc.title
+    tc_steps = tc.steps or ""
+    tc_expected = tc.expected or ""
+    tc_project_id = tc.project_id
+    db.close()
+
+    # ---- 调 AI 引擎（阻塞,可能数十秒~数分钟）----
+    script, err = engine.generate_script(kind, tc_title, tc_steps, tc_expected, project_id=tc_project_id)
     if err:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"生成 script 失败:{err}")
-    tc.script = json.dumps(script, ensure_ascii=False)
-    db.commit()
-    db.refresh(tc)
-    return ok(_to_case_out(tc))
+
+    # ---- 新 session 写回结果 ----
+    s = SessionLocal()
+    try:
+        tc2 = s.get(TestCase, cid)
+        if not tc2:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点已被删除")
+        tc2.script = json.dumps(script, ensure_ascii=False)
+        s.commit()
+        s.refresh(tc2)
+        return ok(_to_case_out(tc2))
+    finally:
+        s.close()
