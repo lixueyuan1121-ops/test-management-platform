@@ -124,6 +124,8 @@ export const upsertApiEnv = (body) => http.put('/api-env', body)
 export const parseCurl = (curl) => http.post('/api-env/parse-curl', { curl })
 // importOpenapi body: { project_id, spec(对象或JSON串) } → { base_url, contract, count }（仅粘贴，不服务端拉 URL）
 export const importOpenapi = (project_id, spec) => http.post('/api-env/import-openapi', { project_id, spec })
+// getApiContract：成员可读的接口清单（不含鉴权凭据），供生成页展示辅助圈定。→ { base_url, contract, has_contract }
+export const getApiContract = (project_id) => http.get('/api-env/contract', { params: { project_id } })
 
 // 设备探测：网页发起一次探测（discover/verify）→ 轮询查状态/结果。
 // startProbe body: { project_id, sub_product, runner, params:{contains?, mode?} } → { id }

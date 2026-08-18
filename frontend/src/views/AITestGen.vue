@@ -99,6 +99,34 @@
         <span>来源：{{ sourceInfo.label }} · 提取 {{ sourceInfo.chars }} 字（可切「编辑」修改后再生成）</span>
       </div>
 
+      <!-- api 用例引导：有契约展示可选接口清单（可「引用」到需求）；无契约提示去配置。附「插入需求模板」。 -->
+      <div v-if="pid" class="api-guide">
+        <template v-if="apiContract.has_contract">
+          <el-collapse class="api-collapse">
+            <el-collapse-item name="c">
+              <template #title>
+                <el-icon class="api-guide-icon"><Connection /></el-icon>
+                <span class="api-guide-title">本项目 api 接口清单（{{ apiLines.length }}）</span>
+                <span class="api-guide-sub">写 api 用例需求时可「引用」，AI 据此打对接口</span>
+              </template>
+              <div class="api-line" v-for="(l, i) in apiLines" :key="i">
+                <code class="api-code">{{ l }}</code>
+                <el-button link type="primary" size="small" @click.stop="refInterface(l)">引用</el-button>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+          <el-button link type="primary" size="small" class="tpl-btn" @click="insertApiTemplate">
+            插入 api 用例需求模板
+          </el-button>
+        </template>
+        <div v-else class="api-guide-empty">
+          <el-icon><Connection /></el-icon>
+          <span>本项目未配置 api 契约 · api 用例可能降级人工。</span>
+          <router-link to="/api-env" class="api-guide-link">去配置 api 环境 →</router-link>
+          <el-button link type="primary" size="small" @click="insertApiTemplate">插入 api 用例需求模板</el-button>
+        </div>
+      </div>
+
       <div class="req-head">
         <span class="req-label">需求内容</span>
         <el-radio-group v-model="reqMode" size="small" :disabled="running">
@@ -237,10 +265,10 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { MagicStick, UploadFilled, Document } from '@element-plus/icons-vue'
+import { MagicStick, UploadFilled, Document, Connection } from '@element-plus/icons-vue'
 import {
   listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
-  extractUrl, extractFile,
+  extractUrl, extractFile, getApiContract,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -299,6 +327,11 @@ const urlInput = ref('')
 const extracting = ref(false)
 const sourceInfo = ref(null)   // { label, chars }
 
+// 项目 api 契约(接口清单,成员可读,不含凭据)。有契约时生成页展示"可选接口清单"辅助 QA 圈定 api 用例范围。
+const apiContract = ref({ has_contract: false, contract: '', base_url: '' })
+const apiLines = computed(() =>
+  (apiContract.value.contract || '').split('\n').map((s) => s.trim()).filter(Boolean))
+
 const running = ref(false)
 const rawStream = ref('')
 const elapsed = ref(0)          // 毫秒
@@ -343,12 +376,43 @@ async function onProjectChange() {
   cases.value = []
   meta.value = null
   viewingId.value = null
+  apiContract.value = { has_contract: false, contract: '', base_url: '' }
   if (!pid.value) { tasks.value = []; history.value = []; return }
   setLastProjectId(pid.value)
   ;[tasks.value, history.value] = await Promise.all([
     listTasks({ project_id: pid.value }),
     listAiTasks(pid.value, 20),
   ])
+  // api 契约独立拉取,失败不影响主流程(无契约就是常态)。
+  try { apiContract.value = await getApiContract(pid.value) } catch { /* 忽略 */ }
+}
+
+// 引用某接口到需求(追加一行),切编辑态。
+function refInterface(line) {
+  requirement.value = requirement.value.trim() ? `${requirement.value.trimEnd()}\n${line}` : line
+  reqMode.value = 'edit'
+  ElMessage.success('已引用接口到需求')
+}
+
+// 插入 api 用例需求模板(关联接口 + 场景清单 + 业务判定,呼应设计稿 §8.2)。
+const API_REQ_TEMPLATE = `## 关联接口
+（从下方"接口清单"选择「引用」，或直接写 method + path）
+
+## 测试场景
+- 正常流程：
+- 必填 / 参数校验：
+- 重复 / 冲突：
+- 越权 / 鉴权：
+
+## 业务判定
+- 成功：HTTP 200 且 code==0，返回 …
+- 失败：错误码 … 对应 …
+`
+function insertApiTemplate() {
+  requirement.value = requirement.value.trim()
+    ? `${requirement.value.trimEnd()}\n\n${API_REQ_TEMPLATE}`
+    : API_REQ_TEMPLATE
+  reqMode.value = 'edit'
 }
 
 // 飞书文档主机（与后端 feishu.is_feishu_url 保持一致）
@@ -569,6 +633,28 @@ function fmtTime(s) {
 }
 .form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .req-input { font-size: 14px; }
+
+/* api 用例引导面板 */
+.api-guide { margin-bottom: 12px; }
+.api-collapse { border: 1px solid #e3e8ef; border-radius: 6px; }
+.api-collapse :deep(.el-collapse-item__header) { padding: 0 12px; height: 40px; line-height: 40px; }
+.api-guide-icon { color: #00b386; margin-right: 6px; }
+.api-guide-title { font-size: 13px; font-weight: 600; color: #1f2d3d; }
+.api-guide-sub { font-size: 12px; color: #a0a8b3; margin-left: 10px; }
+.api-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 12px; }
+.api-line:hover { background: #f5f7fa; }
+.api-code { background: #f2f4f7; border-radius: 3px; padding: 2px 8px; font-size: 12px; color: #475569;
+  font-family: 'JetBrains Mono', ui-monospace, monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-btn { margin-top: 6px; }
+.api-guide-empty {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: #90a4ae;
+  background: rgba(0,179,134,.04); border: 1px dashed rgba(0,179,134,.25);
+  border-radius: 6px; padding: 8px 12px;
+}
+.api-guide-empty .el-icon { color: #00b386; }
+.api-guide-link { color: #00926e; text-decoration: none; font-weight: 500; }
+.api-guide-link:hover { text-decoration: underline; }
 .req-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .req-label { font-size: 13px; font-weight: 600; color: #1a1d21; }
 .req-preview {
