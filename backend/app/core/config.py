@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = ""
     DB_NAME: str = ""
     DB_CHARSET: str = "utf8mb4"
+    # 连接回收秒数（仅 MySQL 等连接池生效）：存活超此值的连接下次使用前被换新，
+    # 避免 MySQL wait_timeout / 中间层空闲断连导致 `2013 Lost connection`。
+    # 取值须小于服务端 wait_timeout 与 LB/代理空闲超时。默认 280s（<常见 300s 阈值）。
+    DB_POOL_RECYCLE: int = 280
 
     JWT_SECRET: str = "please-change-this-secret-in-production"
     JWT_ALG: str = "HS256"
