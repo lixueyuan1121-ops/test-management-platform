@@ -404,7 +404,8 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
         kind = str(it.get("kind") or "").strip().lower()
         if kind not in _VALID_KINDS:
             kind = "manual"
-        # script:仅 gui/e2e 保留;校验结构 + key 合法性,非法则该用例降级 manual(不派坏 script 给执行机)
+        # script:gui/e2e 校验界面步骤 + key 合法性;api 校验请求-断言-提取原子。
+        # 非法则该用例降级 manual(不派坏 script 给执行机)。
         script_json = None
         if kind in ("gui", "e2e"):
             script, err = _validate_script(it.get("script"), valid_keys)
@@ -415,6 +416,12 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
                 # 说明它其实是单点 gui → 改判 gui,确保"勾选的用例按其真实类型执行"。
                 if kind == "e2e" and not _looks_like_e2e(script):
                     kind = "gui"
+                script_json = json.dumps(script, ensure_ascii=False)
+        elif kind == "api":
+            script, err = _validate_api_script(it.get("script"))
+            if err:
+                kind = "manual"  # api script 非法/缺失/变量不闭环/写操作缺清理 → 降级 manual
+            elif script:
                 script_json = json.dumps(script, ensure_ascii=False)
         out.append({
             "category": str(it.get("category") or "").strip()[:32],
