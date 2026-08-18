@@ -23,6 +23,11 @@
             <el-select v-model="providerFilter" placeholder="引擎" size="small" clearable style="width:110px" @change="reload">
               <el-option v-for="p in PROVIDERS" :key="p" :label="p" :value="p" />
             </el-select>
+            <el-tooltip content="只看「因选择器缺失而降级人工、补齐 key 即可自动化」的用例" placement="top">
+              <el-checkbox v-model="selectorFixOnly" size="small" border class="sel-fix-filter" @change="reload">
+                仅待补选择器<span v-if="selectorFixOnly && total"> · {{ total }}</span>
+              </el-checkbox>
+            </el-tooltip>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="reload" @clear="reload"
@@ -57,7 +62,7 @@
             <el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="执行类型" width="120" align="center">
+        <el-table-column label="执行类型" width="150" align="center">
           <template #default="{ row }">
             <el-tooltip :disabled="!row.kind_reason" :content="'AI 判定：' + (row.kind_reason || '')" placement="top">
               <el-select :model-value="row.exec_kind || 'gui'" size="small" style="width:90px"
@@ -65,8 +70,10 @@
                 <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
               </el-select>
             </el-tooltip>
-            <el-tooltip v-if="needSelectorFix(row)" :content="row.kind_reason" placement="top">
-              <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">补选择器可自动化</el-tag>
+            <el-tooltip v-if="row.selector_fix" :content="row.kind_reason" placement="top">
+              <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">
+                补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"><br>补: {{ row.selector_fix_keys.join(', ') }}</template>
+              </el-tag>
             </el-tooltip>
           </template>
         </el-table-column>
@@ -134,7 +141,7 @@
         <el-form-item label="预期"><el-input v-model="edit.expected" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
-        <span class="edit-hint">改了步骤后,若该用例是 gui/e2e,建议重生 script 使执行步骤同步</span>
+        <span class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
         <el-button @click="edit.visible = false">取消</el-button>
         <el-button :loading="edit.regen" @click="doEditAndRegen">保存并重生 script</el-button>
         <el-button type="primary" :loading="edit.saving" @click="doEdit">保存</el-button>
@@ -199,6 +206,7 @@ const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
 const execKindFilter = ref(null)   // 执行类型筛选(null=全部),下推后端
+const selectorFixOnly = ref(false) // 仅看「待补选择器」(补齐 key 即可自动化)的降级用例
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
@@ -220,15 +228,8 @@ function canDispatch(row) {
   return row.review_status === 'adopted' && !!row.task_id && (row.exec_kind || 'gui') !== 'manual'
 }
 
-// 是否"仅因选择器缺失而降级 manual"——后端在 kind_reason 打了「[选择器待补]」前缀
-// (须与后端 claude_runner._SELECTOR_FIX_MARK 一致)。据此显示「补选择器可自动化」标签,
-// 悬停即见缺哪几个 key,补齐后该用例即可执行 gui/e2e。
-const SELECTOR_FIX_MARK = '[选择器待补]'
-function needSelectorFix(row) {
-  return (row.exec_kind || '') === 'manual'
-    && typeof row.kind_reason === 'string'
-    && row.kind_reason.startsWith(SELECTOR_FIX_MARK)
-}
+// 「仅因选择器缺失而降级」由后端算好 selector_fix / selector_fix_keys(见 _to_case_out),
+// 前端直接用,无需解析 kind_reason 文本。
 
 // 用例库下发:用例不一定挂清单项 → 先按任务分组 attachChecklist 建/取清单项,再 enqueue。
 async function dispatchSelected() {
@@ -298,6 +299,7 @@ async function load() {
       category: category.value || undefined,
       exec_kind: execKindFilter.value || undefined,
       provider: providerFilter.value || undefined,
+      selector_fix: selectorFixOnly.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
@@ -361,7 +363,7 @@ async function doEdit() {
   finally { edit.saving = false }
 }
 
-// 保存正文后,按新 steps 重生 script(仅 gui/e2e;后端会校验类型)
+// 保存正文后重生 script。gui/e2e 按最新 steps 重生;「待补选择器」降级的 manual 用例后端会一键按原意图恢复。
 async function doEditAndRegen() {
   if (!edit.title.trim()) { ElMessage.warning('标题不能为空'); return }
   edit.regen = true
@@ -437,7 +439,8 @@ async function bulkDelete() {
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
-.sel-fix-tag { margin-top: 4px; cursor: help; display: block; line-height: 1.4; }
+.sel-fix-tag { margin-top: 4px; cursor: help; display: block; height: auto; line-height: 1.5; white-space: normal; padding: 2px 6px; }
+.sel-fix-filter { margin-left: 0; }
 .detail { font-size: 13px; color: #334; }
 .detail .d-row { margin: 8px 0 2px; }
 .detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }
