@@ -29,6 +29,27 @@ def read_env(
     return ok(get_api_env(db, project_id))
 
 
+@router.get("/contract")
+def read_contract(
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """读项目 api 契约清单(接口列表,非敏感)——供生成页展示辅助圈定。
+
+    任何项目成员(admin/member/guest)可读;**只回 base_url + contract,绝不含 auth 凭据**
+    (与 read_env 的 admin-only 全量读区分开:生成用例的 QA 未必是 admin,但需看接口清单)。
+    """
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    env = get_api_env(db, project_id) or {}
+    contract = env.get("contract") or ""
+    return ok({
+        "base_url": env.get("base_url") or "",
+        "contract": contract,
+        "has_contract": bool(contract.strip()),
+    })
+
+
 @router.put("")
 def upsert_env(
     body: dict,
