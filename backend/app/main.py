@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.db.migrate import ensure_exec_run_kind, ensure_issue_columns, ensure_perf_indexes, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column
+from app.db.migrate import ensure_exec_run_kind, ensure_issue_columns, ensure_perf_indexes, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column, ensure_api_env_table
 from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
@@ -40,6 +40,7 @@ def init_db() -> None:
     ensure_selector_page_column()
     ensure_selector_frame_width()
     ensure_probe_screenshot_column()
+    ensure_api_env_table()
     ensure_perf_indexes()
     db = SessionLocal()
     try:

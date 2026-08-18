@@ -377,6 +377,21 @@ CREATE TABLE IF NOT EXISTS `probe_request` (
   KEY `idx_probe_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 项目级 api 测试环境（被测业务系统的 base_url + 鉴权 + 接口契约）
+-- auth_json/contract 用 TEXT 存 JSON 字符串（MySQL 5.6 无原生 JSON）
+CREATE TABLE IF NOT EXISTS `api_env` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `base_url` VARCHAR(255) NOT NULL DEFAULT '',
+  `auth_type` VARCHAR(16) NOT NULL DEFAULT 'fixed',
+  `auth_json` TEXT,
+  `contract` TEXT,
+  `updated_by` BIGINT DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_apienv_project` (`project_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

@@ -12,6 +12,7 @@ from app.models.exec_queue import ExecRun
 from app.models.runner_device import RunnerDevice
 from app.models.release import ReleaseRecord
 from app.models.selector import SelectorKey, SelectorScope, ProbeRequest
+from app.models.api_env import ApiEnv
 
 __all__ = [
     "User",
@@ -35,4 +36,5 @@ __all__ = [
     "SelectorKey",
     "SelectorScope",
     "ProbeRequest",
+    "ApiEnv",
 ]
