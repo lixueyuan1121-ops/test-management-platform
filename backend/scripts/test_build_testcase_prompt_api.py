@@ -22,6 +22,11 @@ def main():
     assert "cleanup" in p and "写操作" in p
     # 无契约提示(project_id=None)
     assert "无 api 契约" in p and "manual" in p
+    # 自动化优先原则:偏向 gui/e2e、收窄 manual(提升自动化执行率、减轻人力)
+    assert "自动化优先" in p, "缺自动化优先原则"
+    assert "优先判 gui/e2e" in p, "缺 gui/e2e 优先引导"
+    # 无契约时引导优先改判 gui/e2e(api 客户端外无法鉴权),而非直接 manual
+    assert "优先改判 kind=gui/e2e" in p, "无契约应引导优先 gui/e2e"
     # item2 script 说明已并入 api
     assert "api 给请求-断言-提取数组" in p
     # 回归:gui/e2e 段仍在

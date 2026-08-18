@@ -95,7 +95,7 @@ def _load_api_contract(project_id: int | None = None) -> dict | None:
 
 
 def _api_contract_block(project_id: int | None = None) -> str:
-    """api 契约注入块:有契约给 base_url+接口清单;无契约提示"改判 manual、勿臆造接口"。"""
+    """api 契约注入块:有契约给 base_url+接口清单;无契约提示"优先改判 gui/e2e、勿臆造接口"。"""
     c = _load_api_contract(project_id)
     if c:
         return (
@@ -104,8 +104,9 @@ def _api_contract_block(project_id: int | None = None) -> str:
             f"   - 接口清单:\n{c['contract'] or '(空)'}"
         )
     return (
-        "   (当前项目无 api 契约:若需求本身未自带接口信息(method/path/参数/成功响应结构),"
-        "api 用例请改判 kind=manual、script=[],不要臆造接口 path)"
+        "   (当前项目无 api 契约:api 用例无法在被测客户端外鉴权执行(接口鉴权由客户端内部动态签名)。"
+        "若该验证点在界面上可操作、可断言,请**优先改判 kind=gui/e2e**(界面触发操作+断言界面结果);"
+        "确无界面入口可验证再判 manual。不要臆造接口 path 硬写 api。)"
     )
 
 # 禁用的内置工具：覆盖执行/改文件/联网/子代理，纯生成任务一个都用不到
@@ -196,7 +197,11 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None) -> st
    - api：调接口、校验响应码/响应体
    - cli：跑命令行、校验退出码/输出
    - e2e：跨多个界面步骤的端到端流程（如登录→进入某页→操作→验证结果），比单点 gui 长
-   - manual：**无法用上述自动化方式表达**的——纯人工体验/探索性/主观判断（如"页面美观""交互流畅""某功能是否符合需求预期"这类描述性、无明确可断言元素的）。拿不准是否可自动化时，优先判 manual。
+   - manual：仅当验证点**依赖人的主观判断、无法给出客观断言**时才用（如"页面美观""交互流畅""体验是否顺滑"这类无明确可断言元素的）。
+   **自动化优先原则（重要——直接决定自动化执行率、减轻人力，请认真执行）**：
+   - 凡能"在被测客户端界面上操作、并对结果做客观断言"的验证点，一律**优先判 gui/e2e**，不要动辄判 manual：单点/局部验证判 gui，跨界面的流程判 e2e。
+   - 后端/接口行为若在界面上有可观察结果（如"创建后列表出现该项""删除后该项消失""出错时界面弹出某提示文案"），**优先设计成 gui/e2e**（在界面触发操作并断言界面结果），而不是判 api。
+   - 只有确无界面入口可验证、且非主观感受时，才考虑 api/cli；连客观断言都给不出的，才判 manual。
 5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
    - action 只能取：connect（第一步必须，连接客户端）、click、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、screenshot
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
