@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createGuiCore } from "./gui-mcp/gui-core.mjs";
 import { runScript } from "./step-executor.mjs";
+import { run as apiRun } from "./api-executor.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -422,8 +423,18 @@ async function tick() {
         } else {
           result = await runClaude(item.payload, item.kind);
         }
-      } else if (item.kind === "api" || item.kind === "cli") {
-        result = await runClaude(item.payload, item.kind);   // api/cli:走 claude(+Bash)
+      } else if (item.kind === "api") {
+        // api:有结构化 script → 确定性执行器(不经 LLM);无/降级 → claude(+Bash)兜底。
+        const script = item.payload?.script;
+        if (Array.isArray(script) && script.length) {
+          const r = await apiRun(script, item.payload?.api_env || {}, (m) => log(m));
+          if (r.needClaude) { log(`  api script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
+          else result = r;
+        } else {
+          result = await runClaude(item.payload, item.kind);
+        }
+      } else if (item.kind === "cli") {
+        result = await runClaude(item.payload, item.kind);   // cli:仍走 claude(+Bash)
       } else {
         // 未知 kind:不猜,直接 fail(避免又当 gui 塞给 claude)
         result = { verdict: "fail", reason: `未知执行类型 kind=${item.kind},runner 不支持`, duration_ms: 1 };
