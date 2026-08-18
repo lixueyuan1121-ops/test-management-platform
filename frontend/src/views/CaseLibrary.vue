@@ -36,6 +36,15 @@
         </div>
       </template>
 
+      <div v-if="selectorFixOnly && total > 0" class="regen-bar">
+        <span class="sel-info">待补选择器 {{ total }} 条</span>
+        <span class="sel-hint">补齐 key 后一键批量重生:逐条按原意图转回 gui/e2e(调 AI,较慢,请勿关闭页面)</span>
+        <el-button
+          type="primary" size="small" :loading="batchRegen.running"
+          @click="batchRegenAll"
+        >{{ batchRegen.running ? `重生中 ${batchRegen.done}/${batchRegen.total}(成功 ${batchRegen.ok})` : '一键重生全部' }}</el-button>
+      </div>
+
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <el-select v-model="runner" size="small" style="width:180px"
@@ -380,6 +389,43 @@ async function doEditAndRegen() {
   finally { edit.regen = false }
 }
 
+// ---- 批量一键重生「待补选择器」用例 ----
+// 前端顺序编排:逐条调单条重生端点(已支持一键按原意图恢复 gui/e2e + 清标识)。
+// 为何顺序:后端 AI 有并发闸(默认 2)、单条同步慢,顺序最稳且天然幂等——
+// 成功的会掉出「待补」集,再点只重试剩余(仍缺 key 的);单条失败不中断整批。
+const batchRegen = reactive({ running: false, done: 0, total: 0, ok: 0, fail: 0 })
+
+async function batchRegenAll() {
+  if (batchRegen.running) return
+  // 取全部待补选择器用例 id(不受当前分页限制;上限 200,超出提示分批)
+  let ids = []
+  let truncated = false
+  try {
+    const { items, total: t } = await listCases({ project_id: pid.value, selector_fix: true, limit: 200 })
+    ids = (items || []).map((c) => c.id)
+    truncated = (t || 0) > ids.length
+  } catch { return /* 已提示 */ }
+  if (!ids.length) { ElMessage.info('没有待补选择器的用例'); return }
+  try {
+    await ElMessageBox.confirm(
+      `将对 ${ids.length} 条「待补选择器」用例逐条重生 script(调用 AI,预计每条数十秒,请勿关闭页面)。\n` +
+      '请先确认相关选择器 key 已在「选择器管理」补齐,否则该条会重生失败并保留标识。',
+      '批量一键重生', { type: 'warning' },
+    )
+  } catch { return }
+
+  Object.assign(batchRegen, { running: true, done: 0, total: ids.length, ok: 0, fail: 0 })
+  for (const id of ids) {
+    try { await genTestcaseScript(id); batchRegen.ok += 1 }   // 成功=恢复 gui/e2e+清标识
+    catch { batchRegen.fail += 1 }                            // 仍缺 key/生成失败:跳过,保留标识
+    batchRegen.done += 1
+  }
+  batchRegen.running = false
+  const tail = truncated ? `;还有更多未包含,补齐后再点一次` : ''
+  ElMessage.success(`批量重生完成:${batchRegen.ok} 条转为可执行,${batchRegen.fail} 条仍需补 key${tail}`)
+  await load()
+}
+
 // ---- 详情 ----
 // 列表行已瘦身不含 script,打开详情时按 id 单取完整用例补上 script。
 const detail = reactive({ visible: false, row: null, loading: false })
@@ -436,6 +482,7 @@ async function bulkDelete() {
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
+.regen-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #fdf6ec; border: 1px solid #f5dab1; border-radius: 6px; }
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
