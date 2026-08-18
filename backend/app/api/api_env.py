@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import assert_project_role, get_current_user, require_runner_ctx, RunnerCtx
+from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import ApiEnv, User
@@ -20,9 +20,10 @@ router = APIRouter(prefix="/api/api-env", tags=["api-env"])
 def read_env(
     project_id: int = Query(...),
     db: Session = Depends(get_db),
-    ctx: RunnerCtx | None = Depends(require_runner_ctx),
+    user: User = Depends(get_current_user),
 ):
-    """读项目 api 环境。runner token 或用户 JWT 均可读。无配置返回 null。"""
+    """读项目 api 环境(仅项目 admin — auth_json 含被测系统凭据)。无配置返回 null。"""
+    assert_project_role(db, user, project_id, (ProjectRole.admin,))
     return ok(get_api_env(db, project_id))
 
 
