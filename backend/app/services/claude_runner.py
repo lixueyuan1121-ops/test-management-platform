@@ -462,7 +462,72 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
         yield {"type": "error", "msg": f"生成未完成：{detail}"}
 
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(\[.*?\])\s*```", re.S)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\[.*\])\s*```", re.S)
+
+
+def _salvage_objects(text: str) -> list[dict]:
+    """从文本里逐个抠出**平衡的** {...} 块并 json.loads,保留成功的 dict。
+
+    整体数组解析失败时的兜底:容忍数组被截断(尾部半个对象)、前后有多余文本、
+    个别对象格式坏——扫描时按花括号配平(且跳过字符串内的括号/转义),
+    未闭合或解析失败的块直接丢弃,"能救一条是一条"。
+    """
+    out: list[dict] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth, j, in_str, esc = 0, i, False, False
+        while j < n:
+            ch = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        o = json.loads(text[i:j + 1])
+                        if isinstance(o, dict):
+                            out.append(o)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+            j += 1
+        i = j + 1   # 从该块之后继续(嵌套对象不会被重复抠)
+    return out
+
+
+def _extract_cases_array(raw: str) -> list:
+    """从模型输出稳健提取用例对象数组。多重兜底,最大化"抠出用例":
+
+    ① ```json fence 内数组(贪婪到最后一个 ])  ② 全文首个 [ 到末个 ]  ③ 逐个平衡 {...} salvage。
+    ①② 按整体 json.loads;都失败(截断/多余文本/坏对象)才 salvage,避免"模型产出了却全丢"。
+    """
+    candidates = []
+    m = _FENCE_RE.search(raw)
+    if m:
+        candidates.append(m.group(1))
+    s, e = raw.find("["), raw.rfind("]")
+    if s != -1 and e > s:
+        candidates.append(raw[s:e + 1])
+    for blob in candidates:
+        try:
+            arr = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(arr, list) and arr:
+            return arr
+    return _salvage_objects(raw)
 
 
 def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
@@ -474,18 +539,8 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     """
     if not raw:
         return []
-    m = _FENCE_RE.search(raw)
-    blob = m.group(1) if m else None
-    if blob is None:
-        s, e = raw.find("["), raw.rfind("]")
-        blob = raw[s:e + 1] if (s != -1 and e > s) else None
-    if not blob:
-        return []
-    try:
-        arr = json.loads(blob)
-    except (json.JSONDecodeError, ValueError):
-        return []
-    if not isinstance(arr, list):
+    arr = _extract_cases_array(raw)   # 稳健提取:fence→裸[]→逐对象 salvage(容忍截断/坏对象)
+    if not arr:
         return []
     out = []
     _VALID_KINDS = {"gui", "api", "cli", "e2e", "manual"}
