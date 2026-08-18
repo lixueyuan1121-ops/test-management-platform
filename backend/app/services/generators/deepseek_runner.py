@@ -32,6 +32,7 @@ from app.services.claude_runner import (  # noqa: F401
     build_script_prompt,
     parse_testcases,
     _validate_script,
+    _validate_api_script,
     _registered_keys,
     _FENCE_RE,
 )
@@ -158,11 +159,11 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
 
 def generate_script(kind: str, title: str, steps: str, expected: str,
                     project_id: int | None = None, timeout: int | None = None) -> tuple[list, str | None]:
-    """同步为单条 gui/e2e 用例生成结构化 script。返回 (script列表, 错误)。"""
+    """同步为单条 gui/e2e/api 用例生成结构化 script。返回 (script列表, 错误)。"""
     if not is_available():
         return [], "DeepSeek 引擎未启用或未配置"
-    if kind not in ("gui", "e2e"):
-        return [], "仅 gui/e2e 用例支持生成 script"
+    if kind not in ("gui", "e2e", "api"):
+        return [], "仅 gui/e2e/api 用例支持生成 script"
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     if not _slots.acquire(blocking=False):
         return [], "DeepSeek 生成繁忙（已达并发上限），请稍后重试"
@@ -197,7 +198,10 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
         arr = json.loads(blob)
     except (json.JSONDecodeError, ValueError):
         return [], "script JSON 解析失败"
-    script, err = _validate_script(arr, _registered_keys(project_id))
+    if kind == "api":
+        script, err = _validate_api_script(arr)
+    else:
+        script, err = _validate_script(arr, _registered_keys(project_id))
     if err:
         return [], f"生成的 script 不合法：{err}"
     return script, None

@@ -137,7 +137,8 @@ def is_available() -> bool:
 # api script 编写规范段(注入 build_testcase_prompt / build_script_prompt)。
 # **普通字符串(非 f-string)**:内含 {{变量}} 模板与 {字段} JSON 示例,避免 f-string 花括号转义地狱。
 # 由调用方 f-string 以 {_API_SCRIPT_SPEC} 原样插入(f-string 不会二次解释被插值变量的花括号)。
-_API_SCRIPT_SPEC = """7. api script(当 kind=api)——请求-断言-提取原子的有序数组,每步一个对象 {name, request, asserts, extract?, cleanup?}:
+# 不带条目序号:build_testcase_prompt 用时前缀"7. ",单条重生 build_script_prompt 直接用。
+_API_SCRIPT_SPEC = """api script(当 kind=api)——请求-断言-提取原子的有序数组,每步一个对象 {name, request, asserts, extract?, cleanup?}:
    - request:{method(GET/POST/PUT/PATCH/DELETE), path(相对路径,如 /api/projects,可含 {{变量}}), headers?, query?, body?}
    - path 只能来自下方「项目 api 契约」的接口清单;契约里没有的接口 → 改判 kind=manual、script=[](不要臆造 path)
    - asserts:至少 1 个,每个 {type, path?, op, value?}:
@@ -212,7 +213,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None) -> st
    正例(gui,单点)：connect → wait_for(navTasks) → assert_visible(navTasks)
    正例(e2e,多步)：connect → click(loginAccountTab) → fill(loginUserName) → fill(loginPassword) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle) → assert_text(homepageTitle,"早上好",contains)
 {keys_block}
-{_API_SCRIPT_SPEC}
+7. {_API_SCRIPT_SPEC}
 {api_contract_block}
 8. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
 9. 数量随需求复杂度伸缩：一般 8-20 条；简单需求可少于 8 条，复杂需求可到 30 条。聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。
@@ -239,7 +240,23 @@ def _build_cmd(prompt: str) -> list[str]:
 
 
 def build_script_prompt(kind: str, title: str, steps: str, expected: str, project_id: int | None = None) -> str:
-    """把单条(gui/e2e)用例转成"只产出该用例结构化 script"的指令(注入选择器 key 清单)。"""
+    """把单条用例转成"只产出该用例结构化 script"的指令。
+
+    gui/e2e 注入选择器 key 清单;api 注入请求-断言-提取规范段 + 项目 api 契约。
+    """
+    if kind == "api":
+        return f"""为下面这条 api 测试用例设计**可执行的结构化 script**(请求-断言-提取原子)。
+
+用例:
+- 标题:{title}
+- 步骤:{steps or '(无)'}
+- 预期:{expected or '(无)'}
+
+输出要求:
+1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
+2. 数组每步的结构与规则:
+{_API_SCRIPT_SPEC}
+{_api_contract_block(project_id)}"""
     keys = _load_selector_keys(project_id)
     lines = "\n".join(f"   - {k['key']}({k['frame']}):{k['desc']}" for k in keys) if keys else "   (无可用 key)"
     return f"""为下面这条 {kind} 测试用例设计**可执行的结构化步骤 script**。
@@ -263,11 +280,14 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 
 
 def generate_script(kind: str, title: str, steps: str, expected: str, project_id: int | None = None, timeout: int | None = None) -> tuple[list, str | None]:
-    """同步调 claude 为单条用例生成 script。返回 (script列表, 错误)。校验复用 _validate_script。"""
+    """同步调 claude 为单条用例生成 script。返回 (script列表, 错误)。
+
+    校验按 kind 分流:gui/e2e → _validate_script(选择器 key);api → _validate_api_script。
+    """
     if not is_available():
         return [], "AI 功能未启用或未找到 claude 可执行文件"
-    if kind not in ("gui", "e2e"):
-        return [], "仅 gui/e2e 用例支持生成 script"
+    if kind not in ("gui", "e2e", "api"):
+        return [], "仅 gui/e2e/api 用例支持生成 script"
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
     cmd = [
@@ -307,7 +327,10 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
         arr = json.loads(blob)
     except (json.JSONDecodeError, ValueError):
         return [], "script JSON 解析失败"
-    script, err = _validate_script(arr, _registered_keys(project_id))
+    if kind == "api":
+        script, err = _validate_api_script(arr)
+    else:
+        script, err = _validate_script(arr, _registered_keys(project_id))
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None

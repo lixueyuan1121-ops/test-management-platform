@@ -479,14 +479,14 @@ def gen_script(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e)。同步调 claude,写回并返回。"""
+    """按用例当前 steps/expected 重新生成结构化 script(gui/e2e/api)。同步调引擎,写回并返回。"""
     tc = db.get(TestCase, cid)
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
     assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
     kind = getattr(tc, "exec_kind", "gui") or "gui"
-    if kind not in ("gui", "e2e"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"仅 gui/e2e 用例支持生成 script(当前 {kind})")
+    if kind not in ("gui", "e2e", "api"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"仅 gui/e2e/api 用例支持生成 script(当前 {kind})")
     # 用与该用例相同的引擎重生 script(保持一致);引擎不可用则回落默认。
     engine = generators.get_provider(getattr(tc, "provider", None))
     if not engine.is_available():
