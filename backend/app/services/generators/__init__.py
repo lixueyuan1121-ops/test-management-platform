@@ -2,14 +2,14 @@
 
 平台支持多引擎生成测试点。每个 provider 是一个模块,实现统一的对外接口:
   - is_available() -> bool
-  - stream_generate(requirement, project_id=None, timeout=None) -> Iterator[dict]
+  - stream_generate(requirement, project_id=None, timeout=None, pages=None) -> Iterator[dict]
       yield 事件: {"type": "delta"|"result"|"error"|"heartbeat", ...}
   - generate_script(kind, title, steps, expected, project_id=None, timeout=None) -> tuple[list, str|None]
-  - build_testcase_prompt(requirement, project_id=None) -> str   # 供各 provider 复用同一 prompt
+  - build_testcase_prompt(requirement, project_id=None, pages=None) -> str   # 供各 provider 复用同一 prompt
   - parse_testcases(raw, project_id=None) -> list[dict]          # 供各 provider 复用同一解析/降级
 
 project_id 决定 prompt 注入哪个项目的共享 key 清单、script.target.key 用哪个注册表校验
-(经 selectors 服务层读 DB;为空则不注入、不校验)。
+(经 selectors 服务层读 DB;为空则不注入、不校验)。pages 非空时按页面收窄注入的 key。
 
 现有 claude_runner 已满足该接口,直接注册;deepseek_runner 基于 DeepSeek Harness SDK。
 新增 provider 时:实现上述接口 → 在 PROVIDERS 注册 → 前端 /ai/status 自动可见。

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -21,7 +21,7 @@ from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, generators
-from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK
+from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -61,6 +61,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "selector_fix": sel_fix,            # True=仅补选择器即可自动化(前端据此显标签/筛选)
         "selector_fix_keys": sel_fix_keys,  # 待补的选择器 key 列表(直接展示,免 hover)
         "last_gen_error": getattr(tc, "last_gen_error", None),  # 上次重生 script 失败原因(成功清空;列表瘦身 Row 无此列→None)
+        "page": getattr(tc, "page", None),  # 关联选择器页面(逗号分隔多页)
         "adopted": tc.adopted,
         "review_status": getattr(rs, "value", rs),
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
@@ -176,6 +177,7 @@ def gen_testcases(
     project_id = body.project_id
     task_id = body.task_id
     requirement = body.requirement
+    pages = body.pages or None   # 目标页面:收窄注入 key + 无 key 用例兜底打标
 
     def sse():
         raw = ""
@@ -183,7 +185,7 @@ def gen_testcases(
         err: str | None = None
         t0 = time.monotonic()
         try:
-            for evt in engine.stream_generate(requirement, project_id=project_id):
+            for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages):
                 etype = evt.get("type")
                 if etype == "heartbeat":
                     # SSE 注释帧:保持连接有字节流动,防网关空闲超时切断;前端解析忽略非 data: 行
@@ -248,6 +250,8 @@ def gen_testcases(
                     exec_kind=c.get("kind") or "manual",       # 生成侧已判类型;缺省 manual(不误派)
                     kind_reason=c.get("kind_reason") or None,
                     script=c.get("script") or None,            # gui/e2e 的结构化步骤(JSON 字符串);其余为 None
+                    # 页面:优先按 script 用到的 key 自动推断(parse 已填);无 key 用例回落生成时所选页面
+                    page=c.get("page") or (",".join(pages) if pages else None),
                 )
                 s.add(tc)
                 objs.append(tc)
@@ -326,6 +330,7 @@ def list_cases(
     exec_kind: str | None = Query(None),
     provider: str | None = Query(None),
     selector_fix: bool | None = Query(None),
+    page: str | None = Query(None),
     keyword: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -354,6 +359,14 @@ def list_cases(
         if selector_fix:
             # 「仅补选择器即可自动化」= kind_reason 以标识前缀开头(SQL 下推,不全量捞)。
             q = q.filter(TestCase.kind_reason.like(f"{_SELECTOR_FIX_MARK}%"))
+        if page:
+            # page 逗号分隔多页,按整段匹配(避免"任务"误命中"任务列表"):恰等 / 首 / 尾 / 中。
+            q = q.filter(or_(
+                TestCase.page == page,
+                TestCase.page.like(f"{page},%"),
+                TestCase.page.like(f"%,{page}"),
+                TestCase.page.like(f"%,{page},%"),
+            ))
         if keyword:
             q = q.filter(TestCase.title.ilike(f"%{keyword}%"))
         return q
@@ -365,6 +378,7 @@ def list_cases(
             TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
             TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
             TestCase.priority, TestCase.exec_kind, TestCase.provider, TestCase.kind_reason,
+            TestCase.page,
             TestCase.adopted, TestCase.review_status, TestCase.reviewed_at, TestCase.created_at,
         )
     )
@@ -459,6 +473,9 @@ def review_testcase(
         tc.category = body.category.strip()[:32] or None
     if body.priority is not None:
         tc.priority = body.priority.strip()[:8] or None
+    if body.page is not None:
+        # 手动指定用例所属页面(逗号分隔多页);空串→清空(置 None)
+        tc.page = body.page.strip()[:255] or None
 
     db.commit()
     db.refresh(tc)
@@ -546,6 +563,9 @@ def gen_script(
         if sel_fix:
             tc2.kind_reason = None        # 已成功重生,清除「选择器待补」标识(前端 badge 随之消失)
         tc2.last_gen_error = None         # 重生成功 → 清除上次失败原因
+        p = pages_for_script(script, tc_project_id)
+        if p:
+            tc2.page = p                  # 按新 script 用到的 key 重新打页面标(推断为空则保留原页面,不清)
         s.commit()
         s.refresh(tc2)
         return ok(_to_case_out(tc2))

@@ -23,6 +23,12 @@
             <el-select v-model="providerFilter" placeholder="引擎" size="small" clearable style="width:110px" @change="reload">
               <el-option v-for="p in PROVIDERS" :key="p" :label="p" :value="p" />
             </el-select>
+            <el-select
+              v-if="pageOptions.length" v-model="pageFilter" placeholder="页面" size="small"
+              clearable filterable style="width:130px" @change="reload"
+            >
+              <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+            </el-select>
             <el-tooltip content="只看「因选择器缺失而降级人工、补齐 key 即可自动化」的用例" placement="top">
               <el-checkbox v-model="selectorFixOnly" size="small" border class="sel-fix-filter" @change="reload">
                 仅待补选择器<span v-if="selectorFixOnly && total"> · {{ total }}</span>
@@ -91,6 +97,14 @@
             <el-tag :type="PROVIDER_TYPE[row.provider] || 'info'" size="small" effect="plain">{{ row.provider || 'claude' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="页面" width="120" align="center">
+          <template #default="{ row }">
+            <template v-if="row.page">
+              <el-tag v-for="p in row.page.split(',').filter(Boolean)" :key="p" size="small" effect="plain" class="page-tag">{{ p }}</el-tag>
+            </template>
+            <span v-else class="page-none">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
         <el-table-column label="步骤" min-width="200">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
@@ -148,6 +162,14 @@
         </el-form-item>
         <el-form-item label="步骤"><el-input v-model="edit.steps" type="textarea" :rows="4" placeholder="可多步,换行分隔" /></el-form-item>
         <el-form-item label="预期"><el-input v-model="edit.expected" type="textarea" :rows="2" /></el-form-item>
+        <el-form-item label="页面">
+          <el-select
+            v-model="edit.pages" multiple filterable allow-create default-first-option
+            placeholder="关联选择器页面(可多选/输入);重生 script 会按用到的 key 自动校正" style="width:100%"
+          >
+            <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
@@ -162,6 +184,7 @@
       <div v-if="detail.row" class="detail">
         <p><b>{{ detail.row.title }}</b></p>
         <p class="d-row"><span class="d-k">执行类型</span> {{ (detail.row.exec_kind || 'gui').toUpperCase() }}</p>
+        <p v-if="detail.row.page" class="d-row"><span class="d-k">关联页面</span> {{ detail.row.page }}</p>
         <p v-if="detail.row.kind_reason" class="d-row"><span class="d-k">判定理由</span> {{ detail.row.kind_reason }}</p>
         <div v-if="detail.row.last_gen_error" class="d-row">
           <span class="d-k">上次重生失败</span>
@@ -196,7 +219,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript } from '@/api'
+import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -228,6 +251,8 @@ const taskId = ref(null)
 const reviewStatus = ref(null)
 const category = ref(null)
 const providerFilter = ref(null)
+const pageFilter = ref(null)        // 页面筛选(null=全部),下推后端精确匹配
+const pageOptions = ref([])         // 页面下拉候选:当前项目选择器里已有的 page(去重)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
@@ -302,9 +327,16 @@ onMounted(async () => {
 
 async function onProjectChange() {
   taskId.value = null
+  pageFilter.value = null
+  pageOptions.value = []
   if (!pid.value) { tasks.value = []; rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
   tasks.value = await listTasks({ project_id: pid.value })
+  // 页面候选:从项目选择器(共享域)派生 distinct page,失败不影响列表。
+  try {
+    const data = await listSelectors(pid.value)
+    pageOptions.value = [...new Set((data.shared || []).map((k) => k.page).filter(Boolean))].sort()
+  } catch { pageOptions.value = [] }
   await reload()
 }
 
@@ -325,6 +357,7 @@ async function load() {
       category: category.value || undefined,
       exec_kind: execKindFilter.value || undefined,
       provider: providerFilter.value || undefined,
+      page: pageFilter.value || undefined,
       selector_fix: selectorFixOnly.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
@@ -364,7 +397,7 @@ async function onReviewChange(row, val) {
 }
 
 // ---- 编辑 ----
-const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, saving: false, regen: false })
+const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, pages: [], saving: false, regen: false })
 function openEdit(row) {
   edit.id = row.id
   edit.title = row.title || ''
@@ -372,6 +405,7 @@ function openEdit(row) {
   edit.expected = row.expected || ''
   edit.category = row.category || null
   edit.priority = (row.priority || '').toUpperCase() || null
+  edit.pages = row.page ? row.page.split(',').filter(Boolean) : []
   edit.visible = true
 }
 async function doEdit() {
@@ -380,7 +414,7 @@ async function doEdit() {
   try {
     await updateTestcase(edit.id, {
       title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
-      category: edit.category || '', priority: edit.priority || '',
+      category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
     })
     edit.visible = false
     ElMessage.success('已保存')
@@ -396,9 +430,9 @@ async function doEditAndRegen() {
   try {
     await updateTestcase(edit.id, {
       title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
-      category: edit.category || '', priority: edit.priority || '',
+      category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
     })
-    await genTestcaseScript(edit.id)   // 后端按最新 steps 重生并写回
+    await genTestcaseScript(edit.id)   // 后端按最新 steps 重生并写回(并按新 script 的 key 重推页面)
     edit.visible = false
     ElMessage.success('已保存并重生 script')
     await load()
@@ -512,6 +546,8 @@ async function bulkDelete() {
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
 .sel-fix-tag { margin-top: 4px; cursor: help; display: block; height: auto; line-height: 1.5; white-space: normal; padding: 2px 6px; }
+.page-tag { margin: 1px 2px; }
+.page-none { color: #c0c4cc; }
 .sel-fix-filter { margin-left: 0; }
 .detail { font-size: 13px; color: #334; }
 .detail .d-row { margin: 8px 0 2px; }

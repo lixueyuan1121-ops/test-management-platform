@@ -41,11 +41,27 @@ def resolved_registry(db: Session, project_id: int, sub_product: str = "") -> di
     return {"vmIframe": vm, "registry": reg, "version": str(ver)}
 
 
-def shared_key_dicts(db: Session, project_id: int) -> list[dict]:
+def shared_key_dicts(db: Session, project_id: int, pages: list[str] | None = None) -> list[dict]:
+    """项目共享 key 清单(供 prompt 注入),返回 [{key, frame, desc, page}, ...]。
+
+    pages 非空时按页面收窄:只留「所属页面 ∈ pages」或「未分类(page='')」的 key
+    ——未分类通常是全局/通用 key(如连接、登录),始终带上避免误伤。pages 为空/None → 全部。
+    """
     rows = (db.query(SelectorKey)
             .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
             .all())
-    return [{"key": r.key, "frame": r.frame, "desc": r.desc} for r in rows]
+    if pages:
+        want = set(pages)
+        rows = [r for r in rows if not (r.page or "") or (r.page or "") in want]
+    return [{"key": r.key, "frame": r.frame, "desc": r.desc, "page": r.page or ""} for r in rows]
+
+
+def shared_key_page_map(db: Session, project_id: int) -> dict[str, str]:
+    """项目共享 key → 所属页面(page,可为空串)的映射,供按 script 用到的 key 反查页面。"""
+    rows = (db.query(SelectorKey.key, SelectorKey.page)
+            .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
+            .all())
+    return {k: (p or "") for k, p in rows}
 
 
 def shared_key_set(db: Session, project_id: int) -> set[str]:

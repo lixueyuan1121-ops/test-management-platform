@@ -92,6 +92,9 @@ def ensure_testcase_columns() -> None:
         if "last_gen_error" not in cols:
             # 上次「重生 script」失败原因（成功清空），供事后回看逐条修复。
             conn.execute(text("ALTER TABLE test_case ADD COLUMN last_gen_error TEXT NULL"))
+        if "page" not in cols:
+            # 关联的选择器页面（逗号分隔多页），供生成收窄 key + 用例库按页维护。
+            conn.execute(text("ALTER TABLE test_case ADD COLUMN page VARCHAR(255) NULL"))
         # 回填：仅把仍为 pending 且 adopted=1 的老行标记为已采纳（幂等）。
         conn.execute(text(
             "UPDATE test_case SET review_status='adopted', reviewed_at=created_at "

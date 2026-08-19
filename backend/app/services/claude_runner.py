@@ -28,11 +28,12 @@ from app.core.config import settings
 logger = logging.getLogger("test_platform")
 
 
-def _load_selector_keys(project_id: int | None = None) -> list[dict]:
-    """项目级共享 key 清单(供 prompt 注入),返回 [{key, frame, desc}, ...]。
+def _load_selector_keys(project_id: int | None = None, pages: list[str] | None = None) -> list[dict]:
+    """项目级共享 key 清单(供 prompt 注入),返回 [{key, frame, desc, page}, ...]。
 
     DB 是唯一事实来源:走服务层读项目共享 key(sub_product='')。生成器脱离请求 db,
     故内部自开 SessionLocal 并关闭。project_id 为空或读不到 → 空列表(prompt 不注入 key 清单)。
+    pages 非空时按页面收窄(见 shared_key_dicts):只留该页 + 未分类的 key。
     """
     if not project_id:
         return []
@@ -40,12 +41,62 @@ def _load_selector_keys(project_id: int | None = None) -> list[dict]:
     from app.services.selectors import shared_key_dicts
     s = SessionLocal()
     try:
-        return shared_key_dicts(s, project_id)
+        return shared_key_dicts(s, project_id, pages)
     except Exception:
         logger.warning("读注册表失败(project_id=%s),prompt 不注入 key 清单", project_id)
         return []
     finally:
         s.close()
+
+
+def _key_page_map(project_id: int | None = None) -> dict[str, str]:
+    """项目共享 key → 所属页面 的映射(供按 script 用到的 key 反查页面,自动给用例打页面标)。
+
+    project_id 为空或读不到 → 空 dict。生成器脱离请求 db,内部自开 SessionLocal 并关闭。
+    """
+    if not project_id:
+        return {}
+    from app.db.session import SessionLocal
+    from app.services.selectors import shared_key_page_map
+    s = SessionLocal()
+    try:
+        return shared_key_page_map(s, project_id)
+    except Exception:
+        return {}
+    finally:
+        s.close()
+
+
+def _pages_for_script(script, key_page_map: dict[str, str]) -> str:
+    """从 script 里引用的 target.key 反查页面,并集去重、按序逗号拼接。无 key/无页面 → 空串。
+
+    script 可为步骤数组或已 json.dumps 的字符串;key_page_map 传入(批量场景外部读一次复用)。
+    """
+    if not key_page_map or not script:
+        return ""
+    steps = script
+    if isinstance(script, str):
+        try:
+            steps = json.loads(script)
+        except (json.JSONDecodeError, ValueError):
+            return ""
+    if not isinstance(steps, list):
+        return ""
+    pages: list[str] = []
+    for st in steps:
+        if not isinstance(st, dict):
+            continue
+        tgt = st.get("target") or {}
+        k = tgt.get("key") if isinstance(tgt, dict) else None
+        p = (key_page_map.get(k) or "").strip() if k else ""
+        if p and p not in pages:
+            pages.append(p)
+    return ",".join(pages)
+
+
+def pages_for_script(script, project_id: int | None = None) -> str:
+    """单条便捷版:读一次 key→page 映射并推断该 script 的页面(供 gen_script 重生后重新打标)。"""
+    return _pages_for_script(script, _key_page_map(project_id))
 
 
 def _registered_keys(project_id: int | None = None) -> set[str]:
@@ -159,15 +210,16 @@ _API_SCRIPT_SPEC = """api script(当 kind=api)——请求-断言-提取原子�
      ]"""
 
 
-def build_testcase_prompt(requirement: str, project_id: int | None = None) -> str:
+def build_testcase_prompt(requirement: str, project_id: int | None = None, pages: list[str] | None = None) -> str:
     """把需求文本包装成「生成结构化测试点」的指令。
 
     用 <requirement> 标签包裹用户输入（而非引号），避免内容里的引号破坏边界。
     强约束只输出 JSON 数组；即便模型仍包了 markdown fence，解析层也能兜底剥离。
     project_id:注入该项目共享 key 清单;为空则不注入(见 _load_selector_keys)。
+    pages:非空时只注入这些页面(+未分类)的 key,收窄噪声、减少降级(见 _load_selector_keys)。
     """
     # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
-    keys = _load_selector_keys(project_id)
+    keys = _load_selector_keys(project_id, pages)
     if keys:
         lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
         keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
@@ -377,17 +429,18 @@ def _parse_line(line: str) -> dict | None:
     return None
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
     project_id 透传给 prompt 构造,决定注入哪个项目的 key 清单。
+    pages 非空则只注入这些页面的 key(收窄),减少噪声与降级。
     """
     if not is_available():
         yield {"type": "error", "msg": "AI 功能未启用或未找到 claude 可执行文件"}
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
-    cmd = _build_cmd(build_testcase_prompt(requirement, project_id))
+    cmd = _build_cmd(build_testcase_prompt(requirement, project_id, pages))
 
     if not _slots.acquire(blocking=False):
         yield {"type": "error", "msg": "AI 生成繁忙（已达并发上限），请稍后重试"}
@@ -545,6 +598,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     out = []
     _VALID_KINDS = {"gui", "api", "cli", "e2e", "manual"}
     valid_keys = _registered_keys(project_id)   # 读一次注册表,供本批所有 gui/e2e 校验 target.key
+    key_page_map = _key_page_map(project_id)     # 读一次 key→page,供按 script 用到的 key 自动打页面标
     for it in arr:
         if not isinstance(it, dict):
             continue
@@ -594,6 +648,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
             "kind": kind,
             "kind_reason": kind_reason,
             "script": script_json,
+            "page": _pages_for_script(script_json, key_page_map) or None,  # 按 script 用到的 key 反查页面
         })
     return out
 

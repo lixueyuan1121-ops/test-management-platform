@@ -9,6 +9,7 @@ class TestCaseGenIn(BaseModel):
     input_type: AiInputType = AiInputType.text
     provider: str | None = None  # 生成引擎 claude/deepseek/...；空/非法由后端 normalize 回落 claude
     requirement: str = Field(min_length=1, max_length=20000)  # M1：需求正文（url/file 由前端取文后填此字段）
+    pages: list[str] | None = None  # 目标页面(选择器管理里的 page):①收窄注入的 key ②给该批无 key 用例兜底打页面标
 
 
 class TestCaseReviewIn(BaseModel):
@@ -25,11 +26,12 @@ class TestCaseReviewIn(BaseModel):
     expected: str | None = None
     category: str | None = Field(None, max_length=32)
     priority: str | None = Field(None, max_length=8)
+    page: str | None = Field(None, max_length=255)  # 关联页面(逗号分隔多页);手动指定用例所属页面
 
     @model_validator(mode="after")
     def _at_least_one(self):
         if all(getattr(self, f) is None for f in
-               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority")):
+               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority", "page")):
             raise ValueError("至少提供一个要修改的字段")
         return self
 

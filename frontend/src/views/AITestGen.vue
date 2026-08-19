@@ -36,6 +36,15 @@
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
         <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（可选）" @change="onTaskChange" />
+        <el-select
+          v-model="targetPages" multiple filterable collapse-tags collapse-tags-tooltip
+          placeholder="目标页面（可选，聚焦该页选择器）" style="width:260px" :disabled="running"
+        >
+          <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+        </el-select>
+      </div>
+      <div v-if="pageOptions.length" class="page-hint">
+        选目标页面后:生成时只注入该页(+未分类)的选择器 key、更聚焦少降级,并给该批用例打上页面标(便于后续按页维护)。
       </div>
 
       <el-alert
@@ -277,7 +286,7 @@ import { ElMessage } from 'element-plus'
 import { MagicStick, UploadFilled, Document, Connection } from '@element-plus/icons-vue'
 import {
   listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
-  extractUrl, extractFile, getApiContract,
+  extractUrl, extractFile, getApiContract, listSelectors,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -318,6 +327,8 @@ const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
 const taskId = ref(null)
+const targetPages = ref([])        // 生成的目标页面(收窄注入 key + 给该批用例打页面标)
+const pageOptions = ref([])        // 目标页面下拉候选:当前项目选择器里已有的 page(去重)
 const requirement = ref('')
 const aiAvailable = ref(true)
 const providers = ref([])          // [{id, available}] 来自 /ai/status
@@ -385,6 +396,8 @@ async function onProjectChange() {
   cases.value = []
   meta.value = null
   viewingId.value = null
+  targetPages.value = []
+  pageOptions.value = []
   apiContract.value = { has_contract: false, contract: '', base_url: '' }
   if (!pid.value) { tasks.value = []; history.value = []; return }
   setLastProjectId(pid.value)
@@ -394,6 +407,11 @@ async function onProjectChange() {
   ])
   // api 契约独立拉取,失败不影响主流程(无契约就是常态)。
   try { apiContract.value = await getApiContract(pid.value) } catch { /* 忽略 */ }
+  // 目标页面候选:从项目选择器(共享域)派生 distinct page,失败不影响生成。
+  try {
+    const data = await listSelectors(pid.value)
+    pageOptions.value = [...new Set((data.shared || []).map((k) => k.page).filter(Boolean))].sort()
+  } catch { pageOptions.value = [] }
 }
 
 // 引用某接口到需求(追加一行),切编辑态。
@@ -524,7 +542,7 @@ function generate() {
 
   ctrl = new AbortController()
   streamTestcases(
-    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value },
+    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined },
     {
       signal: ctrl.signal,
       onDelta: (t) => { rawStream.value += t },
@@ -641,6 +659,7 @@ function fmtTime(s) {
   border-radius: 4px; padding: 6px 10px;
 }
 .form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.page-hint { margin: -4px 0 12px; font-size: 12px; color: #90a4ae; line-height: 1.5; }
 .req-input { font-size: 14px; }
 
 /* api 用例引导面板 */

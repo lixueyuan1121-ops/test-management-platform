@@ -245,6 +245,7 @@ CREATE TABLE `test_case` (
   `kind_reason` TEXT NULL,
   `script` TEXT NULL,
   `last_gen_error` TEXT NULL,
+  `page` VARCHAR(255) NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_testcase_aitask` (`ai_task_id`),
