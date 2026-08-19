@@ -1,10 +1,10 @@
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
-from app.core.enums import ProjectRole
+from app.core.enums import ProjectRole, TaskStatus
 from app.db.session import get_db
 from app.models import DailyReport, Project, ProjectMember, RemainingIssue, Task, User
 from app.schemas.common import ok
@@ -111,6 +111,12 @@ def upsert_report(
             severity=it.severity, status=it.status,
             owner=it.owner, external_ref=it.external_ref,
         ))
+    # 联动:日报勾「已上线」→ 任务置 online(仅单向,取消勾选不回退)。
+    # 已被人工在任务页接管(status_locked)则不覆盖,尊重人工设定(与 agent /sync 一致)。
+    # 这是自动联动、非人工接管,故不置 status_locked(任务页手动仍可随时接管)。
+    if body.is_online and not task.status_locked and task.status != TaskStatus.online:
+        task.status = TaskStatus.online
+        task.online_at = datetime.utcnow()   # 进入 online 刷时间戳(同 tasks._stamp_terminal 语义)
     db.commit()
     db.refresh(rep)
     return ok(_to_out(db, rep))
