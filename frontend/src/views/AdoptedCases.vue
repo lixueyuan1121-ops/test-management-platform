@@ -42,9 +42,6 @@
         <el-table-column label="优先级" width="80" align="center">
           <template #default="{ row }"><el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="引擎" width="90" align="center">
-          <template #default="{ row }"><el-tag :type="PROVIDER_TYPE[row.provider] || 'info'" size="small" effect="plain">{{ row.provider || 'claude' }}</el-tag></template>
-        </el-table-column>
         <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
         <el-table-column label="步骤" min-width="220">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
@@ -81,7 +78,6 @@ import TaskPicker from '@/components/TaskPicker.vue'
 const app = useAppStore()
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
-const PROVIDER_TYPE = { claude: 'warning', deepseek: 'primary' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
 const EXEC_KINDS = [
   { value: 'gui', label: 'GUI' }, { value: 'api', label: 'API' }, { value: 'cli', label: 'CLI' },
