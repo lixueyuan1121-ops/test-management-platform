@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -39,7 +39,8 @@ def overview_stats(
     pids = _visible_project_ids(db, user)
 
     empty_today = {
-        "total": 0, "pending": 0, "testing": 0, "blocked": 0, "online": 0, "done_rate": 0.0,
+        "total": 0, "pending": 0, "testing": 0, "blocked": 0, "online": 0,
+        "closed": 0, "done_cnt": 0, "done_rate": 0.0,
     }
     if not pids:
         # 无可见项目：返回全 0 结构 + 空 7 天序列（不报错）
@@ -50,19 +51,27 @@ def overview_stats(
                    "today": empty_today, "open_issues": 0, "trend": trend})
 
     # ---- 今日 KPI：基于派单流转状态(Task.status)，不依赖日报 ----
+    # 口径：今日派发的全部任务 + 历史派发但仍处于 testing/blocked 的延期任务。
     status_rows = (
         db.query(Task.status, func.count(Task.id))
-        .filter(Task.project_id.in_(pids), Task.assigned_date == today)
+        .filter(
+            Task.project_id.in_(pids),
+            or_(
+                Task.assigned_date == today,
+                and_(Task.assigned_date < today,
+                     Task.status.in_([TaskStatus.testing, TaskStatus.blocked])),
+            ),
+        )
         .group_by(Task.status)
         .all()
     )
     counts = {TaskStatus.pending: 0, TaskStatus.testing: 0,
-              TaskStatus.blocked: 0, TaskStatus.online: 0}
+              TaskStatus.blocked: 0, TaskStatus.online: 0, TaskStatus.closed: 0}
     for st, c in status_rows:
         counts[st] = c
     total = sum(counts.values())
-    online_cnt = counts[TaskStatus.online]
-    done_rate = round(online_cnt / total * 100, 1) if total else 0.0
+    done_cnt = counts[TaskStatus.online] + counts[TaskStatus.closed]
+    done_rate = round(done_cnt / total * 100, 1) if total else 0.0
 
     # ---- 未解决遗留问题（跨项目存量，不限今日）----
     # 两条来源：report 路径（project_id 命中）与 task 直挂路径（task_id 指向可见项目的任务）。
@@ -99,7 +108,7 @@ def overview_stats(
     for d, st, c in week_rows:
         rec = by_day.setdefault(str(d), {"total": 0, "online": 0})
         rec["total"] += c
-        if st == TaskStatus.online:
+        if st in (TaskStatus.online, TaskStatus.closed):
             rec["online"] += c
     trend = []
     for i in range(7):
@@ -118,7 +127,9 @@ def overview_stats(
             "pending": counts[TaskStatus.pending],
             "testing": counts[TaskStatus.testing],
             "blocked": counts[TaskStatus.blocked],
-            "online": online_cnt,
+            "online": counts[TaskStatus.online],
+            "closed": counts[TaskStatus.closed],
+            "done_cnt": done_cnt,
             "done_rate": done_rate,
         },
         "open_issues": open_issues,
@@ -226,7 +237,7 @@ def workload_stats(
     assert_project_role(db, user, project_id,
                         (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     # 聚合下推 SQL:不再全量拉 Task 到内存。online 用条件求和(status==online 计 1)。
-    online_sum = func.sum(case((Task.status == TaskStatus.online, 1), else_=0))
+    online_sum = func.sum(case((Task.status.in_([TaskStatus.online, TaskStatus.closed]), 1), else_=0))
     base = [Task.project_id == project_id,
             Task.assigned_date >= from_date,
             Task.assigned_date <= to_date]
