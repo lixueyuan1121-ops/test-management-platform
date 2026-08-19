@@ -43,6 +43,8 @@ function tryRefresh() {
 
 http.interceptors.response.use(
   (resp) => {
+    // 下载类接口：要完整响应（含 Content-Disposition 等头），不解包信封。
+    if (resp.config?.returnResponse) return resp
     const body = resp.data
     if (body && typeof body === 'object' && 'code' in body) {
       if (body.code === 0) return body.data

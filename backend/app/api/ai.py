@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -20,8 +20,9 @@ from app.db.session import SessionLocal, get_db
 from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRegressionIn
 from app.schemas.common import ok
-from app.services import claude_runner, extractors, generators
+from app.services import claude_runner, extractors, generators, selectors
 from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script
+from app.services.playwright_exporter import export_case_to_playwright
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -597,3 +598,128 @@ def gen_script(
         return ok(_to_case_out(tc2))
     finally:
         s.close()
+
+
+# ---- 导出 Playwright 脚本（回归用例库：给开发本地自测）----
+# gui/e2e 用例的结构化 script → 自包含 .spec.mjs（connectOverCDP 连被测客户端）。
+# 下载响应直接返回文件字节，**绕开** {code,msg,data} 信封（前端用 blob 接收，见 http.js 约定）。
+import io
+import re
+import zipfile
+
+
+def _export_kind(tc) -> str | None:
+    """该用例用于导出的有效 kind：gui/e2e 直接用；「选择器待补」降级(manual)的取其原意图。
+    返回 None 表示不可导出（api/cli/纯 manual）。"""
+    kind = getattr(tc, "exec_kind", "gui") or "gui"
+    if kind in ("gui", "e2e"):
+        return kind
+    sel_fix, _keys, intended = selector_fix_info(getattr(tc, "kind_reason", None))
+    if kind == "manual" and sel_fix and intended in ("gui", "e2e"):
+        return intended
+    return None
+
+
+def _safe_filename(title: str, cid: int) -> str:
+    """用例标题 → 安全文件名（去路径/特殊字符，限长），带 id 防重名。"""
+    base = re.sub(r"[^\w一-鿿-]+", "_", (title or "case").strip())[:40].strip("_") or "case"
+    return f"case-{cid}-{base}.spec.mjs"
+
+
+def _content_disposition(filename: str) -> str:
+    """构造 Content-Disposition。HTTP 头须 latin-1，中文文件名走 RFC 5987 的 filename*，
+    并给一个纯 ASCII 的 filename 兜底（老浏览器）。"""
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "download"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+def _case_for_export(tc) -> dict:
+    """ORM TestCase → 翻译器入参（解析 script JSON 字符串为 list）。"""
+    try:
+        script = json.loads(tc.script) if tc.script else None
+    except (json.JSONDecodeError, ValueError):
+        script = None
+    return {
+        "id": tc.id, "title": tc.title, "exec_kind": _export_kind(tc) or "gui",
+        "steps": tc.steps or "", "expected": tc.expected or "", "script": script,
+    }
+
+
+@router.get("/testcases/{cid}/export-playwright")
+def export_playwright_one(
+    cid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """单条 gui/e2e 用例 → 下载一个 .spec.mjs。非 gui/e2e 或无 script → 400。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _ALL_ROLES)   # 读操作：项目内任意角色可导
+    if not _export_kind(tc):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅 gui/e2e 用例支持导出 Playwright 脚本")
+    reg = selectors.resolved_registry(db, tc.project_id)
+    try:
+        text = export_case_to_playwright(_case_for_export(tc), reg["registry"], reg["vmIframe"])
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+    fname = _safe_filename(tc.title, tc.id)
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(fname)},
+    )
+
+
+@router.post("/testcases/export-playwright")
+def export_playwright_bulk(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """多条用例 → 打包 zip 下载。body: {"ids": [1,2,...]}。
+    非 gui/e2e 或无 script 的用例跳过（不阻断其余）；全部被跳过 → 400。"""
+    ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="请提供要导出的用例 id 列表")
+    rows = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="未找到任何用例")
+    # 逐项目缓存注册表（避免每条重复查库）；同时按项目做鉴权（去重项目集）。
+    reg_cache: dict[int, dict] = {}
+    checked: set[int] = set()
+    buf = io.BytesIO()
+    exported, skipped = 0, []
+    used_names: set[str] = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for tc in rows:
+            if tc.project_id not in checked:
+                assert_project_role(db, user, tc.project_id, _ALL_ROLES)
+                checked.add(tc.project_id)
+            if not _export_kind(tc):
+                skipped.append(tc.id)
+                continue
+            if tc.project_id not in reg_cache:
+                reg_cache[tc.project_id] = selectors.resolved_registry(db, tc.project_id)
+            reg = reg_cache[tc.project_id]
+            try:
+                text = export_case_to_playwright(_case_for_export(tc), reg["registry"], reg["vmIframe"])
+            except ValueError:
+                skipped.append(tc.id)   # 无 script 等 → 跳过
+                continue
+            name = _safe_filename(tc.title, tc.id)
+            while name in used_names:   # 理论上 id 已保证唯一，防御性兜底
+                name = name.replace(".spec.mjs", f"-{len(used_names)}.spec.mjs")
+            used_names.add(name)
+            zf.writestr(name, text)
+            exported += 1
+    if exported == 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            detail="选中用例均不可导出（需 gui/e2e 且已生成 script）")
+    buf.seek(0)
+    headers = {"Content-Disposition": 'attachment; filename="playwright-cases.zip"'}
+    if skipped:
+        # 附带跳过清单（前端可读此头提示用户）；逗号分隔的 id。
+        headers["X-Export-Skipped"] = ",".join(str(i) for i in skipped)
+    return Response(content=buf.getvalue(), media_type="application/zip", headers=headers)

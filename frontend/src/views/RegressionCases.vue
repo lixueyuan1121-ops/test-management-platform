@@ -41,6 +41,7 @@
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="success" size="small" :loading="dispatching" @click="runRegression">执行回归</el-button>
+        <el-button size="small" :loading="exporting" @click="exportSelected">导出选中脚本</el-button>
         <span class="sel-hint">随选随跑,仅跳过 manual(不可自动化)用例</span>
       </div>
 
@@ -70,6 +71,16 @@
         <el-table-column label="关联任务" min-width="110" show-overflow-tooltip>
           <template #default="{ row }">{{ row.task_title || '—' }}</template>
         </el-table-column>
+        <el-table-column label="操作" width="100" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="canExport(row)" link type="primary" size="small" @click="exportOne(row)"
+            >导出脚本</el-button>
+            <el-tooltip v-else content="仅 GUI/E2E 且已生成 script 的用例可导出" placement="top">
+              <span class="exp-dim">导出脚本</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="pager">
@@ -92,7 +103,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listCases, listMyDevices, listSelectors, enqueueCases } from '@/api'
+import { listCases, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, _blobErrorMsg } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const app = useAppStore()
@@ -116,6 +127,7 @@ const myDevices = ref([])
 const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
+const exporting = ref(false)
 const tableRef = ref(null)
 
 // 分页(后端分页:total 为过滤后总数)
@@ -192,6 +204,35 @@ async function runRegression() {
   } catch { /* http 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
+
+// 能否导出 Playwright 脚本：仅 gui/e2e（后端仍会二次校验有无 script）。
+function canExport(row) {
+  return ['gui', 'e2e'].includes(row.exec_kind || 'gui')
+}
+
+// 单条导出：下载一个 .spec.mjs。
+async function exportOne(row) {
+  try {
+    await exportPlaywrightOne(row.id)
+    ElMessage.success(`已导出「${row.title}」`)
+  } catch (e) {
+    ElMessage.error(await _blobErrorMsg(e))
+  }
+}
+
+// 批量导出：选中的 gui/e2e 用例打包 zip 下载。
+async function exportSelected() {
+  const items = selected.value.filter(canExport)
+  if (!items.length) { ElMessage.warning('选中项里没有可导出的用例(需 GUI/E2E)'); return }
+  exporting.value = true
+  try {
+    const skipped = await exportPlaywrightBulk(items.map((r) => r.id))
+    const n = items.length - skipped.length
+    ElMessage.success(`已导出 ${n} 条脚本${skipped.length ? `(跳过 ${skipped.length} 条：无 script 或不支持)` : ''}`)
+  } catch (e) {
+    ElMessage.error(await _blobErrorMsg(e))
+  } finally { exporting.value = false }
+}
 </script>
 
 <style scoped>
@@ -203,6 +244,7 @@ async function runRegression() {
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
 .sel-info { font-weight: 600; color: #00926e; }
+.exp-dim { color: #c0c4cc; font-size: 12px; cursor: not-allowed; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .page-tag { margin: 1px 2px; }
 .page-none { color: #c0c4cc; }

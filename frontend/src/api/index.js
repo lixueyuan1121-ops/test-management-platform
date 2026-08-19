@@ -105,6 +105,61 @@ export const enqueueExec = (project_id, runner, checklistItemIds) =>
 // 回归执行:直接按用例 id 下发(不依赖任务/采纳,不挂清单项)。
 export const enqueueCases = (project_id, runner, testCaseIds) =>
   http.post('/exec-queue/enqueue-cases', { project_id, runner, test_case_ids: testCaseIds })
+
+// ===== 导出 Playwright 脚本（回归用例库 → 开发本地自测）=====
+// 下载类接口用 responseType:'blob' + returnResponse:true —— 拿到完整响应（含头），
+// 绕开 http.js 对 {code,msg,data} 的解包；错误 body 也成了 Blob，需手动读回 JSON 取 msg。
+
+// 触发浏览器保存一个 Blob；文件名优先取响应头 Content-Disposition。
+function _saveBlob(blob, filename) {
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.URL.revokeObjectURL(url)
+}
+
+function _filenameFromResp(resp, fallback) {
+  const cd = resp.headers?.['content-disposition'] || ''
+  // 优先 RFC 5987 的 filename*（含 UTF-8 中文），回落普通 filename。
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  if (star) { try { return decodeURIComponent(star[1]) } catch { /* 落到下面 */ } }
+  const m = /filename="?([^";]+)"?/.exec(cd)
+  return m ? m[1] : fallback
+}
+
+// blob 请求出错时后端返回的是 JSON 信封（被当 Blob 收），读回文本解析 msg。
+async function _blobErrorMsg(error) {
+  const data = error.response?.data
+  if (data instanceof Blob) {
+    try { const j = JSON.parse(await data.text()); return j.msg || '导出失败' } catch { return '导出失败' }
+  }
+  return error.message || '导出失败'
+}
+
+// 单条导出：下载一个 .spec.mjs。成功返回 true。
+export async function exportPlaywrightOne(cid) {
+  const resp = await http.get(`/ai/testcases/${cid}/export-playwright`, {
+    responseType: 'blob', returnResponse: true,
+  })
+  _saveBlob(resp.data, _filenameFromResp(resp, `case-${cid}.spec.mjs`))
+  return true
+}
+
+// 批量导出：下载 zip。返回被跳过的用例 id 数组（后端经 X-Export-Skipped 头告知）。
+export async function exportPlaywrightBulk(ids) {
+  const resp = await http.post('/ai/testcases/export-playwright', { ids }, {
+    responseType: 'blob', returnResponse: true,
+  })
+  _saveBlob(resp.data, _filenameFromResp(resp, 'playwright-cases.zip'))
+  const skipped = resp.headers?.['x-export-skipped']
+  return skipped ? skipped.split(',').filter(Boolean) : []
+}
+
+export { _blobErrorMsg }
 // 执行历史(独立"执行结果"页):按项目/任务/设备/verdict/status 筛,最新在前,不覆盖。
 export const listExecHistory = (params) => http.get('/exec-queue/history', { params })
 
