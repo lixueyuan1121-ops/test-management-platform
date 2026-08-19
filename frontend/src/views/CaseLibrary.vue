@@ -3,7 +3,7 @@
     <el-card>
       <template #header>
         <div class="header">
-          <span>用例库</span>
+          <span>AI用例库</span>
           <div class="filters">
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
@@ -20,20 +20,12 @@
             <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
-            <el-select v-model="providerFilter" placeholder="引擎" size="small" clearable style="width:110px" @change="reload">
-              <el-option v-for="p in PROVIDERS" :key="p" :label="p" :value="p" />
-            </el-select>
             <el-select
               v-if="pageOptions.length" v-model="pageFilter" placeholder="页面" size="small"
               clearable filterable style="width:130px" @change="reload"
             >
               <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
             </el-select>
-            <el-tooltip content="只看「因选择器缺失而降级人工、补齐 key 即可自动化」的用例" placement="top">
-              <el-checkbox v-model="selectorFixOnly" size="small" border class="sel-fix-filter" @change="reload">
-                仅待补选择器<span v-if="selectorFixOnly && total"> · {{ total }}</span>
-              </el-checkbox>
-            </el-tooltip>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="reload" @clear="reload"
@@ -41,15 +33,6 @@
           </div>
         </div>
       </template>
-
-      <div v-if="selectorFixOnly && total > 0" class="regen-bar">
-        <span class="sel-info">待补选择器 {{ total }} 条</span>
-        <span class="sel-hint">补齐 key 后一键批量重生:逐条按原意图转回 gui/e2e(调 AI,较慢,请勿关闭页面)</span>
-        <el-button
-          type="primary" size="small" :loading="batchRegen.running"
-          @click="batchRegenAll"
-        >{{ batchRegen.running ? `重生中 ${batchRegen.done}/${batchRegen.total}(成功 ${batchRegen.ok})` : '一键重生全部' }}</el-button>
-      </div>
 
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
@@ -92,11 +75,6 @@
                 补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"><br>补: {{ row.selector_fix_keys.join(', ') }}</template>
               </el-tag>
             </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column label="引擎" width="90" align="center">
-          <template #default="{ row }">
-            <el-tag :type="PROVIDER_TYPE[row.provider] || 'info'" size="small" effect="plain">{{ row.provider || 'claude' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="页面" width="120" align="center">
@@ -212,19 +190,6 @@
         <pre class="d-pre">{{ detail.loading ? '加载中…' : prettyScript(detail.row.script) }}</pre>
       </div>
     </el-drawer>
-
-    <!-- 批量重生失败清单：逐条列出仍失败的用例 + 具体原因（也已落库，详情可再看）-->
-    <el-dialog v-model="regenFail.visible" title="重生失败清单" width="640px">
-      <p class="fail-tip">以下用例重生 script 仍失败（多为选择器 key 未补齐）。按原因补齐后，再点「一键重生全部」重试即可。</p>
-      <el-table :data="regenFail.fails" size="small" border max-height="52vh">
-        <el-table-column prop="id" label="ID" width="72" align="center" />
-        <el-table-column prop="title" label="用例" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="msg" label="失败原因" min-width="240">
-          <template #default="{ row }"><span class="fail-msg">{{ row.msg }}</span></template>
-        </el-table-column>
-      </el-table>
-      <template #footer><el-button type="primary" @click="regenFail.visible = false">知道了</el-button></template>
-    </el-dialog>
   </div>
 </template>
 
@@ -238,9 +203,6 @@ import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
-// 生成引擎 → el-tag 配色 + 筛选选项（与 AITestGen 保持一致）
-const PROVIDER_TYPE = { claude: 'warning', deepseek: 'primary' }
-const PROVIDERS = ['claude', 'deepseek']
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
 const CATEGORIES = ['功能', '边界', '异常', '兼容', '性能']
 // 采纳三态 → 配色/文案（采纳=success / 否决=danger / 待定=info）
@@ -263,14 +225,12 @@ const tasks = ref([])
 const taskId = ref(null)
 const reviewStatus = ref(null)
 const category = ref(null)
-const providerFilter = ref(null)
 const pageFilter = ref(null)        // 页面筛选(null=全部),下推后端精确匹配
 const pageOptions = ref([])         // 页面下拉候选:当前项目选择器里已有的 page(去重)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
 const execKindFilter = ref(null)   // 执行类型筛选(null=全部),下推后端
-const selectorFixOnly = ref(false) // 仅看「待补选择器」(补齐 key 即可自动化)的降级用例
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
@@ -380,9 +340,7 @@ async function load() {
       review_status: reviewStatus.value || undefined,
       category: category.value || undefined,
       exec_kind: execKindFilter.value || undefined,
-      provider: providerFilter.value || undefined,
       page: pageFilter.value || undefined,
-      selector_fix: selectorFixOnly.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
@@ -467,51 +425,6 @@ async function doEditAndRegen() {
   finally { edit.regen = false }
 }
 
-// ---- 批量一键重生「待补选择器」用例 ----
-// 前端顺序编排:逐条调单条重生端点(已支持一键按原意图恢复 gui/e2e + 清标识)。
-// 为何顺序:后端 AI 有并发闸(默认 2)、单条同步慢,顺序最稳且天然幂等——
-// 成功的会掉出「待补」集,再点只重试剩余(仍缺 key 的);单条失败不中断整批。
-// silent 调用抑制逐条 toast,失败原因收集进 regenFail.fails,结束弹汇总清单(也已落库,详情可回看)。
-const batchRegen = reactive({ running: false, done: 0, total: 0, ok: 0, fail: 0 })
-const regenFail = reactive({ visible: false, fails: [] })   // [{ id, title, msg }]
-
-async function batchRegenAll() {
-  if (batchRegen.running) return
-  // 取全部待补选择器用例(不受当前分页限制;上限 200,超出提示分批)。保留 title 供失败清单展示。
-  let items = []
-  let truncated = false
-  try {
-    const { items: it, total: t } = await listCases({ project_id: pid.value, selector_fix: true, limit: 200 })
-    items = it || []
-    truncated = (t || 0) > items.length
-  } catch { return /* 已提示 */ }
-  if (!items.length) { ElMessage.info('没有待补选择器的用例'); return }
-  try {
-    await ElMessageBox.confirm(
-      `将对 ${items.length} 条「待补选择器」用例逐条重生 script(调用 AI,预计每条数十秒,请勿关闭页面)。\n` +
-      '请先确认相关选择器 key 已在「选择器管理」补齐,否则该条会重生失败并保留标识。',
-      '批量一键重生', { type: 'warning' },
-    )
-  } catch { return }
-
-  const fails = []
-  Object.assign(batchRegen, { running: true, done: 0, total: items.length, ok: 0, fail: 0 })
-  for (const c of items) {
-    try { await genTestcaseScript(c.id, { silent: true }); batchRegen.ok += 1 }   // 成功=恢复 gui/e2e+清标识
-    catch (e) {
-      batchRegen.fail += 1                                                        // 仍缺 key/生成失败:跳过,保留标识
-      const msg = e?.response?.data?.msg || e?.message || '未知错误'
-      fails.push({ id: c.id, title: c.title || `#${c.id}`, msg })
-    }
-    batchRegen.done += 1
-  }
-  batchRegen.running = false
-  const tail = truncated ? `;还有更多未包含,补齐后再点一次` : ''
-  ElMessage.success(`批量重生完成:${batchRegen.ok} 条转为可执行,${batchRegen.fail} 条仍需补 key${tail}`)
-  if (fails.length) { regenFail.fails = fails; regenFail.visible = true }   // 有失败→弹清单逐条修
-  await load()
-}
-
 // ---- 详情 ----
 // 列表行已瘦身不含 script,打开详情时按 id 单取完整用例补上 script。
 const detail = reactive({ visible: false, row: null, loading: false })
@@ -568,19 +481,15 @@ async function bulkDelete() {
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
-.regen-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #fdf6ec; border: 1px solid #f5dab1; border-radius: 6px; }
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
 .sel-fix-tag { margin-top: 4px; cursor: help; display: block; height: auto; line-height: 1.5; white-space: normal; padding: 2px 6px; }
 .page-tag { margin: 1px 2px; }
 .page-none { color: #c0c4cc; }
-.sel-fix-filter { margin-left: 0; }
 .detail { font-size: 13px; color: #334; }
 .detail .d-row { margin: 8px 0 2px; }
 .detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }
 .detail .d-pre { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 220px; overflow: auto; }
 .detail .d-err { background: #fef0f0; color: #c45656; }
-.fail-tip { color: #90a4ae; font-size: 13px; margin: 0 0 10px; }
-.fail-msg { color: #c45656; font-size: 12px; word-break: break-word; }
 </style>
