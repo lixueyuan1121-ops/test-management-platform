@@ -18,7 +18,7 @@ from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import AiTaskStatus, ChecklistStatus, ProjectRole, ReviewStatus
 from app.db.session import SessionLocal, get_db
 from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
-from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn
+from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRegressionIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, generators
 from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script
@@ -62,6 +62,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "selector_fix_keys": sel_fix_keys,  # 待补的选择器 key 列表(直接展示,免 hover)
         "last_gen_error": getattr(tc, "last_gen_error", None),  # 上次重生 script 失败原因(成功清空;列表瘦身 Row 无此列→None)
         "page": getattr(tc, "page", None),  # 关联选择器页面(逗号分隔多页)
+        "is_regression": bool(getattr(tc, "is_regression", False)),  # 是否在回归用例库
         "adopted": tc.adopted,
         "review_status": getattr(rs, "value", rs),
         "reviewed_at": tc.reviewed_at.isoformat() if tc.reviewed_at else None,
@@ -331,6 +332,7 @@ def list_cases(
     provider: str | None = Query(None),
     selector_fix: bool | None = Query(None),
     page: str | None = Query(None),
+    is_regression: bool | None = Query(None),
     keyword: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -359,6 +361,8 @@ def list_cases(
         if selector_fix:
             # 「仅补选择器即可自动化」= kind_reason 以标识前缀开头(SQL 下推,不全量捞)。
             q = q.filter(TestCase.kind_reason.like(f"{_SELECTOR_FIX_MARK}%"))
+        if is_regression is not None:
+            q = q.filter(TestCase.is_regression == is_regression)
         if page:
             # page 逗号分隔多页,按整段匹配(避免"任务"误命中"任务列表"):恰等 / 首 / 尾 / 中。
             q = q.filter(or_(
@@ -378,7 +382,7 @@ def list_cases(
             TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
             TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
             TestCase.priority, TestCase.exec_kind, TestCase.provider, TestCase.kind_reason,
-            TestCase.page,
+            TestCase.page, TestCase.is_regression,
             TestCase.adopted, TestCase.review_status, TestCase.reviewed_at, TestCase.created_at,
         )
     )
@@ -393,6 +397,26 @@ def list_cases(
         )
     items = [_to_case_out(r, task_title=title_map.get(r.task_id), with_script=False) for r in rows]
     return ok({"items": items, "total": total})
+
+
+@router.patch("/testcases/regression")
+def bulk_set_regression(
+    body: BulkRegressionIn,
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量标记/取消回归。project_id 走体外鉴权;只改属于该项目的用例(跨项目 id 忽略)。
+
+    路由须注册在 /testcases/{cid} 之前,否则 "regression" 会被当成 cid 捕获。
+    """
+    assert_project_role(db, user, project_id, _WRITE_ROLES)
+    ids = list(dict.fromkeys(body.ids))
+    n = (db.query(TestCase)
+         .filter(TestCase.id.in_(ids), TestCase.project_id == project_id)
+         .update({TestCase.is_regression: body.is_regression}, synchronize_session=False))
+    db.commit()
+    return ok({"updated": n, "is_regression": body.is_regression})
 
 
 @router.get("/testcases/{cid}")
@@ -476,6 +500,8 @@ def review_testcase(
     if body.page is not None:
         # 手动指定用例所属页面(逗号分隔多页);空串→清空(置 None)
         tc.page = body.page.strip()[:255] or None
+    if body.is_regression is not None:
+        tc.is_regression = body.is_regression
 
     db.commit()
     db.refresh(tc)

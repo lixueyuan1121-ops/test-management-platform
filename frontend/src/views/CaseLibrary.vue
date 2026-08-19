@@ -34,6 +34,11 @@
                 仅待补选择器<span v-if="selectorFixOnly && total"> · {{ total }}</span>
               </el-checkbox>
             </el-tooltip>
+            <el-tooltip content="只看回归用例库(可按页面筛选后勾选执行)" placement="top">
+              <el-checkbox v-model="regressionOnly" size="small" border class="sel-fix-filter" @change="reload">
+                仅回归<span v-if="regressionOnly && total"> · {{ total }}</span>
+              </el-checkbox>
+            </el-tooltip>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="reload" @clear="reload"
@@ -58,10 +63,13 @@
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
+        <el-button size="small" type="success" plain :loading="dispatching" @click="runRegressionSelected">执行回归</el-button>
         <el-divider direction="vertical" />
+        <el-button size="small" @click="bulkSetRegressionFlag(true)">标记回归</el-button>
+        <el-button size="small" plain @click="bulkSetRegressionFlag(false)">取消回归</el-button>
         <el-button size="small" @click="bulkReview('adopted')">批量采纳</el-button>
         <el-button size="small" type="danger" plain @click="bulkDelete">批量删除</el-button>
-        <span class="sel-hint">下发仅对『已采纳+有关联任务+非人工』的选中项生效</span>
+        <span class="sel-hint">「发送到执行机」需已采纳+关联任务;「执行回归」随选随跑(不依赖任务,仅跳过 manual)</span>
       </div>
 
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
@@ -102,6 +110,12 @@
             <template v-if="row.page">
               <el-tag v-for="p in row.page.split(',').filter(Boolean)" :key="p" size="small" effect="plain" class="page-tag">{{ p }}</el-tag>
             </template>
+            <span v-else class="page-none">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="回归" width="60" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.is_regression" type="success" size="small" effect="dark">回归</el-tag>
             <span v-else class="page-none">—</span>
           </template>
         </el-table-column>
@@ -170,6 +184,10 @@
             <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
           </el-select>
         </el-form-item>
+        <el-form-item label="回归">
+          <el-switch v-model="edit.is_regression" />
+          <span class="edit-hint" style="margin-left:10px">纳入回归用例库后,可在「仅回归」视图按页面勾选直接执行(不依赖任务/采纳)</span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
@@ -185,6 +203,7 @@
         <p><b>{{ detail.row.title }}</b></p>
         <p class="d-row"><span class="d-k">执行类型</span> {{ (detail.row.exec_kind || 'gui').toUpperCase() }}</p>
         <p v-if="detail.row.page" class="d-row"><span class="d-k">关联页面</span> {{ detail.row.page }}</p>
+        <p v-if="detail.row.is_regression" class="d-row"><span class="d-k">回归</span> <el-tag type="success" size="small" effect="dark">回归用例</el-tag></p>
         <p v-if="detail.row.kind_reason" class="d-row"><span class="d-k">判定理由</span> {{ detail.row.kind_reason }}</p>
         <div v-if="detail.row.last_gen_error" class="d-row">
           <span class="d-k">上次重生失败</span>
@@ -219,7 +238,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors } from '@/api'
+import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression, enqueueCases } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -258,6 +277,7 @@ const rows = ref([])
 const loading = ref(false)
 const execKindFilter = ref(null)   // 执行类型筛选(null=全部),下推后端
 const selectorFixOnly = ref(false) // 仅看「待补选择器」(补齐 key 即可自动化)的降级用例
+const regressionOnly = ref(false)  // 仅看回归用例库
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
@@ -313,6 +333,34 @@ async function dispatchSelected() {
   finally { dispatching.value = false }
 }
 
+// ---- 回归:批量标记/取消 ----
+async function bulkSetRegressionFlag(flag) {
+  if (!selected.value.length) return
+  const ids = selected.value.map((r) => r.id)
+  try {
+    const res = await bulkSetRegression(pid.value, ids, flag)
+    ElMessage.success(`${flag ? '已标记' : '已取消'}回归 ${res?.updated ?? ids.length} 条`)
+    await load()
+  } catch { /* 已提示 */ }
+}
+
+// ---- 回归:直接执行(不依赖任务/采纳,不挂清单)----
+// 只下发选中里「非 manual」的用例(manual 后端也会拒),按 page 勾选后随选随跑。
+async function runRegressionSelected() {
+  if (!selected.value.length) return
+  if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
+  const items = selected.value.filter((r) => (r.exec_kind || 'gui') !== 'manual')
+  if (!items.length) { ElMessage.warning('选中项里没有可执行的用例(manual 不可自动化)'); return }
+  const skipped = selected.value.length - items.length
+  dispatching.value = true
+  try {
+    const res = await enqueueCases(pid.value, runner.value, items.map((r) => r.id))
+    const n = res?.run_ids?.length || items.length
+    ElMessage.success(`已下发 ${n} 条回归到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''},执行机跑完自动回写结果`)
+  } catch { /* 已提示 */ }
+  finally { dispatching.value = false }
+}
+
 onMounted(async () => {
   // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
   const [devicesRes, projectsRes] = await Promise.allSettled([listMyDevices(), app.fetchProjects()])
@@ -359,6 +407,7 @@ async function load() {
       provider: providerFilter.value || undefined,
       page: pageFilter.value || undefined,
       selector_fix: selectorFixOnly.value || undefined,
+      is_regression: regressionOnly.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
@@ -397,7 +446,7 @@ async function onReviewChange(row, val) {
 }
 
 // ---- 编辑 ----
-const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, pages: [], saving: false, regen: false })
+const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, pages: [], is_regression: false, saving: false, regen: false })
 function openEdit(row) {
   edit.id = row.id
   edit.title = row.title || ''
@@ -406,6 +455,7 @@ function openEdit(row) {
   edit.category = row.category || null
   edit.priority = (row.priority || '').toUpperCase() || null
   edit.pages = row.page ? row.page.split(',').filter(Boolean) : []
+  edit.is_regression = !!row.is_regression
   edit.visible = true
 }
 async function doEdit() {
@@ -415,6 +465,7 @@ async function doEdit() {
     await updateTestcase(edit.id, {
       title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
       category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
+      is_regression: edit.is_regression,
     })
     edit.visible = false
     ElMessage.success('已保存')
@@ -431,6 +482,7 @@ async function doEditAndRegen() {
     await updateTestcase(edit.id, {
       title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
       category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
+      is_regression: edit.is_regression,
     })
     await genTestcaseScript(edit.id)   // 后端按最新 steps 重生并写回(并按新 script 的 key 重推页面)
     edit.visible = false

@@ -27,14 +27,21 @@ class TestCaseReviewIn(BaseModel):
     category: str | None = Field(None, max_length=32)
     priority: str | None = Field(None, max_length=8)
     page: str | None = Field(None, max_length=255)  # 关联页面(逗号分隔多页);手动指定用例所属页面
+    is_regression: bool | None = None  # 是否纳入回归用例库(单条切换)
 
     @model_validator(mode="after")
     def _at_least_one(self):
         if all(getattr(self, f) is None for f in
-               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority", "page")):
+               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority", "page", "is_regression")):
             raise ValueError("至少提供一个要修改的字段")
         return self
 
 
 class ExtractUrlIn(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
+
+
+class BulkRegressionIn(BaseModel):
+    """批量标记/取消回归。ids 为用例 id 列表,is_regression 目标值。"""
+    ids: list[int] = Field(..., min_length=1)
+    is_regression: bool

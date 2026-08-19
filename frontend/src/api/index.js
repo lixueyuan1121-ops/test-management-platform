@@ -80,6 +80,9 @@ export const setCaseExecKind = (id, exec_kind) => http.patch(`/ai/testcases/${id
 export const updateTestcase = (id, patch) => http.patch(`/ai/testcases/${id}`, patch)
 // 删除测试点(级联清其清单项)
 export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
+// 批量标记/取消回归(只改本项目用例;跨项目 id 后端忽略)。
+export const bulkSetRegression = (project_id, ids, is_regression) =>
+  http.patch('/ai/testcases/regression', { ids, is_regression }, { params: { project_id } })
 // 按用例当前 steps/expected 重新生成结构化 script(仅 gui/e2e)
 // 重生单条 script:同步调 AI 生成,较慢(常 30-60s),单独放宽超时到 60s(覆盖全局 15s 默认)。
 // 重生 script：单条同步调 AI，前端放宽超时到 60s。
@@ -99,6 +102,9 @@ export const listAdoptableCases = (tid) => http.get(`/tasks/${tid}/adoptable-cas
 // 前端只调 enqueue；拉取/认领/回写由 runner 用独立 token 完成。回写后 checklist_item.exec_status 自动更新。
 export const enqueueExec = (project_id, runner, checklistItemIds) =>
   http.post('/exec-queue/enqueue', { project_id, runner, checklist_item_ids: checklistItemIds })
+// 回归执行:直接按用例 id 下发(不依赖任务/采纳,不挂清单项)。
+export const enqueueCases = (project_id, runner, testCaseIds) =>
+  http.post('/exec-queue/enqueue-cases', { project_id, runner, test_case_ids: testCaseIds })
 // 执行历史(独立"执行结果"页):按项目/任务/设备/verdict/status 筛,最新在前,不覆盖。
 export const listExecHistory = (params) => http.get('/exec-queue/history', { params })
 

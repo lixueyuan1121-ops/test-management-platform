@@ -246,6 +246,7 @@ CREATE TABLE `test_case` (
   `script` TEXT NULL,
   `last_gen_error` TEXT NULL,
   `page` VARCHAR(255) NULL,
+  `is_regression` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_testcase_aitask` (`ai_task_id`),
@@ -254,6 +255,7 @@ CREATE TABLE `test_case` (
   KEY `idx_testcase_proj_review` (`project_id`,`review_status`),
   KEY `idx_testcase_reviewed` (`reviewed_at`),
   KEY `idx_testcase_provider` (`provider`),
+  KEY `idx_testcase_regression` (`project_id`,`is_regression`),
   CONSTRAINT `fk_testcase_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL

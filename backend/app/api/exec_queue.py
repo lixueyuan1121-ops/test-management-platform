@@ -19,7 +19,7 @@ from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
 from app.db.session import get_db
 from app.models import ChecklistItem, ExecRun, TestCase, User
 from app.schemas.common import ok
-from app.schemas.exec_queue import EnqueueExecIn, ExecReportIn
+from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn
 
 router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 
@@ -136,6 +136,55 @@ def enqueue(
             test_case_id=it.test_case_id,
             task_id=it.task_id,
             project_id=it.project_id,
+            runner=body.runner,
+            kind=_kind_of(tc),
+            status=ExecStatus.pending,
+            payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
+            enqueued_by=user.id,
+        )
+        db.add(row)
+        db.flush()
+        created.append(row.id)
+    db.commit()
+    return ok({"run_ids": created})
+
+
+@router.post("/enqueue-cases")
+def enqueue_cases(
+    body: EnqueueCasesIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """回归执行:直接按用例 id 下发,不经验收清单(不依赖任务/采纳)。
+
+    与 /enqueue 的区别:ExecRun.checklist_item_id=None(runner 回写时不回流清单,见 report 的判空);
+    task_id 取用例自带的(可为 None)。整体校验:任一用例不存在/跨项目/为 manual → 400 整批拒绝。
+    """
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+
+    ids = list(dict.fromkeys(body.test_case_ids))  # 去重保序
+    cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
+    found = {c.id: c for c in cases}
+    for cid in ids:
+        tc = found.get(cid)
+        if tc is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {cid} 不存在")
+        if tc.project_id != body.project_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {cid} 不属于该项目")
+        if _kind_of(tc) == ExecKind.manual:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
+            )
+
+    created = []
+    for cid in ids:
+        tc = found[cid]
+        row = ExecRun(
+            checklist_item_id=None,          # 回归执行不挂清单项 → 回写不回流清单
+            test_case_id=tc.id,
+            task_id=getattr(tc, "task_id", None),
+            project_id=tc.project_id,
             runner=body.runner,
             kind=_kind_of(tc),
             status=ExecStatus.pending,

@@ -72,6 +72,8 @@ class TestCase(Base):
     # 关联的选择器页面（逗号分隔多页，仿 channel 惯例兼容 MySQL5.6 无 JSON）。
     # 生成/重生时按 script 用到的 key 自动推断；无 key 用例回落生成时所选页面；用例库可手动改。
     page: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 是否纳入「回归用例库」：长期稳定复用、可按页面勾选直接执行(不依赖任务/采纳)。老库缺省 0。
+    is_regression: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
     adopted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 三态评审：pending/adopted/rejected（adopted 布尔保留做兼容，见 migrate.ensure_testcase_columns）
     review_status: Mapped[ReviewStatus] = mapped_column(

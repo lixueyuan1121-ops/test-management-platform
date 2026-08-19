@@ -12,6 +12,17 @@ class EnqueueExecIn(BaseModel):
     checklist_item_ids: list[int] = Field(..., min_length=1)
 
 
+class EnqueueCasesIn(BaseModel):
+    """回归执行:直接按用例 id 下发,不经验收清单(不依赖任务/采纳)。
+
+    project_id 走体外鉴权;test_case_ids 每项校验存在、属于该项目、非 manual,
+    然后据用例组装 payload 快照入队(ExecRun.checklist_item_id=None,回写不回流清单)。
+    """
+    project_id: int
+    runner: str = Field("mac-01", max_length=64)
+    test_case_ids: list[int] = Field(..., min_length=1)
+
+
 class ExecReportIn(BaseModel):
     """runner 回写结果。verdict 用 runner 契约的 pass/fail；平台映射到 passed/failed。"""
     verdict: str  # "pass" | "fail"

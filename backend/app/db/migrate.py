@@ -95,11 +95,16 @@ def ensure_testcase_columns() -> None:
         if "page" not in cols:
             # 关联的选择器页面（逗号分隔多页），供生成收窄 key + 用例库按页维护。
             conn.execute(text("ALTER TABLE test_case ADD COLUMN page VARCHAR(255) NULL"))
+        if "is_regression" not in cols:
+            # 是否纳入回归用例库（按页面勾选直接执行，不依赖任务/采纳）。
+            conn.execute(text("ALTER TABLE test_case ADD COLUMN is_regression TINYINT(1) NOT NULL DEFAULT 0"))
         # 回填：仅把仍为 pending 且 adopted=1 的老行标记为已采纳（幂等）。
         conn.execute(text(
             "UPDATE test_case SET review_status='adopted', reviewed_at=created_at "
             "WHERE adopted=1 AND review_status='pending'"
         ))
+    # 回归筛选高频列索引（在事务块外单独建，避免嵌套 engine.begin 死锁；_ensure_index 幂等）。
+    _ensure_index("test_case", "idx_testcase_regression", "project_id, is_regression")
 
 
 def migrate_task_status() -> None:
