@@ -16,6 +16,12 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  build: {
+    // watch 模式每次重建不清空 dist —— 避免“清空→写完”之间 index.html 短暂消失、
+    // 后端托管返回 500。代价：改名/删文件的旧 chunk 会残留（index.html 只引用最新的，无害；
+    // 要干净产物时手动删 dist 再 build）。
+    emptyOutDir: false,
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,

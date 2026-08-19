@@ -28,7 +28,7 @@
         <el-sub-menu index="design">
           <template #title><el-icon><MagicStick /></el-icon><span>测试设计</span></template>
           <el-menu-item index="/ai-testgen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>AI 测试助手</span></el-menu-item>
-          <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>AI用例库</span></el-menu-item>
+          <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
           <el-menu-item index="/adopted-cases"><el-icon><Select /></el-icon><span>已采纳用例</span></el-menu-item>
           <el-menu-item index="/regression-cases"><el-icon><RefreshRight /></el-icon><span>回归用例库</span></el-menu-item>
           <el-menu-item index="/selectors"><el-icon><Aim /></el-icon><span>选择器管理</span></el-menu-item>
@@ -56,6 +56,13 @@
           <el-menu-item index="/stats"><el-icon><DataAnalysis /></el-icon><span>日报统计</span></el-menu-item>
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
+        </el-sub-menu>
+
+        <!-- 性能测试(独立顶级入口):nami-perfdog 采集结果下发 + 在线报告 -->
+        <el-sub-menu index="perf">
+          <template #title><el-icon><Stopwatch /></el-icon><span>性能测试</span></template>
+          <el-menu-item index="/perf-report"><el-icon><Histogram /></el-icon><span>性能报告</span></el-menu-item>
+          <el-menu-item index="/perf-dispatch"><el-icon><Promotion /></el-icon><span>任务下发</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 测试工具广场 -->
@@ -111,7 +118,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Promotion, Aim, Connection, RefreshRight,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
@@ -127,7 +134,7 @@ function toggleCollapse() {
 }
 
 const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
-const openSubs = ['org', 'exec', 'stats', 'tools']
+const openSubs = ['org', 'exec', 'stats', 'tools', 'perf']
 
 const avatarText = computed(() => {
   const n = auth.user?.name || auth.user?.username || '?'

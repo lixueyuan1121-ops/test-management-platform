@@ -184,6 +184,24 @@ def ensure_exec_run_report_columns() -> None:
     _ensure_index("exec_run", "idx_execrun_batch", "batch_id")
 
 
+def ensure_perf_run_columns() -> None:
+    """perf_run 表补列 report_set_id / prompt / signal_seq（如缺失）。
+
+    report_set_id：报告集拆分功能；prompt/signal_seq：交互采集的平台控制功能。
+    老库启动时补上。两方言通用 ADD COLUMN，幂等：ADD 前先探列。
+    """
+    cols = _columns("perf_run")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "report_set_id" not in cols:
+            conn.execute(text("ALTER TABLE perf_run ADD COLUMN report_set_id BIGINT NULL"))
+        if "prompt" not in cols:
+            conn.execute(text("ALTER TABLE perf_run ADD COLUMN prompt TEXT NULL"))
+        if "signal_seq" not in cols:
+            conn.execute(text("ALTER TABLE perf_run ADD COLUMN signal_seq INT NOT NULL DEFAULT 0"))
+
+
 def ensure_issue_columns() -> None:
     """remaining_issue 表补列 task_id / checklist_item_id（如缺失），并放宽 report_id 可空。
 

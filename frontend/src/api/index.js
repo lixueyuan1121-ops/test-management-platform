@@ -204,6 +204,22 @@ export const listMyDevices = () => http.get('/devices')
 export const registerDevice = (runner_id, name) => http.post('/devices', { runner_id, name })
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
 export const deleteDevice = (id) => http.delete(`/devices/${id}`)
+
+// ===== 性能测试（nami-perfdog 采集结果的下发 / 回传 / 在线报告）=====
+export const dispatchPerfJob = (data) => http.post('/perf/jobs', data)
+export const listPerfRuns = (params) => http.get('/perf/runs', { params })
+export const getPerfRun = (id) => http.get(`/perf/runs/${id}`)
+export const perfReport = (params) => http.get('/perf/report', { params })
+export const deletePerfRun = (id) => http.delete(`/perf/runs/${id}`)
+// 报告集：把多次采集归入一个可命名、独立展示的报告
+export const listPerfSets = () => http.get('/perf/report-sets')
+export const createPerfSet = (name) => http.post('/perf/report-sets', { name })
+export const renamePerfSet = (id, name) => http.patch(`/perf/report-sets/${id}`, { name })
+export const deletePerfSet = (id) => http.delete(`/perf/report-sets/${id}`)
+// 交互采集控制：轮询提示/状态、点继续推进、取消采集
+export const getPerfPrompt = (id) => http.get(`/perf/runs/${id}/prompt`)
+export const signalPerfRun = (id) => http.post(`/perf/runs/${id}/signal`)
+export const cancelPerfRun = (id) => http.post(`/perf/runs/${id}/cancel`)
 export const extractUrl = (url) => http.post('/ai/extract-url', { url })
 export const extractFile = (file) => {
   const fd = new FormData()

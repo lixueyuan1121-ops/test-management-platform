@@ -399,6 +399,55 @@ CREATE TABLE IF NOT EXISTS `api_env` (
   UNIQUE KEY `uq_apienv_project` (`project_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 性能报告集:把若干次采集归入一个可命名、独立展示的报告(下发/上传前建或选)。
+CREATE TABLE `perf_report_set` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(128) NOT NULL,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `fk_perfset_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 性能测试记录:nami-perfdog 采集结果载体 + 下发单。双轨 source(dispatch 下发 / upload 本地直传)。
+-- 状态/场景用 VARCHAR(不用 ENUM):规避 MySQL 原生 ENUM 越界静默空串的坑,且场景名可自定义扩展。
+CREATE TABLE `perf_run` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT DEFAULT NULL,
+  `report_set_id` BIGINT DEFAULT NULL,
+  `runner` VARCHAR(64) NOT NULL DEFAULT 'win-01',
+  `scenario` VARCHAR(32) NOT NULL,
+  `variant` VARCHAR(64) NOT NULL DEFAULT 'default',
+  `proc` VARCHAR(128) DEFAULT NULL,
+  `duration` VARCHAR(16) DEFAULT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'dispatch',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `outcome` VARCHAR(16) DEFAULT NULL,
+  `meta_json` TEXT,
+  `samples_json` LONGTEXT,
+  `events_json` TEXT,
+  `duration_ms` INT DEFAULT NULL,
+  `error` TEXT,
+  `prompt` TEXT,
+  `signal_seq` INT NOT NULL DEFAULT 0,
+  `started_at` DATETIME DEFAULT NULL,
+  `ended_at` DATETIME DEFAULT NULL,
+  `enqueued_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_perfrun_project` (`project_id`),
+  KEY `idx_perfrun_reportset` (`report_set_id`),
+  KEY `idx_perfrun_runner` (`runner`),
+  KEY `idx_perfrun_scenario` (`scenario`),
+  KEY `idx_perfrun_variant` (`variant`),
+  KEY `idx_perfrun_status` (`status`),
+  CONSTRAINT `fk_perfrun_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_perfrun_reportset` FOREIGN KEY (`report_set_id`) REFERENCES `perf_report_set`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_perfrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

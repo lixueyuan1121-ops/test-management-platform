@@ -13,6 +13,8 @@ from app.models.runner_device import RunnerDevice
 from app.models.release import ReleaseRecord
 from app.models.selector import SelectorKey, SelectorScope, ProbeRequest
 from app.models.api_env import ApiEnv
+from app.models.perf import PerfRun
+from app.models.perf_report_set import PerfReportSet
 
 __all__ = [
     "User",
@@ -37,4 +39,6 @@ __all__ = [
     "SelectorScope",
     "ProbeRequest",
     "ApiEnv",
+    "PerfRun",
+    "PerfReportSet",
 ]
