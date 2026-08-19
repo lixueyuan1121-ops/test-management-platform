@@ -1,5 +1,5 @@
 {
-  "_comment": "纳米Work 语义选择器注册表(gui-mcp 消费)。key -> {frame:shell|vm|auto, desc, candidates:[{by,value,name?}]}。candidates 按稳定性排序(testid>role>label>text>placeholder>css),命中即用。基座导出自 nami-work-test/lib/selectors.js,已并入 daily_test 实测项。更新:往对应 key 的 candidates 头部(更稳)或尾部(兜底)加一条即可。",
+  "_comment": "纳米Work 语义选择器注册表(gui-mcp 消费)。key -> {frame:shell|vm|auto, desc, candidates:[{by,value,name?}]}。candidates 按稳定性排序(testid>role>label>text>placeholder>css),命中即用。基座导出自 nami-work-test/lib/selectors.js,已并入 daily_test 实测项。更新:往对应 key 的 candidates 头部(更稳)或尾部(兜底)加一条即可。 【2026-08 同步 skill selectors.js:新增 skill 独有项，重叠项 candidates 保持平台版、仅 frame 对齐 auto。】",
   "vmIframe": "iframe[src*=\".work.n.cn\"]",
   "registry": {
     "loginAccountTab": {
@@ -86,7 +86,7 @@
       ]
     },
     "sidebarItem": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "左侧栏 会话/任务列表项（点击进入该会话）",
       "candidates": [
         {
@@ -104,7 +104,7 @@
       ]
     },
     "sidebarItemSelected": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "左侧栏 当前选中的会话项",
       "candidates": [
         {
@@ -114,7 +114,7 @@
       ]
     },
     "sidebarTitle": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "左侧栏 会话标题文本（按文本匹配定位某会话）",
       "candidates": [
         {
@@ -124,7 +124,7 @@
       ]
     },
     "newTask": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "左侧栏顶部「+新建任务」按钮",
       "candidates": [
         {
@@ -149,7 +149,7 @@
       ]
     },
     "avatar": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "右上角头像（打开个人菜单）",
       "candidates": [
         {
@@ -365,7 +365,7 @@
       ]
     },
     "coinRow": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "算力豆明细 每行",
       "candidates": [
         {
@@ -375,7 +375,7 @@
       ]
     },
     "coinChange": {
-      "frame": "shell",
+      "frame": "auto",
       "desc": "算力豆 变动数值",
       "candidates": [
         {
@@ -545,7 +545,7 @@
       ]
     },
     "navItem": {
-      "frame": "vm",
+      "frame": "auto",
       "desc": "主导航项(左侧栏 首页/任务/专家/文件/自动化/连接器)",
       "candidates": [
         {
@@ -585,7 +585,7 @@
       ]
     },
     "navTasks": {
-      "frame": "vm",
+      "frame": "auto",
       "desc": "主导航『任务』",
       "candidates": [
         {
@@ -595,7 +595,7 @@
       ]
     },
     "navExperts": {
-      "frame": "vm",
+      "frame": "auto",
       "desc": "主导航『专家』",
       "candidates": [
         {
@@ -631,6 +631,1099 @@
         {
           "by": "text",
           "value": "连接器"
+        }
+      ]
+    },
+    "navProjects": {
+      "frame": "auto",
+      "desc": "一级导航「项目」入口",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "sidebar-nav .sidebar-nav__item:has(.sidebar-nav__text:text-is(\"项目\"))"
+        },
+        {
+          "by": "text",
+          "value": "项目"
+        }
+      ]
+    },
+    "navDepartment": {
+      "frame": "auto",
+      "desc": "一级导航「团队/部门」入口",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "sidebar-nav .sidebar-nav__item:has(.sidebar-nav__text:text-is(\"团队\"))"
+        },
+        {
+          "by": "text",
+          "value": "团队"
+        }
+      ]
+    },
+    "navCloudDrive": {
+      "frame": "auto",
+      "desc": "一级导航「文件」入口（★实探：云盘在「文件」导航，非「云盘」文字）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "sidebar-nav .sidebar-nav__item:has(.sidebar-nav__text:text-is(\"文件\"))"
+        },
+        {
+          "by": "text",
+          "value": "文件"
+        }
+      ]
+    },
+    "sidebarUnread": {
+      "frame": "auto",
+      "desc": "左侧栏 未读红点（任务完成有新回复未读）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".aside-panel-task-list__unread"
+        }
+      ]
+    },
+    "sidebarRunning": {
+      "frame": "auto",
+      "desc": "左侧栏 generating 蓝圈（任务正在执行）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".aside-panel-task-list__status--running"
+        }
+      ]
+    },
+    "copyBtn": {
+      "frame": "auto",
+      "desc": "答案复制按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-copy-btn"
+        },
+        {
+          "by": "css",
+          "value": ".chat-group-actions__item"
+        }
+      ]
+    },
+    "toolCard": {
+      "frame": "auto",
+      "desc": "工具卡片（可点 --clickable）；头 .chat-tool-card__header/__title",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-tool-card"
+        }
+      ]
+    },
+    "thinkingLoading": {
+      "frame": "auto",
+      "desc": "思考流 loading 态（流式进行中）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-thinking--loading"
+        },
+        {
+          "by": "css",
+          "value": ".chat-thinking__marker--loading"
+        }
+      ]
+    },
+    "thinkingToggle": {
+      "frame": "auto",
+      "desc": "思考中 头/切换（\"思考中...\"标签 --thinking）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-thinking-toggle"
+        }
+      ]
+    },
+    "sharePanel": {
+      "frame": "auto",
+      "desc": "分享面板容器",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "chat-share-panel"
+        },
+        {
+          "by": "css",
+          "value": ".chat-share-panel"
+        }
+      ]
+    },
+    "shareSelectAll": {
+      "frame": "auto",
+      "desc": "分享面板 全选",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-share-panel__select-all"
+        },
+        {
+          "by": "text",
+          "value": "全选"
+        }
+      ]
+    },
+    "shareCopyLink": {
+      "frame": "auto",
+      "desc": "分享面板 生成/复制链接按钮（文案动态）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-share-panel__copy-link-btn"
+        },
+        {
+          "by": "css",
+          "value": ".chat-share-panel__action-btn"
+        }
+      ]
+    },
+    "shareCloseBtn": {
+      "frame": "auto",
+      "desc": "分享面板 右下角关闭按钮（★实探 aria-label=\"退出勾选会话\"，点它退出分享/勾选态）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-share-panel__close-btn"
+        },
+        {
+          "by": "label",
+          "value": "退出勾选会话"
+        }
+      ]
+    },
+    "fileShareModal": {
+      "frame": "auto",
+      "desc": "文件链接分享弹窗（打开即建永久链接）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "share-link-view"
+        }
+      ]
+    },
+    "fileShareCopyPrimary": {
+      "frame": "auto",
+      "desc": "文件分享弹窗 复制链接主按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".share-link__action--primary"
+        }
+      ]
+    },
+    "attachmentUploadBtn": {
+      "frame": "auto",
+      "desc": "上传附件入口（+）。真实 <input type=file> 藏在 input-file 的 shadow root，建议 setInputFiles 配合 filechooser，或直接 locator(\"input-attachment\")",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "chat-input-button[tooltip=\"上传附件\"]"
+        },
+        {
+          "by": "css",
+          "value": "input-attachment"
+        }
+      ],
+      "shadowDom": true
+    },
+    "attachmentFileInput": {
+      "frame": "auto",
+      "desc": "附件真实文件 input（Shadow DOM 内，setInputFiles 用）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "input-file input[type=file]"
+        }
+      ],
+      "shadowDom": true
+    },
+    "attachmentItem": {
+      "frame": "auto",
+      "desc": "附件预览项（Shadow DOM；内 .file-name/.uploading-text/.attachment-item__remove）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "attachment-item"
+        },
+        {
+          "by": "css",
+          "value": "image-item"
+        }
+      ],
+      "shadowDom": true
+    },
+    "cloudTab": {
+      "frame": "auto",
+      "desc": "云盘 Tab 项（用户上传/AI文件/工作空间/知识库；active --active）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".cloud-drive-page__tab"
+        }
+      ]
+    },
+    "cloudEnterBtn": {
+      "frame": "auto",
+      "desc": "顶栏进云盘按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".topbar-chat-actions__cloud"
+        }
+      ]
+    },
+    "cloudFileRow": {
+      "frame": "auto",
+      "desc": "云盘 文件行（名称 .cloud-disk-list__name；点击区 __name-wrap）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".cloud-disk-list__row"
+        }
+      ]
+    },
+    "cloudFileMore": {
+      "frame": "auto",
+      "desc": "云盘 行更多菜单（aria-label 更多）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".cloud-disk-list__more-btn"
+        }
+      ]
+    },
+    "coinPill": {
+      "frame": "auto",
+      "desc": "头像（点开后菜单里有算力豆/明细/充值）。★实探：算力豆入口在头像菜单内，先点头像",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".topbar-avatar"
+        },
+        {
+          "by": "css",
+          "value": "avatar-view .topbar-avatar"
+        }
+      ]
+    },
+    "coinDetailMenuItem": {
+      "frame": "auto",
+      "desc": "头像菜单里的「明细」项（点开算力豆明细）",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "明细"
+        }
+      ]
+    },
+    "coinInfoView": {
+      "frame": "auto",
+      "desc": "算力豆明细弹窗视图",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "coin-info-view"
+        },
+        {
+          "by": "css",
+          "value": ".coin-info"
+        }
+      ]
+    },
+    "coinDetailClose": {
+      "frame": "auto",
+      "desc": "算力豆明细弹窗 关闭按钮（★实探：明细在 config-modal 里，关闭钮 .config-modal__close）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".config-modal__close"
+        },
+        {
+          "by": "css",
+          "value": ".modal-overlay .config-modal__close"
+        }
+      ]
+    },
+    "toolConfirmOption": {
+      "frame": "auto",
+      "desc": "工作流确认卡 选项（Shadow 内，Playwright 组合可穿透）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "tool-confirm-modal .opt"
+        }
+      ],
+      "shadowDom": true
+    },
+    "toolConfirmSubmit": {
+      "frame": "auto",
+      "desc": "工作流确认卡 提交",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "tool-confirm-modal .btn-submit"
+        }
+      ],
+      "shadowDom": true
+    },
+    "confirmOverlay": {
+      "frame": "auto",
+      "desc": "全局 confirm 弹层（渲染到 #openclaw-confirm-root，Light DOM）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".confirm-overlay"
+        }
+      ]
+    },
+    "confirmPrimary": {
+      "frame": "auto",
+      "desc": "全局 confirm 主按钮（确认/危险）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".confirm-actions .btn.primary"
+        },
+        {
+          "by": "css",
+          "value": ".confirm-actions .btn.danger"
+        }
+      ]
+    },
+    "toast": {
+      "frame": "auto",
+      "desc": "全局 Toast（动态注入 body）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "#qihooclaw-toast-root .toast-item"
+        }
+      ]
+    },
+    "expirePop": {
+      "frame": "auto",
+      "desc": "会员到期弹窗（拦截点击，自动化前需清掉）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "expire-pop-view"
+        }
+      ]
+    },
+    "userMenu": {
+      "frame": "auto",
+      "desc": "用户菜单（头像点开后）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "user-menu-view .topbar-user-menu"
+        }
+      ]
+    },
+    "settingsBtn": {
+      "frame": "auto",
+      "desc": "设置入口",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".topbar-settings-btn"
+        }
+      ]
+    },
+    "modelDropdown": {
+      "frame": "auto",
+      "desc": "模型下拉（★Shadow DOM，Playwright 组合可穿透）。触发 .trigger，项 .item-btn",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "model-dropdown .trigger"
+        },
+        {
+          "by": "css",
+          "value": "model-dropdown"
+        }
+      ],
+      "shadowDom": true
+    },
+    "modeDropdown": {
+      "frame": "auto",
+      "desc": "模式下拉（会话，★Shadow DOM）。触发 .trigger，项 .row",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "mode-dropdown .trigger"
+        },
+        {
+          "by": "css",
+          "value": "mode-dropdown"
+        }
+      ],
+      "shadowDom": true
+    },
+    "topNavTab": {
+      "frame": "auto",
+      "desc": "二级 top-nav Tab（我的专家/专家广场/技能宝典等；active --active，按文本）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "top-nav .top-nav__tab"
+        }
+      ]
+    },
+    "expertCard": {
+      "frame": "auto",
+      "desc": "专家广场卡片（名 .expert-card-view-name__text）。★实探：专家页有多个 tab 面板，隐藏面板的 card display:none，用 :visible 只取当前激活面板的可见 card",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "expert-card-view:visible"
+        },
+        {
+          "by": "css",
+          "value": "expert-card-view"
+        }
+      ]
+    },
+    "expertIntroModal": {
+      "frame": "auto",
+      "desc": "专家介绍弹窗（外壳 .modal-overlay，标题 .modal-title，关闭 .modal-close）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".experts-introduce-modal"
+        }
+      ]
+    },
+    "expertHireBtn": {
+      "frame": "auto",
+      "desc": "雇佣/新任务按钮（专家介绍弹窗内）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".experts-introduce-hire-btn"
+        }
+      ]
+    },
+    "expertIntroClose": {
+      "frame": "auto",
+      "desc": "专家介绍弹窗 右上角关闭按钮（★实探 .modal-close，aria-label=\"关闭\"）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".experts-introduce-modal .modal-close"
+        },
+        {
+          "by": "css",
+          "value": ".modal-close"
+        }
+      ]
+    },
+    "agentExampleModal": {
+      "frame": "auto",
+      "desc": "案例弹窗（做同款；根 #openclaw-agent-example-modal-root）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".agent-example-modal"
+        }
+      ]
+    },
+    "createSkillBtn": {
+      "frame": "auto",
+      "desc": "创建专家入口（★实探：在左侧栏 .aside-panel__create-agent，非 top-nav）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".aside-panel__create-agent"
+        },
+        {
+          "by": "css",
+          "value": "top-nav .top-nav__create-skill"
+        }
+      ]
+    },
+    "topNavTabByText": {
+      "frame": "auto",
+      "desc": "专家页 top-nav 指定文本 tab（我的专家/专家广场/技能宝典），用 index 取具体项",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "top-nav .top-nav__tab"
+        }
+      ]
+    },
+    "createMenuItem": {
+      "frame": "auto",
+      "desc": "创建下拉菜单项（创建专家/创建专家团/对话创建/导入技能包，按文本）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".top-nav__create-menu-item"
+        }
+      ]
+    },
+    "createSkillMenuBtn": {
+      "frame": "auto",
+      "desc": "技能宝典 tab「创建技能」按钮（★实探：点它弹出「对话创建/导入技能包」下拉，≠左侧栏 .aside-panel__create-agent「创建专家」。二者别混）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "top-nav .top-nav__create-skill"
+        },
+        {
+          "by": "css",
+          "value": ".top-nav__create-skill"
+        }
+      ]
+    },
+    "createSkillDialogItem": {
+      "frame": "auto",
+      "desc": "创建技能下拉「对话创建」项（进对话创建技能页 skills-create-view）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".top-nav__create-menu-item:has(.top-nav__create-menu-item-title:text-is(\"对话创建\"))"
+        },
+        {
+          "by": "css",
+          "value": ".top-nav__create-menu-item"
+        }
+      ]
+    },
+    "creatorRoot": {
+      "frame": "auto",
+      "desc": "创建页根（三面板 coach/config/preview）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "creator-view .creator-page[data-node-id=\"creator-root\"]"
+        },
+        {
+          "by": "css",
+          "value": ".creator-page"
+        }
+      ]
+    },
+    "creatorDone": {
+      "frame": "auto",
+      "desc": "创建页 完成按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-page__done"
+        }
+      ]
+    },
+    "skillCard": {
+      "frame": "auto",
+      "desc": "技能宝典 技能卡片（★实探：技能宝典 tab 里是 .my-created-skill-card；多 tab 面板隐藏面板 card 也在 DOM，用 :visible）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".my-created-skill-card:visible"
+        },
+        {
+          "by": "css",
+          "value": ".skills-set-card:visible"
+        },
+        {
+          "by": "css",
+          "value": ".my-created-skill-card"
+        },
+        {
+          "by": "css",
+          "value": ".skills-set-card"
+        }
+      ]
+    },
+    "skillUseBtn": {
+      "frame": "auto",
+      "desc": "技能卡片 使用按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-set-card__btn--use"
+        }
+      ]
+    },
+    "projectSidebar": {
+      "frame": "auto",
+      "desc": "项目侧栏（新建 .project-sidebar__create-btn）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "project-sidebar .project-sidebar__main"
+        }
+      ]
+    },
+    "projectCreateBtn": {
+      "frame": "auto",
+      "desc": "项目 新建按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".project-sidebar__create-btn"
+        }
+      ]
+    },
+    "projectCard": {
+      "frame": "auto",
+      "desc": "项目卡片（active --active；名 .project-card__name；编辑 __edit）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".project-card"
+        }
+      ]
+    },
+    "projectPage": {
+      "frame": "auto",
+      "desc": "项目中间页（标题 .project-page__title）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".project-page"
+        }
+      ]
+    },
+    "projectContentTab": {
+      "frame": "auto",
+      "desc": "项目 任务/知识/专家 Tab（active --active，aria-selected）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "project-content-panel .project-content-panel__tab"
+        }
+      ]
+    },
+    "projectMoveMenu": {
+      "frame": "auto",
+      "desc": "移动/复制到项目菜单（复制态 [action=\"copy\"]；触发 __trigger）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "project-move-menu .project-move-menu__trigger"
+        }
+      ]
+    },
+    "deptOrgSidebar": {
+      "frame": "auto",
+      "desc": "部门组织树侧栏（标题 .department-org-sidebar__title）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "department-org-sidebar"
+        }
+      ]
+    },
+    "deptOrgRow": {
+      "frame": "auto",
+      "desc": "组织树 行（active --active；名 .department-org-tree__name；展开 __toggle）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".department-org-tree__row"
+        }
+      ]
+    },
+    "deptAgentCard": {
+      "frame": "auto",
+      "desc": "部门 专家卡（雇佣 .department-agent-card__hire；标题 __title）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".department-agent-card"
+        }
+      ]
+    },
+    "deptTaskItem": {
+      "frame": "auto",
+      "desc": "部门 任务卡（标题 .department-task-item__title）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".department-task-item"
+        }
+      ]
+    },
+    "skillCreateView": {
+      "frame": "auto",
+      "desc": "对话创建技能页 根（host skills-create-view）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "skills-create-view"
+        },
+        {
+          "by": "css",
+          "value": ".skills-create__panel--coach"
+        }
+      ]
+    },
+    "skillCoachPanel": {
+      "frame": "auto",
+      "desc": "创建技能 左侧「技能专家」创建/编辑面板",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__panel--coach"
+        }
+      ]
+    },
+    "skillCoachInput": {
+      "frame": "auto",
+      "desc": "创建技能 左侧输入框（compose）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__compose--coach chat-compose-rich-textarea"
+        }
+      ]
+    },
+    "skillCoachSend": {
+      "frame": "auto",
+      "desc": "创建技能 左侧发送/停止按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__compose--coach .send-btn"
+        }
+      ]
+    },
+    "skillPreviewPanel": {
+      "frame": "auto",
+      "desc": "创建技能 右侧「试试效果」面板容器",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__panel--preview"
+        }
+      ]
+    },
+    "skillPreviewTabBtn": {
+      "frame": "auto",
+      "desc": "创建技能 右侧 Tab 头（试试效果/编辑基础信息，选中 --active）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__tab-btn"
+        }
+      ]
+    },
+    "skillPreviewInput": {
+      "frame": "auto",
+      "desc": "★★ 创建技能 右侧「试试效果」输入框（compose）—— 线上缺失事故的核心不变量。缺它 = 复现 bug。锚定 preview 面板容器 + compose，勿只查 #chat-compose-textarea（左右同 id）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__panel--preview .skills-create__compose chat-compose-rich-textarea"
+        },
+        {
+          "by": "css",
+          "value": ".skills-create__preview-summary chat-compose-rich-textarea"
+        }
+      ]
+    },
+    "skillPreviewSend": {
+      "frame": "auto",
+      "desc": "创建技能 右侧「试试效果」发送/停止按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__preview-summary .send-btn"
+        }
+      ]
+    },
+    "skillSaveVersionBtn": {
+      "frame": "auto",
+      "desc": "创建技能 右侧「保存该版本」按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".skills-create__save-version-btn"
+        }
+      ]
+    },
+    "creatorCoachPanel": {
+      "frame": "auto",
+      "desc": "龙虾教练 coach 列容器",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "creator-coach-panel .creator-col--coach"
+        }
+      ]
+    },
+    "creatorCoachInput": {
+      "frame": "auto",
+      "desc": "龙虾教练 教练输入框（compose）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-chat-compose chat-compose-rich-textarea"
+        }
+      ]
+    },
+    "creatorConfigPanel": {
+      "frame": "auto",
+      "desc": "龙虾教练 配置面板列容器",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "creator-config-panel .creator-col--config"
+        }
+      ]
+    },
+    "creatorConfigMainTab": {
+      "frame": "auto",
+      "desc": "龙虾教练 配置主 Tab（基本信息/技能/工具权限/知识/连接器，选中 .is-active）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-config__main-tab"
+        }
+      ]
+    },
+    "creatorSkillTabPanel": {
+      "frame": "auto",
+      "desc": "龙虾教练 配置面板「技能」tab 内容容器（★实探：点「技能」main-tab 后出现，含说明 + 添加技能/对话创建/导入技能包空态按钮）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-config-skill"
+        },
+        {
+          "by": "css",
+          "value": ".creator-config-skill__box"
+        }
+      ]
+    },
+    "creatorAddSkillBtn": {
+      "frame": "auto",
+      "desc": "龙虾教练「技能」tab 内「添加技能」按钮（★实探 class 单下划线 creator-config-skill_add，用 [class*=] 兼容单/双下划线；空态另有 .creator-empty-state__action）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "[class*=\"creator-config-skill_add\"]"
+        },
+        {
+          "by": "css",
+          "value": ".creator-empty-state__action:has-text(\"添加技能\")"
+        }
+      ]
+    },
+    "creatorNameInput": {
+      "frame": "auto",
+      "desc": "龙虾教练 名称输入框",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-config__name-row .field input[type=text]"
+        }
+      ]
+    },
+    "creatorPreviewPanel": {
+      "frame": "auto",
+      "desc": "龙虾教练 预览面板列容器",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "creator-preview-panel .creator-col--preview"
+        }
+      ]
+    },
+    "previewToggle": {
+      "frame": "auto",
+      "desc": "「试试效果」展开按钮（预览面板收起态点它展开，展开后 preview compose 才进 DOM）。配置面板的收起态 toggle；也兼容按文本",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-config__preview-toggle"
+        },
+        {
+          "by": "css",
+          "value": ".skills-create__preview-toggle"
+        },
+        {
+          "by": "text",
+          "value": "试试效果"
+        }
+      ]
+    },
+    "creatorPreviewInput": {
+      "frame": "auto",
+      "desc": "龙虾教练 预览输入框（compose）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-preview-compose chat-compose-rich-textarea"
+        }
+      ]
+    },
+    "creatorPreviewSend": {
+      "frame": "auto",
+      "desc": "龙虾教练 预览发送/停止按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-preview-compose .send-btn"
+        }
+      ]
+    },
+    "creatorBack": {
+      "frame": "auto",
+      "desc": "龙虾教练 返回按钮",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-page__back"
+        }
+      ]
+    },
+    "creatorDoneBtn": {
+      "frame": "auto",
+      "desc": "龙虾教练 完成/提交按钮（禁用 --disabled）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-page__done"
+        }
+      ]
+    },
+    "chatComposeToolbar": {
+      "frame": "auto",
+      "desc": "聊天 输入区工具栏容器",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".chat-compose__actions"
+        },
+        {
+          "by": "css",
+          "value": ".chat-compose__toolbar"
+        }
+      ]
+    },
+    "engineSelector": {
+      "frame": "auto",
+      "desc": "Creator 创建/编辑页 基本信息区「Agent 引擎选择器」容器（名称输入框右侧）。存在=引擎选择器 feature 已上线（需域名白名单 *.work.n.cn/*.nmw.n.cn + 网关版本达标）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "creator-engine-selector"
+        },
+        {
+          "by": "css",
+          "value": ".creator-engine-selector"
+        }
+      ]
+    },
+    "engineSelectorTrigger": {
+      "frame": "auto",
+      "desc": "引擎选择器 触发按钮（点击展开下拉；展开态附加 is-open）。⚠️ 仅当可选引擎 >1 时可展开，==1 时只读展示当前引擎（dropdownEnabled=false）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-engine-selector__trigger"
+        }
+      ]
+    },
+    "engineSelectorTitle": {
+      "frame": "auto",
+      "desc": "引擎选择器 当前引擎名（触发按钮内文本，如「Claude Code」「Codex」）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-engine-selector__title"
+        }
+      ]
+    },
+    "engineSelectorMenu": {
+      "frame": "auto",
+      "desc": "引擎选择器 下拉浮层（fixed 定位；标题「选择 Agent 引擎：」）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-engine-selector__menu"
+        },
+        {
+          "by": "css",
+          "value": ".creator-engine-selector__menu-title"
+        }
+      ]
+    },
+    "engineSelectorOption": {
+      "frame": "auto",
+      "desc": "引擎选择器 下拉的单个引擎项（选中态 is-selected；含 __option-title + __option-desc）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-engine-selector__option"
+        }
+      ]
+    },
+    "engineSelectorOptionTitle": {
+      "frame": "auto",
+      "desc": "引擎项 标题文本（云控 engineTitle，如「Codex」；文案由云控 assistant_lobster_create_config 下发）",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".creator-engine-selector__option-title"
+        }
+      ]
+    },
+    "codexRuntimeProgress": {
+      "frame": "auto",
+      "desc": "★待实探★ Codex 专家雇佣/发送前「受管 Runtime 准备」进度弹窗（Claude Code 无此步）。源码 codex-runtime-progress.ts 四步文案：检查运行环境/下载 Codex/校验并安装/完成雇佣。DOM class 未 probe，先用文本候选兜底，实探后补 host class 到候选头部",
+      "candidates": [
+        {
+          "by": "css",
+          "value": "codex-runtime-progress"
+        },
+        {
+          "by": "text",
+          "value": "下载 Codex"
+        },
+        {
+          "by": "text",
+          "value": "检查运行环境"
+        }
+      ]
+    },
+    "codexRuntimeFailedRetry": {
+      "frame": "auto",
+      "desc": "★待实探★ Runtime 准备失败态按钮：可重试→「重试」；版本不支持→「升级后重试」；标题「Codex 运行环境准备失败」。文案取自源码，DOM 待 probe",
+      "candidates": [
+        {
+          "by": "text",
+          "value": "升级后重试"
+        },
+        {
+          "by": "text",
+          "value": "重试"
+        }
+      ]
+    },
+    "engineSwitchConfirm": {
+      "frame": "auto",
+      "desc": "★待实探★ 引擎切换二次确认弹窗（SPEC §6.1：标题「确定切换到{engineTitle}引擎」，正文含「会对当前编辑内容进行 AI 改写…部分配置可能会丢失」）。可能复用全局 confirmOverlay 或专用组件；先用文本兜底，实探后校准",
+      "candidates": [
+        {
+          "by": "css",
+          "value": ".confirm-overlay"
+        },
+        {
+          "by": "text",
+          "value": "确定切换"
         }
       ]
     }
