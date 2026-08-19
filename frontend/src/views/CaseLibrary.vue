@@ -34,11 +34,6 @@
                 仅待补选择器<span v-if="selectorFixOnly && total"> · {{ total }}</span>
               </el-checkbox>
             </el-tooltip>
-            <el-tooltip content="只看回归用例库(可按页面筛选后勾选执行)" placement="top">
-              <el-checkbox v-model="regressionOnly" size="small" border class="sel-fix-filter" @change="reload">
-                仅回归<span v-if="regressionOnly && total"> · {{ total }}</span>
-              </el-checkbox>
-            </el-tooltip>
             <el-input
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="reload" @clear="reload"
@@ -63,13 +58,12 @@
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
-        <el-button size="small" type="success" plain :loading="dispatching" @click="runRegressionSelected">执行回归</el-button>
         <el-divider direction="vertical" />
         <el-button size="small" @click="bulkSetRegressionFlag(true)">标记回归</el-button>
         <el-button size="small" plain @click="bulkSetRegressionFlag(false)">取消回归</el-button>
         <el-button size="small" @click="bulkReview('adopted')">批量采纳</el-button>
         <el-button size="small" type="danger" plain @click="bulkDelete">批量删除</el-button>
-        <span class="sel-hint">「发送到执行机」需已采纳+关联任务;「执行回归」随选随跑(不依赖任务,仅跳过 manual)</span>
+        <span class="sel-hint">「发送到执行机」需已采纳+关联任务;标记回归后可在「回归用例库」按页面执行</span>
       </div>
 
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
@@ -238,7 +232,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression, enqueueCases } from '@/api'
+import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -277,7 +271,6 @@ const rows = ref([])
 const loading = ref(false)
 const execKindFilter = ref(null)   // 执行类型筛选(null=全部),下推后端
 const selectorFixOnly = ref(false) // 仅看「待补选择器」(补齐 key 即可自动化)的降级用例
-const regressionOnly = ref(false)  // 仅看回归用例库
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
@@ -344,23 +337,6 @@ async function bulkSetRegressionFlag(flag) {
   } catch { /* 已提示 */ }
 }
 
-// ---- 回归:直接执行(不依赖任务/采纳,不挂清单)----
-// 只下发选中里「非 manual」的用例(manual 后端也会拒),按 page 勾选后随选随跑。
-async function runRegressionSelected() {
-  if (!selected.value.length) return
-  if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
-  const items = selected.value.filter((r) => (r.exec_kind || 'gui') !== 'manual')
-  if (!items.length) { ElMessage.warning('选中项里没有可执行的用例(manual 不可自动化)'); return }
-  const skipped = selected.value.length - items.length
-  dispatching.value = true
-  try {
-    const res = await enqueueCases(pid.value, runner.value, items.map((r) => r.id))
-    const n = res?.run_ids?.length || items.length
-    ElMessage.success(`已下发 ${n} 条回归到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''},执行机跑完自动回写结果`)
-  } catch { /* 已提示 */ }
-  finally { dispatching.value = false }
-}
-
 onMounted(async () => {
   // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
   const [devicesRes, projectsRes] = await Promise.allSettled([listMyDevices(), app.fetchProjects()])
@@ -407,7 +383,6 @@ async function load() {
       provider: providerFilter.value || undefined,
       page: pageFilter.value || undefined,
       selector_fix: selectorFixOnly.value || undefined,
-      is_regression: regressionOnly.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,

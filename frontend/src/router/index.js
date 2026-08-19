@@ -13,6 +13,7 @@ const routes = [
       { path: 'ai-testgen', name: 'ai-testgen', component: () => import('@/views/AITestGen.vue') },
       { path: 'case-library', name: 'case-library', component: () => import('@/views/CaseLibrary.vue') },
       { path: 'adopted-cases', name: 'adopted-cases', component: () => import('@/views/AdoptedCases.vue') },
+      { path: 'regression-cases', name: 'regression-cases', component: () => import('@/views/RegressionCases.vue'), meta: { title: '回归用例库' } },
       { path: 'projects', name: 'projects', component: () => import('@/views/Projects.vue'), meta: { platformAdmin: true } },
       { path: 'users', name: 'users', component: () => import('@/views/Users.vue'), meta: { platformAdmin: true } },
       { path: 'projects/:id/members', name: 'project-members', component: () => import('@/views/Members.vue') },
