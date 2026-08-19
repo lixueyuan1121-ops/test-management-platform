@@ -93,6 +93,36 @@ async function uploadProbeShot(id, buffer) {
   return res.json().catch(() => ({}));
 }
 
+// 上传某执行步的截图(PNG Buffer)到 exec 独立端点,返回可访问 URL(失败抛错,调用方吞掉不阻断回写)。
+async function uploadExecShot(runId, idx, buffer) {
+  const fd = new FormData();
+  fd.append("file", new Blob([buffer], { type: "image/png" }), `exec-${runId}-${idx}.png`);
+  const res = await fetch(`${BASE_URL}/api/exec-queue/${runId}/screenshot?idx=${idx}&runner=${encodeURIComponent(RUNNER_ID)}`, {
+    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j = await res.json().catch(() => ({}));
+  return j?.data?.screenshot_url || j?.screenshot_url || null;   // api() 未用,这里手解包
+}
+
+// 把 result.report 里各步的 shotBuf 逐张上传换成 shot(URL),返回可回写的纯 JSON report(无 Buffer)。
+// 上传失败的步只是没有截图 URL,不影响其余步与回写。无 report/无截图 → 返回 report 原样(去掉 Buffer)。
+async function uploadReportShots(runId, report) {
+  if (!Array.isArray(report)) return null;
+  const out = [];
+  for (const step of report) {
+    const { shotBuf, ...rest } = step || {};
+    if (shotBuf && shotBuf.length) {
+      try {
+        const url = await uploadExecShot(runId, rest.no || out.length + 1, shotBuf);
+        if (url) rest.shot = url;
+      } catch (e) { log(`  截图上传失败 run=${runId} step=${rest.no}: ${e.message}`); }
+    }
+    out.push(rest);
+  }
+  return out;
+}
+
 // 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。三种情形都不清空内置兜底:
 //   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 跳过 setRegistry、保留内置 57 key;
 //   ② API 不可达(异常)→ 用缓存或 null;③ 拿到非空注册表 → 缓存并返回。
@@ -440,11 +470,19 @@ async function tick() {
         result = { verdict: "fail", reason: `未知执行类型 kind=${item.kind},runner 不支持`, duration_ms: 1 };
       }
 
+      // 有逐步报告(gui/e2e StepExecutor 产)→ 先把每步截图 Buffer 上传换成 URL,随回写落库。
+      let reportJson = null;
+      if (Array.isArray(result.report) && result.report.length) {
+        try { reportJson = await uploadReportShots(item.run_id, result.report); }
+        catch (e) { log(`  报告截图处理失败 run_id=${item.run_id}: ${e.message}`); }
+      }
+
       await report(item.run_id, {
         verdict: result.verdict,
         reason: result.reason ?? "",
         evidence_url: result.evidence ?? null,
         duration_ms: result.duration_ms ?? null,
+        report: reportJson,
       });
       // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
       const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";

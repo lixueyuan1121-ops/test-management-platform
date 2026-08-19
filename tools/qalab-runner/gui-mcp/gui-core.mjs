@@ -348,6 +348,15 @@ export function createGuiCore(opts = {}) {
       await page.screenshot({ path, fullPage: false });
       return { evidence: path };
     },
+    // 截当前视口为 PNG Buffer(供执行报告上传,不落本地文件)。失败返回 null,不阻断执行。
+    async shotBuffer() {
+      try {
+        await ensureConnected();
+        return await page.screenshot({ fullPage: false, type: "png" });
+      } catch {
+        return null;
+      }
+    },
     async close() {
       // connectOverCDP 的 close 只断开连接,不关被测客户端
       if (browser) { try { await browser.close(); } catch { /* 已断开 */ } }

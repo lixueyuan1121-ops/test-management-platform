@@ -9,9 +9,12 @@
 沿用全项目约定：{code,msg,data} 信封（ok/fail）、手写 _to_out、体外 assert_project_role。
 """
 import json
+import os
+import secrets
+import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
@@ -24,6 +27,12 @@ from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn
 router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
+
+
+def _new_batch_id() -> str:
+    """一次 enqueue 的批次号:YYYYmmdd-HHMMSS-<4hex>,人读友好 + 同批唯一。"""
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+
 
 # test_case.exec_kind（若存在）→ ExecKind；缺省 gui。exec_kind 列由 migrate 补，
 # 老库/未设值的用例回落到 gui（GUI 是被测客户端的主要形态）。
@@ -84,6 +93,7 @@ def _to_out(r: ExecRun) -> dict:
         "test_case_id": r.test_case_id,
         "task_id": r.task_id,
         "project_id": r.project_id,
+        "batch_id": r.batch_id,
         "runner": r.runner,
         # 防御:kind/status 正常是枚举(有 .value),但历史/脏数据可能是裸字符串;
         # 用 getattr 兼容两者,避免一行坏数据让 runner 的 GET 轮询整个 500(实测踩过)。
@@ -93,10 +103,21 @@ def _to_out(r: ExecRun) -> dict:
         "verdict": r.verdict,
         "reason": r.reason,
         "evidence_url": r.evidence_url,
+        "report": _load_report(r.report),
         "duration_ms": r.duration_ms,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
+
+
+def _load_report(raw):
+    """report TEXT-JSON → 对象(数组/字典);空或坏 JSON → None(前端回落旧证据展示)。"""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 
 # ---- ① 前端「发送到本地执行」：把勾选的清单项入队 ----
@@ -123,6 +144,7 @@ def enqueue(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"清单项 {cid} 不属于该项目")
 
     created = []
+    batch_id = _new_batch_id()   # 本次下发一个批次号,该批所有 run 共享(结果页按批汇总)
     for cid in ids:
         it = found[cid]
         tc = db.get(TestCase, it.test_case_id)
@@ -136,6 +158,7 @@ def enqueue(
             test_case_id=it.test_case_id,
             task_id=it.task_id,
             project_id=it.project_id,
+            batch_id=batch_id,
             runner=body.runner,
             kind=_kind_of(tc),
             status=ExecStatus.pending,
@@ -146,7 +169,7 @@ def enqueue(
         db.flush()
         created.append(row.id)
     db.commit()
-    return ok({"run_ids": created})
+    return ok({"run_ids": created, "batch_id": batch_id})
 
 
 @router.post("/enqueue-cases")
@@ -178,6 +201,7 @@ def enqueue_cases(
             )
 
     created = []
+    batch_id = _new_batch_id()   # 回归批次号,该批所有 run 共享(结果页按批汇总)
     for cid in ids:
         tc = found[cid]
         row = ExecRun(
@@ -185,6 +209,7 @@ def enqueue_cases(
             test_case_id=tc.id,
             task_id=getattr(tc, "task_id", None),
             project_id=tc.project_id,
+            batch_id=batch_id,
             runner=body.runner,
             kind=_kind_of(tc),
             status=ExecStatus.pending,
@@ -195,7 +220,7 @@ def enqueue_cases(
         db.flush()
         created.append(row.id)
     db.commit()
-    return ok({"run_ids": created})
+    return ok({"run_ids": created, "batch_id": batch_id})
 
 
 # ---- 执行历史查询(用户侧,独立"执行结果"页用)----
@@ -309,6 +334,8 @@ def report(
     r.reason = body.reason
     r.evidence_url = body.evidence_url
     r.duration_ms = body.duration_ms
+    if body.report is not None:
+        r.report = json.dumps(body.report, ensure_ascii=False)   # 逐步执行报告(含截图 URL)
 
     # 闭环落点：把结果同步回验收清单项（pass→passed / fail→failed）。
     # 复用现有清单展示、checklist-summary 统计、失败转遗留问题等下游能力。
@@ -321,3 +348,75 @@ def report(
     db.commit()
     db.refresh(r)
     return ok(_to_out(r))
+
+
+# ---- ⑤ runner 上传执行截图（二进制,独立于 report TEXT 通道)----
+# 同 probe:截图大,base64 塞 report TEXT 会撑爆 MySQL 5.6 的 64KB。走 multipart 存磁盘,report 里只放 URL。
+_UPLOADS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
+_EXEC_SHOT_ROOT = os.path.join(_UPLOADS_DIR, "execs")
+_MAX_SHOT_BYTES = 10 * 1024 * 1024  # 10MB
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# 执行截图保留天数(惰性清理):超期的旧批目录在有新执行上传时删。≤0 不清理。
+_SHOT_RETENTION_DAYS = int(os.getenv("EXEC_SHOT_RETENTION_DAYS", "14"))
+
+
+def _cleanup_old_exec_shots() -> None:
+    """删超过保留期的执行截图子目录(惰性:上传新图时触发)。只清磁盘,不动 DB 的 report URL。
+
+    整个函数吞异常——清理尽力而为,绝不影响上传主流程。过期后前端显示裂图但记录不丢。
+    """
+    if _SHOT_RETENTION_DAYS <= 0:
+        return
+    try:
+        cutoff = time.time() - _SHOT_RETENTION_DAYS * 86400
+        for name in os.listdir(_EXEC_SHOT_ROOT):
+            sub = os.path.join(_EXEC_SHOT_ROOT, name)
+            try:
+                if os.path.isdir(sub) and os.path.getmtime(sub) < cutoff:
+                    for f in os.listdir(sub):
+                        try:
+                            os.remove(os.path.join(sub, f))
+                        except OSError:
+                            continue
+                    os.rmdir(sub)
+            except OSError:
+                continue
+    except OSError:
+        pass   # 根目录不存在等:本就无可清理
+
+
+@router.post("/{run_id}/screenshot")
+async def upload_exec_screenshot(
+    run_id: int,
+    file: UploadFile = File(...),
+    idx: int = Query(0),                 # 第几步截图,决定文件名(同一 run 多张)
+    runner: str = Query("mac-01"),
+    db: Session = Depends(get_db),
+    ctx: RunnerCtx = Depends(require_runner_ctx),
+):
+    """runner 上传某执行步的截图(PNG)。存 uploads/execs/<run_id>/<idx>.png,返回可访问 URL。
+
+    runner token 鉴权 + 归属校验(只能给派给自己的执行项传图);仅 PNG;≤10MB。
+    URL 由 runner 收集后写进回写 report 的对应步骤,DB 不额外记(report JSON 里带)。
+    """
+    if ctx.device is not None:
+        runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
+    r = db.get(ExecRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    if r.runner != runner:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+    data = await file.read()
+    if len(data) > _MAX_SHOT_BYTES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"截图过大（>{_MAX_SHOT_BYTES // 1024 // 1024}MB）")
+    if not data.startswith(_PNG_MAGIC):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅支持 PNG 截图")
+    sub = os.path.join(_EXEC_SHOT_ROOT, str(run_id))
+    os.makedirs(sub, exist_ok=True)
+    safe_idx = max(0, int(idx))
+    rel = f"execs/{run_id}/{safe_idx}.png"
+    with open(os.path.join(_UPLOADS_DIR, rel), "wb") as f:
+        f.write(data)
+    _cleanup_old_exec_shots()   # 顺手清过期旧批(惰性)
+    return ok({"screenshot_url": f"/uploads/{rel}"})

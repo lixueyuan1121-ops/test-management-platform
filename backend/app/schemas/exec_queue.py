@@ -29,3 +29,4 @@ class ExecReportIn(BaseModel):
     reason: str | None = None
     evidence_url: str | None = None
     duration_ms: int | None = None
+    report: list | dict | None = None  # 逐步执行报告(每步 action/desc/ok/截图 URL + 结论);gui/e2e 由 runner 回写

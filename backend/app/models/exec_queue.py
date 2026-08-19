@@ -47,9 +47,13 @@ class ExecRun(Base):
         Enum(ExecStatus, length=16), default=ExecStatus.pending, server_default="pending", index=True
     )
     payload: Mapped[str] = mapped_column(Text)  # 用例快照 JSON 字符串（steps/expected/params）
+    # 批次号：一次 enqueue 生成一个，该批所有 run 共享（供执行结果页按批次汇总）。老库补列后为 NULL=未分批。
+    batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)  # runner 回写原值 pass/fail
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 逐步执行报告 JSON 字符串（每步 action/desc/ok/截图 URL/错误 + 结论）；gui/e2e 由 runner 回写。Text-JSON 兼容 MySQL5.6。
+    report: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enqueued_by: Mapped[int | None] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True

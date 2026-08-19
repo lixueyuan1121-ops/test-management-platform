@@ -166,6 +166,24 @@ def ensure_exec_run_kind() -> None:
         conn.execute(text("UPDATE exec_run SET kind='manual' WHERE kind='' OR kind IS NULL"))
 
 
+def ensure_exec_run_report_columns() -> None:
+    """exec_run 补列 batch_id / report（执行结果批次汇总 + 逐步截图报告）。
+
+    batch_id：一次 enqueue 生成一个,该批所有 run 共享,供结果页按批分组现算汇总(老行 NULL=未分批)。
+    report：runner 回写的逐步执行报告 JSON(每步 action/desc/ok/截图 URL + 结论),截图本身走 uploads/。
+    幂等：ADD 前先探列;索引单独幂等建。
+    """
+    cols = _columns("exec_run")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "batch_id" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN batch_id VARCHAR(32) NULL"))
+        if "report" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN report TEXT NULL"))
+    _ensure_index("exec_run", "idx_execrun_batch", "batch_id")
+
+
 def ensure_issue_columns() -> None:
     """remaining_issue 表补列 task_id / checklist_item_id（如缺失），并放宽 report_id 可空。
 
