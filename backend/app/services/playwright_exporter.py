@@ -25,6 +25,16 @@ def _js_str(s: str) -> str:
     return s
 
 
+def _js_comment(s) -> str:
+    """把值安全嵌入 // 单行注释：消除换行（\\r/\\n → 空格）。
+
+    注释里的值（desc/title/action/key 等来自用例文本）若含换行，会逃出 // 行注释，
+    使后续内容变成 live JS——导出脚本在开发本机 `npx playwright test` 运行时即被执行
+    （存储型注入 → 开发机代码执行）。字符串字面量走 _js_str 已消除换行，注释侧须对称处理。
+    """
+    return str(s or "").replace("\r", " ").replace("\n", " ")
+
+
 def _cand_expr(scope: str, cand: dict) -> str:
     """单个 candidate → Playwright locator 表达式（不含 scope 前缀的调用），镜像 byToLocator。"""
     by = cand.get("by", "css")
