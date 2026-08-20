@@ -332,12 +332,13 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
 2. 每步一个对象 {{action, target?, args?, desc}}:
    - action 只能取:connect(第一步必须)、click、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、screenshot
-   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有的元素才用 {{"selector":"<CSS>"}}
+   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
    - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}
    - desc:该步人读说明
    - **至少含一个 assert_text 或 assert_visible**(否则无判定依据)
-   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,2-4 步即可'}
-3. 只能用下方 key 清单里的 key,找不到合适的就用最接近的语义 key 或 selector:
+   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入与恢复通常 3-6 步'}
+   - **用例自治**:connect 后先用导航/入口 key 显式进入目标页(不假设当前页,默认已登录主界面);结尾恢复 UI 瞬态(关本用例开的弹窗、清填写的输入、必要时导航回起点页),确保连续执行不相互污染
+3. target.key 优先取下方清单里的 key;清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
 

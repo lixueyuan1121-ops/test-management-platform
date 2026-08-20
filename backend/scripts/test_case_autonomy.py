@@ -52,10 +52,27 @@ def test_three_phase_e2e_recognized():
     assert _looks_like_e2e(script) is True, "多步三段式应识别为 e2e"
 
 
+def test_script_prompt_gui_autonomy():
+    p = build_script_prompt("gui", "任务页新建校验", "打开任务页→新建", "列表出现新项", project_id=None)
+    assert "用例自治" in p, "单条重生 gui 缺自治规则"
+    assert ("3-6 步" in p) or ("3–6 步" in p), "gui 步数应为 3-6 步"
+    # 对齐组件4:缺 key 走选择器待补,不再用 selector 兜底
+    assert "选择器待补" in p, "应对齐组件4缺 key 话术"
+    assert "最接近的语义 key 或 selector" not in p, "旧的『用 selector 兜底』话术应移除"
+
+
+def test_script_prompt_e2e_autonomy():
+    p = build_script_prompt("e2e", "登录后发消息", "登录→发消息→等回复", "有回复", project_id=None)
+    assert "用例自治" in p, "单条重生 e2e 缺自治规则"
+    assert "≥5 步" in p, "e2e 应保留 ≥5 步要求"
+
+
 def main():
     test_testcase_prompt_has_autonomy_rules()
     test_three_phase_gui_script_not_downgraded()
     test_three_phase_e2e_recognized()
+    test_script_prompt_gui_autonomy()
+    test_script_prompt_e2e_autonomy()
     print("OK test_case_autonomy")
 
 
