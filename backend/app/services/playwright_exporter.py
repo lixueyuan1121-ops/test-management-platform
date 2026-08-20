@@ -106,7 +106,7 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
     args = step.get("args") or {}
     target = step.get("target") or {}
     # 两行注释：序号定位（step N/动作）+ 用例原始 desc 独立成行（便于搜索/对照）
-    lines = [f"// step{idx + 1} [{action}]", f"// {desc}"]
+    lines = [f"// step{idx + 1} [{_js_comment(action)}]", f"// {_js_comment(desc)}"]
 
     if action == "connect":
         lines.append("// 连接已在文件头完成（connectOverCDP），此步无需额外操作")
@@ -119,15 +119,14 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
 
     if action in ("wait_response", "judge"):
         q = args.get("question") or desc
-        lines.append(f"// TODO: 「{action}」无通用 Playwright 对应，请手写。判定点：{_js_str(q)}")
+        lines.append(f"// TODO: 「{_js_comment(action)}」无通用 Playwright 对应，请手写。判定点：{_js_str(q)}")
         return lines
 
     # 以下动作都需要定位
     loc, todo = _resolve_target(target, registry, vm_iframe)
     if todo:
-        key = target.get("key") or ""
-        lines.append(f"// TODO: {todo}；请在平台补 selector 后重新导出，或手写下面这步的定位")
-        lines.append(f"throw new Error('用例导出：{_js_str(todo)}（key={_js_str(key)}）');")
+        lines.append(f"// TODO: {_js_comment(todo)}；请在平台补 selector 后重新导出，或手写下面这步的定位")
+        lines.append("throw new Error('用例导出：该步选择器待补，见上方 TODO 注释');")
         return lines
 
     if action == "click":
@@ -155,7 +154,7 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
         else:
             lines.append(f"await expect({loc}).toHaveText('{expected}');")
     else:
-        lines.append(f"// TODO: 未支持的动作「{action}」，请手写")
+        lines.append(f"// TODO: 未支持的动作「{_js_comment(action)}」，请手写")
     return lines
 
 
@@ -189,7 +188,7 @@ def export_case_to_playwright(case: dict, registry: dict, vm_iframe: str) -> str
 
     indented = "\n".join(("  " + ln if ln else "") for ln in body_lines).rstrip()
 
-    header = f"""// 由测试管理平台导出：{title}
+    header = f"""// 由测试管理平台导出：{_js_comment(title)}
 // 用例意图（steps）：{steps_txt}
 // 预期（expected）：{expected_txt}
 //
