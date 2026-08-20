@@ -224,6 +224,35 @@ def main():
               steps=payload, expected=payload),
         REGISTRY, VM_IFRAME))
 
+    # ---- 安全：U+2028/U+2029 也是 JS 行终止符，同样会逃出 // 注释 ----
+    # 单行注释遇 LS(U+2028)/PS(U+2029) 同样结束；_js_comment/_js_str 须一并消除(非仅 CR/LF)。
+    # 注：Python splitlines() 会在 U+2028/U+2029 处分行，故未消除时下方按行校验能抓到逃逸。
+    for _sep in ("\u2028", "\u2029"):
+        _p = f"点登录{_sep}await fetch('{MARK}'); //"
+        _head = _p.split(_sep, 1)[1].strip()
+
+        def _no_sep_inj(text, _head=_head):
+            for ln in text.splitlines():
+                assert not ln.strip().startswith(_head), f"U+2028/U+2029 注入逃逸成 live 代码: {ln!r}"
+
+        # desc / title / action / 未登记 key / steps+expected 各注入一遍
+        _no_sep_inj(export_case_to_playwright(
+            _case([{"action": "click", "target": {"key": "loginSubmit"}, "desc": _p}]),
+            REGISTRY, VM_IFRAME))
+        _no_sep_inj(export_case_to_playwright(
+            _case([{"action": "click", "target": {"key": "loginSubmit"}, "desc": "x"}], title=_p),
+            REGISTRY, VM_IFRAME))
+        _no_sep_inj(export_case_to_playwright(
+            _case([{"action": _p, "target": {"key": "loginSubmit"}, "desc": "x"}]),
+            REGISTRY, VM_IFRAME))
+        _no_sep_inj(export_case_to_playwright(
+            _case([{"action": "click", "target": {"key": _p}, "desc": "x"}]),
+            REGISTRY, VM_IFRAME))
+        _no_sep_inj(export_case_to_playwright(
+            _case([{"action": "click", "target": {"key": "loginSubmit"}, "desc": "x"}],
+                  steps=_p, expected=_p),
+            REGISTRY, VM_IFRAME))
+
     print("OK test_playwright_export")
 
 

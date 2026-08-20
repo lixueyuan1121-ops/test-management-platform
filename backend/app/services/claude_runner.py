@@ -261,14 +261,19 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    - desc：该步人读说明
    - **每条 gui/e2e 至少有一个 assert_text 或 assert_visible**（否则没有判定依据，应改判 manual）
    - target.key 优先取下方清单里的 key。**清单里没有合适 key 时**：不要瞎编 selector、也不要直接判 manual——给该元素起一个语义化新 key 名（如 submitOrderBtn），照常写进 script，并在该步 desc 里**描述这个元素**（可见文案 / 角色 / 页面位置）。用到未注册 key 的用例会被自动标为「选择器待补」，补齐后即可自动执行；只有确无界面元素可操作/断言时才判 manual、script=[]。
+   - **用例自治（关键——直接决定连续执行成功率，务必执行）**：多条用例在**同一客户端、同一页面**上连续执行，执行器不会在用例之间重置页面。每条用例必须能**单独、从初始态、一步步执行到底**，不得依赖上一条遗留的页面状态。按「进入→执行→恢复」三段组织：
+     · **进入（不假设当前页）**：connect 后先用导航/入口类 key（如 navHome/navTasks，见下方清单）**显式进入本用例目标功能页**，再开始操作；不要假设“当前已在该页”。默认起点为**已登录的应用主界面**（登录流程单列为一条 e2e 用例，其它用例不重复写登录步）。清单无对应导航 key 时，按上一条缺 key 规则起语义化 key 名 + desc 描述该导航元素。
+     · **执行**：完成本用例的操作与断言。
+     · **恢复（结尾还原，确保下一条能顺利开始）**：用例最后还原本用例引入的 UI 瞬态——①关闭本用例打开的弹窗/面板（点其关闭 key；无 key 同上起语义 key 名 + desc）；②清空本用例填写但未提交的输入框（fill 空串 ""）；③视情况导航回起点页。数据副作用（如新建数据）尽力而为、无便捷删除入口时在 desc 注明即可，不强制。
 6. 按 kind 的 script 编写偏重（**务必区分，别把 e2e 写成 gui**）：
-   - **gui**：单点/局部验证，**2–4 步**即可——connect → (最多一两个 click/fill/wait_for) → assert_*。聚焦"某一个元素/文案对不对"，不要串联整条业务流程。
-   - **e2e**：**端到端多步流程，通常 ≥5 步**，体现"从入口一路操作到结果"。必须串联多个界面动作（如 登录→导航→输入→提交），并在**关键节点分别断言**（不止最后断一次）。
+   - **gui**：单点/局部验证，但**仍需自治**——结构为「进入导航 + 单点操作/断言 + 收尾恢复」，通常 **3–6 步**（比纯断言略长是正常的，含进入与恢复）。断言聚焦单点，不要串联整条业务流程。
+   - **e2e**：**端到端多步流程，通常 ≥5 步**，从已登录主界面**导航进入 → 操作 → 关键节点分别断言 → 收尾恢复**。必须串联多个界面动作，并在**关键节点分别断言**（不止最后断一次）。
      · 若流程中触发了 AI 生成/异步加载（发消息、提交后等结果），**必须插入 wait_response 或 wait_for** 再断言，不能立刻断。
-     · 一条 e2e 的 script 明显比 gui 长、动作更丰富；若你发现某"e2e"只需 2–3 步就能验完，说明它其实是 gui，请改判 kind=gui。
-   - **判定自检**：kind=e2e 但 script 少于 5 步或无跨界面串联 → 要么补足步骤，要么改判 gui。
-   正例(gui,单点)：connect → wait_for(navTasks) → assert_visible(navTasks)
-   正例(e2e,多步)：connect → click(loginAccountTab) → fill(loginUserName) → fill(loginPassword) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle) → assert_text(homepageTitle,"早上好",contains)
+     · 一条 e2e 的 script 明显比 gui 长、动作更丰富；若你发现某"e2e"剔除进入/恢复后只需 2–3 步就能验完，说明它其实是 gui，请改判 kind=gui。
+   - **判定自检**：kind=e2e 但剔除进入/恢复步后实质交互不足或总步数过短 → 改判 gui。
+   正例(gui,单点,含自治)：connect → click(navTasks) → wait_for(任务页锚点) → assert_visible(目标元素) → click(navHome)[恢复回起点]
+   正例(e2e,多步,含自治)：connect → click(navTasks) → click(新建按钮) → fill(表单字段) → click(提交) → wait_for(结果锚点) → assert_text(结果文案,contains) → click(navHome)[恢复]
+   登录单列(其它用例默认已登录)：connect → fill(loginUserName) → fill(loginPassword) → click(loginAgree) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle)
 {keys_block}
 7. {_API_SCRIPT_SPEC}
 {api_contract_block}
@@ -327,12 +332,13 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
 2. 每步一个对象 {{action, target?, args?, desc}}:
    - action 只能取:connect(第一步必须)、click、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、screenshot
-   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有的元素才用 {{"selector":"<CSS>"}}
+   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
    - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}
    - desc:该步人读说明
    - **至少含一个 assert_text 或 assert_visible**(否则无判定依据)
-   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,2-4 步即可'}
-3. 只能用下方 key 清单里的 key,找不到合适的就用最接近的语义 key 或 selector:
+   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入与恢复通常 3-6 步'}
+   - **用例自治**:connect 后先用导航/入口 key 显式进入目标页(不假设当前页,默认已登录主界面);结尾恢复 UI 瞬态(关本用例开的弹窗、清填写的输入、必要时导航回起点页),确保连续执行不相互污染
+3. target.key 优先取下方清单里的 key;清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
 
