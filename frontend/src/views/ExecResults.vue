@@ -12,9 +12,10 @@
             <el-select v-model="runner" placeholder="执行设备" size="small" clearable style="width:150px" @change="load">
               <el-option v-for="rn in runners" :key="rn" :label="rn" :value="rn" />
             </el-select>
-            <el-select v-model="verdict" placeholder="结果" size="small" clearable style="width:100px" @change="load">
+            <el-select v-model="verdict" placeholder="结果" size="small" clearable style="width:110px" @change="load">
               <el-option label="通过" value="pass" />
               <el-option label="失败" value="fail" />
+              <el-option label="选择器阻塞" value="blocked" />
             </el-select>
             <el-button size="small" :icon="Refresh" @click="load">刷新</el-button>
           </div>
@@ -28,23 +29,24 @@
         <el-collapse-item v-for="b in batches" :key="b.id" :name="b.id">
           <template #title>
             <div class="batch-head">
-              <el-tag :type="b.failed ? 'danger' : 'success'" size="small" effect="dark">
-                {{ b.failed ? '有失败' : '全部通过' }}
+              <el-tag :type="b.failed ? 'danger' : (b.blocked ? 'warning' : 'success')" size="small" effect="dark">
+                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : '全部通过') }}
               </el-tag>
               <span class="batch-id">{{ b.label }}</span>
               <span class="batch-stat">
                 共 {{ b.total }} · <b class="ok">{{ b.passed }} 过</b> · <b class="ng">{{ b.failed }} 失</b>
-                · 通过率 {{ b.rate }}%
+                <template v-if="b.blocked"> · <b class="blk">{{ b.blocked }} 阻塞</b></template>
+                · 功能通过率 {{ b.rate }}%
               </span>
               <span class="batch-meta">{{ b.runner }} · {{ b.durationText }} · {{ fmtTime(b.time) }}</span>
             </div>
           </template>
 
           <el-table :data="b.rows" size="small" border stripe empty-text="无记录">
-            <el-table-column label="结果" width="80" align="center">
+            <el-table-column label="结果" width="96" align="center">
               <template #default="{ row }">
-                <el-tag :type="row.verdict === 'pass' ? 'success' : (row.verdict === 'fail' ? 'danger' : 'info')" size="small">
-                  {{ row.verdict === 'pass' ? '通过' : (row.verdict === 'fail' ? '失败' : (STATUS_LABEL[row.status] || row.status)) }}
+                <el-tag :type="resultType(row)" size="small">
+                  {{ resultLabel(row) }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -55,7 +57,10 @@
               <template #default="{ row }">{{ row.title || `#${row.case_id ?? '—'}` }}</template>
             </el-table-column>
             <el-table-column label="原因/结论" min-width="240">
-              <template #default="{ row }"><span class="reason">{{ row.reason || '—' }}</span></template>
+              <template #default="{ row }">
+                <span class="reason">{{ row.reason || '—' }}</span>
+                <el-link v-if="isBlocked(row)" type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
+              </template>
             </el-table-column>
             <el-table-column label="耗时" width="80" align="center">
               <template #default="{ row }">{{ row.duration_ms != null ? (row.duration_ms / 1000).toFixed(1) + 's' : '—' }}</template>
@@ -121,15 +126,18 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import { listTasks, listExecHistory } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
+const router = useRouter()
+
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
-const STATUS_LABEL = { pending: '待执行', running: '执行中', passed: '通过', failed: '失败' }
+const STATUS_LABEL = { pending: '待执行', running: '执行中', passed: '通过', failed: '失败', blocked: '选择器阻塞' }
 
 const projects = ref([])
 const pid = ref(null)
@@ -162,18 +170,20 @@ const batches = computed(() => {
   for (const [key, list] of map) {
     const passed = list.filter((r) => r.verdict === 'pass').length
     const failed = list.filter((r) => r.verdict === 'fail').length
+    const blocked = list.filter((r) => r.verdict === 'blocked' || r.status === 'blocked').length
     const total = list.length
     const durSum = list.reduce((n, r) => n + (r.duration_ms || 0), 0)
     const time = list.reduce((t, r) => {
       const s = r.updated_at || r.created_at || ''
       return s > t ? s : t
     }, '')
+    const fnDenom = passed + failed
     out.push({
       id: key,
       label: key === '__none__' ? '(未分批 · 历史记录)' : `批次 ${key}`,
       rows: list,
-      total, passed, failed,
-      rate: total ? Math.round((passed / total) * 100) : 0,
+      total, passed, failed, blocked,
+      rate: fnDenom ? Math.round((passed / fnDenom) * 100) : 0,
       runner: [...new Set(list.map((r) => r.runner).filter(Boolean))].join(', ') || '—',
       durationText: durSum ? (durSum / 1000).toFixed(1) + 's' : '—',
       time,
@@ -218,6 +228,33 @@ function showReport(row) { rep.value = { visible: true, row } }
 function showEvidence(row) { ev.value = { visible: true, path: row.evidence_url } }
 function zoom(url) { shot.value = { visible: true, url } }
 function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—' }
+
+// 三态结果:pass 通过 / fail 功能失败(真 bug) / blocked 选择器阻塞(不计功能失败率)。
+// 后端把 selector 阻塞的 verdict 直接写成 blocked;老数据可能仅 status=blocked,一并识别。
+function isBlocked(row) { return row.verdict === 'blocked' || row.status === 'blocked' }
+function resultType(row) {
+  if (row.verdict === 'pass') return 'success'
+  if (isBlocked(row)) return 'warning'
+  if (row.verdict === 'fail') return 'danger'
+  return 'info'
+}
+function resultLabel(row) {
+  if (row.verdict === 'pass') return '通过'
+  if (isBlocked(row)) return '选择器阻塞'
+  if (row.verdict === 'fail') return '失败'
+  return STATUS_LABEL[row.status] || row.status
+}
+// blocked 行一键跳选择器管理:带项目 + 用例上下文(title/reason),SelectorAdmin 按上下文探测并高亮匹配元素。
+// reason 常含"未命中 key xxx",作为定位线索一并带上。复用 CaseLibrary「定位缺失 key」的 selectors 路由桥接。
+function fixSelector(row) {
+  router.push({
+    name: 'selectors',
+    query: {
+      project_id: pid.value,
+      ctx: `${row.title || ''} ${row.reason || ''}`.trim().slice(0, 200),
+    },
+  })
+}
 </script>
 
 <style scoped>
@@ -232,6 +269,8 @@ function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—
 .batch-stat { font-size: 13px; color: #5a6b7b; }
 .batch-stat .ok { color: #00926e; }
 .batch-stat .ng { color: #c45656; }
+.batch-stat .blk { color: #e6a23c; }
+.fix-link { margin-left: 10px; font-size: 12px; }
 .batch-meta { margin-left: auto; font-size: 12px; color: #90a4ae; }
 /* 报告 */
 .rep-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }

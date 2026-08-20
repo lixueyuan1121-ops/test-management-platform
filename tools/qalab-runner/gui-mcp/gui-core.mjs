@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
+import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
@@ -88,6 +89,12 @@ export function createGuiCore(opts = {}) {
   let BUILTIN = {};
   try { BUILTIN = JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8")).registry || {}; }
   catch { BUILTIN = {}; }
+
+  // 核心 key 清单(进入/首页/登录类):单一事实源在 selectors.json 顶层 coreKeys(见 core-keys.mjs)。
+  // 供 verify 巡检默认目标 + 失效告警。读不到 → []（巡检退化为按传入 keys,不误报）。
+  let CORE_KEYS = [];
+  try { CORE_KEYS = pickCoreKeys(JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8"))); }
+  catch { CORE_KEYS = []; }
 
   let browser = null;
   let page = null;
@@ -199,6 +206,7 @@ export function createGuiCore(opts = {}) {
   // ---- 对外操作(server 和 StepExecutor 共用)----
   return {
     get registry() { return REGISTRY; },
+    get coreKeys() { return CORE_KEYS.slice(); },
     // 就地换注册表(runner 每条 gui/e2e 用例执行前按 project_id 从 API 拉后调):只换 REGISTRY/VM_IFRAME,
     // 不动 browser/page 连接态。闭包引用它俩的 resolveKey/isKeyVisible/scopesFor/contentFrame 随即生效。
     setRegistry(registry, vmIframe) { REGISTRY = registry || {}; VM_IFRAME = vmIframe || VM_IFRAME; },
@@ -281,6 +289,15 @@ export function createGuiCore(opts = {}) {
       const out = {};
       for (const k of (keys || [])) out[k] = await isKeyVisible(k);
       return { verify: out };
+    },
+    // 核心 key 巡检:探核心 key(默认内置 coreKeys,可传子集覆盖)是否都在当前页可见,
+    // 返回 {verify, failed, core}。failed 非空 = 有核心 key 失效(进入段/复位/掉登录检测会塌),供告警。
+    async verifyCoreKeys(keys) {
+      await ensureConnected();
+      const core = (Array.isArray(keys) && keys.length) ? keys : CORE_KEYS;
+      const out = {};
+      for (const k of core) out[k] = await isKeyVisible(k);
+      return { verify: out, failed: failedCoreKeys(core, out), core };
     },
     async goto(url) {
       await ensureConnected();
