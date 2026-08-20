@@ -24,8 +24,9 @@ class EnqueueCasesIn(BaseModel):
 
 
 class ExecReportIn(BaseModel):
-    """runner 回写结果。verdict 用 runner 契约的 pass/fail；平台映射到 passed/failed。"""
+    """runner 回写结果。verdict 用 runner 契约的 pass/fail;平台按 fail_kind 映射 passed/failed/blocked。"""
     verdict: str  # "pass" | "fail"
+    fail_kind: str | None = None  # selector(选择器/环境阻塞->blocked) | business(功能失败->failed);pass 时 None
     reason: str | None = None
     evidence_url: str | None = None
     duration_ms: int | None = None

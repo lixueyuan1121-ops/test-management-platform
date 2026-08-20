@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { createGuiCore } from "./gui-mcp/gui-core.mjs";
 import { runScript } from "./step-executor.mjs";
 import { run as apiRun } from "./api-executor.mjs";
-import { resetHomeWithRetry } from "./reset-home.mjs";
+import { resetOrBlock } from "./reset-home.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -447,8 +447,10 @@ async function tick() {
         const reg = await fetchRegistry(item.payload?.project_id, "");
         if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
         // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
-        if (RESET_BETWEEN_CASES && !(await resetHomeWithRetry(guiCore, log))) {
-          result = { verdict: "fail", reason: "用例前复位(reload)失败,跳过执行以免脏态污染", duration_ms: 1 };
+        // 复位失败或复位后掉登录 → 记 blocked(fail_kind=selector,环境阻塞,不计功能失败率),不空跑脏态用例。
+        const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log) : { ok: true };
+        if (!gate.ok) {
+          result = gate.result;
         } else {
           const script = item.payload?.script;
           // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
@@ -486,6 +488,7 @@ async function tick() {
 
       await report(item.run_id, {
         verdict: result.verdict,
+        fail_kind: result.fail_kind ?? null,   // selector=选择器/环境阻塞(后端映射 blocked);business=功能失败;pass 时 null
         reason: result.reason ?? "",
         evidence_url: result.evidence ?? null,
         duration_ms: result.duration_ms ?? null,
@@ -496,7 +499,8 @@ async function tick() {
       log(`回写 run_id=${item.run_id} -> ${result.verdict} (${result.duration_ms ?? "?"}ms)${reasonTail}`);
     } catch (e) {
       log(`run_id=${item.run_id} 执行异常:`, e.message);
-      try { await report(item.run_id, { verdict: "fail", reason: `runner异常: ${e.message}` }); } catch {}
+      // runner 侧异常(连接/客户端/网络类)属环境阻塞,归 selector(不计功能失败率)。
+      try { await report(item.run_id, { verdict: "fail", fail_kind: "selector", reason: `runner异常: ${e.message}` }); } catch {}
     }
   }
 }

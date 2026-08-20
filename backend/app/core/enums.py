@@ -100,12 +100,14 @@ class ExecKind(str, enum.Enum):
 class ExecStatus(str, enum.Enum):
     """执行队列项（exec_run）的生命周期。
 
-    runner 回写用 pass/fail（见 runner.mjs 契约），平台侧映射到 passed/failed。
+    runner 回写用 pass/fail（见 runner.mjs 契约），平台侧映射到 passed/failed；
+    fail_kind=selector（选择器/环境阻塞）→ 映射到 blocked（不计入功能失败率，见 L2）。
     """
     pending = "pending"    # 待执行（已入队，等 runner 拉取）
     running = "running"    # 执行中（runner 已 claim）
     passed = "passed"      # 通过（verdict=pass）
-    failed = "failed"      # 失败（verdict=fail 或异常）
+    failed = "failed"      # 失败（verdict=fail 且 fail_kind≠selector：真功能 bug）
+    blocked = "blocked"    # 阻塞（选择器/环境问题：定位失败/复位失败/掉登录，非功能失败）
 
 
 # 所有项目级角色的集合，便于权限校验

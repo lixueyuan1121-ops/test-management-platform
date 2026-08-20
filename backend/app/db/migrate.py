@@ -157,9 +157,11 @@ def ensure_exec_run_kind() -> None:
                 "ALTER TABLE exec_run MODIFY COLUMN `kind` "
                 "ENUM('gui','api','cli','e2e','manual') NOT NULL DEFAULT 'gui'"
             ))
+            # status 加 blocked(L2:选择器/环境阻塞)。原生 ENUM 遇范围外值静默存 ''(同 kind 的坑),
+            # 故上线 L2 前必须放宽此列,否则 runner 回写的 blocked 会被写坏成空串。
             conn.execute(text(
                 "ALTER TABLE exec_run MODIFY COLUMN `status` "
-                "ENUM('pending','running','passed','failed') NOT NULL DEFAULT 'pending'"
+                "ENUM('pending','running','passed','failed','blocked') NOT NULL DEFAULT 'pending'"
             ))
         # 修复:此前 e2e/manual 被静默写成 '' 的坏行 → 归回 manual(不可自动化,不误派)。
         # 两方言都执行(幂等:无坏行则 0 行受影响)。
@@ -167,10 +169,11 @@ def ensure_exec_run_kind() -> None:
 
 
 def ensure_exec_run_report_columns() -> None:
-    """exec_run 补列 batch_id / report（执行结果批次汇总 + 逐步截图报告）。
+    """exec_run 补列 batch_id / report / fail_kind(执行结果批次汇总 + 逐步截图报告 + L2 失败分类)。
 
     batch_id：一次 enqueue 生成一个,该批所有 run 共享,供结果页按批分组现算汇总(老行 NULL=未分批)。
     report：runner 回写的逐步执行报告 JSON(每步 action/desc/ok/截图 URL + 结论),截图本身走 uploads/。
+    fail_kind(L2)：selector=选择器/环境阻塞(不计功能失败率)/business=功能失败;老行 NULL(旧数据不分类)。
     幂等：ADD 前先探列;索引单独幂等建。
     """
     cols = _columns("exec_run")
@@ -181,6 +184,8 @@ def ensure_exec_run_report_columns() -> None:
             conn.execute(text("ALTER TABLE exec_run ADD COLUMN batch_id VARCHAR(32) NULL"))
         if "report" not in cols:
             conn.execute(text("ALTER TABLE exec_run ADD COLUMN report TEXT NULL"))
+        if "fail_kind" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN fail_kind VARCHAR(16) NULL"))
     _ensure_index("exec_run", "idx_execrun_batch", "batch_id")
 
 
