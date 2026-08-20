@@ -257,7 +257,8 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
 5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
    - action 只能取：connect（第一步必须，连接客户端）、click、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、screenshot
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
-   - args：assert_text 用 {{"expected":"...","contains":true}}；fill 用 {{"text":"..."}}；wait_for 用 {{"timeout_ms":6000}}
+   - **wait_for 是"等某个元素出现"，必须带 target（key 或 selector）**——它不是纯计时等待；只想等异步结果（发消息/提交后等生成）用 wait_response，不要写没有 target 的 wait_for
+   - args：assert_text 用 {{"expected":"...","contains":true}}；fill 用 {{"text":"..."}}；wait_for 用 {{"timeout_ms":6000}}（超时上限，仍需配 target）
    - desc：该步人读说明
    - **每条 gui/e2e 至少有一个 assert_text 或 assert_visible**（否则没有判定依据，应改判 manual）
    - target.key 优先取下方清单里的 key。**清单里没有合适 key 时**：不要瞎编 selector、也不要直接判 manual——给该元素起一个语义化新 key 名（如 submitOrderBtn），照常写进 script，并在该步 desc 里**描述这个元素**（可见文案 / 角色 / 页面位置）。用到未注册 key 的用例会被自动标为「选择器待补」，补齐后即可自动执行；只有确无界面元素可操作/断言时才判 manual、script=[]。
@@ -333,7 +334,8 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 2. 每步一个对象 {{action, target?, args?, desc}}:
    - action 只能取:connect(第一步必须)、click、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、screenshot
    - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
-   - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}
+   - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
+   - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}(超时上限,仍需配 target)
    - desc:该步人读说明
    - **至少含一个 assert_text 或 assert_visible**(否则无判定依据)
    - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入与恢复通常 3-6 步'}

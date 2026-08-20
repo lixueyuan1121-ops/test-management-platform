@@ -21,6 +21,9 @@ def test_testcase_prompt_has_autonomy_rules():
     # 回归:组件4缺 key 话术与既有断言未被破坏
     assert "选择器待补" in p and "描述这个元素" in p
     assert "connect" in p and "assert_visible" in p
+    # wait_for 必须带 target(纯等异步用 wait_response),防模型漏 target 撞校验
+    assert "wait_response" in p, "缺 wait_response 说明"
+    assert "不是纯计时等待" in p, "缺『wait_for 必须带 target』约束"
 
 
 def test_three_phase_gui_script_not_downgraded():
