@@ -526,4 +526,11 @@ async function main() {
 process.on("uncaughtException", (e) => log("未捕获异常(已忽略,继续轮询):", e.message));
 process.on("unhandledRejection", (e) => log("未处理拒绝(已忽略,继续轮询):", e?.message || e));
 
-main();
+// 入口:upload 子命令直传本地 session;否则常驻三队列轮询。
+const _argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+if (_argv[0] === "upload") {
+  const ctx = { api, log, RUNNER_ID, PERFDOG_DIR, SESSIONS_DIR, REPORT_SET_ID };
+  uploadLocalSessions(ctx, _argv[1]).then(() => process.exit(0)).catch((e) => { log("upload 失败:", e.message); process.exit(1); });
+} else {
+  main();
+}
