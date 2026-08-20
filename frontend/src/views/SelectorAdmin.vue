@@ -286,14 +286,14 @@
           <el-select v-model="add.targetId" placeholder="选择当前作用域的已有 key" filterable style="width:100%">
             <el-option v-for="r in rows" :key="r.id" :value="r.id" :label="`${r.key}（${(r.candidates || []).length} 候选）`" />
           </el-select>
-          <div class="form-hint">best 候选将追加到该 key 候选列表的<b>头部</b>（优先尝试）</div>
+          <div class="form-hint">best 候选将按<b>稳定优先</b>并入该 key（文案类候选自动降到末尾，超出上限丢弃最不稳的）</div>
           <div v-if="addTarget" class="add-compare">
             <div class="form-hint">「{{ addTarget.key }}」现有候选（{{ (addTarget.candidates || []).length }}）</div>
             <ul class="cand-list">
               <li v-for="(c, ci) in (addTarget.candidates || [])" :key="ci"><code>{{ c.by }} = {{ c.value }}</code></li>
               <li v-if="!(addTarget.candidates || []).length" class="form-hint">（空）</li>
             </ul>
-            <div class="form-hint">合并后顺序（best 追加到头部，优先尝试）</div>
+            <div class="form-hint">合并后顺序（稳定优先，脆弱文案候选降到末尾）</div>
             <ol class="cand-list merged">
               <li v-for="(c, ci) in addMergedPreview" :key="ci"><code>{{ c.by }} = {{ c.value }}</code> <el-tag v-if="c._new" type="warning" size="small" effect="plain">新</el-tag></li>
             </ol>
@@ -318,6 +318,7 @@ import {
   listMyDevices, startProbe, getProbe,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { isFragile, orderCandidates } from '@/utils/selector-ranking'
 
 // 子产品固定枚举，须与后端 api/release.py 的 SUB_PRODUCTS 一致（选择器按 (项目, 子产品) 分域）。
 const SUB_PRODUCTS = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
@@ -463,6 +464,9 @@ async function onImport() {
   finally { importing.value = false }
 }
 
+// 单个 key 候选链上限：脆弱候选在尾，超出上限时 slice 自然丢弃最不稳的，防链膨胀/优先级倒置。
+const MAX_CANDIDATES = 6
+
 // ---- 设备探测（discover / verify）----
 // probe.result 存最近一次探测结果；mode 记录当前展示的是 discover 还是 verify。
 // updateTarget：verify 里点「重新探测更新」预置的目标 key，下次「加为 key」默认选它（更新已有）。
@@ -538,14 +542,27 @@ const candIndex = computed(() => {
 })
 
 // 给一个探测元素算标识:{ type:'exists'|'update'|'new', key?:命中的已有 key }
+// 口径:best 已在库→已存在;否则看其它候选与哪个 key 重叠——
+//   稳定候选命中且 best 是脆弱(纯文案漂移)→ 已存在(不更新,避免堆积脆弱候选);
+//   稳定候选命中且 best 也是稳定(锚点变更)→ 更新;
+//   仅脆弱候选命中 → 更新;都不命中 → 新增。
 function matchStatus(el) {
   const idx = candIndex.value
   const best = el.best
   if (best && idx.has(candKey(best))) return { type: 'exists', key: idx.get(candKey(best)) }
-  // best 不在库里,但元素其它候选若与某 key 重叠 → 该 key 存在、可用 best 更新它
+  let stableHit = null
+  let fragileHit = null
   for (const c of (el.candidates || [])) {
-    if (idx.has(candKey(c))) return { type: 'update', key: idx.get(candKey(c)) }
+    if (!idx.has(candKey(c))) continue
+    if (isFragile(c)) { if (!fragileHit) fragileHit = idx.get(candKey(c)) }
+    else if (!stableHit) stableHit = idx.get(candKey(c))
   }
+  if (stableHit) {
+    return best && isFragile(best)
+      ? { type: 'exists', key: stableHit }   // 纯文案漂移:稳定锚点已在库,best 只是文案 → 不更新
+      : { type: 'update', key: stableHit }   // best 是新的稳定锚点 → 值得更新
+  }
+  if (fragileHit) return { type: 'update', key: fragileHit }
   return { type: 'new' }
 }
 
@@ -644,13 +661,15 @@ const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: 
 // 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
 const addTarget = computed(() => (add.mode === 'update' && add.targetId ? rows.value.find((r) => r.id === add.targetId) || null : null))
 
-// 合并后候选顺序预览：best 追加到头部 + 去重（与 submitAddAsKey 的 merged 逻辑一致），标记哪条是新增。
+// 合并后候选顺序预览：与 submitAddAsKey 的 merged 完全一致（就地替换脆弱同 by + 稳定优先 + 上限），标记新增项。
 const addMergedPreview = computed(() => {
   if (!add.cand || !addTarget.value) return []
   const existing = addTarget.value.candidates || []
   const isDup = (c) => c.by === add.cand.by && c.value === add.cand.value
+  const dropSameFragile = (c) => isFragile(add.cand) && c.by === add.cand.by
+  const kept = existing.filter((c) => !isDup(c) && !dropSameFragile(c))
   const dup = existing.some(isDup)
-  return [{ ...add.cand, _new: !dup }, ...existing.filter((c) => !isDup(c)).map((c) => ({ ...c, _new: false }))]
+  return orderCandidates([{ ...add.cand, _new: !dup }, ...kept.map((c) => ({ ...c, _new: false }))]).slice(0, MAX_CANDIDATES)
 })
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
@@ -691,8 +710,11 @@ async function submitAddAsKey() {
     } else {
       const target = rows.value.find((r) => r.id === add.targetId)
       const existing = target?.candidates || []
-      // best 候选追加到头部（优先尝试）；去掉与新候选完全相同的旧项，避免重复。
-      const merged = [add.cand, ...existing.filter((c) => !(c.by === add.cand.by && c.value === add.cand.value))]
+      // 合并：去掉与新候选完全相同的旧项；新候选若脆弱(text/role)则替换同 by 的旧脆弱项(就地替换、不累加)；
+      // 再按稳定优先排序(脆弱降尾)、裁剪到上限，避免链膨胀与优先级倒置。
+      const dropSameFragile = (c) => isFragile(add.cand) && c.by === add.cand.by
+      const kept = existing.filter((c) => !(c.by === add.cand.by && c.value === add.cand.value) && !dropSameFragile(c))
+      const merged = orderCandidates([add.cand, ...kept]).slice(0, MAX_CANDIDATES)
       await patchSelector(add.targetId, { candidates: merged })
       ElMessage.success('已更新已有 key 的候选')
       if (target && probe.updateTarget === target.key) probe.updateTarget = ''
