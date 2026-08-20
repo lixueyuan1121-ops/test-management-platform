@@ -69,3 +69,18 @@ def shared_key_set(db: Session, project_id: int) -> set[str]:
             .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
             .all())
     return {r[0] for r in rows}
+
+
+def usable_key_set(db: Session, project_id: int) -> set[str]:
+    """项目共享 key 中「候选有效」(至少一个含 by+value 的候选)的 key 名集合(L4 生成侧校验口径)。
+
+    与 shared_key_set(仅认 key 名注册)的区别:本函数只收候选结构可用的 key——候选坏成 [{}]、
+    或空候选 [] 的 key 视作「不可用」被排除。生成侧校验(_validate_script/回填/parse)据此把
+    「注册了但候选坏/缺」的 key 当『选择器待补』降级,而非当可执行 script 放行。
+    「有效候选」口径单点定义在 selector_ranking.valid_candidates(schema/服务/runner 三处共用)。
+    """
+    from app.services.selector_ranking import valid_candidates
+    rows = (db.query(SelectorKey.key, SelectorKey.candidates)
+            .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
+            .all())
+    return {k for k, raw in rows if valid_candidates(_cands(raw))}

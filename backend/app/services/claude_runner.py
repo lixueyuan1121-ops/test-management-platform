@@ -100,7 +100,11 @@ def pages_for_script(script, project_id: int | None = None) -> str:
 
 
 def _registered_keys(project_id: int | None = None) -> set[str]:
-    """项目级共享 key 的合法集合(供生成侧校验 script.target.key)。
+    """项目级**候选有效**的 key 集合(供生成侧校验 script.target.key)——L4 口径。
+
+    只收候选结构可用(至少一个含 by+value 的候选)的 key:注册了但候选坏成 [{}]/空 [] 的 key
+    **不算可用**,会被当『选择器待补』降级(而非当可执行 script 放行)。口径由服务层
+    usable_key_set 单点定义(与 schema/runner 的「有效候选」一致)。
 
     project_id 为空或读不到 → 返回空集。空集时校验放行(见 _validate_script),
     避免"读不到注册表就把所有 gui/e2e 全降 manual"这种误伤生成结果。
@@ -108,10 +112,10 @@ def _registered_keys(project_id: int | None = None) -> set[str]:
     if not project_id:
         return set()
     from app.db.session import SessionLocal
-    from app.services.selectors import shared_key_set
+    from app.services.selectors import usable_key_set
     s = SessionLocal()
     try:
-        return shared_key_set(s, project_id)
+        return usable_key_set(s, project_id)
     except Exception:
         return set()
     finally:
