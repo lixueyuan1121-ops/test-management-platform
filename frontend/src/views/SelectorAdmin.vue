@@ -1,59 +1,7 @@
 <template>
   <div class="selector-admin">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>选择器管理</span>
-          <div class="filters">
-            <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
-              <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-            </el-select>
-            <el-select v-model="subProduct" placeholder="作用域" size="small" style="width:150px" @change="reload">
-              <el-option label="项目级共享" :value="''" />
-              <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
-            </el-select>
-            <el-button type="primary" size="small" :disabled="!pid" @click="openCreate">新增 key</el-button>
-            <el-button
-              v-if="canImport" size="small" :disabled="!pid" :loading="importing" @click="onImport"
-            >导入内置纳米Work注册表</el-button>
-          </div>
-        </div>
-      </template>
-
-      <el-empty v-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
-      <el-collapse v-else v-model="activePages" v-loading="loading">
-        <el-collapse-item v-for="grp in groupedRows" :key="grp.name" :name="grp.name">
-          <template #title>
-            <span class="page-title">{{ grp.pageLabel }}</span>
-            <el-tag size="small" type="info" effect="plain" class="page-count">{{ grp.keys.length }}</el-tag>
-          </template>
-          <el-table :data="grp.keys" size="small" border stripe>
-            <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="frame" label="frame" width="110">
-              <template #default="{ row }">{{ row.frame || 'auto' }}</template>
-            </el-table-column>
-            <el-table-column prop="desc" label="说明" min-width="200" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.desc || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="候选数" width="80" align="center">
-              <template #default="{ row }">{{ (row.candidates || []).length }}</template>
-            </el-table-column>
-            <el-table-column label="更新时间" width="150">
-              <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="120" align="center">
-              <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-                <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-collapse-item>
-      </el-collapse>
-    </el-card>
-
     <!-- 设备探测面板：选在线设备，扫当前页元素产候选 → 加为 key(新建/更新已有)；或校验现有 key 是否失效 -->
-    <el-card class="probe-card">
+    <el-card>
       <template #header>
         <div class="header">
           <span>设备探测</span>
@@ -226,6 +174,58 @@
           </el-table-column>
         </el-table>
       </template>
+    </el-card>
+
+    <el-card class="registry-card">
+      <template #header>
+        <div class="header">
+          <span>选择器管理</span>
+          <div class="filters">
+            <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
+              <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+            </el-select>
+            <el-select v-model="subProduct" placeholder="作用域" size="small" style="width:150px" @change="reload">
+              <el-option label="项目级共享" :value="''" />
+              <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
+            </el-select>
+            <el-button type="primary" size="small" :disabled="!pid" @click="openCreate">新增 key</el-button>
+            <el-button
+              v-if="canImport" size="small" :disabled="!pid" :loading="importing" @click="onImport"
+            >导入内置纳米Work注册表</el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-empty v-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
+      <el-collapse v-else v-model="activePages" v-loading="loading">
+        <el-collapse-item v-for="grp in groupedRows" :key="grp.name" :name="grp.name">
+          <template #title>
+            <span class="page-title">{{ grp.pageLabel }}</span>
+            <el-tag size="small" type="info" effect="plain" class="page-count">{{ grp.keys.length }}</el-tag>
+          </template>
+          <el-table :data="grp.keys" size="small" border stripe>
+            <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="frame" label="frame" width="110">
+              <template #default="{ row }">{{ row.frame || 'auto' }}</template>
+            </el-table-column>
+            <el-table-column prop="desc" label="说明" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.desc || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="候选数" width="80" align="center">
+              <template #default="{ row }">{{ (row.candidates || []).length }}</template>
+            </el-table-column>
+            <el-table-column label="更新时间" width="150">
+              <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" align="center">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+                <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
     </el-card>
 
     <!-- 新增 / 编辑弹窗 -->
@@ -784,7 +784,7 @@ async function submitAddAsKey() {
 .page-count { vertical-align: middle; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .form-hint { color: #90a4ae; font-size: 12px; }
-.probe-card { margin-top: 16px; }
+.registry-card { margin-top: 16px; }
 .probe-scope { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; color: #607d8b; font-size: 13px; }
 .probe-group { margin-bottom: 14px; }
 .probe-group-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
