@@ -56,19 +56,30 @@ def main():
     # ---- _locator_expr：各 by 类型映射（shell 作用域 = page）----
     # css → page.locator('...')
     e = _locator_expr(REGISTRY["loginSubmit"], "loginSubmit", REGISTRY, VM_IFRAME)
-    assert e == "page.locator('input[type=submit]')", e
+    assert e == "page.locator('input[type=submit]').first()", e
 
     # 多候选 css + placeholder → .or() 链
     e = _locator_expr(REGISTRY["loginUserName"], "loginUserName", REGISTRY, VM_IFRAME)
-    assert e == "page.locator('input[name=userName]').or(page.getByPlaceholder('手机号/用户名/邮箱'))", e
+    assert e == "page.locator('input[name=userName]').or(page.getByPlaceholder('手机号/用户名/邮箱')).first()", e
 
     # vm 作用域 → frameLocator(vmIframe) 前缀；role 带 name
     e = _locator_expr(REGISTRY["sendBtn"], "sendBtn", REGISTRY, VM_IFRAME)
-    assert e == "vm.getByRole('button', { name: '发送' })", e
+    assert e == "vm.getByRole('button', { name: '发送' }).first()", e
 
     # vm + 多候选：testid / text / label
     e = _locator_expr(REGISTRY["titleText"], "titleText", REGISTRY, VM_IFRAME)
-    assert e == "vm.getByTestId('chat-title').or(vm.getByText('对话')).or(vm.getByLabel('标题'))", e
+    assert e == "vm.getByTestId('chat-title').or(vm.getByLabel('标题')).or(vm.getByText('对话')).first()", e
+
+    # 脆弱候选(text/role)必须被降到链尾：即便注册表里 text 排在 testid 之前
+    reordered = _locator_expr(
+        {"frame": "vm", "candidates": [
+            {"by": "text", "value": "对话"},
+            {"by": "testid", "value": "chat-title"},
+        ]}, "x", REGISTRY, VM_IFRAME)
+    assert reordered == "vm.getByTestId('chat-title').or(vm.getByText('对话')).first()", reordered
+    # 每个 _locator_expr 结果都以 .first() 收尾（消除 .or() 多命中 strict 违例）
+    for k in REGISTRY:
+        assert _locator_expr(REGISTRY[k], k, REGISTRY, VM_IFRAME).endswith(".first()"), k
 
     # ---- 完整用例：多 step 翻译 ----
     script = [
@@ -94,7 +105,7 @@ def main():
     assert "getByPlaceholder('手机号/用户名/邮箱')" in out  # fill 用到 loginUserName 的 or 链
     assert ".fill('qa')" in out
     assert "page.locator('input[type=submit]').or" not in out  # loginSubmit 单候选，无 or
-    assert "page.locator('input[type=submit]').click()" in out
+    assert "page.locator('input[type=submit]').first().click()" in out
     assert ".click()" in out
     assert "waitFor({ state: 'visible', timeout: 8000 })" in out
     assert "toBeVisible()" in out

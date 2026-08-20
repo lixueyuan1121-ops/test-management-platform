@@ -82,7 +82,7 @@ def test_single_export():
     assert "connectOverCDP" in body
     assert "127.0.0.1:9222" in body
     # 注册表翻译:shell key → page.locator;vm key → vm.getByRole
-    assert "page.locator('input[type=submit]').click()" in body, body
+    assert "page.locator('input[type=submit]').first().click()" in body, body
     assert "vm.getByRole('button', { name: '发送' })" in body, body
     assert "toBeVisible()" in body
     assert "登录并发送" in body

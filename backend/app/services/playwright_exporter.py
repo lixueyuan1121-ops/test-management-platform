@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+from app.services.selector_ranking import order_candidates
+
 
 def _js_str(s: str) -> str:
     """把 Python 字符串安全嵌进 JS 单引号字符串（转义 \\ 和 '，去掉换行）。"""
@@ -62,18 +64,22 @@ def _scope_var(frame) -> str:
 
 
 def _locator_expr(entry: dict, key: str, registry: dict, vm_iframe: str) -> str:
-    """一个已登记 key 的 entry → 多候选 .or() 链表达式。"""
+    """一个已登记 key 的 entry → 多候选 .or() 链（稳定优先、脆弱降尾）+ 末尾 .first()。
+
+    镜像 runner resolveKey：runner 逐候选 byToLocator(scope,cand).first()；导出侧把整条
+    .or() 链收敛为 .first()，避免多个候选（尤其 getByText 子串匹配）同时命中触发
+    Playwright strict 违例。候选排序见 selector_ranking.order_candidates（脆弱 text/role 降尾）。
+    """
     scope = _scope_var(entry.get("frame"))
-    cands = entry.get("candidates") or []
+    cands = order_candidates(entry.get("candidates") or [])
     if not cands:
-        # 登记了 key 但无候选：退化成一个显然定位不到的占位，交给下方 TODO 逻辑处理更合适，
-        # 但此函数只管表达式；给个 css 空串（调用侧不会走到这，candidates 一般非空）。
+        # 登记了 key 但无候选：占位（调用侧一般不会走到，candidates 通常非空）。
         return f"{scope}.locator('')"
     exprs = [_cand_expr(scope, c) for c in cands]
     head = exprs[0]
     for e in exprs[1:]:
         head = f"{head}.or({e})"
-    return head
+    return f"{head}.first()"
 
 
 def _resolve_target(target: dict, registry: dict, vm_iframe: str):
