@@ -340,7 +340,7 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
    - **至少含一个 assert_text 或 assert_visible**(否则无判定依据)
    - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入与恢复通常 3-6 步'}
    - **用例自治**:connect 后先用导航/入口 key 显式进入目标页(不假设当前页,默认已登录主界面);结尾恢复 UI 瞬态(关本用例开的弹窗、清填写的输入、必要时导航回起点页),确保连续执行不相互污染
-3. target.key 优先取下方清单里的 key;清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
+3. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
 
@@ -399,6 +399,16 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None
+
+
+def revalidate_for_backfill(script, project_id: int | None = None) -> tuple[list, str | None]:
+    """用当前注册表重新校验一份已存的 gui/e2e script(供「选择器待补」重生时确定性回填)。
+
+    返回 (规范化步骤, 错误)。err is None 表示 script 引用的 key 现已全部注册、结构合法
+    → 可直接回填、无需再调 AI(避免 AI 盲重写导致 key 名漂移、反复降级);err 非空则调用方
+    落 AI 兜底。script 为空/非数组时 _validate_script 亦返回错误。
+    """
+    return _validate_script(script, _registered_keys(project_id))
 
 
 def _parse_line(line: str) -> dict | None:
@@ -631,8 +641,13 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
                 missing = _unregistered_keys(it.get("script"), valid_keys)
                 if missing:
                     keys_txt = ", ".join(missing)
-                    if _validate_script(it.get("script"), (valid_keys or set()) | set(missing))[1] is None:
+                    # 用"补齐这些 key"后的集合重校验:通过 → 仅缺 key(补齐即可执行),把这份规范化 script
+                    # 保留下来(不再丢成 None),供重生时确定性回填——避免重生走 AI 盲重写导致 key 名漂移、
+                    # 反复降级(同批次多条缺同一 key 时,补一次即可让每条按各自旧 script 回填)。
+                    norm2, err2 = _validate_script(it.get("script"), (valid_keys or set()) | set(missing))
+                    if err2 is None:
                         kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {intended}"[:500]
+                        script_json = json.dumps(norm2, ensure_ascii=False)
                     else:
                         kind_reason = f"{_SELECTOR_FIX_MARK} 缺选择器 key:{keys_txt}(补齐后仍需修其它问题,目标 {intended})"[:500]
             elif script:
