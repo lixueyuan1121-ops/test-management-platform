@@ -124,5 +124,15 @@
 ## 10. 决策记录（已批准 2026-08-20）
 1. 稳定/脆弱口径：**两处镜像（后端 py ↔ 前端 js，均参照 gui-core 分梯）+ 文档标注**。✅
 2. P1 匹配：**高亮候选、由人点选确认**（不自动选中 Top1）。✅
-3. 组件 4：**把「元素 desc」写进 `_SELECTOR_FIX_MARK`**（前后端解析格式随之同步）。✅
+3. 组件 4：**把「元素 desc」写进 `_SELECTOR_FIX_MARK`** —— **实现时调整**：改 prompt 引导模型缺 key 时造语义化 key 名 + 在 step desc 描述元素、走「选择器待补」（不再静默 manual）；**未改 `_SELECTOR_FIX_MARK` 格式**（避免触碰其脆弱正则与 4 个既有测试），桥接（组件 5）改用「缺 key 名 + 用例 title/steps」做语义匹配，效果等同且风险更低。
 4. 整体按**方案 A** 推进。✅
+
+## 11. 实现状态（2026-08-20 全部完成）
+- 组件 1（稳定/脆弱口径）→ `selector_ranking.py` + `selector-ranking.js`，两处镜像 ✅
+- 组件 2（exporter `.first()` + 脆弱降尾）→ `playwright_exporter._locator_expr` ✅
+- 组件 3（合并策略：文案漂移不入库 + 稳定优先 + 上限）→ `SelectorAdmin.vue` ✅
+- 组件 4（缺 key 引导描述元素）→ `build_testcase_prompt`（见决策 3 调整）✅
+- 组件 5（缺 key→页面元素实时探测桥接）→ `CaseLibrary`「定位缺失 key」+ `SelectorAdmin` 待办横幅/匹配高亮 + `selector-match.js` ✅
+- 附带（Task 0）：补全上游 `_js_comment` 接线（注释注入防护此前只有函数、未接线、自测红）✅
+- 验证：后端 hermetic 23/23 全绿；前端 `npm run build` 通过；Playwright 驱动真实 UI 验证「定位缺失 key → 导航带参 → 预填项目/页面 + 待办横幅」全链路 PASS；匹配排序在浏览器运行时（真实模块）验证正确。
+- ⏳ 待用户在**有在线 runner** 的实机跑一次端到端：待补用例 → 定位 → 真机 discover → 截图高亮 Top 匹配 → 加为 key → 一键重生恢复 gui/e2e。
