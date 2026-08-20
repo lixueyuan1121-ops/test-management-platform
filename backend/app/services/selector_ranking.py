@@ -25,3 +25,21 @@ def order_candidates(cands: list[dict]) -> list[dict]:
     stable = [c for c in cands if not is_fragile(c)]
     fragile = [c for c in cands if is_fragile(c)]
     return stable + fragile
+
+
+VALID_BYS: set[str] = {"testid", "role", "label", "text", "placeholder", "css"}
+
+
+def is_valid_candidate(cand: dict) -> bool:
+    """候选结构是否有效（可被 runner 定位）：含合法 by + 非空 value。
+
+    与 is_fragile 正交：is_fragile 谈"稳不稳"，本函数谈"结构完不完整"。
+    坏例 {}、{"by":"css"}(缺 value)、{"value":"x"}(缺 by)、非法 by 均无效。
+    镜像：frontend/src/utils/selector-ranking.js、gui-core.mjs::validCands（三处口径契约）。
+    """
+    return isinstance(cand, dict) and cand.get("by") in VALID_BYS and bool(cand.get("value"))
+
+
+def valid_candidates(cands: list[dict]) -> list[dict]:
+    """过滤出有效候选（保序）；非 list → []。"""
+    return [c for c in cands if is_valid_candidate(c)] if isinstance(cands, list) else []
