@@ -8,6 +8,7 @@ import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { validCands, pickCandidates } from "./candidates.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
@@ -83,6 +84,11 @@ export function createGuiCore(opts = {}) {
     REGISTRY = j.registry; VM_IFRAME = j.vmIframe;
   }
 
+  // 内置兜底副本(始终从仓库 selectors.json 读一份):DB 某 key 候选全坏/缺时逐 key 回落到内置同名 key。
+  let BUILTIN = {};
+  try { BUILTIN = JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8")).registry || {}; }
+  catch { BUILTIN = {}; }
+
   let browser = null;
   let page = null;
 
@@ -149,7 +155,8 @@ export function createGuiCore(opts = {}) {
     const entry = REGISTRY[key];
     if (!entry) throw new Error(`未定义语义 key "${key}"(selectors.json 无此项;先看 listKeys)`);
     const plan = [];
-    for (const s of scopesFor(entry.frame)) for (const cand of entry.candidates) plan.push({ s, cand });
+    const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
+    for (const s of scopesFor(entry.frame)) for (const cand of cands) plan.push({ s, cand });
     const end = Date.now() + timeout;
     for (;;) {
       for (const { s, cand } of plan) {
@@ -177,8 +184,9 @@ export function createGuiCore(opts = {}) {
   async function isKeyVisible(key) {
     const entry = REGISTRY[key];
     if (!entry) return false;
+    const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
     for (const s of scopesFor(entry.frame)) {
-      for (const cand of entry.candidates) {
+      for (const cand of cands) {
         try {
           const loc = byToLocator(s.scope, cand).first();
           if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) return true;
@@ -278,6 +286,19 @@ export function createGuiCore(opts = {}) {
       await ensureConnected();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       return { url: page.url(), title: await page.title() };
+    },
+    // 用例间硬复位:reload 顶层回初始加载态(清全部前端瞬态:选中/展开/弹窗/输入残留/焦点),
+    // 等 vm iframe 就绪(waitForContentFrame,不依赖业务选择器);可选再等首页锚点就绪(尽力,失败不阻断)。
+    // 串行执行时每条 gui/e2e 前调,消除上一条遗留状态污染,让进入段自导航从初始主界面开始。
+    async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
+      await ensureConnected();
+      await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
+      await waitForContentFrame();
+      if (readyKey && REGISTRY[readyKey]) {
+        try { await resolveKey(readyKey, { timeout: readyTimeout, requireVisible: true }); }
+        catch { /* 首页锚点尽力而为,不阻断复位 */ }
+      }
+      return { reset: true, url: page.url() };
     },
     async click(args) {
       await ensureConnected();
