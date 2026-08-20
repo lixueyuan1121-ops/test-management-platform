@@ -75,6 +75,10 @@
                 补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"><br>补: {{ row.selector_fix_keys.join(', ') }}</template>
               </el-tag>
             </el-tooltip>
+            <el-button
+              v-if="row.selector_fix && row.selector_fix_keys && row.selector_fix_keys.length"
+              link type="primary" size="small" class="locate-key-btn" @click="locateMissingKeys(row)"
+            >定位缺失 key</el-button>
           </template>
         </el-table-column>
         <el-table-column label="页面" width="120" align="center">
@@ -196,6 +200,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '@/store/app'
 import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -219,6 +224,7 @@ const EXEC_KINDS = [
 ]
 
 const app = useAppStore()
+const router = useRouter()
 const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
@@ -376,6 +382,20 @@ async function onReviewChange(row, val) {
     await reviewTestcase(row.id, val)
     ElMessage.success('采纳状态已更新')
   } catch { row.review_status = prev }
+}
+
+// 「定位缺失 key」：带上项目/页面/缺失 key/用例上下文跳到选择器管理，触发按上下文探测并高亮匹配元素。
+// steps/title 作为语义匹配上下文（中文文案命中元素可见文字，key 名命中英文属性）。见 SelectorAdmin fixKeys 分支。
+function locateMissingKeys(row) {
+  router.push({
+    name: 'selectors',
+    query: {
+      project_id: pid.value,
+      page: (row.page || '').split(',').filter(Boolean)[0] || '',
+      fix_keys: (row.selector_fix_keys || []).join(','),
+      ctx: `${row.title || ''} ${row.steps || ''}`.trim().slice(0, 200),
+    },
+  })
 }
 
 // ---- 编辑 ----

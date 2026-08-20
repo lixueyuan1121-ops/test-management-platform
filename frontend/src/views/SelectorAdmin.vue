@@ -97,6 +97,17 @@
         </el-tag>
       </div>
 
+      <!-- 「定位缺失 key」待办条：从用例库跳来时列出待补 key，选中后按语义匹配高亮元素，点「加为 key」预填该 key 名 -->
+      <el-alert v-if="fixCtx.keys.length" type="warning" :closable="false" class="fix-bar">
+        <div class="fix-bar-in">
+          <span class="fix-bar-hint">待补选择器 key（选一个 → 下方高亮页面上最可能的元素 → 点该元素「加为 key」新建）：</span>
+          <el-radio-group v-model="fixCtx.activeKey" size="small">
+            <el-radio-button v-for="k in fixCtx.keys" :key="k" :value="k">{{ k }}</el-radio-button>
+          </el-radio-group>
+          <el-button link type="info" size="small" @click="fixCtx.keys = []; fixCtx.activeKey = ''">退出定位</el-button>
+        </div>
+      </el-alert>
+
       <el-empty v-if="!probe.done && !probe.running" description="选择在线设备后点「探测」，会扫描该设备当前页面的可交互元素" :image-size="80" />
       <div v-else-if="probe.running" class="probe-loading" v-loading="true" element-loading-text="探测中，请在设备上停留在目标页面…" style="min-height:120px" />
 
@@ -286,14 +297,14 @@
           <el-select v-model="add.targetId" placeholder="选择当前作用域的已有 key" filterable style="width:100%">
             <el-option v-for="r in rows" :key="r.id" :value="r.id" :label="`${r.key}（${(r.candidates || []).length} 候选）`" />
           </el-select>
-          <div class="form-hint">best 候选将追加到该 key 候选列表的<b>头部</b>（优先尝试）</div>
+          <div class="form-hint">best 候选将按<b>稳定优先</b>并入该 key（文案类候选自动降到末尾，超出上限丢弃最不稳的）</div>
           <div v-if="addTarget" class="add-compare">
             <div class="form-hint">「{{ addTarget.key }}」现有候选（{{ (addTarget.candidates || []).length }}）</div>
             <ul class="cand-list">
               <li v-for="(c, ci) in (addTarget.candidates || [])" :key="ci"><code>{{ c.by }} = {{ c.value }}</code></li>
               <li v-if="!(addTarget.candidates || []).length" class="form-hint">（空）</li>
             </ul>
-            <div class="form-hint">合并后顺序（best 追加到头部，优先尝试）</div>
+            <div class="form-hint">合并后顺序（稳定优先，脆弱文案候选降到末尾）</div>
             <ol class="cand-list merged">
               <li v-for="(c, ci) in addMergedPreview" :key="ci"><code>{{ c.by }} = {{ c.value }}</code> <el-tag v-if="c._new" type="warning" size="small" effect="plain">新</el-tag></li>
             </ol>
@@ -318,6 +329,9 @@ import {
   listMyDevices, startProbe, getProbe,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { isFragile, orderCandidates } from '@/utils/selector-ranking'
+import { rankElements } from '@/utils/selector-match'
+import { useRoute } from 'vue-router'
 
 // 子产品固定枚举，须与后端 api/release.py 的 SUB_PRODUCTS 一致（选择器按 (项目, 子产品) 分域）。
 const SUB_PRODUCTS = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
@@ -366,6 +380,23 @@ const canImport = computed(() => !!pid.value && auth.roleIn(pid.value) === 'admi
 onMounted(async () => {
   try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
   try { devices.value = await listMyDevices() } catch { devices.value = [] }
+  // 从用例库「定位缺失 key」带 query 跳来：预填项目/页面/缺失 key + 语义上下文，并自动探测。
+  const q = route.query
+  const qPid = q.project_id ? Number(q.project_id) : null
+  if (qPid && projects.value.some((p) => p.id === qPid)) {
+    pid.value = qPid
+    await reload()
+    fixCtx.keys = String(q.fix_keys || '').split(',').filter(Boolean)
+    fixCtx.ctx = String(q.ctx || '')
+    fixCtx.activeKey = fixCtx.keys[0] || ''
+    if (q.page) probe.page = String(q.page)
+    // 有在线设备则自动发起 discover（无设备时留给用户手动选设备后点探测）。
+    if (fixCtx.keys.length && devices.value.length) {
+      probe.runner = devices.value[0].runner_id || probe.runner
+      if (probe.runner) onDiscover()
+    }
+    return
+  }
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await reload()
@@ -463,6 +494,13 @@ async function onImport() {
   finally { importing.value = false }
 }
 
+// 单个 key 候选链上限：脆弱候选在尾，超出上限时 slice 自然丢弃最不稳的，防链膨胀/优先级倒置。
+const MAX_CANDIDATES = 6
+
+// 「定位缺失 key」上下文（从用例库带 query 跳来）：待补的 key 列表 + 语义匹配上下文 + 当前选中的 key。
+const fixCtx = reactive({ keys: [], ctx: '', activeKey: '' })
+const route = useRoute()
+
 // ---- 设备探测（discover / verify）----
 // probe.result 存最近一次探测结果；mode 记录当前展示的是 discover 还是 verify。
 // updateTarget：verify 里点「重新探测更新」预置的目标 key，下次「加为 key」默认选它（更新已有）。
@@ -538,14 +576,27 @@ const candIndex = computed(() => {
 })
 
 // 给一个探测元素算标识:{ type:'exists'|'update'|'new', key?:命中的已有 key }
+// 口径:best 已在库→已存在;否则看其它候选与哪个 key 重叠——
+//   稳定候选命中且 best 是脆弱(纯文案漂移)→ 已存在(不更新,避免堆积脆弱候选);
+//   稳定候选命中且 best 也是稳定(锚点变更)→ 更新;
+//   仅脆弱候选命中 → 更新;都不命中 → 新增。
 function matchStatus(el) {
   const idx = candIndex.value
   const best = el.best
   if (best && idx.has(candKey(best))) return { type: 'exists', key: idx.get(candKey(best)) }
-  // best 不在库里,但元素其它候选若与某 key 重叠 → 该 key 存在、可用 best 更新它
+  let stableHit = null
+  let fragileHit = null
   for (const c of (el.candidates || [])) {
-    if (idx.has(candKey(c))) return { type: 'update', key: idx.get(candKey(c)) }
+    if (!idx.has(candKey(c))) continue
+    if (isFragile(c)) { if (!fragileHit) fragileHit = idx.get(candKey(c)) }
+    else if (!stableHit) stableHit = idx.get(candKey(c))
   }
+  if (stableHit) {
+    return best && isFragile(best)
+      ? { type: 'exists', key: stableHit }   // 纯文案漂移:稳定锚点已在库,best 只是文案 → 不更新
+      : { type: 'update', key: stableHit }   // best 是新的稳定锚点 → 值得更新
+  }
+  if (fragileHit) return { type: 'update', key: fragileHit }
   return { type: 'new' }
 }
 
@@ -576,7 +627,13 @@ const enrichedGroups = computed(() => {
     const counts = { new: 0, update: 0, exists: 0 }
     for (const e of els) if (counts[e._status.type] !== undefined) counts[e._status.type] += 1
     if (probe.hideExists) els = els.filter((e) => e._status.type !== 'exists')
-    els.sort((a, b) => STATUS_ORDER[a._status.type] - STATUS_ORDER[b._status.type])
+    // 「定位缺失 key」选中了某 key：按语义匹配度排序、给 Top3 打 _matchTop 高亮；否则按状态排序。
+    if (fixCtx.activeKey) {
+      const ranked = rankElements(fixCtx.activeKey, fixCtx.ctx, els)
+      els = ranked.map((r, i) => ({ ...r.el, _matchScore: r.score, _matchTop: r.score > 0 && i < 3 }))
+    } else {
+      els.sort((a, b) => STATUS_ORDER[a._status.type] - STATUS_ORDER[b._status.type])
+    }
     return { ...g, elements: els, counts }
   })
 })
@@ -617,7 +674,10 @@ const shotBoxes = computed(() => {
 })
 
 // 表格行 class 高亮当前 hover 的元素；cell hover 设 hoverKey（框↔行双向联动）。
-const rowClass = ({ row }) => (row._uid && row._uid === hoverKey.value ? 'row-hi' : '')
+const rowClass = ({ row }) => {
+  if (row._uid && row._uid === hoverKey.value) return 'row-hi'
+  return row._matchTop ? 'row-match' : ''   // 「定位缺失 key」的高分匹配行
+}
 const onCellEnter = (row) => { hoverKey.value = row._uid || '' }
 
 // 框覆盖统计：boxTotal=当前列表元素总数（含无坐标者），approxCount=位置近似（虚线）的框数。
@@ -644,13 +704,15 @@ const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: 
 // 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
 const addTarget = computed(() => (add.mode === 'update' && add.targetId ? rows.value.find((r) => r.id === add.targetId) || null : null))
 
-// 合并后候选顺序预览：best 追加到头部 + 去重（与 submitAddAsKey 的 merged 逻辑一致），标记哪条是新增。
+// 合并后候选顺序预览：与 submitAddAsKey 的 merged 完全一致（就地替换脆弱同 by + 稳定优先 + 上限），标记新增项。
 const addMergedPreview = computed(() => {
   if (!add.cand || !addTarget.value) return []
   const existing = addTarget.value.candidates || []
   const isDup = (c) => c.by === add.cand.by && c.value === add.cand.value
+  const dropSameFragile = (c) => isFragile(add.cand) && c.by === add.cand.by
+  const kept = existing.filter((c) => !isDup(c) && !dropSameFragile(c))
   const dup = existing.some(isDup)
-  return [{ ...add.cand, _new: !dup }, ...existing.filter((c) => !isDup(c)).map((c) => ({ ...c, _new: false }))]
+  return orderCandidates([{ ...add.cand, _new: !dup }, ...kept.map((c) => ({ ...c, _new: false }))]).slice(0, MAX_CANDIDATES)
 })
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
@@ -661,6 +723,15 @@ function toCand(c) {
 function openAddAsKey(el, frame) {
   const cand = toCand(el.best)
   const status = matchStatus(el)   // #3 标识:exists/update/new
+  // 「定位缺失 key」模式:直接新建选中的那个待补 key(预填 key 名),不走更新预置。
+  if (fixCtx.activeKey) {
+    Object.assign(add, {
+      visible: true, saving: false, status,
+      tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
+      cand, mode: 'create', key: fixCtx.activeKey, page: probe.page || '', desc: el.text || '', targetId: null,
+    })
+    return
+  }
   // 预置更新目标优先级:verify 的「重新探测更新」预置 > 对比标识命中的已有 key。
   const presetByVerify = probe.updateTarget && rows.value.find((r) => r.key === probe.updateTarget)
   const presetByMatch = status.key && rows.value.find((r) => r.key === status.key)
@@ -691,8 +762,11 @@ async function submitAddAsKey() {
     } else {
       const target = rows.value.find((r) => r.id === add.targetId)
       const existing = target?.candidates || []
-      // best 候选追加到头部（优先尝试）；去掉与新候选完全相同的旧项，避免重复。
-      const merged = [add.cand, ...existing.filter((c) => !(c.by === add.cand.by && c.value === add.cand.value))]
+      // 合并：去掉与新候选完全相同的旧项；新候选若脆弱(text/role)则替换同 by 的旧脆弱项(就地替换、不累加)；
+      // 再按稳定优先排序(脆弱降尾)、裁剪到上限，避免链膨胀与优先级倒置。
+      const dropSameFragile = (c) => isFragile(add.cand) && c.by === add.cand.by
+      const kept = existing.filter((c) => !(c.by === add.cand.by && c.value === add.cand.value) && !dropSameFragile(c))
+      const merged = orderCandidates([add.cand, ...kept]).slice(0, MAX_CANDIDATES)
       await patchSelector(add.targetId, { candidates: merged })
       ElMessage.success('已更新已有 key 的候选')
       if (target && probe.updateTarget === target.key) probe.updateTarget = ''
@@ -736,6 +810,12 @@ async function submitAddAsKey() {
 .el-box.approx { border-style: dashed; }
 .el-box.active { border-width: 2px; box-shadow: 0 0 0 2px rgba(64,158,255,.35); background: rgba(64,158,255,.18); z-index: 2; }
 :deep(.el-table .row-hi) { background: #ecf5ff; }
+:deep(.el-table .row-match) { background: #fdf6ec; }
+:deep(.el-table .row-match td:first-child) { box-shadow: inset 3px 0 0 0 #e6a23c; }
+.fix-bar { margin: 8px 0; }
+.fix-bar-in { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.fix-bar-hint { font-size: 12px; color: #7a5b00; }
+.locate-key-btn { margin-left: 4px; }
 .status-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; cursor: help; }
 .cand-preview-title { font-weight: 600; margin-bottom: 4px; }
 .cand-list { margin: 4px 0 8px; padding-left: 18px; }

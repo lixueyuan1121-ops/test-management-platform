@@ -31,6 +31,9 @@ def main():
     assert "api 给请求-断言-提取数组" in p
     # 回归:gui/e2e 段仍在
     assert "connect" in p and "assert_visible" in p
+    # 缺 key 时引导「造语义化 key + 描述元素」走选择器待补,而非静默 manual(P1 桥接可补救)
+    assert "选择器待补" in p, "缺 key 应引导走选择器待补而非直接 manual"
+    assert "描述这个元素" in p, "缺 key 应引导在 desc 描述该元素"
     # 需求注入
     assert "测试用户登录与项目创建接口" in p
     # 尾部条目重编号未错乱(应有第 11 条边界示例)
