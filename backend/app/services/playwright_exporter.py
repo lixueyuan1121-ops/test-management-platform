@@ -16,14 +16,22 @@
 """
 from __future__ import annotations
 
+import re
+
 from app.services.selector_ranking import order_candidates
+
+# JS 行终止符全集:除换行(CR/LF)外,U+2028(LINE SEPARATOR)/U+2029(PARAGRAPH SEPARATOR)
+# 在 JS 里同样终止单行注释(ES2019 前还会中断字符串字面量)。用例文本(成员可控)含它们会
+# 逃出 // 注释变成 live JS,导出脚本在开发机 `npx playwright test` 时被执行(存储型注入)。
+# 注释侧(_js_comment)与字符串侧(_js_str)一并消除,保持对称。
+_JS_LINE_TERMS = re.compile("[\r\n\u2028\u2029]")
 
 
 def _js_str(s: str) -> str:
     """把 Python 字符串安全嵌进 JS 单引号字符串（转义 \\ 和 '，去掉换行）。"""
     s = str(s or "")
     s = s.replace("\\", "\\\\").replace("'", "\\'")
-    s = s.replace("\r", " ").replace("\n", " ")
+    s = _JS_LINE_TERMS.sub(" ", s)
     return s
 
 
@@ -34,7 +42,7 @@ def _js_comment(s) -> str:
     使后续内容变成 live JS——导出脚本在开发本机 `npx playwright test` 运行时即被执行
     （存储型注入 → 开发机代码执行）。字符串字面量走 _js_str 已消除换行，注释侧须对称处理。
     """
-    return str(s or "").replace("\r", " ").replace("\n", " ")
+    return _JS_LINE_TERMS.sub(" ", str(s or ""))
 
 
 def _cand_expr(scope: str, cand: dict) -> str:
