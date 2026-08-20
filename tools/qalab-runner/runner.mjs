@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { createGuiCore } from "./gui-mcp/gui-core.mjs";
 import { runScript } from "./step-executor.mjs";
 import { run as apiRun } from "./api-executor.mjs";
+import { resetHomeWithRetry } from "./reset-home.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -52,6 +53,7 @@ const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 240000);
 // 绝对路径(相对 runner.mjs),不依赖启动 cwd。
 const MCP_CONFIG   = join(dirname(fileURLToPath(import.meta.url)), ".mcp.json");
 const DRY          = process.argv.includes("--dry");
+const RESET_BETWEEN_CASES = (process.env.RESET_BETWEEN_CASES ?? "1") !== "0";  // 用例间 reload 复位(默认开)
 
 const H = { "Content-Type": "application/json", "Authorization": `Bearer ${RUNNER_TOKEN}` };
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -444,14 +446,19 @@ async function tick() {
         // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则不换,沿用内置文件(回落)。
         const reg = await fetchRegistry(item.payload?.project_id, "");
         if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
-        const script = item.payload?.script;
-        // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
-        if (Array.isArray(script) && script.length) {
-          const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
-          if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
-          else result = r;
+        // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
+        if (RESET_BETWEEN_CASES && !(await resetHomeWithRetry(guiCore, log))) {
+          result = { verdict: "fail", reason: "用例前复位(reload)失败,跳过执行以免脏态污染", duration_ms: 1 };
         } else {
-          result = await runClaude(item.payload, item.kind);
+          const script = item.payload?.script;
+          // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
+          if (Array.isArray(script) && script.length) {
+            const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
+            if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
+            else result = r;
+          } else {
+            result = await runClaude(item.payload, item.kind);
+          }
         }
       } else if (item.kind === "api") {
         // api:有结构化 script → 确定性执行器(不经 LLM);无/降级 → claude(+Bash)兜底。

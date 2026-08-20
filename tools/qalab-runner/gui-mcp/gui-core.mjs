@@ -287,6 +287,19 @@ export function createGuiCore(opts = {}) {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       return { url: page.url(), title: await page.title() };
     },
+    // 用例间硬复位:reload 顶层回初始加载态(清全部前端瞬态:选中/展开/弹窗/输入残留/焦点),
+    // 等 vm iframe 就绪(waitForContentFrame,不依赖业务选择器);可选再等首页锚点就绪(尽力,失败不阻断)。
+    // 串行执行时每条 gui/e2e 前调,消除上一条遗留状态污染,让进入段自导航从初始主界面开始。
+    async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
+      await ensureConnected();
+      await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
+      await waitForContentFrame();
+      if (readyKey && REGISTRY[readyKey]) {
+        try { await resolveKey(readyKey, { timeout: readyTimeout, requireVisible: true }); }
+        catch { /* 首页锚点尽力而为,不阻断复位 */ }
+      }
+      return { reset: true, url: page.url() };
+    },
     async click(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args);
