@@ -401,10 +401,15 @@ async function handleProbes() {
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
       if ((p.params || {}).mode === "verify") {
-        // verify:校验当前作用域已有 key 是否还命中当前页(空 DB→reg 为 null→[]→{verify:{}})
-        const keys = Object.keys((reg && reg.registry) || {});
-        const out = await guiCore.verifyKeys(keys);
-        await reportProbe(p.id, { result: out });
+        // verify:校验 key 是否还命中当前页。core=true 巡检核心 key 集(失效即在 failed 里告警)。
+        if ((p.params || {}).core) {
+          const out = await guiCore.verifyCoreKeys((p.params || {}).keys);
+          await reportProbe(p.id, { result: out });
+        } else {
+          const keys = Object.keys((reg && reg.registry) || {});
+          const out = await guiCore.verifyKeys(keys);
+          await reportProbe(p.id, { result: out });
+        }
       } else {
         // discover:扫当前页元素拿候选选择器 + 整页截图(供网页叠框标注)。
         const out = await guiCore.probe({ ...(p.params || {}), screenshot: true });

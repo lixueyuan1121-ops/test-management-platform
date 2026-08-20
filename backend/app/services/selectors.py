@@ -1,6 +1,7 @@
 """选择器注册表服务:DB 是唯一事实来源。merge 规则=项目级共享(sub_product='') ∪
 子产品专属,同名 key 子产品覆盖共享。生成侧/API/runner 都经此层读,口径一致。"""
 import json
+import os
 from sqlalchemy.orm import Session
 from app.models import SelectorKey, SelectorScope
 
@@ -84,3 +85,26 @@ def usable_key_set(db: Session, project_id: int) -> set[str]:
             .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
             .all())
     return {k for k, raw in rows if valid_candidates(_cands(raw))}
+
+
+# 内置 selectors.json 路径(与 api/selectors.py::import_legacy 同一份;settings.SELECTORS_PATH 可覆盖)。
+_BUILTIN_SELECTORS_PATH = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "tools", "qalab-runner", "gui-mcp", "selectors.json"))
+
+
+def core_key_set() -> set[str]:
+    """核心 key 清单(进入/首页/登录类)的集合(L3 巡检目标)——单一事实源。
+
+    读内置 selectors.json 顶层 `coreKeys` 数组(runner 侧 core-keys.mjs 读同一份,故两端必然一致)。
+    这类 key 一旦失效,进入段自导航、复位就绪门禁、掉登录检测全塌,故列为核心、重点巡检。
+    读不到/无 coreKeys → 空集(巡检退化为按显式传入的 keys,不误报)。
+    """
+    from app.core.config import settings
+    path = settings.SELECTORS_PATH or _BUILTIN_SELECTORS_PATH
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        ck = data.get("coreKeys")
+        return set(ck) if isinstance(ck, list) else set()
+    except (OSError, json.JSONDecodeError, ValueError):
+        return set()

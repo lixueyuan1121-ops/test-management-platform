@@ -1,6 +1,7 @@
 {
   "_comment": "纳米Work 语义选择器注册表(gui-mcp 消费)。key -> {frame:shell|vm|auto, desc, candidates:[{by,value,name?}]}。candidates 按稳定性排序(testid>role>label>text>placeholder>css),命中即用。基座导出自 nami-work-test/lib/selectors.js,已并入 daily_test 实测项。更新:往对应 key 的 candidates 头部(更稳)或尾部(兜底)加一条即可。 【2026-08 同步 skill selectors.js:新增 skill 独有项，重叠项 candidates 保持平台版、仅 frame 对齐 auto。】",
   "vmIframe": "iframe[src*=\".work.n.cn\"]",
+  "coreKeys": ["homepageTitle", "navHome", "navTasks", "loginModal", "loginSubmit", "userMenu"],
   "registry": {
     "loginAccountTab": {
       "frame": "shell",
