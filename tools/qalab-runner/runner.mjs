@@ -14,6 +14,8 @@ import { dirname, join } from "node:path";
 import { createGuiCore } from "./gui-mcp/gui-core.mjs";
 import { runScript } from "./step-executor.mjs";
 import { run as apiRun } from "./api-executor.mjs";
+import { pollPerfOnce, uploadLocalSessions } from "./perf-collect.mjs";
+import { existsSync } from "node:fs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -52,6 +54,12 @@ const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 240000);
 // 绝对路径(相对 runner.mjs),不依赖启动 cwd。
 const MCP_CONFIG   = join(dirname(fileURLToPath(import.meta.url)), ".mcp.json");
 const DRY          = process.argv.includes("--dry");
+
+// perf 采集引擎目录:分发包内 nami-perfdog 与 runner 同目录 → 优先自身;开发环境回落源码路径。
+const __rdir = dirname(fileURLToPath(import.meta.url));
+const PERFDOG_DIR  = process.env.PERFDOG_DIR || (existsSync(join(__rdir, "nami-perfdog.mjs")) ? __rdir : "D:/git/test/nami-perfdog");
+const SESSIONS_DIR = join(PERFDOG_DIR, "sessions");
+const REPORT_SET_ID = process.env.REPORT_SET_ID ? Number(process.env.REPORT_SET_ID) : null;
 
 const H = { "Content-Type": "application/json", "Authorization": `Bearer ${RUNNER_TOKEN}` };
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -422,6 +430,11 @@ async function handleProbes() {
   }
 }
 
+// perf 采集:与 exec/probe 并列的第三条队列(独立 try,异常不影响其他轮询)。
+async function handlePerf() {
+  await pollPerfOnce({ api, log, RUNNER_ID, PERFDOG_DIR, SESSIONS_DIR, REPORT_SET_ID });
+}
+
 // ---- 主循环 ----
 async function tick() {
   const pending = await fetchPending();
@@ -497,10 +510,13 @@ async function tick() {
 async function main() {
   log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY}`);
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
+  log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
   for (;;) {
     try { await tick(); } catch (e) { log("轮询异常:", e.message); }
     // exec 轮询之后并列处理设备探测队列(独立 try,探测异常不影响下一轮 exec 轮询)。
     try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
+    // 再并列处理 perf 采集队列(独立 try,采集异常不影响下一轮其他轮询)。
+    try { await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
     await sleep(POLL_MS);
   }
 }
