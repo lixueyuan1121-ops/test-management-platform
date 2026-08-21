@@ -21,7 +21,7 @@ from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRegressionIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, generators, selectors
-from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script, revalidate_for_backfill
+from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script, revalidate_for_backfill, validate_script_for_edit
 from app.services.playwright_exporter import export_case_to_playwright
 
 logger = logging.getLogger("test_platform")
@@ -503,6 +503,18 @@ def review_testcase(
         tc.page = body.page.strip()[:255] or None
     if body.is_regression is not None:
         tc.is_regression = body.is_regression
+
+    # 直接编辑结构化 script:按用例当前(含本次可能刚改的)exec_kind 分流校验,合法才入库,
+    # 并按新 script 用到的 key 重推关联页面(与重生逻辑一致)。不合法 → 400 附原因。
+    if body.script is not None:
+        eff_kind = getattr(tc, "exec_kind", "gui") or "gui"
+        norm, verr = validate_script_for_edit(eff_kind, body.script, project_id=tc.project_id, db=db)
+        if verr is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"script 不合法:{verr}")
+        tc.script = json.dumps(norm, ensure_ascii=False)
+        p = pages_for_script(norm, tc.project_id)
+        if p:
+            tc.page = p   # 按新 script 的 key 重推页面(推断为空则保留原页面,不清)
 
     db.commit()
     db.refresh(tc)

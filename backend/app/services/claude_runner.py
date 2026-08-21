@@ -418,6 +418,28 @@ def revalidate_for_backfill(script, project_id: int | None = None) -> tuple[list
     return _validate_script(script, _registered_keys(project_id))
 
 
+def validate_script_for_edit(kind: str, script, project_id: int | None = None, db=None) -> tuple[list, str | None]:
+    """校验人工编辑后的 script,按 kind 分流(与生成侧同一批校验器,口径一致)。
+
+    返回 (规范化步骤, 错误说明);err is None 表示合法可入库。
+    - gui/e2e → _validate_script + 注册表「可用 key」集(usable_key_set):action 合法、定位步带
+      target、至少一个断言、key 必须已注册且候选有效。传了活 db 直接用之(编辑侧 db 未关);
+      否则回落 _registered_keys(自开 session)。
+    - api → _validate_api_script:请求-断言-提取原子校验(auth_vars 默认空,与生成侧一致)。
+    - 其它 kind(manual/cli):不支持结构化 script → 返回错误(调用方拒绝)。
+    """
+    if kind in ("gui", "e2e"):
+        if db is not None:
+            from app.services.selectors import usable_key_set
+            valid_keys = usable_key_set(db, project_id) if project_id else set()
+        else:
+            valid_keys = _registered_keys(project_id)
+        return _validate_script(script, valid_keys)
+    if kind == "api":
+        return _validate_api_script(script)
+    return [], f"仅 gui/e2e/api 用例支持编辑 script(当前 {kind})"
+
+
 def _parse_line(line: str) -> dict | None:
     """把一行 stream-json 解析为对外事件；非目标事件返回 None（跳过）。
 

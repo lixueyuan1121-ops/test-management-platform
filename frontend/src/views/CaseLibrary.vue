@@ -190,8 +190,22 @@
         <pre class="d-pre">{{ detail.row.steps || '—' }}</pre>
         <p class="d-row"><span class="d-k">预期</span></p>
         <pre class="d-pre">{{ detail.row.expected || '—' }}</pre>
-        <p class="d-row"><span class="d-k">script</span></p>
-        <pre class="d-pre">{{ detail.loading ? '加载中…' : prettyScript(detail.row.script) }}</pre>
+        <div class="d-row d-script-head">
+          <span class="d-k">script</span>
+          <el-button
+            v-if="!detail.loading && canEditScript(detail.row) && !scriptEdit.on"
+            link type="primary" size="small" @click="startScriptEdit"
+          >编辑</el-button>
+          <template v-if="scriptEdit.on">
+            <el-button link size="small" @click="scriptEdit.on = false">取消</el-button>
+            <el-button link type="primary" size="small" :loading="scriptEdit.saving" @click="saveScript">保存</el-button>
+          </template>
+        </div>
+        <pre v-if="!scriptEdit.on" class="d-pre">{{ detail.loading ? '加载中…' : prettyScript(detail.row.script) }}</pre>
+        <template v-else>
+          <el-input v-model="scriptEdit.text" type="textarea" :rows="14" spellcheck="false" style="font-family:monospace" />
+          <span class="edit-hint">直接编辑结构化步骤数组(JSON)。保存时按用例类型校验:gui/e2e 需 action 合法+定位步带 key/selector+至少一个断言,且 key 须已在选择器管理注册;api 校验请求-断言-提取。</span>
+        </template>
       </div>
     </el-drawer>
   </div>
@@ -448,10 +462,13 @@ async function doEditAndRegen() {
 // ---- 详情 ----
 // 列表行已瘦身不含 script,打开详情时按 id 单取完整用例补上 script。
 const detail = reactive({ visible: false, row: null, loading: false })
+// script 直编态:on=编辑中,text=编辑区 JSON 文本,saving=保存中。
+const scriptEdit = reactive({ on: false, text: '', saving: false })
 async function openDetail(row) {
   detail.row = { ...row }   // 先用列表行(含 steps/expected)即时展示
   detail.visible = true
   detail.loading = true
+  scriptEdit.on = false     // 每次打开详情重置编辑态
   try {
     const full = await getTestcase(row.id)
     if (detail.row && detail.row.id === row.id) detail.row = full
@@ -461,6 +478,35 @@ async function openDetail(row) {
 function prettyScript(s) {
   if (!s) return '(无 script,该用例由 claude 兜底执行或非结构化)'
   try { return JSON.stringify(typeof s === 'string' ? JSON.parse(s) : s, null, 2) } catch { return String(s) }
+}
+// 仅 gui/e2e/api 用例支持编辑 script(manual/cli 无结构化 script)。
+function canEditScript(row) {
+  return row && ['gui', 'e2e', 'api'].includes((row.exec_kind || 'gui'))
+}
+function startScriptEdit() {
+  // 用当前 script 预填编辑区(格式化);空 script 给个空数组模板。
+  const s = detail.row?.script
+  scriptEdit.text = s ? prettyScript(s) : '[]'
+  scriptEdit.on = true
+}
+async function saveScript() {
+  let parsed
+  try {
+    parsed = JSON.parse(scriptEdit.text)
+  } catch (e) {
+    ElMessage.error('JSON 格式错误:' + e.message)
+    return
+  }
+  if (!Array.isArray(parsed)) { ElMessage.error('script 必须是步骤数组(以 [ 开头)'); return }
+  scriptEdit.saving = true
+  try {
+    const updated = await updateTestcase(detail.row.id, { script: parsed })   // 后端按 kind 校验;不合法弹 msg
+    detail.row = updated                 // 用回写结果刷新(含重推的 page)
+    scriptEdit.on = false
+    ElMessage.success('script 已保存')
+    await load()                         // 列表可能有 page 等展示变化
+  } catch { /* 校验失败等已由 http 拦截器提示 */ }
+  finally { scriptEdit.saving = false }
 }
 
 // ---- 删除 ----
@@ -512,4 +558,6 @@ async function bulkDelete() {
 .detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }
 .detail .d-pre { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 220px; overflow: auto; }
 .detail .d-err { background: #fef0f0; color: #c45656; }
+.detail .d-script-head { display: flex; align-items: center; gap: 6px; }
+.detail .d-script-head .d-k { min-width: auto; margin-right: auto; }
 </style>
