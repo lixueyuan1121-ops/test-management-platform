@@ -630,6 +630,92 @@ def _extract_cases_array(raw: str) -> list:
     return _salvage_objects(raw)
 
 
+# 对话测评维度:值 → 生成引导说明(供 build_eval_query_prompt 拼进 prompt)
+EVAL_DIMENSIONS = {
+    "thinking": "需要多步推理/规划才能回答的问题,考查思考过程是否完整、有条理",
+    "tool_use": "需要联网搜索或调用工具(含 MCP 工具)才能完成的任务,考查工具调用是否正常、结果是否被正确使用",
+    "artifact": "要求产出网页/文件/代码/文档等交付物的任务,考查产物是否符合预期",
+    "multi_turn": "需要多轮对话逐步澄清/细化的场景,考查上下文连贯性(这类应产出同一 conversation_group 下的多条,turn_index 递增)",
+    "instruction": "带明确约束或格式要求的任务,考查是否严格遵循指令",
+}
+
+
+def build_eval_query_prompt(requirement: str, dimensions: list[str]) -> str:
+    """构造"生成对话测评 query"的 prompt。产物是发给被测大模型的对话提问,不是功能测试点。
+    不注入 selector key / api 契约 / script DSL(那些是测试点特有)。
+    """
+    valid = [d for d in (dimensions or []) if d in EVAL_DIMENSIONS] or ["thinking"]
+    dim_lines = "\n".join(f"- {d}: {EVAL_DIMENSIONS[d]}" for d in valid)
+    return f"""你是"AI 对话能力测评"的出题专家。基于下面的需求文档,生成一批"对话测评 query"——
+即拿去发给被测大模型(如 Claude、codex 等 Agent)对话、用来考查其对话能力的提问。
+
+要覆盖的测评维度(按这些维度出题,尽量均衡覆盖):
+{dim_lines}
+
+严格输出一个 JSON 数组,不要任何数组之外的解释文字。每个元素:
+{{
+  "title": "题目摘要(<=50字)",
+  "prompt": "发给被测大模型的完整提问正文(必填,这是要真正发出去对话的内容)",
+  "dimension": "该题主考的维度,取值必须是: {", ".join(valid)} 之一",
+  "expected": "期望被测模型产出什么或做到什么(用于后续判定的参照,要具体、可核对)",
+  "attachments": [],
+  "conversation_group": "会话分组名。单轮题给独立唯一名(如 g1/g2);多轮题同一对话的多条用相同名",
+  "turn_index": 0
+}}
+
+多轮说明:multi_turn 维度的题,把一个对话意图拆成多条,conversation_group 相同、turn_index 从 0 递增
+(0=首轮提问,1/2=追问)。单轮题 turn_index 恒为 0、各自独立 conversation_group。
+attachments 一般为空数组 [];仅当需求明确涉及上传文件/图片时才给出 [{{"name":"...","url":"..."}}]。
+不要输出 dialog_options 等执行参数。
+
+<requirement>
+{requirement}
+</requirement>"""
+
+
+_EVAL_DIM_VALUES = set(EVAL_DIMENSIONS.keys())
+
+
+def parse_eval_queries(raw: str) -> list[dict]:
+    """把模型输出解析成对话测评 query dict 列表。复用 _extract_cases_array 的多重兜底提取;
+    字段映射为 query 结构,不走 script/selector 校验。丢弃无 prompt 或无 title 的条目。
+    """
+    arr = _extract_cases_array(raw)
+    out: list[dict] = []
+    for item in arr:
+        if not isinstance(item, dict):
+            continue
+        title = (item.get("title") or "").strip()
+        prompt = (item.get("prompt") or "").strip()
+        if not title or not prompt:
+            continue  # 无题干或无提问正文的条目无意义,丢弃
+        dim = item.get("dimension")
+        if dim not in _EVAL_DIM_VALUES:
+            dim = None  # 非法维度置空(不猜)
+        # turn_index 归一为非负整数
+        ti = item.get("turn_index", 0)
+        try:
+            ti = max(0, int(ti))
+        except (TypeError, ValueError):
+            ti = 0
+        # attachments 归一为 list
+        att = item.get("attachments")
+        if not isinstance(att, list):
+            att = []
+        cg = item.get("conversation_group")
+        cg = cg.strip() if isinstance(cg, str) and cg.strip() else None
+        out.append({
+            "title": title[:512],
+            "prompt": prompt,
+            "dimension": dim,
+            "expected": (item.get("expected") or "").strip() or None,
+            "attachments": att,
+            "conversation_group": cg,   # None → 落库时补唯一组名
+            "turn_index": ti,
+        })
+    return out
+
+
 def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     """从模型输出全文中提取结构化测试点数组。
 
