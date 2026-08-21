@@ -5,7 +5,7 @@
 // 依赖:npm i (在本目录) → @modelcontextprotocol/sdk + playwright-core
 // 前提:namiclaw 已带 --remote-debugging-port=9222 启动(由 runner 的 ensureNamiclaw 保证)。
 //
-// 暴露工具:gui_connect / gui_list_keys / gui_probe / gui_goto / gui_click / gui_fill /
+// 暴露工具:gui_connect / gui_list_keys / gui_probe / gui_goto / gui_click / gui_hover / gui_fill /
 //           gui_get_text / gui_wait_for / gui_assert_text / gui_screenshot
 // 语义 key 用法见 selectors.json 与 gui-mcp/README.md;更新选择器只改 selectors.json。
 
@@ -26,6 +26,7 @@ const TOOLS = [
   { name: "gui_probe", description: "注册表没覆盖某元素时用:扫描当前页(顶层 shell + 业务 iframe)的可见可交互元素,返回每个元素的候选选择器(按稳定性打分排序,best 最优)。可用 contains 过滤文本。拿到候选后:一次性用就传给 gui_click 的 selector;要复用就把 best 回报给人补进 selectors.json。", inputSchema: { type: "object", properties: { contains: { type: "string", description: "只返回可见文本包含该串的元素(缩小结果)" }, limit: { type: "number", description: "每个 frame 最多返回几个(默认 40)" } } } },
   { name: "gui_goto", description: "把顶层页面导航到指定 URL。", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "gui_click", description: "点击元素(优先传语义 key,兜底传原始 selector,二选一)。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
+  { name: "gui_hover", description: "鼠标悬停到元素(触发悬浮态:菜单/浮层/tooltip)。用于『悬停才显示』的元素:先 gui_hover 承载元素,再 gui_wait_for 等浮层出现,然后 gui_click/gui_assert_text。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
   { name: "gui_fill", description: "向输入框填入文本(会先清空)。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, text: { type: "string" } }, required: ["text"] } },
   { name: "gui_get_text", description: "返回元素的可见文本。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
   { name: "gui_wait_for", description: "等待元素在指定毫秒内变为可见;超时抛错。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, timeout_ms: { type: "number" } } } },
@@ -43,6 +44,7 @@ async function dispatch(name, args) {
     case "gui_probe": return ok({ hint: "best=最优候选;复用就把它按 {frame,by,value} 补进 selectors.json 的某个 key", ...(await gui.probe(args)) });
     case "gui_goto": return ok(await gui.goto(args.url));
     case "gui_click": return ok(await gui.click(args));
+    case "gui_hover": return ok(await gui.hover(args));
     case "gui_fill": return ok(await gui.fill(args));
     case "gui_get_text": return ok(await gui.getText(args));
     case "gui_wait_for": { await gui.waitFor(args); return ok(`visible ${args.key || args.selector}`); }

@@ -135,6 +135,13 @@ def main():
         REGISTRY, VM_IFRAME)
     assert "textContent()" in out4, out4
 
+    # ---- hover → .hover() ----
+    out_hover = export_case_to_playwright(
+        _case([{"action": "hover", "target": {"key": "sendBtn"}, "desc": "悬停发送按钮"}]),
+        REGISTRY, VM_IFRAME)
+    assert ".hover()" in out_hover, out_hover
+    assert "// 悬停发送按钮" in out_hover, out_hover
+
     # ---- 原始 selector（target.selector 而非 key）直接用 ----
     out5 = export_case_to_playwright(
         _case([{"action": "click", "target": {"selector": ".foo-btn"}, "desc": "点原始选择器"}]),

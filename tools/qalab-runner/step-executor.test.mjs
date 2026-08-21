@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { runScript } from "./step-executor.mjs";
 
 // 假 gui:记录 shotBuffer 调用次数;可控 assertVisible 成败。返回 Buffer 模拟截图。
-function fakeGui({ visibleOk = true, clickThrow = false } = {}) {
-  const calls = { shot: 0 };
+function fakeGui({ visibleOk = true, clickThrow = false, hoverThrow = false } = {}) {
+  const calls = { shot: 0, hover: 0 };
   return {
     calls,
     async connect() { return { connected: true }; },
     async click() { if (clickThrow) throw new Error("未命中 key「navTasks」"); return { clicked: true }; },
+    async hover(t) { if (hoverThrow) throw new Error("未命中 key「taskMenuButton」"); calls.hover += 1; return { hovered: t.key || t.selector }; },
     async assertVisible() { return visibleOk ? { pass: true } : { pass: false, error: "元素不可见" }; },
     async assertText() { return { pass: true, mode: "contains", actual: "x" }; },
     async shotBuffer() { calls.shot += 1; return Buffer.from([0x89, 0x50, 0x4e, 0x47]); },
@@ -75,4 +76,30 @@ test("空 script → needClaude,不产 report", async () => {
   const r = await runScript(fakeGui(), [], () => {}, null);
   assert.equal(r.needClaude, true);
   assert.equal(r.report, undefined);
+});
+
+test("hover:调 gui.hover 后正常继续,report 记该步 ok", async () => {
+  const gui = fakeGui({ visibleOk: true });
+  const script = [
+    { action: "connect", desc: "连接" },
+    { action: "hover", target: { key: "taskListItem" }, desc: "悬停任务项" },
+    { action: "assert_visible", target: { key: "taskMenuButton" }, desc: "看悬停后出现的菜单按钮" },
+  ];
+  const r = await runScript(gui, script, () => {}, null);
+  assert.equal(r.verdict, "pass", r.reason);
+  assert.equal(gui.calls.hover, 1, "应调用一次 gui.hover");
+  assert.equal(r.report[1].action, "hover");
+  assert.equal(r.report[1].ok, true);
+});
+
+test("hover:定位/操作抛错 → selector(阻塞,非功能失败)", async () => {
+  const gui = fakeGui({ hoverThrow: true });
+  const script = [
+    { action: "connect", desc: "连接" },
+    { action: "hover", target: { key: "taskMenuButton" }, desc: "悬停" },
+    { action: "assert_visible", target: { key: "x" }, desc: "看X" },
+  ];
+  const r = await runScript(gui, script, () => {}, null);
+  assert.equal(r.verdict, "fail");
+  assert.equal(r.fail_kind, "selector", "hover 抛错应归 selector(定位/环境阻塞)");
 });

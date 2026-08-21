@@ -77,12 +77,41 @@ def test_script_prompt_e2e_autonomy():
     assert "恢复" not in p, "单条重生 e2e 恢复段应已移除"
 
 
+def test_hover_action_valid_and_needs_target():
+    # hover 是合法 action,且属定位类步骤(须带 target.key/selector)
+    script = [
+        {"action": "connect", "desc": "连接"},
+        {"action": "hover", "target": {"key": "taskListItem"}, "desc": "悬停任务项"},
+        {"action": "assert_visible", "target": {"key": "taskMenuButton"}, "desc": "看悬停后菜单按钮"},
+    ]
+    valid = {"taskListItem", "taskMenuButton"}
+    norm, err = _validate_script(script, valid)
+    assert err is None, f"含 hover 的 script 不应被判非法: {err}"
+    assert any(s["action"] == "hover" for s in norm), "hover 步应被保留"
+
+    # hover 缺 target → 报缺 target(与 click 一致)
+    bad = [
+        {"action": "connect", "desc": "连接"},
+        {"action": "hover", "desc": "悬停但没给 target"},
+        {"action": "assert_visible", "target": {"key": "x"}, "desc": "看"},
+    ]
+    _norm2, err2 = _validate_script(bad, {"x"})
+    assert err2 is not None and "hover" in err2, f"hover 缺 target 应报错: {err2}"
+
+
+def test_testcase_prompt_mentions_hover():
+    p = build_testcase_prompt("任务项悬停显示更多菜单", project_id=None)
+    assert "hover" in p, "生成 prompt 的 action 清单应包含 hover"
+
+
 def main():
     test_testcase_prompt_has_autonomy_rules()
     test_three_phase_gui_script_not_downgraded()
     test_three_phase_e2e_recognized()
     test_script_prompt_gui_autonomy()
     test_script_prompt_e2e_autonomy()
+    test_hover_action_valid_and_needs_target()
+    test_testcase_prompt_mentions_hover()
     print("OK test_case_autonomy")
 
 

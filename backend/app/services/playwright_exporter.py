@@ -8,7 +8,7 @@
   （testid/role/label/text/placeholder/css）；一个 key 的多个 candidates 用 .or() 串成自愈链。
 - frame 作用域：'shell'→顶层 page；其余（'vm'/'auto'/'url:...'）→ 业务 iframe（frameLocator(vmIframe)），
   执行侧 vm 会回退 shell，导出脚本从简只落 iframe 作用域（业务页现状在 iframe 内）。
-- step→语句：connect（连接头已在模板，转注释）/goto/click/fill/wait_for/get_text/
+- step→语句：connect（连接头已在模板，转注释）/goto/click/hover/fill/wait_for/get_text/
   assert_visible/assert_text；wait_response/judge 无通用 Playwright 对应 → 生成 TODO 占位注释。
 - 未登记 key（选择器待补）→ 生成抛错占位 + TODO 注释（点名缺失 key），其余步照常翻译。
 
@@ -145,6 +145,8 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
 
     if action == "click":
         lines.append(f"await {loc}.click();")
+    elif action == "hover":
+        lines.append(f"await {loc}.hover();")
     elif action == "fill":
         text = _js_str(args.get("text", ""))
         lines.append(f"await {loc}.fill('{text}');")

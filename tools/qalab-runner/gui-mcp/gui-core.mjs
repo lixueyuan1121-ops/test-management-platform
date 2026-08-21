@@ -323,6 +323,14 @@ export function createGuiCore(opts = {}) {
       await loc.click({ timeout: DEFAULT_TIMEOUT });
       return { clicked: args.key || args.selector, via: hit };
     },
+    // 鼠标悬停到目标元素(触发 mouseover/mouseenter + CSS :hover);常用于"悬停才显示"的
+    // 菜单/浮层:hover → wait_for(浮层出现) → click/assert。定位与 click 同一套引擎(语义 key 优先)。
+    async hover(args) {
+      await ensureConnected();
+      const { loc, hit } = await resolveTarget(args);
+      await loc.hover({ timeout: DEFAULT_TIMEOUT });
+      return { hovered: args.key || args.selector, via: hit };
+    },
     async fill(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args);

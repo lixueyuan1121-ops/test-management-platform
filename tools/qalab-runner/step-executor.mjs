@@ -15,7 +15,7 @@
 //   PNG Buffer 挂在该步 shotBuf。runner 负责把 shotBuf 逐张上传换成 URL(step-executor 不碰网络)。
 
 const DETERMINISTIC = new Set([
-  "connect", "click", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
+  "connect", "click", "hover", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible", "judge",
 ]);
 
@@ -67,6 +67,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         case "connect": { const r = await gui.connect(); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "goto": { const r = await gui.goto(args.url || target.url); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "click": { const r = await gui.click(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "hover": { const r = await gui.hover(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "fill": { const r = await gui.fill({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_response": {
