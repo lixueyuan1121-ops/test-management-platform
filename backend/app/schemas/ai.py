@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.enums import AiInputType, ExecKind, ReviewStatus
@@ -18,6 +20,7 @@ class TestCaseReviewIn(BaseModel):
     - review_status:采纳/否决/置回待定（含清单回流副作用）。
     - exec_kind:改自动化执行类型。
     - title/steps/expected/category/priority:编辑用例正文（人工修订）。
+    - script:直接编辑结构化步骤数组（按 kind 校验合法性后入库,并按新 script 重推 page）。
     """
     review_status: ReviewStatus | None = None
     exec_kind: ExecKind | None = None
@@ -28,11 +31,12 @@ class TestCaseReviewIn(BaseModel):
     priority: str | None = Field(None, max_length=8)
     page: str | None = Field(None, max_length=255)  # 关联页面(逗号分隔多页);手动指定用例所属页面
     is_regression: bool | None = None  # 是否纳入回归用例库(单条切换)
+    script: list[Any] | None = None  # 直接编辑的结构化步骤数组(gui/e2e/api);按 kind 校验后入库
 
     @model_validator(mode="after")
     def _at_least_one(self):
         if all(getattr(self, f) is None for f in
-               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority", "page", "is_regression")):
+               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority", "page", "is_regression", "script")):
             raise ValueError("至少提供一个要修改的字段")
         return self
 
