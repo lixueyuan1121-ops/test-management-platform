@@ -30,6 +30,8 @@ class EvalQuery(Base):
     # 生成引擎 claude/deepseek，冗余自 ai_task.provider（免 join），default claude。
     provider: Mapped[str] = mapped_column(String(16), default="claude", server_default="claude", index=True)
     title: Mapped[str] = mapped_column(String(512))
+    # 该 query 主考的对话测评维度(thinking/tool_use/artifact/multi_turn/instruction);生成侧填,可空
+    dimension: Mapped[str | None] = mapped_column(String(16), nullable=True)
     prompt: Mapped[str] = mapped_column(Text)  # query 正文（发给被测模型的提问）
     attachments: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [{name,file_token?/url?}]
     # 多轮分组键（对齐 CLI conversationId）；NULL/空 = 单轮独立会话。
