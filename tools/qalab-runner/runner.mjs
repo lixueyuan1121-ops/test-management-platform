@@ -15,6 +15,7 @@ import { createGuiCore } from "./gui-mcp/gui-core.mjs";
 import { runScript } from "./step-executor.mjs";
 import { run as apiRun } from "./api-executor.mjs";
 import { resetOrBlock } from "./reset-home.mjs";
+import { summarizeBatch } from "./runner-summary.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -434,6 +435,7 @@ async function tick() {
   const pending = await fetchPending();
   if (!pending?.length) return;
   log(`拉到 ${pending.length} 条待执行`);
+  const batch = [];   // 本批各条结果(供结束语汇总)
   for (const item of pending) {
     try {
       await claim(item.run_id);
@@ -502,12 +504,16 @@ async function tick() {
       // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
       const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";
       log(`回写 run_id=${item.run_id} -> ${result.verdict} (${result.duration_ms ?? "?"}ms)${reasonTail}`);
+      batch.push(result);
     } catch (e) {
       log(`run_id=${item.run_id} 执行异常:`, e.message);
       // runner 侧异常(连接/客户端/网络类)属环境阻塞,归 selector(不计功能失败率)。
       try { await report(item.run_id, { verdict: "fail", fail_kind: "selector", reason: `runner异常: ${e.message}` }); } catch {}
+      batch.push({ verdict: "fail", fail_kind: "selector" });
     }
   }
+  // 本批结束语:一批跑完给个明确收尾状态(此前静默结束,无人值守时看不出跑没跑完)。
+  log(summarizeBatch(batch).text);
 }
 
 async function main() {

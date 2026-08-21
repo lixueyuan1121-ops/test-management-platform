@@ -75,6 +75,11 @@
             <el-table-column label="执行时间" width="150">
               <template #default="{ row }">{{ fmtTime(row.updated_at || row.created_at) }}</template>
             </el-table-column>
+            <el-table-column label="纠偏" width="70" align="center" fixed="right">
+              <template #default="{ row }">
+                <el-link type="primary" @click="openCorrect(row)">纠偏</el-link>
+              </template>
+            </el-table-column>
           </el-table>
         </el-collapse-item>
       </el-collapse>
@@ -116,6 +121,48 @@
       <img v-if="shot.url" :src="shot.url" class="shot-full" alt="截图" />
     </el-dialog>
 
+    <!-- 人工纠偏执行结果 -->
+    <el-dialog v-model="correct.visible" title="人工纠偏结果" width="440px">
+      <div v-if="correct.row" class="correct">
+        <p class="correct-case"><b>{{ correct.row.title || `#${correct.row.case_id}` }}</b></p>
+        <p class="correct-cur">当前判定：<el-tag :type="resultType(correct.row)" size="small">{{ resultLabel(correct.row) }}</el-tag></p>
+        <el-form label-width="72px">
+          <el-form-item label="纠正为">
+            <el-radio-group v-model="correct.verdict">
+              <el-radio value="pass">通过</el-radio>
+              <el-radio value="fail">失败(真 bug)</el-radio>
+              <el-radio value="blocked">选择器阻塞</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="correct.reason" type="textarea" :rows="2" placeholder="纠偏原因(可选)，会记入结果说明" maxlength="2000" />
+          </el-form-item>
+        </el-form>
+        <!-- 维护用例:文案/步骤变化导致的真失败,改正文+重生 script,下次不再需纠偏 -->
+        <el-divider content-position="left" class="maint-divider">顺带维护用例(可选)</el-divider>
+        <el-checkbox v-model="correct.maintain" :disabled="!canMaintain(correct.row)">
+          用例已过时(如断言文案变了)，更新用例并重生 script
+        </el-checkbox>
+        <div v-if="correct.maintain && canMaintain(correct.row)" class="maint-box">
+          <el-form label-width="72px">
+            <el-form-item label="预期">
+              <el-input v-model="correct.expected" type="textarea" :rows="2" placeholder="改成最新的预期/文案" />
+            </el-form-item>
+            <el-form-item label="步骤">
+              <el-input v-model="correct.steps" type="textarea" :rows="2" placeholder="如步骤也变了才改，否则留空不动" />
+            </el-form-item>
+          </el-form>
+          <span class="correct-hint">保存后按新正文重新生成该用例的 script(gui/e2e/api)，让下次执行断言新文案。</span>
+        </div>
+        <span v-else-if="correct.maintain" class="correct-hint">该用例类型不支持重生 script(仅 gui/e2e/api)。</span>
+        <p class="correct-hint" style="margin-top:10px">纠偏后结果说明会打「[人工纠偏]」前缀，并同步回填对应验收清单项。</p>
+      </div>
+      <template #footer>
+        <el-button @click="correct.visible = false">取消</el-button>
+        <el-button type="primary" :loading="correct.saving" @click="saveCorrect">保存纠偏</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 旧记录:仅本地路径 -->
     <el-dialog v-model="ev.visible" title="执行证据" width="480px">
       <p class="ev-path">{{ ev.path }}</p>
@@ -127,8 +174,9 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
-import { listTasks, listExecHistory } from '@/api'
+import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -150,6 +198,7 @@ const loading = ref(false)
 const ev = ref({ visible: false, path: '' })
 const rep = ref({ visible: false, row: null })
 const shot = ref({ visible: false, url: '' })
+const correct = ref({ visible: false, row: null, verdict: 'pass', reason: '', saving: false, maintain: false, expected: '', steps: '' })
 const activeBatches = ref([])
 const app = useAppStore()
 
@@ -255,6 +304,55 @@ function fixSelector(row) {
     },
   })
 }
+
+// 人工纠偏:预置为"当前判定的反面"更符合直觉——通过则默认改失败,否则默认改通过。
+function openCorrect(row) {
+  correct.value = {
+    visible: true, row, saving: false, reason: '',
+    verdict: row.verdict === 'pass' ? 'fail' : 'pass',
+    maintain: false, expected: '', steps: '',
+  }
+  // 预填用例正文(供"维护用例"编辑):列表行 payload 里有 steps/expected 快照,取不到再单查详情。
+  const cid = row.case_id ?? row.test_case_id
+  correct.value.expected = row.payload?.expected || ''
+  correct.value.steps = row.payload?.steps || ''
+  if (cid && !correct.value.expected) {
+    getTestcase(cid).then((tc) => {
+      if (correct.value.row === row) {
+        correct.value.expected = tc.expected || ''
+        correct.value.steps = tc.steps || ''
+      }
+    }).catch(() => {})
+  }
+}
+// 仅 gui/e2e/api 用例能重生 script(manual/cli 不支持)。
+function canMaintain(row) {
+  return row && ['gui', 'e2e', 'api'].includes(row.kind || 'gui')
+}
+async function saveCorrect() {
+  const c = correct.value
+  if (!c.row) return
+  const cid = c.row.case_id ?? c.row.test_case_id
+  c.saving = true
+  try {
+    // 1) 先纠偏本次执行结果
+    await correctExecVerdict(c.row.run_id, c.verdict, c.reason.trim() || undefined)
+    // 2) 维护用例(可选):更新正文 → 按新正文重生 script,闭环"文案变了"这类真失败
+    if (c.maintain && canMaintain(c.row) && cid) {
+      const patch = {}
+      if (c.expected.trim()) patch.expected = c.expected.trim()
+      if (c.steps.trim()) patch.steps = c.steps.trim()
+      if (Object.keys(patch).length) await updateTestcase(cid, patch)
+      await genTestcaseScript(cid)   // 后端按最新 steps/expected 重生并写回
+      ElMessage.success('已纠偏，并已更新用例、重生 script')
+    } else {
+      ElMessage.success('已纠偏')
+    }
+    correct.value.visible = false
+    await load()
+  } catch { /* http 拦截器已提示 */ }
+  finally { c.saving = false }
+}
 </script>
 
 <style scoped>
@@ -271,6 +369,11 @@ function fixSelector(row) {
 .batch-stat .ng { color: #c45656; }
 .batch-stat .blk { color: #e6a23c; }
 .fix-link { margin-left: 10px; font-size: 12px; }
+.correct-case { margin: 0 0 6px; }
+.correct-cur { margin: 0 0 12px; color: #5a6b7b; font-size: 13px; }
+.correct-hint { color: #90a4ae; font-size: 12px; }
+.maint-divider { margin: 14px 0 10px; }
+.maint-box { margin-top: 10px; padding: 8px 12px; background: #f7faf9; border: 1px solid #e3ecea; border-radius: 6px; }
 .batch-meta { margin-left: auto; font-size: 12px; color: #90a4ae; }
 /* 报告 */
 .rep-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }

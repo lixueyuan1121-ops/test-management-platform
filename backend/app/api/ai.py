@@ -356,7 +356,10 @@ def list_cases(
         if category:
             q = q.filter(TestCase.category == category)
         if exec_kind:
-            q = q.filter(TestCase.exec_kind == exec_kind)
+            # exec_kind 支持逗号分隔多值(如 gui,e2e):按并集过滤;单值时等价于 ==(向后兼容)。
+            kinds = [k.strip() for k in exec_kind.split(",") if k.strip()]
+            if kinds:
+                q = q.filter(TestCase.exec_kind.in_(kinds))
         if provider:
             q = q.filter(TestCase.provider == provider)
         if selector_fix:

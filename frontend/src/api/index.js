@@ -162,6 +162,9 @@ export async function exportPlaywrightBulk(ids) {
 export { _blobErrorMsg }
 // 执行历史(独立"执行结果"页):按项目/任务/设备/verdict/status 筛,最新在前,不覆盖。
 export const listExecHistory = (params) => http.get('/exec-queue/history', { params })
+// 人工纠偏执行结果:verdict 三态 pass/fail/blocked + 可选备注;后端打「[人工纠偏]」前缀并同步清单。
+export const correctExecVerdict = (runId, verdict, reason) =>
+  http.patch(`/exec-queue/${runId}/verdict`, { verdict, reason })
 
 // 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
 export const listReleases = (params) => http.get('/releases', { params })

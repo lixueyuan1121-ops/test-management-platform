@@ -31,3 +31,14 @@ class ExecReportIn(BaseModel):
     evidence_url: str | None = None
     duration_ms: int | None = None
     report: list | dict | None = None  # 逐步执行报告(每步 action/desc/ok/截图 URL + 结论);gui/e2e 由 runner 回写
+
+
+class ExecCorrectIn(BaseModel):
+    """人工纠偏执行结果(用户 JWT,非 runner)。verdict 三态 pass/fail/blocked;可选备注。
+
+    与 runner 回写的区别:这是人对机器判定的复核修正,reason 会被打上「[人工纠偏]」前缀留痕。
+    fail_kind 由 verdict 推定(fail→business 真 bug、blocked→selector 环境阻塞、pass→None),
+    与 report 端点的映射保持一致。
+    """
+    verdict: str = Field(..., pattern="^(pass|fail|blocked)$")
+    reason: str | None = Field(None, max_length=2000)
