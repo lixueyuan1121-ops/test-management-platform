@@ -1,0 +1,76 @@
+{
+  "_comment": "选择器巡检清单。scan 时:navMode=auto 的页自动导航后 probe staticKeys(未命中=失效告警);triggeredKeys 跳过(要交互才出现,不作失效判据);navMode=manual 的页需你手动切过去再 `--page X` 探。manual 桶=登录/算力豆/全局弹层等特殊态,不纳入自动 scan。首版分类基于实测+desc,跑一次按实际微调。",
+  "pages": [
+    {
+      "page": "shell",
+      "title": "外壳(任意页都在的一级导航/顶栏)",
+      "navMode": "auto",
+      "nav": [],
+      "staticKeys": ["navItem", "navExperts", "navProjects", "navDepartment", "navCloudDrive", "navTasks", "newTask", "avatar"],
+      "triggeredKeys": ["navItemActive", "navText", "navHome", "navFiles", "navAutomation", "navConnectors", "userMenu", "settingsBtn"]
+    },
+    {
+      "page": "chat",
+      "title": "对话页(需在某个会话中)",
+      "navMode": "auto",
+      "nav": [],
+      "staticKeys": ["chatInput", "chatComposeToolbar", "modelDropdown", "modeDropdown", "sidebarItem", "sidebarTitle"],
+      "triggeredKeys": ["sendBtn", "stopBtn", "userGroup", "assistantGroup", "answerBubble", "answerText", "copyBtn", "toolCard", "toolStep", "thinkingLoading", "thinkingToggle", "thinkingContent", "reasoningBlock", "reasoningStep", "guideCard", "guideProcessedTitle", "guideNode", "guideParagraph", "collapseToggle", "stateLabel", "elapsedText", "deliverable", "newChat", "prevNextSlot", "prevNextToolbar", "prevBtn", "nextBtn", "shareBtn", "sharePanel", "shareCheckbox", "shareSelectAll", "shareCopyLink", "shareCloseBtn", "sidebarItemSelected", "sidebarUnread", "sidebarRunning"]
+    },
+    {
+      "page": "experts",
+      "title": "专家页",
+      "navMode": "auto",
+      "nav": [{ "key": "navExperts" }],
+      "staticKeys": ["topNavTab", "topNavTabByText", "expertCard"],
+      "triggeredKeys": ["expertIntroModal", "expertHireBtn", "expertIntroClose", "agentExampleModal", "skillCard", "skillUseBtn", "createSkillBtn", "createMenuItem", "createSkillMenuBtn", "createSkillDialogItem"]
+    },
+    {
+      "page": "creator",
+      "title": "创建专家 / 龙虾教练页",
+      "navMode": "auto",
+      "nav": [{ "key": "createSkillBtn" }],
+      "staticKeys": ["creatorRoot", "creatorDone", "creatorCoachPanel", "creatorCoachInput", "creatorConfigPanel", "creatorConfigMainTab", "creatorNameInput", "creatorBack", "creatorDoneBtn"],
+      "triggeredKeys": ["creatorSkillTabPanel", "creatorAddSkillBtn", "creatorPreviewPanel", "creatorPreviewInput", "creatorPreviewSend", "previewToggle", "engineSelector", "engineSelectorTrigger", "engineSelectorTitle", "engineSelectorMenu", "engineSelectorOption", "engineSelectorOptionTitle", "codexRuntimeProgress", "codexRuntimeFailedRetry", "engineSwitchConfirm"]
+    },
+    {
+      "page": "project",
+      "title": "项目页",
+      "navMode": "auto",
+      "nav": [{ "key": "navProjects" }],
+      "staticKeys": ["projectSidebar", "projectCreateBtn"],
+      "triggeredKeys": ["projectCard", "projectPage", "projectContentTab", "projectMoveMenu"]
+    },
+    {
+      "page": "dept",
+      "title": "部门 / 团队页",
+      "navMode": "auto",
+      "nav": [{ "key": "navDepartment" }],
+      "staticKeys": ["deptOrgSidebar"],
+      "triggeredKeys": ["deptOrgRow", "deptAgentCard", "deptTaskItem"]
+    },
+    {
+      "page": "cloud",
+      "title": "文件 / 云盘页",
+      "navMode": "auto",
+      "nav": [{ "key": "navCloudDrive" }],
+      "staticKeys": ["cloudTab"],
+      "triggeredKeys": ["cloudFileRow", "cloudFileMore", "cloudEnterBtn"]
+    },
+    {
+      "page": "skillsCreate",
+      "title": "对话创建技能页(入口深,手动切过去后 --page skillsCreate)",
+      "navMode": "manual",
+      "nav": [],
+      "staticKeys": ["skillCreateView", "skillCoachPanel", "skillCoachInput", "skillCoachSend", "skillPreviewPanel", "skillPreviewTabBtn"],
+      "triggeredKeys": ["skillPreviewInput", "skillPreviewSend", "skillSaveVersionBtn"]
+    }
+  ],
+  "manual": {
+    "_comment": "以下需特殊态,不纳入自动 scan,也不算冗余",
+    "login(需登出态)": ["loginAccountTab", "loginUserName", "loginPassword", "loginAgree", "loginSubmit", "loginCaptchaImg", "loginCaptchaInput", "loginNow", "loginModal"],
+    "coin(点头像→明细才出现)": ["coinPill", "coinDetailMenuItem", "coinInfoView", "coinDetailClose", "coinRow", "coinChange"],
+    "globalOverlay(要触发才出现)": ["confirmOverlay", "confirmPrimary", "toast", "expirePop", "fileShareModal", "fileShareCopyPrimary", "attachmentUploadBtn", "attachmentFileInput", "attachmentItem", "askFormCard", "askOptions", "askOption", "askSubmit", "toolConfirmModal", "toolConfirmOption", "toolConfirmSubmit"],
+    "homepage(未登录假首页)": ["homepageTitle"]
+  }
+}
