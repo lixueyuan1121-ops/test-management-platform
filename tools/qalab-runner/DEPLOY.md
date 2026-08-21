@@ -70,3 +70,13 @@ CLAUDE_TIMEOUT_MS=240000
 - **登录态**:被测客户端需保持登录(冷启动后一般沿用已保存会话)。
 - **token 泄露/轮换**:token 泄露或换机,在「我的设备」**重置 token** 后更新 `.env`。
 - **manual 用例不下发**:人工/不可自动化用例平台不会派给设备。
+
+## 8. Perf collection (perf)
+
+Perf collection is built into the runner; shares one process/config/token.
+
+- Prereq: app under test running locally; nami-perfdog is bundled.
+- Interactive scenes: operate the app then click Continue on the control page.
+- Local upload: node runner.mjs upload [dir|--all].
+- While collecting, this runner does not claim test/probe jobs (one at a time).
+- Long-monitor: dispatch on platform; runner claims and uploads automatically.
