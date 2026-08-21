@@ -35,7 +35,7 @@
         </div>
         <div class="ring-text">
           <div class="kpi-lbl">今日完成率</div>
-          <div class="kpi-foot">{{ t.online }} / {{ t.total }} 已上线</div>
+          <div class="kpi-foot">{{ t.done_cnt }} / {{ t.total }} 已完成</div>
         </div>
       </div>
 
@@ -58,9 +58,9 @@
       </div>
 
       <div class="kpi">
-        <div class="kpi-lbl">已上线</div>
-        <div class="kpi-num">{{ t.online }}</div>
-        <div class="kpi-foot">今日完成</div>
+        <div class="kpi-lbl">已完成</div>
+        <div class="kpi-num">{{ t.done_cnt }}</div>
+        <div class="kpi-foot">上线 {{ t.online }} · 关闭 {{ t.closed }}</div>
       </div>
 
       <div class="kpi warn">
@@ -216,7 +216,7 @@ async function loadOverview() {
 
 // ---- 今日 KPI（带默认值，overview 未到时显示 0）----
 const t = computed(() => overview.value?.today ?? {
-  total: 0, pending: 0, testing: 0, blocked: 0, online: 0, done_rate: 0,
+  total: 0, pending: 0, testing: 0, blocked: 0, online: 0, closed: 0, done_cnt: 0, done_rate: 0,
 })
 const ringOffset = computed(() => RING_C * (1 - (t.value.done_rate || 0) / 100))
 

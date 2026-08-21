@@ -16,6 +16,7 @@ import { runScript } from "./step-executor.mjs";
 import { run as apiRun } from "./api-executor.mjs";
 import { pollPerfOnce, uploadLocalSessions } from "./perf-collect.mjs";
 import { existsSync } from "node:fs";
+import { resetOrBlock } from "./reset-home.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -54,6 +55,7 @@ const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 240000);
 // 绝对路径(相对 runner.mjs),不依赖启动 cwd。
 const MCP_CONFIG   = join(dirname(fileURLToPath(import.meta.url)), ".mcp.json");
 const DRY          = process.argv.includes("--dry");
+const RESET_BETWEEN_CASES = (process.env.RESET_BETWEEN_CASES ?? "1") !== "0";  // 用例间 reload 复位(默认开)
 
 // perf 采集引擎目录:分发包内 nami-perfdog 与 runner 同目录 → 优先自身;开发环境回落源码路径。
 const __rdir = dirname(fileURLToPath(import.meta.url));
@@ -407,10 +409,15 @@ async function handleProbes() {
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
       if ((p.params || {}).mode === "verify") {
-        // verify:校验当前作用域已有 key 是否还命中当前页(空 DB→reg 为 null→[]→{verify:{}})
-        const keys = Object.keys((reg && reg.registry) || {});
-        const out = await guiCore.verifyKeys(keys);
-        await reportProbe(p.id, { result: out });
+        // verify:校验 key 是否还命中当前页。core=true 巡检核心 key 集(失效即在 failed 里告警)。
+        if ((p.params || {}).core) {
+          const out = await guiCore.verifyCoreKeys((p.params || {}).keys);
+          await reportProbe(p.id, { result: out });
+        } else {
+          const keys = Object.keys((reg && reg.registry) || {});
+          const out = await guiCore.verifyKeys(keys);
+          await reportProbe(p.id, { result: out });
+        }
       } else {
         // discover:扫当前页元素拿候选选择器 + 整页截图(供网页叠框标注)。
         const out = await guiCore.probe({ ...(p.params || {}), screenshot: true });
@@ -457,14 +464,21 @@ async function tick() {
         // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则不换,沿用内置文件(回落)。
         const reg = await fetchRegistry(item.payload?.project_id, "");
         if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
-        const script = item.payload?.script;
-        // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
-        if (Array.isArray(script) && script.length) {
-          const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
-          if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
-          else result = r;
+        // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
+        // 复位失败或复位后掉登录 → 记 blocked(fail_kind=selector,环境阻塞,不计功能失败率),不空跑脏态用例。
+        const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log) : { ok: true };
+        if (!gate.ok) {
+          result = gate.result;
         } else {
-          result = await runClaude(item.payload, item.kind);
+          const script = item.payload?.script;
+          // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
+          if (Array.isArray(script) && script.length) {
+            const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
+            if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
+            else result = r;
+          } else {
+            result = await runClaude(item.payload, item.kind);
+          }
         }
       } else if (item.kind === "api") {
         // api:有结构化 script → 确定性执行器(不经 LLM);无/降级 → claude(+Bash)兜底。
@@ -492,6 +506,7 @@ async function tick() {
 
       await report(item.run_id, {
         verdict: result.verdict,
+        fail_kind: result.fail_kind ?? null,   // selector=选择器/环境阻塞(后端映射 blocked);business=功能失败;pass 时 null
         reason: result.reason ?? "",
         evidence_url: result.evidence ?? null,
         duration_ms: result.duration_ms ?? null,
@@ -502,7 +517,8 @@ async function tick() {
       log(`回写 run_id=${item.run_id} -> ${result.verdict} (${result.duration_ms ?? "?"}ms)${reasonTail}`);
     } catch (e) {
       log(`run_id=${item.run_id} 执行异常:`, e.message);
-      try { await report(item.run_id, { verdict: "fail", reason: `runner异常: ${e.message}` }); } catch {}
+      // runner 侧异常(连接/客户端/网络类)属环境阻塞,归 selector(不计功能失败率)。
+      try { await report(item.run_id, { verdict: "fail", fail_kind: "selector", reason: `runner异常: ${e.message}` }); } catch {}
     }
   }
 }

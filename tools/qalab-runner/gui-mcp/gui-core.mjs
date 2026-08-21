@@ -8,6 +8,8 @@ import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { validCands, pickCandidates } from "./candidates.mjs";
+import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
@@ -68,12 +70,23 @@ export const DISCOVER_SCRIPT = function () {
   return out;
 };
 
+// 从 CDP context 的 pages() 结果里挑"就绪可用"的页面:优先 url 含业务域 work.n.cn 的页,
+// 否则首个未关闭页;一个可用页都没有(冷启动时页面 target 尚未在 CDP 注册)→ null,由调用方
+// 继续轮询等待。纯函数(无 playwright 依赖),单测见 pick-ready-page.test.mjs。
+export function pickReadyPage(pages) {
+  const open = (Array.isArray(pages) ? pages : []).filter((p) => p && !p.isClosed?.());
+  if (!open.length) return null;
+  return open.find((p) => (p.url() || "").includes("work.n.cn")) || open[0];
+}
+
 // 工厂:创建一个 gui-core 实例(持有 browser/page 连接态)。
 // opts: { cdpUrl, timeout, selectorsPath, registry, vmIframe }
 // registry/vmIframe 若传入则直接用之(runner 从 API 拉的注册表),否则 readFileSync 内置 selectors.json。
 export function createGuiCore(opts = {}) {
   const CDP_URL = opts.cdpUrl || process.env.CDP_URL || "http://127.0.0.1:9222";
   const DEFAULT_TIMEOUT = Number(opts.timeout || process.env.GUI_TIMEOUT_MS || 10000);
+  // 冷启动时等页面 target 在 CDP 注册出来的上限(端口活≠页面就绪,见 ensureConnected)。
+  const PAGE_READY_TIMEOUT = Number(opts.pageReadyTimeout || process.env.CDP_PAGE_READY_MS || 15000);
   // let(非 const):setRegistry 就地换表后,闭包引用它的 resolveKey/isKeyVisible/scopesFor/contentFrame 立即生效。
   let REGISTRY, VM_IFRAME;
   if (opts.registry) {
@@ -83,6 +96,17 @@ export function createGuiCore(opts = {}) {
     REGISTRY = j.registry; VM_IFRAME = j.vmIframe;
   }
 
+  // 内置兜底副本(始终从仓库 selectors.json 读一份):DB 某 key 候选全坏/缺时逐 key 回落到内置同名 key。
+  let BUILTIN = {};
+  try { BUILTIN = JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8")).registry || {}; }
+  catch { BUILTIN = {}; }
+
+  // 核心 key 清单(进入/首页/登录类):单一事实源在 selectors.json 顶层 coreKeys(见 core-keys.mjs)。
+  // 供 verify 巡检默认目标 + 失效告警。读不到 → []（巡检退化为按传入 keys,不误报）。
+  let CORE_KEYS = [];
+  try { CORE_KEYS = pickCoreKeys(JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8"))); }
+  catch { CORE_KEYS = []; }
+
   let browser = null;
   let page = null;
 
@@ -90,9 +114,18 @@ export function createGuiCore(opts = {}) {
     if (browser && browser.isConnected() && page && !page.isClosed()) return;
     browser = await chromium.connectOverCDP(CDP_URL);
     const ctx = browser.contexts()[0] || (await browser.newContext());
-    const pages = ctx.pages();
-    page = pages.find((p) => (p.url() || "").includes("work.n.cn")) || pages[0];
-    if (!page) page = await ctx.newPage();
+    // 冷启动竞态:CDP 端口先活、渲染进程的页面 target 后注册,刚连上时 ctx.pages() 可能仍空。
+    // 此时若直接 ctx.newPage() 会撞 Electron 的 Target.createTarget: Not supported(不支持建 target),
+    // 导致冷启动首条用例复位失败。故轮询等页面 target 出现(≤PAGE_READY_TIMEOUT),拿到就用;
+    // 等满仍无页面才回落 newPage(非 Electron/特殊场景的兜底,正常路径不会走到)。
+    const end = Date.now() + PAGE_READY_TIMEOUT;
+    for (;;) {
+      const p = pickReadyPage(ctx.pages());
+      if (p) { page = p; return; }
+      if (Date.now() >= end) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    page = await ctx.newPage();
   }
 
   function contentFrame() {
@@ -149,7 +182,8 @@ export function createGuiCore(opts = {}) {
     const entry = REGISTRY[key];
     if (!entry) throw new Error(`未定义语义 key "${key}"(selectors.json 无此项;先看 listKeys)`);
     const plan = [];
-    for (const s of scopesFor(entry.frame)) for (const cand of entry.candidates) plan.push({ s, cand });
+    const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
+    for (const s of scopesFor(entry.frame)) for (const cand of cands) plan.push({ s, cand });
     const end = Date.now() + timeout;
     for (;;) {
       for (const { s, cand } of plan) {
@@ -177,8 +211,9 @@ export function createGuiCore(opts = {}) {
   async function isKeyVisible(key) {
     const entry = REGISTRY[key];
     if (!entry) return false;
+    const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
     for (const s of scopesFor(entry.frame)) {
-      for (const cand of entry.candidates) {
+      for (const cand of cands) {
         try {
           const loc = byToLocator(s.scope, cand).first();
           if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) return true;
@@ -191,6 +226,7 @@ export function createGuiCore(opts = {}) {
   // ---- 对外操作(server 和 StepExecutor 共用)----
   return {
     get registry() { return REGISTRY; },
+    get coreKeys() { return CORE_KEYS.slice(); },
     // 就地换注册表(runner 每条 gui/e2e 用例执行前按 project_id 从 API 拉后调):只换 REGISTRY/VM_IFRAME,
     // 不动 browser/page 连接态。闭包引用它俩的 resolveKey/isKeyVisible/scopesFor/contentFrame 随即生效。
     setRegistry(registry, vmIframe) { REGISTRY = registry || {}; VM_IFRAME = vmIframe || VM_IFRAME; },
@@ -274,16 +310,46 @@ export function createGuiCore(opts = {}) {
       for (const k of (keys || [])) out[k] = await isKeyVisible(k);
       return { verify: out };
     },
+    // 核心 key 巡检:探核心 key(默认内置 coreKeys,可传子集覆盖)是否都在当前页可见,
+    // 返回 {verify, failed, core}。failed 非空 = 有核心 key 失效(进入段/复位/掉登录检测会塌),供告警。
+    async verifyCoreKeys(keys) {
+      await ensureConnected();
+      const core = (Array.isArray(keys) && keys.length) ? keys : CORE_KEYS;
+      const out = {};
+      for (const k of core) out[k] = await isKeyVisible(k);
+      return { verify: out, failed: failedCoreKeys(core, out), core };
+    },
     async goto(url) {
       await ensureConnected();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       return { url: page.url(), title: await page.title() };
+    },
+    // 用例间硬复位:reload 顶层回初始加载态(清全部前端瞬态:选中/展开/弹窗/输入残留/焦点),
+    // 等 vm iframe 就绪(waitForContentFrame,不依赖业务选择器);可选再等首页锚点就绪(尽力,失败不阻断)。
+    // 串行执行时每条 gui/e2e 前调,消除上一条遗留状态污染,让进入段自导航从初始主界面开始。
+    async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
+      await ensureConnected();
+      await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
+      await waitForContentFrame();
+      if (readyKey && REGISTRY[readyKey]) {
+        try { await resolveKey(readyKey, { timeout: readyTimeout, requireVisible: true }); }
+        catch { /* 首页锚点尽力而为,不阻断复位 */ }
+      }
+      return { reset: true, url: page.url() };
     },
     async click(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args);
       await loc.click({ timeout: DEFAULT_TIMEOUT });
       return { clicked: args.key || args.selector, via: hit };
+    },
+    // 鼠标悬停到目标元素(触发 mouseover/mouseenter + CSS :hover);常用于"悬停才显示"的
+    // 菜单/浮层:hover → wait_for(浮层出现) → click/assert。定位与 click 同一套引擎(语义 key 优先)。
+    async hover(args) {
+      await ensureConnected();
+      const { loc, hit } = await resolveTarget(args);
+      await loc.hover({ timeout: DEFAULT_TIMEOUT });
+      return { hovered: args.key || args.selector, via: hit };
     },
     async fill(args) {
       await ensureConnected();

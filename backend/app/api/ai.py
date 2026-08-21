@@ -21,7 +21,7 @@ from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRegressionIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, generators, selectors
-from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script
+from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script, revalidate_for_backfill
 from app.services.playwright_exporter import export_case_to_playwright
 
 logger = logging.getLogger("test_platform")
@@ -562,6 +562,16 @@ def gen_script(
     tc_steps = tc.steps or ""
     tc_expected = tc.expected or ""
     tc_project_id = tc.project_id
+    tc_old_script = _load_script_list(getattr(tc, "script", None))   # 待补用例保留的原始 script(供确定性回填)
+
+    # ---- 确定性回填快路径(仅「选择器待补」的 gui/e2e)----
+    # 补 key 后,若旧 script 引用的 key 现已全部注册且结构合法 → 直接回填,不调 AI:
+    # 避免 AI 盲重写导致 key 名漂移、反复降级(同批次多条缺同一 key 时补一次即可全部回填)。
+    if sel_fix and kind in ("gui", "e2e") and tc_old_script:
+        norm, verr = revalidate_for_backfill(tc_old_script, project_id=tc_project_id)
+        if verr is None:
+            db.close()
+            return _write_back_script(cid, norm, kind, sel_fix, tc_project_id)
     db.close()
 
     # ---- 调 AI 引擎（阻塞,可能数十秒~数分钟）----
@@ -578,7 +588,27 @@ def gen_script(
         finally:
             es.close()
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=detail)
-    # ---- 新 session 写回结果 ----
+    # ---- 新 session 写回结果(与确定性回填共用)----
+    return _write_back_script(cid, script, kind, sel_fix, tc_project_id)
+
+
+def _load_script_list(raw) -> list | None:
+    """把库里 script(JSON 字符串)解析为 list;空/坏 → None(无旧 script 可回填,落 AI)。"""
+    if not raw:
+        return None
+    try:
+        v = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return v if isinstance(v, list) and v else None
+
+
+def _write_back_script(cid: int, script: list, kind: str, sel_fix: bool, project_id: int) -> dict:
+    """新开 session 把重生/回填得到的 script 写回用例并返回 _to_case_out。
+
+    确定性回填与 AI 重生两条路径共用:恢复可执行 exec_kind、清「选择器待补」标识与上次失败原因、
+    按 script 用到的 key 重新打页面标。db 已在调用前关闭,故此处另开短 session。
+    """
     s = SessionLocal()
     try:
         tc2 = s.get(TestCase, cid)
@@ -590,7 +620,7 @@ def gen_script(
         if sel_fix:
             tc2.kind_reason = None        # 已成功重生,清除「选择器待补」标识(前端 badge 随之消失)
         tc2.last_gen_error = None         # 重生成功 → 清除上次失败原因
-        p = pages_for_script(script, tc_project_id)
+        p = pages_for_script(script, project_id)
         if p:
             tc2.page = p                  # 按新 script 用到的 key 重新打页面标(推断为空则保留原页面,不清)
         s.commit()

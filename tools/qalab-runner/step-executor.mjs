@@ -15,7 +15,7 @@
 //   PNG Buffer 挂在该步 shotBuf。runner 负责把 shotBuf 逐张上传换成 URL(step-executor 不碰网络)。
 
 const DETERMINISTIC = new Set([
-  "connect", "click", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
+  "connect", "click", "hover", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible", "judge",
 ]);
 
@@ -49,10 +49,12 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     return rep;
   };
   // 失败:记该步 + 截图,返回 fail 结果(带 report/steps)。
-  const failAt = async (i, action, desc, reason, extraSteps) => {
+  // failKind 归类失败性质(接后端 L2):"selector"=定位/操作/环境阻塞(不计功能失败率),
+  // "business"=断言不通过(真功能 bug)。缺省 selector(定位/操作抛错走 catch 兜底,均属阻塞类)。
+  const failAt = async (i, action, desc, reason, failKind = "selector", extraSteps) => {
     const rep = rec(i, action, desc, false, reason);
     await capShot(rep);
-    return { verdict: "fail", reason, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps: extraSteps || steps, report };
+    return { verdict: "fail", fail_kind: failKind, reason, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps: extraSteps || steps, report };
   };
 
   for (let i = 0; i < script.length; i++) {
@@ -65,6 +67,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         case "connect": { const r = await gui.connect(); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "goto": { const r = await gui.goto(args.url || target.url); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "click": { const r = await gui.click(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "hover": { const r = await gui.hover(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "fill": { const r = await gui.fill({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_response": {
@@ -88,21 +91,21 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
           const context = captured.join("\n") || "(前面步骤未捕获文本/截图;请仅依据问题判断)";
           const v = await judgeFn(args.question || desc, context);
           steps.push({ action, ...v, question: args.question || desc, desc });
-          if (!v.pass) return await failAt(i, action, desc, `step${i + 1} judge 判定不通过:${v.reason || ""}`);
+          if (!v.pass) return await failAt(i, action, desc, `step${i + 1} judge 判定不通过:${v.reason || ""}`, "business");
           rec(i, action, desc, true);
           break;
         }
         case "assert_visible": {
           const r = await gui.assertVisible(target);
           steps.push({ action, ...r, desc });
-          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言可见失败:${desc || target.key || target.selector}(${r.error || ""})`);
+          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言可见失败:${desc || target.key || target.selector}(${r.error || ""})`, "business");
           const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
           break;
         }
         case "assert_text": {
           const r = await gui.assertText({ ...target, expected: args.expected, contains: args.contains });
           steps.push({ action, ...r, desc });
-          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言文本失败:期望${r.mode === "contains" ? "包含" : "等于"}「${args.expected}」,实际「${r.actual}」`);
+          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言文本失败:期望${r.mode === "contains" ? "包含" : "等于"}「${args.expected}」,实际「${r.actual}」`, "business");
           const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
           break;
         }

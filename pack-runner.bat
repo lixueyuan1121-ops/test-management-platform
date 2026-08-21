@@ -5,19 +5,18 @@ set "ROOT=%~dp0"
 set "RUNNER=%ROOT%tools\qalab-runner"
 set "PERFDOG=D:\git\test\nami-perfdog"
 set "STAGE=%TEMP%\qalab-runner-pack\qalab-runner"
-set "OUT=%ROOT%frontend\public\qalab-runner.zip"
+set "OUT=%ROOT%frontend\dist\qalab-runner.zip"
 
 echo [1/4] Cleaning staging...
 if exist "%TEMP%\qalab-runner-pack" rmdir /s /q "%TEMP%\qalab-runner-pack"
 mkdir "%STAGE%"
 
 echo [2/4] Copying runner (exclude .env / node_modules)...
-robocopy "%RUNNER%" "%STAGE%" /E /XD node_modules .git /XF .env >nul
+robocopy "%RUNNER%" "%STAGE%" /E /XD node_modules .git /XF .env *.bak >nul
 
 echo [3/4] Copying perfdog collector...
 copy /y "%PERFDOG%\nami-perfdog.mjs" "%STAGE%\" >nul
 copy /y "%PERFDOG%\report-logic.mjs" "%STAGE%\" >nul
-copy /y "%PERFDOG%\*.bat" "%STAGE%\" >nul 2>nul
 if not exist "%STAGE%\vendor" mkdir "%STAGE%\vendor"
 copy /y "%PERFDOG%\vendor\*" "%STAGE%\vendor\" >nul 2>nul
 

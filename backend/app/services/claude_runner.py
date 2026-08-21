@@ -100,7 +100,11 @@ def pages_for_script(script, project_id: int | None = None) -> str:
 
 
 def _registered_keys(project_id: int | None = None) -> set[str]:
-    """项目级共享 key 的合法集合(供生成侧校验 script.target.key)。
+    """项目级**候选有效**的 key 集合(供生成侧校验 script.target.key)——L4 口径。
+
+    只收候选结构可用(至少一个含 by+value 的候选)的 key:注册了但候选坏成 [{}]/空 [] 的 key
+    **不算可用**,会被当『选择器待补』降级(而非当可执行 script 放行)。口径由服务层
+    usable_key_set 单点定义(与 schema/runner 的「有效候选」一致)。
 
     project_id 为空或读不到 → 返回空集。空集时校验放行(见 _validate_script),
     避免"读不到注册表就把所有 gui/e2e 全降 manual"这种误伤生成结果。
@@ -108,10 +112,10 @@ def _registered_keys(project_id: int | None = None) -> set[str]:
     if not project_id:
         return set()
     from app.db.session import SessionLocal
-    from app.services.selectors import shared_key_set
+    from app.services.selectors import usable_key_set
     s = SessionLocal()
     try:
-        return shared_key_set(s, project_id)
+        return usable_key_set(s, project_id)
     except Exception:
         return set()
     finally:
@@ -233,7 +237,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
 2. 每个测试点是一个对象，字段：
    - category：维度（功能/边界/异常/兼容/性能 之一）
    - title：一句话标题
-   - steps：操作步骤（可多步，用换行分隔；给人读）
+   - steps：操作步骤（可多步，用换行分隔；给人读）。**只写与本测试点直接相关的操作与断言**；不要写“刷新页面”“确认在首页/确认已进入主界面”“确保已登录”这类环境确认或复位描述（默认已登录、页面就绪，直接从进入目标页开始）。
    - expected：预期结果
    - priority：优先级（P0/P1/P2/P3，判定标准见下）
    - kind：自动化执行类型，只能是 gui/api/cli/e2e/manual 之一（判定规则见下）
@@ -255,20 +259,27 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    - 后端/接口行为若在界面上有可观察结果（如"创建后列表出现该项""删除后该项消失""出错时界面弹出某提示文案"），**优先设计成 gui/e2e**（在界面触发操作并断言界面结果），而不是判 api。
    - 只有确无界面入口可验证、且非主观感受时，才考虑 api/cli；连客观断言都给不出的，才判 manual。
 5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
-   - action 只能取：connect（第一步必须，连接客户端）、click、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、screenshot
+   - action 只能取：connect（第一步必须，连接客户端）、click、hover（鼠标悬停到元素，触发悬浮态）、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、screenshot
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
-   - args：assert_text 用 {{"expected":"...","contains":true}}；fill 用 {{"text":"..."}}；wait_for 用 {{"timeout_ms":6000}}
+   - **hover 用于"悬停才显示"的元素**（如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip）：先 hover 到承载元素，再 wait_for 等浮层出现，然后 click/assert；hover 本身不做断言
+   - **wait_for 是"等某个元素出现"，必须带 target（key 或 selector）**——它不是纯计时等待；只想等异步结果（发消息/提交后等生成）用 wait_response，不要写没有 target 的 wait_for
+   - args：assert_text 用 {{"expected":"...","contains":true}}；fill 用 {{"text":"..."}}；wait_for 用 {{"timeout_ms":6000}}（超时上限，仍需配 target）
    - desc：该步人读说明
    - **每条 gui/e2e 至少有一个 assert_text 或 assert_visible**（否则没有判定依据，应改判 manual）
-   - 只能用下方 key 清单里的 key；**找不到合适 key 表达该测试点 → 改判 kind=manual、script=[]**（不要瞎编 selector）
+   - target.key 优先取下方清单里的 key。**清单里没有合适 key 时**：不要瞎编 selector、也不要直接判 manual——给该元素起一个语义化新 key 名（如 submitOrderBtn），照常写进 script，并在该步 desc 里**描述这个元素**（可见文案 / 角色 / 页面位置）。用到未注册 key 的用例会被自动标为「选择器待补」，补齐后即可自动执行；只有确无界面元素可操作/断言时才判 manual、script=[]。
+   - **用例自治（关键——直接决定连续执行成功率，务必执行）**：多条用例在**同一客户端、同一页面**上连续执行，执行器不会在用例之间重置页面。每条用例必须能**单独、从初始态、一步步执行到底**，不得依赖上一条遗留的页面状态。按「进入→执行」两段组织：
+     · **进入（不假设当前页）**：connect 后先用导航/入口类 key（如 navHome/navTasks，见下方清单）**显式进入本用例目标功能页**，再开始操作；不要假设“当前已在该页”。默认起点为**已登录的应用主界面**（登录流程单列为一条 e2e 用例，其它用例不重复写登录步）。清单无对应导航 key 时，按上一条缺 key 规则起语义化 key 名 + desc 描述该导航元素。**自治靠每条用例开头这一步自导航保证——下一条用例进来会自己导航到位，故不需要在结尾做任何还原/回起点步。**
+     · **进入段只写一步真实导航动作**（一个 click 导航 key），**严禁**出现下列"环境确认/复位"类步骤：❌“刷新页面 / 重新加载”❌“确认当前在首页 / 确认已在首页 / 校验处于主界面”❌“确保已登录 / 检查登录状态”❌“回到首页后再开始”。这些都不是被测点、且锚点不稳会拖垮整条用例——直接 connect→导航到目标页即可，不做任何页面状态的前置确认或刷新。
+     · **执行**：完成本用例的操作与断言。**用例到此为止，不要再加“关闭弹窗/清空输入/导航回首页”之类的收尾还原步**（这类结尾步常因锚点不稳而整条失败）。
 6. 按 kind 的 script 编写偏重（**务必区分，别把 e2e 写成 gui**）：
-   - **gui**：单点/局部验证，**2–4 步**即可——connect → (最多一两个 click/fill/wait_for) → assert_*。聚焦"某一个元素/文案对不对"，不要串联整条业务流程。
-   - **e2e**：**端到端多步流程，通常 ≥5 步**，体现"从入口一路操作到结果"。必须串联多个界面动作（如 登录→导航→输入→提交），并在**关键节点分别断言**（不止最后断一次）。
+   - **gui**：单点/局部验证，但**仍需自治**——结构为「进入导航 + 单点操作/断言」，通常 **2–5 步**（含进入步；不写收尾还原步）。断言聚焦单点，不要串联整条业务流程。
+   - **e2e**：**端到端多步流程，通常 ≥5 步**，从已登录主界面**导航进入 → 操作 → 关键节点分别断言**。必须串联多个界面动作，并在**关键节点分别断言**（不止最后断一次）；不写收尾还原步。
      · 若流程中触发了 AI 生成/异步加载（发消息、提交后等结果），**必须插入 wait_response 或 wait_for** 再断言，不能立刻断。
-     · 一条 e2e 的 script 明显比 gui 长、动作更丰富；若你发现某"e2e"只需 2–3 步就能验完，说明它其实是 gui，请改判 kind=gui。
-   - **判定自检**：kind=e2e 但 script 少于 5 步或无跨界面串联 → 要么补足步骤，要么改判 gui。
-   正例(gui,单点)：connect → wait_for(navTasks) → assert_visible(navTasks)
-   正例(e2e,多步)：connect → click(loginAccountTab) → fill(loginUserName) → fill(loginPassword) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle) → assert_text(homepageTitle,"早上好",contains)
+     · 一条 e2e 的 script 明显比 gui 长、动作更丰富；若你发现某"e2e"剔除进入步后只需 2–3 步就能验完，说明它其实是 gui，请改判 kind=gui。
+   - **判定自检**：kind=e2e 但剔除进入步后实质交互不足或总步数过短 → 改判 gui。
+   正例(gui,单点,含进入)：connect → click(navTasks) → wait_for(任务页锚点) → assert_visible(目标元素)
+   正例(e2e,多步,含进入)：connect → click(navTasks) → click(新建按钮) → fill(表单字段) → click(提交) → wait_for(结果锚点) → assert_text(结果文案,contains)
+   登录单列(其它用例默认已登录)：connect → fill(loginUserName) → fill(loginPassword) → click(loginAgree) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle)
 {keys_block}
 7. {_API_SCRIPT_SPEC}
 {api_contract_block}
@@ -326,13 +337,17 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 输出要求:
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
 2. 每步一个对象 {{action, target?, args?, desc}}:
-   - action 只能取:connect(第一步必须)、click、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、screenshot
-   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有的元素才用 {{"selector":"<CSS>"}}
-   - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}
+   - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、screenshot
+   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
+   - **hover 用于"悬停才显示"的元素**(列表项 hover 出的更多/菜单按钮、tooltip):先 hover 承载元素→wait_for 等浮层→再 click/assert;hover 本身不断言
+   - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
+   - args:assert_text 用 {{"expected":"...","contains":true}};fill 用 {{"text":"..."}};wait_for 用 {{"timeout_ms":6000}}(超时上限,仍需配 target)
    - desc:该步人读说明
    - **至少含一个 assert_text 或 assert_visible**(否则无判定依据)
-   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,2-4 步即可'}
-3. 只能用下方 key 清单里的 key,找不到合适的就用最接近的语义 key 或 selector:
+   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入通常 2-5 步'}
+   - **用例自治**:connect 后先用导航/入口 key 显式进入目标页(不假设当前页,默认已登录主界面),自治靠这一步自导航保证;**用例到操作与断言为止,不要加关弹窗/清输入/导航回首页之类的收尾还原步**(结尾还原步常因锚点不稳而整条失败)
+   - **进入段只写一步真实导航动作**,**严禁**"刷新页面/重新加载""确认当前在首页/确认已在主界面""确保已登录/检查登录状态""回到首页再开始"这类环境确认或复位步——它们不是被测点且锚点不稳,直接 connect→导航到目标页,不做任何页面状态前置确认或刷新
+3. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
 
@@ -391,6 +406,16 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None
+
+
+def revalidate_for_backfill(script, project_id: int | None = None) -> tuple[list, str | None]:
+    """用当前注册表重新校验一份已存的 gui/e2e script(供「选择器待补」重生时确定性回填)。
+
+    返回 (规范化步骤, 错误)。err is None 表示 script 引用的 key 现已全部注册、结构合法
+    → 可直接回填、无需再调 AI(避免 AI 盲重写导致 key 名漂移、反复降级);err 非空则调用方
+    落 AI 兜底。script 为空/非数组时 _validate_script 亦返回错误。
+    """
+    return _validate_script(script, _registered_keys(project_id))
 
 
 def _parse_line(line: str) -> dict | None:
@@ -623,8 +648,13 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
                 missing = _unregistered_keys(it.get("script"), valid_keys)
                 if missing:
                     keys_txt = ", ".join(missing)
-                    if _validate_script(it.get("script"), (valid_keys or set()) | set(missing))[1] is None:
+                    # 用"补齐这些 key"后的集合重校验:通过 → 仅缺 key(补齐即可执行),把这份规范化 script
+                    # 保留下来(不再丢成 None),供重生时确定性回填——避免重生走 AI 盲重写导致 key 名漂移、
+                    # 反复降级(同批次多条缺同一 key 时,补一次即可让每条按各自旧 script 回填)。
+                    norm2, err2 = _validate_script(it.get("script"), (valid_keys or set()) | set(missing))
+                    if err2 is None:
                         kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {intended}"[:500]
+                        script_json = json.dumps(norm2, ensure_ascii=False)
                     else:
                         kind_reason = f"{_SELECTOR_FIX_MARK} 缺选择器 key:{keys_txt}(补齐后仍需修其它问题,目标 {intended})"[:500]
             elif script:
@@ -653,7 +683,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     return out
 
 
-_VALID_ACTIONS = {"connect", "click", "fill", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "screenshot"}
+_VALID_ACTIONS = {"connect", "click", "hover", "fill", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "screenshot"}
 
 # gui/e2e 因"选择器未注册"降级 manual 时的 kind_reason 前缀标识。
 # 前端据此前缀渲染「补选择器可自动化」标签(见 CaseLibrary.vue),故改此串须同步前端。
@@ -721,7 +751,7 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
         if action not in _VALID_ACTIONS:
             return [], f"非法 action「{action}」"
         target = st.get("target") or {}
-        if action in ("click", "fill", "wait_for", "get_text", "assert_text", "assert_visible"):
+        if action in ("click", "hover", "fill", "wait_for", "get_text", "assert_text", "assert_visible"):
             if not (isinstance(target, dict) and (target.get("key") or target.get("selector"))):
                 return [], f"step「{action}」缺 target.key/selector"
             # key 必须在注册表内(仅当提供了 valid_keys 且非空);selector(裸 CSS)不校验

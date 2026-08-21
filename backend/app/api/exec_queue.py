@@ -101,6 +101,7 @@ def _to_out(r: ExecRun) -> dict:
         "status": getattr(r.status, "value", r.status),
         "payload": json.loads(r.payload or "{}"),
         "verdict": r.verdict,
+        "fail_kind": r.fail_kind,
         "reason": r.reason,
         "evidence_url": r.evidence_url,
         "report": _load_report(r.report),
@@ -329,20 +330,26 @@ def report(
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
 
     is_pass = body.verdict == "pass"
-    r.verdict = body.verdict
-    r.status = ExecStatus.passed if is_pass else ExecStatus.failed
+    # L2 失败分类:fail_kind=selector(选择器/环境阻塞)记 blocked,不计入功能失败率;
+    # business 或缺 fail_kind(旧 runner)记 failed(真功能 bug)。pass 照常 passed。
+    is_blocked = (not is_pass) and body.fail_kind == "selector"
+    r.verdict = "blocked" if is_blocked else body.verdict
+    r.fail_kind = body.fail_kind
+    r.status = ExecStatus.passed if is_pass else (ExecStatus.blocked if is_blocked else ExecStatus.failed)
     r.reason = body.reason
     r.evidence_url = body.evidence_url
     r.duration_ms = body.duration_ms
     if body.report is not None:
         r.report = json.dumps(body.report, ensure_ascii=False)   # 逐步执行报告(含截图 URL)
 
-    # 闭环落点：把结果同步回验收清单项（pass→passed / fail→failed）。
+    # 闭环落点:把结果同步回验收清单项(pass 通过 / selector 阻塞记 blocked / 其余 fail 记 failed)。
     # 复用现有清单展示、checklist-summary 统计、失败转遗留问题等下游能力。
     if r.checklist_item_id:
         item = db.get(ChecklistItem, r.checklist_item_id)
         if item:
-            item.exec_status = ChecklistStatus.passed if is_pass else ChecklistStatus.failed
+            item.exec_status = (ChecklistStatus.passed if is_pass
+                                else ChecklistStatus.blocked if is_blocked
+                                else ChecklistStatus.failed)
             item.executed_by = None  # 机器自动执行，无归属用户
             item.executed_at = datetime.utcnow()
     db.commit()

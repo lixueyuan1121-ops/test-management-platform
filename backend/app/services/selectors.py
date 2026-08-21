@@ -1,6 +1,7 @@
 """选择器注册表服务:DB 是唯一事实来源。merge 规则=项目级共享(sub_product='') ∪
 子产品专属,同名 key 子产品覆盖共享。生成侧/API/runner 都经此层读,口径一致。"""
 import json
+import os
 from sqlalchemy.orm import Session
 from app.models import SelectorKey, SelectorScope
 
@@ -69,3 +70,41 @@ def shared_key_set(db: Session, project_id: int) -> set[str]:
             .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
             .all())
     return {r[0] for r in rows}
+
+
+def usable_key_set(db: Session, project_id: int) -> set[str]:
+    """项目共享 key 中「候选有效」(至少一个含 by+value 的候选)的 key 名集合(L4 生成侧校验口径)。
+
+    与 shared_key_set(仅认 key 名注册)的区别:本函数只收候选结构可用的 key——候选坏成 [{}]、
+    或空候选 [] 的 key 视作「不可用」被排除。生成侧校验(_validate_script/回填/parse)据此把
+    「注册了但候选坏/缺」的 key 当『选择器待补』降级,而非当可执行 script 放行。
+    「有效候选」口径单点定义在 selector_ranking.valid_candidates(schema/服务/runner 三处共用)。
+    """
+    from app.services.selector_ranking import valid_candidates
+    rows = (db.query(SelectorKey.key, SelectorKey.candidates)
+            .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == "")
+            .all())
+    return {k for k, raw in rows if valid_candidates(_cands(raw))}
+
+
+# 内置 selectors.json 路径(与 api/selectors.py::import_legacy 同一份;settings.SELECTORS_PATH 可覆盖)。
+_BUILTIN_SELECTORS_PATH = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "tools", "qalab-runner", "gui-mcp", "selectors.json"))
+
+
+def core_key_set() -> set[str]:
+    """核心 key 清单(进入/首页/登录类)的集合(L3 巡检目标)——单一事实源。
+
+    读内置 selectors.json 顶层 `coreKeys` 数组(runner 侧 core-keys.mjs 读同一份,故两端必然一致)。
+    这类 key 一旦失效,进入段自导航、复位就绪门禁、掉登录检测全塌,故列为核心、重点巡检。
+    读不到/无 coreKeys → 空集(巡检退化为按显式传入的 keys,不误报)。
+    """
+    from app.core.config import settings
+    path = settings.SELECTORS_PATH or _BUILTIN_SELECTORS_PATH
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        ck = data.get("coreKeys")
+        return set(ck) if isinstance(ck, list) else set()
+    except (OSError, json.JSONDecodeError, ValueError):
+        return set()

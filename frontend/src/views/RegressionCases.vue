@@ -24,6 +24,7 @@
 
       <el-alert type="success" :closable="false" show-icon class="intro">
         这里是回归用例库(在「用例库」勾选用例点「标记回归」纳入)。按<b>页面</b>筛选后勾选,选自己的设备即可<b>直接执行</b>——不依赖关联任务、无需先采纳;人工(manual)用例不可执行。
+        <br>「导出脚本」把 GUI/E2E 用例导成 Playwright <code>.spec.mjs</code> 给开发本地自测;开发怎么跑、要装什么,见仓库根 <b>回归用例导出脚本-开发运行说明.md</b>。
       </el-alert>
 
       <div class="page-bar">

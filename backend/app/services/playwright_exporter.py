@@ -8,7 +8,7 @@
   （testid/role/label/text/placeholder/css）；一个 key 的多个 candidates 用 .or() 串成自愈链。
 - frame 作用域：'shell'→顶层 page；其余（'vm'/'auto'/'url:...'）→ 业务 iframe（frameLocator(vmIframe)），
   执行侧 vm 会回退 shell，导出脚本从简只落 iframe 作用域（业务页现状在 iframe 内）。
-- step→语句：connect（连接头已在模板，转注释）/goto/click/fill/wait_for/get_text/
+- step→语句：connect（连接头已在模板，转注释）/goto/click/hover/fill/wait_for/get_text/
   assert_visible/assert_text；wait_response/judge 无通用 Playwright 对应 → 生成 TODO 占位注释。
 - 未登记 key（选择器待补）→ 生成抛错占位 + TODO 注释（点名缺失 key），其余步照常翻译。
 
@@ -16,13 +16,33 @@
 """
 from __future__ import annotations
 
+import re
+
+from app.services.selector_ranking import order_candidates
+
+# JS 行终止符全集:除换行(CR/LF)外,U+2028(LINE SEPARATOR)/U+2029(PARAGRAPH SEPARATOR)
+# 在 JS 里同样终止单行注释(ES2019 前还会中断字符串字面量)。用例文本(成员可控)含它们会
+# 逃出 // 注释变成 live JS,导出脚本在开发机 `npx playwright test` 时被执行(存储型注入)。
+# 注释侧(_js_comment)与字符串侧(_js_str)一并消除,保持对称。
+_JS_LINE_TERMS = re.compile("[\r\n\u2028\u2029]")
+
 
 def _js_str(s: str) -> str:
     """把 Python 字符串安全嵌进 JS 单引号字符串（转义 \\ 和 '，去掉换行）。"""
     s = str(s or "")
     s = s.replace("\\", "\\\\").replace("'", "\\'")
-    s = s.replace("\r", " ").replace("\n", " ")
+    s = _JS_LINE_TERMS.sub(" ", s)
     return s
+
+
+def _js_comment(s) -> str:
+    """把值安全嵌入 // 单行注释：消除换行（\\r/\\n → 空格）。
+
+    注释里的值（desc/title/action/key 等来自用例文本）若含换行，会逃出 // 行注释，
+    使后续内容变成 live JS——导出脚本在开发本机 `npx playwright test` 运行时即被执行
+    （存储型注入 → 开发机代码执行）。字符串字面量走 _js_str 已消除换行，注释侧须对称处理。
+    """
+    return _JS_LINE_TERMS.sub(" ", str(s or ""))
 
 
 def _cand_expr(scope: str, cand: dict) -> str:
@@ -52,18 +72,22 @@ def _scope_var(frame) -> str:
 
 
 def _locator_expr(entry: dict, key: str, registry: dict, vm_iframe: str) -> str:
-    """一个已登记 key 的 entry → 多候选 .or() 链表达式。"""
+    """一个已登记 key 的 entry → 多候选 .or() 链（稳定优先、脆弱降尾）+ 末尾 .first()。
+
+    镜像 runner resolveKey：runner 逐候选 byToLocator(scope,cand).first()；导出侧把整条
+    .or() 链收敛为 .first()，避免多个候选（尤其 getByText 子串匹配）同时命中触发
+    Playwright strict 违例。候选排序见 selector_ranking.order_candidates（脆弱 text/role 降尾）。
+    """
     scope = _scope_var(entry.get("frame"))
-    cands = entry.get("candidates") or []
+    cands = order_candidates(entry.get("candidates") or [])
     if not cands:
-        # 登记了 key 但无候选：退化成一个显然定位不到的占位，交给下方 TODO 逻辑处理更合适，
-        # 但此函数只管表达式；给个 css 空串（调用侧不会走到这，candidates 一般非空）。
+        # 登记了 key 但无候选：占位（调用侧一般不会走到，candidates 通常非空）。
         return f"{scope}.locator('')"
     exprs = [_cand_expr(scope, c) for c in cands]
     head = exprs[0]
     for e in exprs[1:]:
         head = f"{head}.or({e})"
-    return head
+    return f"{head}.first()"
 
 
 def _resolve_target(target: dict, registry: dict, vm_iframe: str):
@@ -96,7 +120,7 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
     args = step.get("args") or {}
     target = step.get("target") or {}
     # 两行注释：序号定位（step N/动作）+ 用例原始 desc 独立成行（便于搜索/对照）
-    lines = [f"// step{idx + 1} [{action}]", f"// {desc}"]
+    lines = [f"// step{idx + 1} [{_js_comment(action)}]", f"// {_js_comment(desc)}"]
 
     if action == "connect":
         lines.append("// 连接已在文件头完成（connectOverCDP），此步无需额外操作")
@@ -109,19 +133,20 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
 
     if action in ("wait_response", "judge"):
         q = args.get("question") or desc
-        lines.append(f"// TODO: 「{action}」无通用 Playwright 对应，请手写。判定点：{_js_str(q)}")
+        lines.append(f"// TODO: 「{_js_comment(action)}」无通用 Playwright 对应，请手写。判定点：{_js_str(q)}")
         return lines
 
     # 以下动作都需要定位
     loc, todo = _resolve_target(target, registry, vm_iframe)
     if todo:
-        key = target.get("key") or ""
-        lines.append(f"// TODO: {todo}；请在平台补 selector 后重新导出，或手写下面这步的定位")
-        lines.append(f"throw new Error('用例导出：{_js_str(todo)}（key={_js_str(key)}）');")
+        lines.append(f"// TODO: {_js_comment(todo)}；请在平台补 selector 后重新导出，或手写下面这步的定位")
+        lines.append("throw new Error('用例导出：该步选择器待补，见上方 TODO 注释');")
         return lines
 
     if action == "click":
         lines.append(f"await {loc}.click();")
+    elif action == "hover":
+        lines.append(f"await {loc}.hover();")
     elif action == "fill":
         text = _js_str(args.get("text", ""))
         lines.append(f"await {loc}.fill('{text}');")
@@ -145,7 +170,7 @@ def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[st
         else:
             lines.append(f"await expect({loc}).toHaveText('{expected}');")
     else:
-        lines.append(f"// TODO: 未支持的动作「{action}」，请手写")
+        lines.append(f"// TODO: 未支持的动作「{_js_comment(action)}」，请手写")
     return lines
 
 
@@ -179,7 +204,7 @@ def export_case_to_playwright(case: dict, registry: dict, vm_iframe: str) -> str
 
     indented = "\n".join(("  " + ln if ln else "") for ln in body_lines).rstrip()
 
-    header = f"""// 由测试管理平台导出：{title}
+    header = f"""// 由测试管理平台导出：{_js_comment(title)}
 // 用例意图（steps）：{steps_txt}
 // 预期（expected）：{expected_txt}
 //
