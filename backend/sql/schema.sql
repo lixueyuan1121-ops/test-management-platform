@@ -300,6 +300,74 @@ CREATE TABLE `exec_run` (
   CONSTRAINT `fk_execrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 对话测评题（发给被测大模型的 query 及执行参数）
+CREATE TABLE `eval_query` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `task_id` BIGINT NULL,
+  `ai_task_id` BIGINT NULL,
+  `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
+  `title` VARCHAR(512) NOT NULL,
+  `prompt` TEXT NOT NULL,
+  `attachments` TEXT NULL,
+  `conversation_group` VARCHAR(64) NULL,
+  `turn_index` INT NOT NULL DEFAULT 0,
+  `dialog_options` TEXT NULL,
+  `expected` TEXT NULL,
+  `review_status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `reviewed_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_evalquery_project` (`project_id`),
+  KEY `idx_evalquery_task` (`task_id`),
+  KEY `idx_evalquery_aitask` (`ai_task_id`),
+  KEY `idx_evalquery_provider` (`provider`),
+  CONSTRAINT `fk_evalquery_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_evalquery_task` FOREIGN KEY (`task_id`) REFERENCES `task` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_evalquery_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 一次对话测评执行 + 判定结果（会话全过程轨迹 + 三维判定，合并一行）
+CREATE TABLE `eval_run` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `eval_query_id` BIGINT NULL,
+  `project_id` BIGINT NOT NULL,
+  `batch_id` VARCHAR(32) NULL,
+  `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
+  `device_kind` VARCHAR(8) NOT NULL DEFAULT 'web',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `session_id` VARCHAR(64) NULL,
+  `share_link` VARCHAR(512) NULL,
+  `artifact_share_link` VARCHAR(512) NULL,
+  `answer` TEXT NULL,
+  `trace` TEXT NULL,
+  `reported_duration` VARCHAR(32) NULL,
+  `bean_cost` VARCHAR(32) NULL,
+  `tokens` VARCHAR(32) NULL,
+  `verdict` VARCHAR(16) NULL,
+  `verdict_dims` TEXT NULL,
+  `verdict_reason` TEXT NULL,
+  `judged_by` VARCHAR(16) NULL,
+  `is_abnormal` TINYINT(1) NOT NULL DEFAULT 0,
+  `pushed_multica` TINYINT(1) NOT NULL DEFAULT 0,
+  `multica_ref` VARCHAR(512) NULL,
+  `reason` TEXT NULL,
+  `duration_ms` INT NULL,
+  `enqueued_by` BIGINT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_evalrun_query` (`eval_query_id`),
+  KEY `idx_evalrun_project` (`project_id`),
+  KEY `idx_evalrun_batch` (`batch_id`),
+  KEY `idx_evalrun_runner` (`runner`),
+  KEY `idx_evalrun_status` (`status`),
+  KEY `idx_evalrun_abnormal` (`is_abnormal`),
+  CONSTRAINT `fk_evalrun_query` FOREIGN KEY (`eval_query_id`) REFERENCES `eval_query` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_evalrun_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_evalrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 执行设备:平台成员登记的自有执行机(runner);每设备独立 token,下发只选自己的设备。
 CREATE TABLE `runner_device` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,

@@ -110,6 +110,30 @@ class ExecStatus(str, enum.Enum):
     blocked = "blocked"    # 阻塞（选择器/环境问题：定位失败/复位失败/掉登录，非功能失败）
 
 
+class EvalRunStatus(str, enum.Enum):
+    """一次对话测评执行 + 判定的生命周期。"""
+    pending = "pending"    # 已下发，等执行机拉取
+    running = "running"    # 执行机已认领、对话进行中
+    done = "done"          # 对话+轨迹抓取完成（尚未判定）
+    judging = "judging"    # 轨迹已回传，大模型判定中
+    judged = "judged"      # 判定完成（终态）
+    failed = "failed"      # 执行失败（对话没跑起来/抓取失败；区别于“判定不通过”）
+
+
+class EvalDeviceKind(str, enum.Enum):
+    """执行载体（对齐 ai-eval-cli 的三种运行形态）。"""
+    web = "web"            # Web 多账号（ContextPool，注入 storageState 登录态）
+    desktop = "desktop"    # 桌面客户端（CDP 连 Electron 单客户端多对话）
+    cli = "cli"            # 命令行执行（具体形态见子项 2；先占位）
+
+
+class EvalVerdict(str, enum.Enum):
+    """大模型对一次会话的总判定。"""
+    passed = "pass"        # 三维皆过（passed 规避 Python 保留字 pass，值仍为 "pass"）
+    failed = "fail"        # 有维度不过
+    error = "error"        # 判定本身出错（轨迹缺失/判定引擎异常）
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写
