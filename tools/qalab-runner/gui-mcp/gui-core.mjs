@@ -70,12 +70,23 @@ export const DISCOVER_SCRIPT = function () {
   return out;
 };
 
+// 从 CDP context 的 pages() 结果里挑"就绪可用"的页面:优先 url 含业务域 work.n.cn 的页,
+// 否则首个未关闭页;一个可用页都没有(冷启动时页面 target 尚未在 CDP 注册)→ null,由调用方
+// 继续轮询等待。纯函数(无 playwright 依赖),单测见 pick-ready-page.test.mjs。
+export function pickReadyPage(pages) {
+  const open = (Array.isArray(pages) ? pages : []).filter((p) => p && !p.isClosed?.());
+  if (!open.length) return null;
+  return open.find((p) => (p.url() || "").includes("work.n.cn")) || open[0];
+}
+
 // 工厂:创建一个 gui-core 实例(持有 browser/page 连接态)。
 // opts: { cdpUrl, timeout, selectorsPath, registry, vmIframe }
 // registry/vmIframe 若传入则直接用之(runner 从 API 拉的注册表),否则 readFileSync 内置 selectors.json。
 export function createGuiCore(opts = {}) {
   const CDP_URL = opts.cdpUrl || process.env.CDP_URL || "http://127.0.0.1:9222";
   const DEFAULT_TIMEOUT = Number(opts.timeout || process.env.GUI_TIMEOUT_MS || 10000);
+  // 冷启动时等页面 target 在 CDP 注册出来的上限(端口活≠页面就绪,见 ensureConnected)。
+  const PAGE_READY_TIMEOUT = Number(opts.pageReadyTimeout || process.env.CDP_PAGE_READY_MS || 15000);
   // let(非 const):setRegistry 就地换表后,闭包引用它的 resolveKey/isKeyVisible/scopesFor/contentFrame 立即生效。
   let REGISTRY, VM_IFRAME;
   if (opts.registry) {
@@ -103,9 +114,18 @@ export function createGuiCore(opts = {}) {
     if (browser && browser.isConnected() && page && !page.isClosed()) return;
     browser = await chromium.connectOverCDP(CDP_URL);
     const ctx = browser.contexts()[0] || (await browser.newContext());
-    const pages = ctx.pages();
-    page = pages.find((p) => (p.url() || "").includes("work.n.cn")) || pages[0];
-    if (!page) page = await ctx.newPage();
+    // 冷启动竞态:CDP 端口先活、渲染进程的页面 target 后注册,刚连上时 ctx.pages() 可能仍空。
+    // 此时若直接 ctx.newPage() 会撞 Electron 的 Target.createTarget: Not supported(不支持建 target),
+    // 导致冷启动首条用例复位失败。故轮询等页面 target 出现(≤PAGE_READY_TIMEOUT),拿到就用;
+    // 等满仍无页面才回落 newPage(非 Electron/特殊场景的兜底,正常路径不会走到)。
+    const end = Date.now() + PAGE_READY_TIMEOUT;
+    for (;;) {
+      const p = pickReadyPage(ctx.pages());
+      if (p) { page = p; return; }
+      if (Date.now() >= end) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    page = await ctx.newPage();
   }
 
   function contentFrame() {
