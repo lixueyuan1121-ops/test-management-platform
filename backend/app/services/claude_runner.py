@@ -476,18 +476,20 @@ def _parse_line(line: str) -> dict | None:
     return None
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
     project_id 透传给 prompt 构造,决定注入哪个项目的 key 清单。
     pages 非空则只注入这些页面的 key(收窄),减少噪声与降级。
+    prompt_builder 非空则用它(无参调用)构造 prompt,否则默认生成测试点 prompt。
     """
     if not is_available():
         yield {"type": "error", "msg": "AI 功能未启用或未找到 claude 可执行文件"}
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
-    cmd = _build_cmd(build_testcase_prompt(requirement, project_id, pages))
+    prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
+    cmd = _build_cmd(prompt)
 
     if not _slots.acquire(blocking=False):
         yield {"type": "error", "msg": "AI 生成繁忙（已达并发上限），请稍后重试"}

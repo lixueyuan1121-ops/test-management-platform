@@ -31,6 +31,8 @@ from app.services.claude_runner import (  # noqa: F401
     build_testcase_prompt,
     build_script_prompt,
     parse_testcases,
+    build_eval_query_prompt,
+    parse_eval_queries,
     _validate_script,
     _validate_api_script,
     _registered_keys,
@@ -77,17 +79,19 @@ def _body(prompt: str, stream: bool) -> dict:
     }
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None) -> Iterator[dict]:
     """流式生成测试点。yield delta/result/error/heartbeat，契约与 claude_runner 对齐。
 
     只累积 delta.content（正文）为 raw；delta.reasoning_content（思维链）丢弃。
     project_id 透传给 build_testcase_prompt,决定注入哪个项目的 key 清单。
     pages 非空则只注入这些页面的 key(收窄),与 claude 引擎口径一致。
+    prompt_builder 非空则用它(无参调用)构造 prompt,否则默认生成测试点 prompt。
     """
     if not is_available():
         yield {"type": "error", "msg": "DeepSeek 引擎未启用或未配置（检查 DEEPSEEK_ENABLED / BASE_URL / KEY）"}
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
+    prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
 
     if not _slots.acquire(blocking=False):
         yield {"type": "error", "msg": "DeepSeek 生成繁忙（已达并发上限），请稍后重试"}
@@ -100,7 +104,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     last_beat = time.monotonic()
     try:
         resp = requests.post(
-            _endpoint(), headers=_headers(), json=_body(build_testcase_prompt(requirement, project_id, pages), stream=True),
+            _endpoint(), headers=_headers(), json=_body(prompt, stream=True),
             stream=True, timeout=(10, timeout),
         )
         if resp.status_code != 200:
