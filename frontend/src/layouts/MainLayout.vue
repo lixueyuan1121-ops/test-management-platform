@@ -28,6 +28,7 @@
         <el-sub-menu index="design">
           <template #title><el-icon><MagicStick /></el-icon><span>测试设计</span></template>
           <el-menu-item index="/ai-testgen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>AI 测试助手</span></el-menu-item>
+          <el-menu-item index="/ai-eval-gen" class="ai-entry"><el-icon><ChatDotRound /></el-icon><span>对话测评生成</span></el-menu-item>
           <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
           <el-menu-item index="/adopted-cases"><el-icon><Select /></el-icon><span>已采纳用例</span></el-menu-item>
           <el-menu-item index="/regression-cases"><el-icon><RefreshRight /></el-icon><span>回归用例库</span></el-menu-item>
@@ -118,7 +119,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
