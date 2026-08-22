@@ -46,6 +46,7 @@ def push_abnormal_run(run) -> str | None:
         if settings.MULTICA_TOKEN:
             headers["Authorization"] = f"Bearer {settings.MULTICA_TOKEN}"
         resp = requests.post(settings.MULTICA_URL, json=payload, headers=headers, timeout=15)
+        resp.raise_for_status()  # 非 2xx 抛异常→端点 except 捕获 rollback 不标 pushed(可重试),避免 fail-open 静默吞异常
         try:
             data = resp.json()
         except ValueError:

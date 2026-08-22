@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole
 from app.db.session import get_db
-from app.models import EvalQuery, EvalRun, User
+from app.models import EvalRun, User
 from app.schemas.common import ok
 from app.schemas.eval_export import EvalExportFeishuIn, EvalPushMulticaIn
 from app.services import feishu, multica
@@ -41,10 +41,6 @@ def export_feishu(body: EvalExportFeishuIn, db: Session = Depends(get_db), user:
     runs = _query_runs(db, body.project_id, body.batch_id, body.abnormal_only)
     rows = []
     for r in runs:
-        title = ""
-        if r.eval_query_id:
-            q = db.get(EvalQuery, r.eval_query_id)
-            title = q.title if q else ""
         rows.append({
             "share_link": r.share_link or "", "artifact_share_link": r.artifact_share_link or "",
             "reported_duration": r.reported_duration or "", "bean_cost": r.bean_cost or "",
