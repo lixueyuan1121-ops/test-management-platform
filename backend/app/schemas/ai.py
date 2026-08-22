@@ -14,6 +14,15 @@ class TestCaseGenIn(BaseModel):
     pages: list[str] | None = None  # 目标页面(选择器管理里的 page):①收窄注入的 key ②给该批无 key 用例兜底打页面标
 
 
+class EvalQueryGenIn(BaseModel):
+    project_id: int
+    task_id: int | None = None
+    input_type: AiInputType = AiInputType.text
+    provider: str | None = None  # claude/deepseek;空/非法后端 normalize 回落
+    requirement: str = Field(min_length=1, max_length=20000)  # 需求正文(url/file 由前端取文后填)
+    dimensions: list[str] = Field(min_length=1)  # 至少一个对话测评维度
+
+
 class TestCaseReviewIn(BaseModel):
     """编辑一条测试点:评审三态 / 执行类型 / 正文字段,均可选,至少填一个。
 

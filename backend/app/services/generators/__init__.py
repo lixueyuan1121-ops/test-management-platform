@@ -2,8 +2,9 @@
 
 平台支持多引擎生成测试点。每个 provider 是一个模块,实现统一的对外接口:
   - is_available() -> bool
-  - stream_generate(requirement, project_id=None, timeout=None, pages=None) -> Iterator[dict]
+  - stream_generate(requirement, project_id=None, timeout=None, pages=None, prompt_builder=None, system_prompt=None) -> Iterator[dict]
       yield 事件: {"type": "delta"|"result"|"error"|"heartbeat", ...}
+      prompt_builder/system_prompt 为空时默认走"生成测试点"的 prompt/system;对话测评 query 生成经此二参复用同一引擎(见 api/ai_eval.py)。
   - generate_script(kind, title, steps, expected, project_id=None, timeout=None) -> tuple[list, str|None]
   - build_testcase_prompt(requirement, project_id=None, pages=None) -> str   # 供各 provider 复用同一 prompt
   - parse_testcases(raw, project_id=None) -> list[dict]          # 供各 provider 复用同一解析/降级

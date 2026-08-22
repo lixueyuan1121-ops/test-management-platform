@@ -308,6 +308,7 @@ CREATE TABLE `eval_query` (
   `ai_task_id` BIGINT NULL,
   `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
   `title` VARCHAR(512) NOT NULL,
+  `dimension` VARCHAR(16) NULL,
   `prompt` TEXT NOT NULL,
   `attachments` TEXT NULL,
   `conversation_group` VARCHAR(64) NULL,

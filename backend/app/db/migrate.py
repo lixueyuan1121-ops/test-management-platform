@@ -358,3 +358,12 @@ def ensure_api_env_table(engine=None) -> None:
     from app.models.api_env import ApiEnv
     eng = engine if engine is not None else _default_engine
     ApiEnv.__table__.create(bind=eng, checkfirst=True)
+
+
+def ensure_eval_query_dimension() -> None:
+    """eval_query 补 dimension 列(对话测评题主考维度)。老库已建表故走 ALTER;新库 create_all 已含,探到即跳过(幂等)。"""
+    if not _columns("eval_query"):
+        return  # 表还没建(全新库 create_all 尚未跑到)——create_all 会带上该列,无需 ALTER
+    if "dimension" not in _columns("eval_query"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_query ADD COLUMN dimension VARCHAR(16) NULL"))

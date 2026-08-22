@@ -291,11 +291,14 @@ def list_ai_tasks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """某项目的 AI 生成历史（战绩基础：状态/条数/成本/token/耗时）。"""
+    """某项目的 AI 生成历史（战绩基础：状态/条数/成本/token/耗时）。
+
+    仅测试点生成(kind=testcase_gen);对话测评 query 生成的历史另见 eval 侧。
+    """
     assert_project_role(db, user, project_id, _ALL_ROLES)
     rows = (
         db.query(AiTask)
-        .filter(AiTask.project_id == project_id)
+        .filter(AiTask.project_id == project_id, AiTask.kind == "testcase_gen")
         .order_by(AiTask.id.desc())
         .limit(limit)
         .all()
