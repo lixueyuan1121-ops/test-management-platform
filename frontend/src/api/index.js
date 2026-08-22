@@ -105,6 +105,9 @@ export const enqueueExec = (project_id, runner, checklistItemIds) =>
 // 回归执行:直接按用例 id 下发(不依赖任务/采纳,不挂清单项)。
 export const enqueueCases = (project_id, runner, testCaseIds) =>
   http.post('/exec-queue/enqueue-cases', { project_id, runner, test_case_ids: testCaseIds })
+// 对话测评:下发勾选的 query 到执行机(eval-queue,独立于 exec-queue 功能测试点执行)。
+// payload: { project_id, runner, target_engine:'namiwork', eval_query_ids:[...] } → { run_ids, batch_id }
+export const enqueueEvalQueries = (payload) => http.post('/eval-queue/enqueue', payload)
 
 // ===== 导出 Playwright 脚本（回归用例库 → 开发本地自测）=====
 // 下载类接口用 responseType:'blob' + returnResponse:true —— 拿到完整响应（含头），

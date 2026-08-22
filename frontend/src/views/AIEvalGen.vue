@@ -92,6 +92,21 @@
       <template #header>
         <div class="card-head">
           <span class="result-title">测评 query 清单 · {{ queries.length }} 条</span>
+          <div class="dispatch-bar">
+            <span v-if="selectedQueries.length" class="sel-info">已选 {{ selectedQueries.length }} 条</span>
+            <el-select
+              v-model="chosenRunner" size="small" style="width:200px"
+              :placeholder="devices.length ? '选择执行机' : '未登记设备'"
+              no-data-text="去『我的设备』注册"
+            >
+              <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
+            </el-select>
+            <el-button
+              type="success" size="small" :loading="dispatching"
+              :disabled="!selectedQueries.length || !chosenRunner"
+              @click="dispatchSelected"
+            >发送到执行机</el-button>
+          </div>
         </div>
       </template>
 
@@ -103,7 +118,8 @@
         <div class="stat"><div class="stat-num">{{ meta.cost_usd != null ? '$' + meta.cost_usd.toFixed(3) : '—' }}</div><div class="stat-label">成本</div></div>
       </div>
 
-      <el-table :data="sortedQueries" size="small" border stripe class="case-table">
+      <el-table :data="sortedQueries" size="small" border stripe class="case-table" @selection-change="(s) => (selectedQueries = s)">
+        <el-table-column type="selection" width="42" />
         <el-table-column label="维度" width="120" align="center">
           <template #default="{ row }">
             <el-tag :type="DIM_TYPE[row.dimension] || 'info'" effect="plain" size="small">{{ dimLabel(row.dimension) }}</el-tag>
@@ -133,7 +149,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, ChatDotRound } from '@element-plus/icons-vue'
-import { listTasks, aiStatus, streamEvalQueries } from '@/api'
+import { listTasks, aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -182,6 +198,12 @@ const phaseIdx = ref(0)
 const queries = ref([])
 const meta = ref(null)
 
+// 下发到执行机:勾选的 query + 我的设备(runner)→ /api/eval-queue/enqueue
+const selectedQueries = ref([])
+const devices = ref([])            // 我的执行设备(复用 listMyDevices)
+const chosenRunner = ref('')       // 选中的 runner_id
+const dispatching = ref(false)
+
 let timer = null
 let ctrl = null
 
@@ -193,8 +215,8 @@ const sortedQueries = computed(() =>
     || (a.turn_index ?? 0) - (b.turn_index ?? 0)))
 
 onMounted(async () => {
-  // aiStatus 与项目列表无依赖，并行拉取
-  const [aiRes, projRes] = await Promise.allSettled([aiStatus(), app.fetchProjects()])
+  // aiStatus / 项目列表 / 我的设备 互无依赖，并行拉取
+  const [aiRes, projRes, devRes] = await Promise.allSettled([aiStatus(), app.fetchProjects(), listMyDevices()])
   const aiData = aiRes.status === 'fulfilled' ? (aiRes.value || {}) : {}
   aiAvailable.value = !!aiData.available
   providers.value = aiData.providers || []
@@ -207,6 +229,9 @@ onMounted(async () => {
     pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()
   }
+  // 我的设备(下发选 runner);默认选中第一台,便于直接下发
+  devices.value = devRes.status === 'fulfilled' ? (devRes.value || []) : []
+  if (devices.value.length) chosenRunner.value = devices.value[0].runner_id
 })
 
 async function onProjectChange() {
@@ -260,6 +285,23 @@ function stop() {
 }
 
 function cancel() { ctrl?.abort() }
+
+// 下发选中 query 到执行机:调 /api/eval-queue/enqueue(target_engine 固定 namiwork)。
+// projectId 用本页 pid;eval_query_ids 取选中行的 id(done 帧 query 已含 DB id)。
+async function dispatchSelected() {
+  if (!selectedQueries.value.length || !chosenRunner.value) return
+  dispatching.value = true
+  try {
+    const res = await enqueueEvalQueries({
+      project_id: pid.value,
+      runner: chosenRunner.value,
+      target_engine: 'namiwork',
+      eval_query_ids: selectedQueries.value.map((q) => q.id),
+    })
+    ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
+  } catch { /* http 拦截器已提示 */ }
+  finally { dispatching.value = false }
+}
 </script>
 
 <style scoped>
@@ -343,6 +385,8 @@ function cancel() { ctrl?.abort() }
 .stat-label { font-size: 12px; color: #8a94a6; margin-top: 4px; }
 
 .result-title { font-weight: 600; color: #1f2d3d; }
+.dispatch-bar { display: flex; align-items: center; gap: 10px; }
+.sel-info { font-weight: 600; color: #00926e; font-size: 13px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .cg { font-size: 12px; color: #5a6b7b; }
 .case-table { margin-top: 4px; }
