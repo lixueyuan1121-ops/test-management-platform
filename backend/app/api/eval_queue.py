@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
-from app.core.enums import EvalRunStatus, ProjectRole
+from app.core.enums import EvalDeviceKind, EvalRunStatus, ProjectRole
 from app.db.session import get_db
 from app.models import EvalQuery, EvalRun, User
 from app.schemas.common import ok
@@ -59,6 +59,7 @@ def _to_out(r: EvalRun) -> dict:
         "trace": r.trace,
         "reported_duration": r.reported_duration,
         "bean_cost": r.bean_cost,
+        "tokens": r.tokens,
         "reason": r.reason,
         "duration_ms": r.duration_ms,
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -85,6 +86,7 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
         row = EvalRun(
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
             runner=body.runner, target_engine=body.target_engine,
+            device_kind=EvalDeviceKind.desktop,
             status=EvalRunStatus.pending, payload=json.dumps(_payload_of(q), ensure_ascii=False),
             enqueued_by=user.id,
         )
@@ -152,7 +154,10 @@ _MAX_TRACE_BYTES = 20 * 1024 * 1024
 @router.post("/{run_id}/trace")
 async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = Query("mac-01"),
                        db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
-    """执行器上传会话轨迹 JSON。存 uploads/eval_traces/{run_id}.json,回写 eval_run.trace=URL。"""
+    """执行器上传会话轨迹 JSON。存 uploads/eval_traces/{run_id}-<hex>.json,回写 eval_run.trace=URL。
+
+    文件名加随机后缀防枚举(/uploads 无鉴权静态挂载)。同 run 重传(重跑)前先删旧 trace 避堆积。
+    """
     if ctx.device is not None:
         runner = ctx.device.runner_id
     r = db.get(EvalRun, run_id)
@@ -168,7 +173,17 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
     except (json.JSONDecodeError, ValueError):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="轨迹须为合法 JSON")
     os.makedirs(_TRACE_ROOT, exist_ok=True)
-    rel = f"eval_traces/{run_id}.json"
+    # 重传前删该 run 的旧 trace 文件(随机名会产生多份,吞异常)
+    try:
+        for name in os.listdir(_TRACE_ROOT):
+            if name.startswith(f"{run_id}-"):
+                try:
+                    os.remove(os.path.join(_TRACE_ROOT, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    rel = f"eval_traces/{run_id}-{secrets.token_hex(8)}.json"
     with open(os.path.join(_UPLOADS_DIR, rel), "wb") as f:
         f.write(data)
     r.trace = f"/uploads/{rel}"; db.commit()
