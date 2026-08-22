@@ -109,6 +109,18 @@ export const enqueueCases = (project_id, runner, testCaseIds) =>
 // payload: { project_id, runner, target_engine:'namiwork', eval_query_ids:[...] } → { run_ids, batch_id }
 export const enqueueEvalQueries = (payload) => http.post('/eval-queue/enqueue', payload)
 
+// ===== 对话测评判定（读 trace + 引擎判三维：思考/工具/产物）=====
+// 单条触发判定；provider 可空（后端按默认引擎）。返回已解包的 _run_out（含 verdict/verdict_dims/is_abnormal）。
+// 判定同步调 AI 引擎，较慢（常 30-60s），单独放宽超时到 90s（覆盖全局 15s 默认）。
+export const judgeEvalRun = (runId, provider) => http.post(`/eval-judge/${runId}`, { provider }, { timeout: 90000 })
+// 批量判定；payload: { project_id, run_ids?（空则判该项目所有 done）, provider? } → { judged, results:[...] }
+// 批量逐条同步判定，可能判很多条，放宽到 5 分钟。
+export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payload, { timeout: 300000 })
+// 异常会话（is_abnormal=判定 fail）列表，供复核/推送
+export const listAbnormalEvalRuns = (projectId) => http.get('/eval-judge/abnormal', { params: { project_id: projectId } })
+// eval 执行历史（子项2 端点 /eval-queue/history；此前未在 api 封装，新增）；返回 _to_out 列表（含 payload/status/verdict）
+export const listEvalRuns = (projectId) => http.get('/eval-queue/history', { params: { project_id: projectId } })
+
 // ===== 导出 Playwright 脚本（回归用例库 → 开发本地自测）=====
 // 下载类接口用 responseType:'blob' + returnResponse:true —— 拿到完整响应（含头），
 // 绕开 http.js 对 {code,msg,data} 的解包；错误 body 也成了 Blob，需手动读回 JSON 取 msg。

@@ -22,6 +22,7 @@ const routes = [
       { path: 'my-reports', name: 'my-reports', component: () => import('@/views/MyReports.vue') },
       { path: 'my-devices', name: 'my-devices', component: () => import('@/views/MyDevices.vue') },
       { path: 'exec-results', name: 'exec-results', component: () => import('@/views/ExecResults.vue') },
+      { path: 'eval-results', name: 'eval-results', component: () => import('@/views/EvalResults.vue'), meta: { title: '对话测评结果' } },
       { path: 'stats', name: 'stats', component: () => import('@/views/DailyStats.vue') },
       { path: 'workload', name: 'workload', component: () => import('@/views/WorkloadStats.vue') },
       { path: 'ai-wall', name: 'ai-wall', component: () => import('@/views/AIWall.vue'), meta: { title: 'AI 战绩墙' } },
