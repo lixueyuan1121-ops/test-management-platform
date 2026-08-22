@@ -121,6 +121,14 @@ export const listAbnormalEvalRuns = (projectId) => http.get('/eval-judge/abnorma
 // eval 执行历史（子项2 端点 /eval-queue/history；此前未在 api 封装，新增）；返回 _to_out 列表（含 payload/status/verdict）
 export const listEvalRuns = (projectId) => http.get('/eval-queue/history', { params: { project_id: projectId } })
 
+// ===== 对话测评导出/推送 =====
+// 导出到飞书表；payload: { project_id, sheet_url, abnormal_only?, batch_id?, start_row? } → { exported, sheet_url }
+export const exportEvalFeishu = (payload) => http.post('/eval-export/feishu', payload)
+// 推送异常会话到 multica；payload: { project_id, batch_id? } → { pushed, candidates, results }
+export const pushEvalMultica = (payload) => http.post('/eval-export/multica', payload)
+// 待推 multica 的异常数（is_abnormal 且未 pushed）→ { pending }
+export const evalMulticaPending = (projectId) => http.get('/eval-export/multica-pending', { params: { project_id: projectId } })
+
 // ===== 导出 Playwright 脚本（回归用例库 → 开发本地自测）=====
 // 下载类接口用 responseType:'blob' + returnResponse:true —— 拿到完整响应（含头），
 // 绕开 http.js 对 {code,msg,data} 的解包；错误 body 也成了 Blob，需手动读回 JSON 取 msg。
