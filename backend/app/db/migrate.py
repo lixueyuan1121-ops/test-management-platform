@@ -376,3 +376,12 @@ def ensure_eval_run_target_engine() -> None:
     if "target_engine" not in _columns("eval_run"):
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_engine VARCHAR(32) NULL"))
+
+
+def ensure_eval_run_payload() -> None:
+    """eval_run 补 payload 列(下发时的题面快照 JSON)。老库已建表走 ALTER;新库 create_all 已含,幂等跳过。"""
+    if not _columns("eval_run"):
+        return
+    if "payload" not in _columns("eval_run"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN payload TEXT NULL"))

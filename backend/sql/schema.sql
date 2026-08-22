@@ -338,6 +338,7 @@ CREATE TABLE `eval_run` (
   `device_kind` VARCHAR(8) NOT NULL DEFAULT 'web',
   `target_engine` VARCHAR(32) NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `payload` TEXT NULL,
   `session_id` VARCHAR(64) NULL,
   `share_link` VARCHAR(512) NULL,
   `artifact_share_link` VARCHAR(512) NULL,
