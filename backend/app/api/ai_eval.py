@@ -93,6 +93,7 @@ def gen_eval_queries(
             for evt in engine.stream_generate(
                 requirement, project_id=project_id,
                 prompt_builder=lambda: claude_runner.build_eval_query_prompt(requirement, dimensions),
+                system_prompt=claude_runner.EVAL_SYSTEM_PROMPT,
             ):
                 etype = evt.get("type")
                 if etype == "heartbeat":

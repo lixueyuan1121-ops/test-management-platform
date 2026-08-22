@@ -177,6 +177,11 @@ _SYSTEM_PROMPT = (
     "只按用户要求的格式输出，不寒暄、不解释。"
 )
 
+EVAL_SYSTEM_PROMPT = (
+    "你是 AI 对话能力测评的出题专家，负责生成用于考查被测大模型对话能力的 query。"
+    "只按用户要求的格式输出，不寒暄、不解释。"
+)
+
 # 全局并发闸：控制同时运行的 claude 子进程数（成本 + 机器负载）
 _slots = threading.BoundedSemaphore(max(1, settings.AI_MAX_CONCURRENCY))
 
@@ -294,11 +299,11 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
 </requirement>"""
 
 
-def _build_cmd(prompt: str) -> list[str]:
+def _build_cmd(prompt: str, system_prompt: str | None = None) -> list[str]:
     cmd = [
         _claude_bin(), "-p", prompt,
         "--output-format", "stream-json", "--verbose",
-        "--append-system-prompt", _SYSTEM_PROMPT,
+        "--append-system-prompt", system_prompt or _SYSTEM_PROMPT,
         "--disallowedTools", *_DISALLOWED_TOOLS,
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     ]
@@ -476,20 +481,21 @@ def _parse_line(line: str) -> dict | None:
     return None
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
     project_id 透传给 prompt 构造,决定注入哪个项目的 key 清单。
     pages 非空则只注入这些页面的 key(收窄),减少噪声与降级。
     prompt_builder 非空则用它(无参调用)构造 prompt,否则默认生成测试点 prompt。
+    system_prompt 非空则覆盖注入的 --append-system-prompt,否则回落 _SYSTEM_PROMPT(测试工程师人设)。
     """
     if not is_available():
         yield {"type": "error", "msg": "AI 功能未启用或未找到 claude 可执行文件"}
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
-    cmd = _build_cmd(prompt)
+    cmd = _build_cmd(prompt, system_prompt)
 
     if not _slots.acquire(blocking=False):
         yield {"type": "error", "msg": "AI 生成繁忙（已达并发上限），请稍后重试"}
@@ -687,8 +693,8 @@ def parse_eval_queries(raw: str) -> list[dict]:
     for item in arr:
         if not isinstance(item, dict):
             continue
-        title = (item.get("title") or "").strip()
-        prompt = (item.get("prompt") or "").strip()
+        title = str(item.get("title") or "").strip()
+        prompt = str(item.get("prompt") or "").strip()
         if not title or not prompt:
             continue  # 无题干或无提问正文的条目无意义,丢弃
         dim = item.get("dimension")
@@ -710,7 +716,7 @@ def parse_eval_queries(raw: str) -> list[dict]:
             "title": title[:512],
             "prompt": prompt,
             "dimension": dim,
-            "expected": (item.get("expected") or "").strip() or None,
+            "expected": str(item.get("expected") or "").strip() or None,
             "attachments": att,
             "conversation_group": cg,   # None → 落库时补唯一组名
             "turn_index": ti,

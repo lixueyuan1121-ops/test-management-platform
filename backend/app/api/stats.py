@@ -340,7 +340,9 @@ def ai_stats(
     dims = [{"name": n, "count": int(dim_map.get(n, 0))} for n in DIMS]
 
     # ai_task：done 次数 / 成本 / 平均耗时（按 ai_task.created_at 区间）
+    # 只统计测试点生成(kind=testcase_gen)；对话测评 query 生成(eval_query_gen)不污染测试点战绩墙。
     at_filter = [AiTask.project_id.in_(pids),
+                 AiTask.kind == "testcase_gen",
                  func.date(AiTask.created_at) >= from_d,
                  func.date(AiTask.created_at) <= to_d]
     run_cnt = (db.query(func.count(AiTask.id))
