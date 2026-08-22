@@ -65,9 +65,14 @@ class EvalRun(Base):
     device_kind: Mapped[EvalDeviceKind] = mapped_column(
         Enum(EvalDeviceKind, length=8), default=EvalDeviceKind.web, server_default="web"
     )
+    # 被测引擎(namiwork/codex/claude...);本阶段只实现 namiwork。留空兼容。
+    target_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[EvalRunStatus] = mapped_column(
         Enum(EvalRunStatus, length=16), default=EvalRunStatus.pending, server_default="pending", index=True
     )
+    # 下发时的题面快照 JSON 字符串（prompt/attachments/dialog_options/conversation_group/turn_index）：
+    # 执行器据此驱动对话，用"下发那一刻"的配置避免执行时 eval_query 被改导致漂移（学 exec_run.payload）。
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     # —— CLI 抓回的会话数据 ——
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # work.n.cn 会话 UUID
     share_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
