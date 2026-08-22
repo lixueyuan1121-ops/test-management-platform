@@ -367,3 +367,12 @@ def ensure_eval_query_dimension() -> None:
     if "dimension" not in _columns("eval_query"):
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_query ADD COLUMN dimension VARCHAR(16) NULL"))
+
+
+def ensure_eval_run_target_engine() -> None:
+    """eval_run 补 target_engine 列(被测引擎)。老库已建表走 ALTER;新库 create_all 已含,幂等跳过。"""
+    if not _columns("eval_run"):
+        return
+    if "target_engine" not in _columns("eval_run"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_engine VARCHAR(32) NULL"))

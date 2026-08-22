@@ -336,6 +336,7 @@ CREATE TABLE `eval_run` (
   `batch_id` VARCHAR(32) NULL,
   `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
   `device_kind` VARCHAR(8) NOT NULL DEFAULT 'web',
+  `target_engine` VARCHAR(32) NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
   `session_id` VARCHAR(64) NULL,
   `share_link` VARCHAR(512) NULL,

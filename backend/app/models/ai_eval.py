@@ -65,6 +65,8 @@ class EvalRun(Base):
     device_kind: Mapped[EvalDeviceKind] = mapped_column(
         Enum(EvalDeviceKind, length=8), default=EvalDeviceKind.web, server_default="web"
     )
+    # 被测引擎(namiwork/codex/claude...);本阶段只实现 namiwork。留空兼容。
+    target_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[EvalRunStatus] = mapped_column(
         Enum(EvalRunStatus, length=16), default=EvalRunStatus.pending, server_default="pending", index=True
     )
