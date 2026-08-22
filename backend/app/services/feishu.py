@@ -193,3 +193,111 @@ def extract_feishu(url: str) -> tuple[str, str]:
     if kind == "base":
         return _fetch_base(token)
     raise ValueError("不支持的飞书链接类型")
+
+
+# ---- sheets 写回(导出 eval 结果到飞书表;移植自 ai-eval-cli feishu-sheet.js)----
+def _col_to_num(col: str) -> int:
+    """列字母→序号(多字母26进制):A=1,Z=26,AA=27。"""
+    n = 0
+    for ch in str(col).upper():
+        c = ord(ch)
+        if c < 65 or c > 90:
+            continue
+        n = n * 26 + (c - 64)
+    return n or 1
+
+
+def _num_to_col(n: int) -> str:
+    """序号→列字母(_col_to_num 逆)。"""
+    s = ""
+    while n > 0:
+        r = (n - 1) % 26
+        s = chr(65 + r) + s
+        n = (n - 1) // 26
+    return s
+
+
+_SHEET_TOKEN_ERR = {99991663, 99991661, 99991668}  # token 失效码(刷新重试)
+
+
+def _api_put(path: str, body: dict) -> dict:
+    """PUT 封装(仿 _api_get);token 失效刷新重试一次。code!=0 抛 ValueError。"""
+    def _do():
+        resp = requests.put(
+            f"{_base()}{path}",
+            headers={"Authorization": f"Bearer {_get_token()}", "Content-Type": "application/json"},
+            json=body, timeout=15,
+        )
+        return resp.json()
+    try:
+        data = _do()
+    except requests.RequestException as e:
+        raise ValueError(f"飞书网络错误：{e}")
+    except ValueError:
+        raise ValueError("飞书接口返回非 JSON")
+    if data.get("code") in _SHEET_TOKEN_ERR:
+        _token_cache["token"] = ""  # 清缓存强制刷新
+        try:
+            data = _do()
+        except requests.RequestException as e:
+            raise ValueError(f"飞书网络错误：{e}")
+    if data.get("code") != 0:
+        raise ValueError(_friendly_err(data))
+    return data.get("data", {}) or {}
+
+
+def parse_sheet_url(url: str) -> tuple[str, str]:
+    """从飞书 sheets/wiki 链接解析 (spreadsheet_token, sheet_id)。wiki 经 get_node 换 obj_token。"""
+    import re as _re
+    m_sheet = _re.search(r"[?&]sheet=([A-Za-z0-9]+)", url or "")
+    sheet_id = m_sheet.group(1) if m_sheet else "0"
+    m = _re.search(r"/sheets/([A-Za-z0-9]+)", url or "")
+    if m:
+        return m.group(1), sheet_id
+    m = _re.search(r"/wiki/([A-Za-z0-9]+)", url or "")
+    if m:
+        node = _api_get("/open-apis/wiki/v2/spaces/get_node", {"token": m.group(1)}).get("node", {})
+        obj = node.get("obj_token")
+        if not obj:
+            raise ValueError("wiki 节点未关联电子表格")
+        return obj, sheet_id
+    raise ValueError("无法识别飞书表格链接(支持 /sheets/ 或 /wiki/)")
+
+
+_MAX_CELL = 45000  # 飞书单元格约 5 万字符上限
+
+
+def _column_groups(col_map: dict) -> list:
+    """把 {字段:列字母} 按列号排序,相邻列合并成组(非连续列分区间,不碰中间列)。
+    返回 [{'start':n,'end':n,'fields':[...]}]。"""
+    entries = sorted(({"field": f, "num": _col_to_num(c)} for f, c in col_map.items()), key=lambda e: e["num"])
+    groups = []
+    for e in entries:
+        if groups and e["num"] == groups[-1]["end"] + 1:
+            groups[-1]["end"] = e["num"]; groups[-1]["fields"].append(e["field"])
+        else:
+            groups.append({"start": e["num"], "end": e["num"], "fields": [e["field"]]})
+    return groups
+
+
+def write_sheet_rows(sheet_url: str, rows: list[dict], col_map: dict, start_row: int = 2) -> int:
+    """把 rows(每个是 {字段:值} dict)按 col_map(字段→列字母)从 start_row 起逐行写飞书表。
+    非连续列分区间写(不碰中间列);answer 等长文本截断。返回写入行数。"""
+    if not is_configured():
+        raise ValueError("未配置飞书应用凭据(FEISHU_APP_ID/FEISHU_APP_SECRET)")
+    token, sheet_id = parse_sheet_url(sheet_url)
+    groups = _column_groups(col_map)
+    for i, row in enumerate(rows):
+        real_row = start_row + i
+        for g in groups:
+            vals = []
+            for f in g["fields"]:
+                v = row.get(f, "")
+                v = "" if v is None else str(v)
+                if len(v) > _MAX_CELL:
+                    v = v[:_MAX_CELL]
+                vals.append(v)
+            rng = f"{sheet_id}!{_num_to_col(g['start'])}{real_row}:{_num_to_col(g['end'])}{real_row}"
+            _api_put(f"/open-apis/sheets/v2/spreadsheets/{token}/values",
+                     {"valueRange": {"range": rng, "values": [vals]}})
+    return len(rows)
