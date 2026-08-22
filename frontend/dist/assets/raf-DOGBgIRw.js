@@ -1,0 +1,1 @@
+import{dh as o}from"./index-SVzCDaZx.js";const e="update:modelValue",s="change",n="input",i=t=>o?window.requestAnimationFrame(t):setTimeout(t,16),c=t=>o?window.cancelAnimationFrame(t):clearTimeout(t);export{s as C,n as I,e as U,c,i as r};

@@ -22,7 +22,7 @@ from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
 from app.db.session import get_db
 from app.models import ChecklistItem, ExecRun, TestCase, User
 from app.schemas.common import ok
-from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn
+from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn, ExecCorrectIn
 
 router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 
@@ -357,7 +357,53 @@ def report(
     return ok(_to_out(r))
 
 
-# ---- ⑤ runner 上传执行截图（二进制,独立于 report TEXT 通道)----
+# ---- ⑥ 人工纠偏执行结果（用户 JWT，非 runner）----
+# 机器判定可能误判（如误报 blocked、把真 bug 判过），人工复核后可修正结果。三态 pass/fail/blocked，
+# reason 打「[人工纠偏]」前缀留痕，并同步 checklist_item.exec_status（与 runner 回写同一套映射）。
+_CORRECT_MARK = "[人工纠偏]"
+
+
+@router.patch("/{run_id}/verdict")
+def correct_verdict(
+    run_id: int,
+    body: ExecCorrectIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """人工修正一条执行结果。项目 admin/member 可操作（按 run 所属项目鉴权）。
+
+    verdict 三态:pass→passed;blocked→selector 环境阻塞;fail→business 真 bug。
+    reason 存「[人工纠偏] <备注>」;同步回填清单项 exec_status(有清单项时)。
+    """
+    r = db.get(ExecRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+
+    is_pass = body.verdict == "pass"
+    is_blocked = body.verdict == "blocked"
+    # 与 report 端点一致:blocked→fail_kind=selector;fail→business;pass→None。
+    r.verdict = body.verdict
+    r.fail_kind = None if is_pass else ("selector" if is_blocked else "business")
+    r.status = ExecStatus.passed if is_pass else (ExecStatus.blocked if is_blocked else ExecStatus.failed)
+    note = (body.reason or "").strip()
+    r.reason = f"{_CORRECT_MARK} {note}" if note else _CORRECT_MARK
+
+    # 同步清单项(与 report 端点同一映射);裸执行记录(无清单项)跳过。
+    if r.checklist_item_id:
+        item = db.get(ChecklistItem, r.checklist_item_id)
+        if item:
+            item.exec_status = (ChecklistStatus.passed if is_pass
+                                else ChecklistStatus.blocked if is_blocked
+                                else ChecklistStatus.failed)
+            item.executed_by = user.id      # 人工纠偏:记纠偏人(区别于机器执行的 None)
+            item.executed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(r)
+    return ok(_to_out(r))
+
+
+# ---- ⑦ runner 上传执行截图（二进制,独立于 report TEXT 通道)----
 # 同 probe:截图大,base64 塞 report TEXT 会撑爆 MySQL 5.6 的 64KB。走 multipart 存磁盘,report 里只放 URL。
 _UPLOADS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")

@@ -14,7 +14,7 @@
             >
               <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
             </el-select>
-            <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
+            <el-select v-model="execKindFilter" multiple collapse-tags placeholder="执行类型(可多选)" size="small" clearable style="min-width:150px;max-width:240px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
             <el-input v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px" @keyup.enter="reload" @clear="reload" />
@@ -120,7 +120,7 @@ const projects = ref([])
 const pid = ref(null)
 const pageFilter = ref(null)       // 页面筛选(回归页核心维度)
 const pageOptions = ref([])        // 页面候选:项目选择器已有 page
-const execKindFilter = ref(null)
+const execKindFilter = ref([])    // 执行类型筛选(多选,可同时选 gui+e2e)
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
@@ -180,7 +180,7 @@ async function load() {
       project_id: pid.value,
       is_regression: true,               // 本页固定只看回归用例
       page: pageFilter.value || undefined,
-      exec_kind: execKindFilter.value || undefined,
+      exec_kind: execKindFilter.value.length ? execKindFilter.value.join(',') : undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
