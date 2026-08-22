@@ -829,7 +829,9 @@ def parse_eval_verdict(raw: str) -> dict:
     for k in _JUDGE_DIM_KEYS:
         v = obj.get(k)
         if isinstance(v, dict) and "pass" in v:
-            out[k] = {"pass": bool(v.get("pass")), "note": str(v.get("note") or "").strip()}
+            _p = v.get("pass")
+            _pass = _p if isinstance(_p, bool) else (None if _p is None else str(_p).strip().lower() not in ("false", "0", "no", "", "none"))
+            out[k] = {"pass": _pass, "note": str(v.get("note") or "").strip()}
         else:
             out[k] = {"pass": None, "note": "判定未给出该维度"}
     out["summary"] = str(obj.get("summary") or "").strip()

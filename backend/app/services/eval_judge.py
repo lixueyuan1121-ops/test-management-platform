@@ -60,9 +60,13 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
     provider_id = generators.normalize_provider(provider)
     engine = generators.get_provider(provider_id)
     if not engine.is_available():
+        # 引擎不可用(平台 AI 禁用/claude 缺失):镜像判定失败分支标 verdict=error,
+        # 让前端走 error 分支露出真因(而非 verdict=null 的假成功)且可重判;保持 status 不变(done)。
+        run.verdict = EvalVerdict.error.value
         run.verdict_reason = f"判定引擎「{provider_id}」不可用"
+        run.judged_by = provider_id
         db.commit()
-        return {"error": run.verdict_reason}
+        return {"verdict": "error", "reason": run.verdict_reason}
 
     run.status = EvalRunStatus.judging
     db.commit()
