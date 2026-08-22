@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     FEISHU_APP_SECRET: str = ""
     FEISHU_BASE: str = "https://open.feishu.cn"  # 私有化/国际站可改
 
+    # multica(异常会话详细分析平台)对接。契约待细化,默认 off 不推。
+    MULTICA_MODE: str = "off"          # off / http / cli
+    MULTICA_URL: str = ""              # http 模式:创建分析任务的 endpoint
+    MULTICA_TOKEN: str = ""            # http 模式:Bearer token(如需)
+    MULTICA_CLI_TEMPLATE: str = ""     # cli 模式:命令模板,如 'multica push --link {share_link} --run {run_id}'
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

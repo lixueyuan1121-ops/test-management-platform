@@ -20,6 +20,18 @@
               :disabled="!pid || !doneCount"
               @click="batchJudge"
             >批量判定 done（{{ doneCount }}）</el-button>
+            <el-button
+              size="small" :icon="Upload"
+              :disabled="!pid"
+              @click="exportDialogVisible = true"
+            >导出到飞书</el-button>
+            <el-badge :value="multicaPending" :hidden="!multicaPending" :max="99" type="danger">
+              <el-button
+                size="small" type="warning" :icon="Promotion" :loading="pushingMultica"
+                :disabled="!pid || !abnormalCount"
+                @click="doPushMultica"
+              >推送异常到 multica</el-button>
+            </el-badge>
           </div>
         </div>
       </template>
@@ -94,14 +106,29 @@
 
       <div class="foot-hint">共 {{ rows.length }} 条执行 / 已判 {{ judgedCount }} 条 / 异常 {{ abnormalCount }} 条（判定读会话轨迹调 AI 判三维，单条约 30-60s）</div>
     </el-card>
+
+    <el-dialog v-model="exportDialogVisible" title="导出到飞书表" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="飞书表链接" required>
+          <el-input v-model="exportSheetUrl" placeholder="粘贴目标飞书表格链接" clearable />
+        </el-form-item>
+        <el-form-item label="仅异常">
+          <el-checkbox v-model="exportAbnormalOnly">只导出判定异常的会话</el-checkbox>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="exportDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="exporting" @click="doExportFeishu">导出</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh, DataAnalysis, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch } from '@/api'
+import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
@@ -127,6 +154,14 @@ const verdictFilter = ref(null)
 const expanded = ref([])
 const judgingIds = ref(new Set())
 const batchJudging = ref(false)
+
+// 导出飞书 / 推送 multica
+const exportDialogVisible = ref(false)
+const exportSheetUrl = ref('')
+const exportAbnormalOnly = ref(false)
+const exporting = ref(false)
+const pushingMultica = ref(false)
+const multicaPending = ref(0)
 
 // done 状态（已执行完待判定）条数：批量判定针对这些
 const doneCount = computed(() => rows.value.filter((r) => r.status === 'done').length)
@@ -157,7 +192,7 @@ onMounted(async () => {
 async function onProjectChange() {
   verdictFilter.value = null
   expanded.value = []
-  if (!pid.value) { rows.value = []; return }
+  if (!pid.value) { rows.value = []; multicaPending.value = 0; return }
   setLastProjectId(pid.value)
   await load()
 }
@@ -167,7 +202,17 @@ async function load() {
   loading.value = true
   try {
     rows.value = await listEvalRuns(pid.value)
+    refreshMulticaPending()
   } finally { loading.value = false }
+}
+
+// 待推 multica 数（用于 badge）；失败静默（拦截器已提示），不阻断主流程。
+async function refreshMulticaPending() {
+  if (!pid.value) { multicaPending.value = 0; return }
+  try {
+    const res = await evalMulticaPending(pid.value)
+    multicaPending.value = res.pending || 0
+  } catch { /* http 拦截器已提示 */ }
 }
 
 function onExpand(row, expandedRows) {
@@ -206,6 +251,29 @@ async function batchJudge() {
     await load()
   } catch { /* http 拦截器已提示 */ }
   finally { batchJudging.value = false }
+}
+
+// 导出到飞书：填目标表链接 +（可选）仅异常，调 /eval-export/feishu。
+async function doExportFeishu() {
+  if (!exportSheetUrl.value) { ElMessage.warning('请填飞书表链接'); return }
+  exporting.value = true
+  try {
+    const res = await exportEvalFeishu({ project_id: pid.value, sheet_url: exportSheetUrl.value, abnormal_only: exportAbnormalOnly.value })
+    ElMessage.success(`已导出 ${res.exported} 行到飞书表`)
+    exportDialogVisible.value = false
+  } catch { /* http 拦截器已提示 */ }
+  finally { exporting.value = false }
+}
+
+// 推送异常会话到 multica（后端只推 is_abnormal 且未 pushed 的，防重推）；完成后刷新列表 + 待推数。
+async function doPushMultica() {
+  pushingMultica.value = true
+  try {
+    const res = await pushEvalMultica({ project_id: pid.value })
+    ElMessage.success(`推送 ${res.pushed}/${res.candidates} 条异常到 multica`)
+    await load()
+  } catch { /* http 拦截器已提示 */ }
+  finally { pushingMultica.value = false }
 }
 </script>
 
