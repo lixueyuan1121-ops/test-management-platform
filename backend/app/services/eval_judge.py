@@ -29,7 +29,16 @@ def _load_trace(run: EvalRun) -> dict:
     if not url.startswith("/uploads/"):
         return fallback
     rel = url[len("/uploads/"):]
-    path = os.path.join(_UPLOADS_DIR, rel)
+    # 路径遍历防护(纵深):拒绝 ..、绝对路径、盘符,内部来源亦视为遍历/IDOR 目标
+    if ".." in rel or rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
+        logger.warning("判定读 trace 拒绝可疑路径:%s", url)
+        return fallback
+    path = os.path.realpath(os.path.join(_UPLOADS_DIR, rel))
+    base = os.path.realpath(_UPLOADS_DIR)
+    # realpath 容器校验:解析后必须仍落在 uploads 目录内(挡符号链接/绕过)
+    if not (path == base or path.startswith(base + os.sep)):
+        logger.warning("判定读 trace 越界拒绝:%s", url)
+        return fallback
     try:
         with open(path, "r", encoding="utf-8") as f:
             obj = json.load(f)
