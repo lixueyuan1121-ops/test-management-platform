@@ -724,6 +724,118 @@ def parse_eval_queries(raw: str) -> list[dict]:
     return out
 
 
+# 判定输出是单个 JSON 对象(非数组);平行 _extract_cases_array 的多重兜底提取。
+def _extract_json_object(raw: str):
+    """从模型输出提取单个 JSON 对象:① ```json fence 内 {..} ② 全文首个 { 到末个 } ③ salvage 第一个。失败 None。"""
+    candidates = []
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw or "", re.S)
+    if m:
+        candidates.append(m.group(1))
+    s, e = (raw or "").find("{"), (raw or "").rfind("}")
+    if s != -1 and e > s:
+        candidates.append(raw[s:e + 1])
+    for blob in candidates:
+        try:
+            obj = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            return obj
+    salv = _salvage_objects(raw or "")
+    return salv[0] if salv else None
+
+
+EVAL_JUDGE_SYSTEM_PROMPT = (
+    "你是 AI 对话质量评审专家。严格依据提供的会话轨迹(思考过程、工具调用、产物、答案)与期望,"
+    "客观判定各维度是否达标。只输出要求的 JSON,不寒暄、不解释。"
+)
+
+# 判定维度说明(供 build_eval_judge_prompt)
+EVAL_JUDGE_DIMS = {
+    "thinking_complete": "思考过程是否完整、有条理(有清晰的推理/规划,而非跳步或空洞)",
+    "tools_ok": "工具与 MCP 调用是否正常(该调的调了、调用有结果 reached_result、结果被正确使用;无报错中断)",
+    "artifact_expected": "最终产物/答案是否符合期望(对照 expected 描述)",
+}
+
+
+def build_eval_judge_prompt(trace: dict, expected: str, dimensions=None) -> str:
+    """构造判定 prompt:喂思考/工具调用/产物/答案 + 期望,要求三维 JSON 判定。"""
+    t = trace or {}
+    _MAX = 4000  # 各长文本截断,判定看要点、避免 prompt 超限
+    def _clip(s):
+        s = str(s or "")
+        return s if len(s) <= _MAX else s[:_MAX] + "…(已截断)"
+    thinking = _clip(t.get("thinking"))
+    answer = _clip(t.get("answer"))
+    ws_captured = t.get("ws_captured", True)
+    tools = t.get("tool_calls") or []
+    tool_lines = []
+    for tc in tools:
+        if not isinstance(tc, dict):
+            continue
+        mcp = " [MCP]" if tc.get("is_mcp") else ""
+        reached = "有结果" if tc.get("reached_result") else "未完成/无结果"
+        tool_lines.append(
+            f"- {str(tc.get('original_tool_name') or tc.get('name') or '')}{mcp}: "
+            f"{reached};结果摘要={_clip(tc.get('result_text'))[:500]}"
+        )
+    tools_block = "\n".join(tool_lines) if tool_lines else "(无工具调用)"
+    artifacts = t.get("artifacts") or []
+    art_block = "\n".join(f"- {str(a.get('name') if isinstance(a, dict) else a)}" for a in artifacts) or "(无产物)"
+    dim_lines = "\n".join(f"- {k}: {v}" for k, v in EVAL_JUDGE_DIMS.items())
+    ws_note = "" if ws_captured else "\n注意:本会话轨迹未完整捕获(ws_captured=false),思考/工具信息可能缺失,对应维度请据可得信息判定并在 note 说明。"
+
+    return f"""判定下面这次 AI 对话的质量。按三个维度各给 pass(true/false)与 note(简短理由)。
+
+维度:
+{dim_lines}
+
+期望(该对话应达到什么):
+{expected or "(未提供明确期望,仅凭合理性判定产物维度)"}
+
+会话轨迹:
+【思考过程】
+{thinking or "(无)"}
+
+【工具/MCP 调用】
+{tools_block}
+
+【产物】
+{art_block}
+
+【最终答案】
+{answer or "(无)"}
+{ws_note}
+
+严格输出一个 JSON 对象(不要数组、不要额外文字):
+{{
+  "thinking_complete": {{"pass": true/false, "note": "..."}},
+  "tools_ok": {{"pass": true/false, "note": "..."}},
+  "artifact_expected": {{"pass": true/false, "note": "..."}},
+  "summary": "总体判定理由(简短)"
+}}"""
+
+
+_JUDGE_DIM_KEYS = ("thinking_complete", "tools_ok", "artifact_expected")
+
+
+def parse_eval_verdict(raw: str) -> dict:
+    """解析判定输出为三维 dict。健壮:提取失败/缺维 → 该维 pass=None+note;非 dict → error 标记。"""
+    obj = _extract_json_object(raw)
+    if not isinstance(obj, dict):
+        return {"error": True, "raw_tail": str(raw or "")[-200:],
+                **{k: {"pass": None, "note": "判定输出无法解析"} for k in _JUDGE_DIM_KEYS}}
+    out = {}
+    for k in _JUDGE_DIM_KEYS:
+        v = obj.get(k)
+        if isinstance(v, dict) and "pass" in v:
+            out[k] = {"pass": bool(v.get("pass")), "note": str(v.get("note") or "").strip()}
+        else:
+            out[k] = {"pass": None, "note": "判定未给出该维度"}
+    out["summary"] = str(obj.get("summary") or "").strip()
+    return out
+
+
 def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     """从模型输出全文中提取结构化测试点数组。
 
