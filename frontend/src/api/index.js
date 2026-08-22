@@ -123,9 +123,11 @@ export const listEvalRuns = (projectId) => http.get('/eval-queue/history', { par
 
 // ===== 对话测评导出/推送 =====
 // 导出到飞书表；payload: { project_id, sheet_url, abnormal_only?, batch_id?, start_row? } → { exported, sheet_url }
-export const exportEvalFeishu = (payload) => http.post('/eval-export/feishu', payload)
+// 批量导出为顺序网络循环(N 行 × 飞书 PUT)，放宽超时到 300s（覆盖全局 15s 默认，参照 judge 端点）。
+export const exportEvalFeishu = (payload) => http.post('/eval-export/feishu', payload, { timeout: 300000 })
 // 推送异常会话到 multica；payload: { project_id, batch_id? } → { pushed, candidates, results }
-export const pushEvalMultica = (payload) => http.post('/eval-export/multica', payload)
+// 逐条推送(multica CLI/HTTP，每条可达 60s)，放宽超时到 300s（覆盖全局 15s 默认，参照 judge 端点）。
+export const pushEvalMultica = (payload) => http.post('/eval-export/multica', payload, { timeout: 300000 })
 // 待推 multica 的异常数（is_abnormal 且未 pushed）→ { pending }
 export const evalMulticaPending = (projectId) => http.get('/eval-export/multica-pending', { params: { project_id: projectId } })
 
