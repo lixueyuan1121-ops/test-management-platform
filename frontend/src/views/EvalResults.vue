@@ -76,7 +76,7 @@
         </el-table-column>
         <el-table-column label="分享" width="70" align="center">
           <template #default="{ row }">
-            <el-link v-if="row.share_link" type="primary" :href="row.share_link" target="_blank">会话</el-link>
+            <el-link v-if="safeUrl(row.share_link)" type="primary" :href="safeUrl(row.share_link)" target="_blank" rel="noopener noreferrer">会话</el-link>
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
@@ -139,6 +139,8 @@ const filteredRows = computed(() => {
 })
 
 const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query #${row.eval_query_id ?? '—'}`
+// 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
+const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 const dimPass = (row, k) => row.verdict_dims?.[k]?.pass
 const dimNote = (row, k) => row.verdict_dims?.[k]?.note
 // 执行完成（done）或已判过（judged/有 verdict）才可判/重判；未跑完（pending/running/failed）不可判
