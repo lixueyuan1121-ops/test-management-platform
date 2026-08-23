@@ -385,3 +385,12 @@ def ensure_eval_run_payload() -> None:
     if "payload" not in _columns("eval_run"):
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN payload TEXT NULL"))
+
+
+def ensure_eval_run_target_device() -> None:
+    """eval_run 补 target_device 列(目标设备 vm_id)。老库已建表走 ALTER;新库 create_all 已含,幂等跳过。"""
+    if not _columns("eval_run"):
+        return
+    if "target_device" not in _columns("eval_run"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_device VARCHAR(64) NULL"))

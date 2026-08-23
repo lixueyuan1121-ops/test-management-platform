@@ -108,6 +108,8 @@ export const enqueueCases = (project_id, runner, testCaseIds) =>
 // 对话测评:下发勾选的 query 到执行机(eval-queue,独立于 exec-queue 功能测试点执行)。
 // payload: { project_id, runner, target_engine:'namiwork', eval_query_ids:[...] } → { run_ids, batch_id }
 export const enqueueEvalQueries = (payload) => http.post('/eval-queue/enqueue', payload)
+// 对话测评:某执行机上报的客户端设备(vm)列表,供下发时选目标设备。
+export const listEvalDevices = (runner) => http.get('/eval-devices', { params: { runner } })
 
 // ===== 对话测评判定（读 trace + 引擎判三维：思考/工具/产物）=====
 // 单条触发判定；provider 可空（后端按默认引擎）。返回已解包的 _run_out（含 verdict/verdict_dims/is_abnormal）。

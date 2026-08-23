@@ -6,7 +6,7 @@
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import EvalDeviceKind, EvalRunStatus, ReviewStatus
@@ -67,6 +67,8 @@ class EvalRun(Base):
     )
     # 被测引擎(namiwork/codex/claude...);本阶段只实现 namiwork。留空兼容。
     target_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 目标设备(纳米 Work 客户端里的 vm_id);空=不指定,CLI 用当前设备(向后兼容)。
+    target_device: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[EvalRunStatus] = mapped_column(
         Enum(EvalRunStatus, length=16), default=EvalRunStatus.pending, server_default="pending", index=True
     )
@@ -100,3 +102,24 @@ class EvalRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class EvalClientDevice(Base):
+    """执行机(runner)连上的纳米 Work 客户端里的可切换设备(vm)快照。
+
+    CLI 平台模式连客户端后注入 window.clawDeviceService.getDeviceList 读到,上报到此表(按 runner+vm_id upsert),
+    供前端下发时下拉选目标设备。区别于 runner_device(物理执行机):物理机 → 机上多个 vm。
+    """
+
+    __tablename__ = "eval_client_device"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    runner: Mapped[str] = mapped_column(String(64), index=True)  # 所属执行机 runner_id
+    vm_id: Mapped[str] = mapped_column(String(64))               # 设备 32 位 hex 核(=device.id)
+    label: Mapped[str | None] = mapped_column(String(96), nullable=True)  # 带前缀子域 label(=device.url 首段,切换用)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 显示名
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # online/offline/pending/...
+    device_type: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0云/1本地/2盒子/3wsl/4elec
+    last_report_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (UniqueConstraint("runner", "vm_id", name="uk_eval_device_runner_vm"),)
