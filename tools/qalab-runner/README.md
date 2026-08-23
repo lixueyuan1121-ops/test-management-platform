@@ -20,6 +20,14 @@ qalab 平台(FastAPI)  ──①拉 pending──►  runner.mjs(node 轮询)
 - `run.cmd` —— 启动脚本(填 token 后运行)。
 - `platform/` —— 平台侧要并入的 FastAPI 代码(见对话中的 model + router)。
 
+## 对话测评执行器(eval/)
+
+`eval/` 是对话测评执行器(原 ai-eval-cli-yt,CommonJS)——跑 **eval_queue**(对话测评:驱动纳米Work对话、抓 WS 轨迹、大模型判定回写)。与本目录功能测试点 runner(`runner.mjs`)**共用同一套平台配置**(BASE_URL/RUNNER_TOKEN/RUNNER_ID/NAMICLAW_EXE/CDP_PORT),各自独立进程、互不干扰。
+
+- 一次性准备:`cd eval && npm install`(装 playwright 等依赖;比功能点 runner 的零依赖重)。
+- 启动:`run-eval.cmd`(Windows)/ `run-eval.sh`(Mac),或 `cd eval && node bin/ai-eval.js platform`(常驻轮询;`--once` 只跑一轮)。
+- 配置:eval 侧 `.env` 加载器优先读上级 `tools/qalab-runner/.env`(与功能点 runner 共享一份),兜底 `eval/.env`。BASE_URL/RUNNER_TOKEN/RUNNER_ID 等同名同义、天然共享;飞书导出等 eval 专属项见 `.env.example`。
+
 ## 一次性准备
 ```powershell
 # 1) 安装 GUI MCP 依赖(playwright-core 无需下载浏览器,连的是 namiclaw 自带 Chromium)
