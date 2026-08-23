@@ -1,0 +1,7 @@
+# Windows 批处理脚本必须用 CRLF 换行:cmd.exe 解析器对纯 LF 的多行 if/set 块会解析错乱
+# (曾导致 run-eval.cmd 的 %EVAL_DIR% 变空、node 加载 D:\bin\ai-eval.js 报 MODULE_NOT_FOUND)。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Shell 脚本必须用 LF(否则 bash/sh 报 \r 错误)
+*.sh text eol=lf
