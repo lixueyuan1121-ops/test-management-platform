@@ -49,6 +49,7 @@ def _to_out(r: EvalRun) -> dict:
         "batch_id": r.batch_id,
         "runner": r.runner,
         "target_engine": r.target_engine,
+        "target_device": r.target_device,
         "device_kind": getattr(r.device_kind, "value", r.device_kind),
         "status": getattr(r.status, "value", r.status),
         "payload": json.loads(r.payload) if r.payload else {},
@@ -92,6 +93,7 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
         row = EvalRun(
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
             runner=body.runner, target_engine=body.target_engine,
+            target_device=body.target_device,
             device_kind=EvalDeviceKind.desktop,
             status=EvalRunStatus.pending, payload=json.dumps(_payload_of(q), ensure_ascii=False),
             enqueued_by=user.id,
