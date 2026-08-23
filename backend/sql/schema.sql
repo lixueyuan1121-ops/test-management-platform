@@ -337,6 +337,7 @@ CREATE TABLE `eval_run` (
   `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
   `device_kind` VARCHAR(8) NOT NULL DEFAULT 'web',
   `target_engine` VARCHAR(32) NULL,
+  `target_device` VARCHAR(64) NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
   `payload` TEXT NULL,
   `session_id` VARCHAR(64) NULL,
@@ -369,6 +370,21 @@ CREATE TABLE `eval_run` (
   CONSTRAINT `fk_evalrun_query` FOREIGN KEY (`eval_query_id`) REFERENCES `eval_query` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_evalrun_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_evalrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 执行机连上的纳米 Work 客户端可切换设备(vm)快照:CLI 上报,前端下发时下拉选
+CREATE TABLE `eval_client_device` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `runner` VARCHAR(64) NOT NULL,
+  `vm_id` VARCHAR(64) NOT NULL,
+  `label` VARCHAR(96) NULL,
+  `name` VARCHAR(128) NULL,
+  `status` VARCHAR(16) NULL,
+  `device_type` INT NULL,
+  `last_report_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_eval_device_runner_vm` (`runner`,`vm_id`),
+  KEY `idx_eval_device_runner` (`runner`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 执行设备:平台成员登记的自有执行机(runner);每设备独立 token,下发只选自己的设备。

@@ -15,7 +15,7 @@ from app.models.selector import SelectorKey, SelectorScope, ProbeRequest
 from app.models.api_env import ApiEnv
 from app.models.perf import PerfRun
 from app.models.perf_report_set import PerfReportSet
-from app.models.ai_eval import EvalQuery, EvalRun
+from app.models.ai_eval import EvalQuery, EvalRun, EvalClientDevice
 
 __all__ = [
     "User",
@@ -44,4 +44,5 @@ __all__ = [
     "PerfReportSet",
     "EvalQuery",
     "EvalRun",
+    "EvalClientDevice",
 ]
