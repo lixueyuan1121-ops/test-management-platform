@@ -205,3 +205,42 @@ def list_history(project_id: int = Query(...), limit: int = Query(100, le=500),
     rows = (db.query(EvalRun).filter(EvalRun.project_id == project_id)
             .order_by(EvalRun.id.desc()).limit(limit).all())
     return ok([_to_out(r) for r in rows])
+
+
+@router.get("/_diag/{run_id}")
+def diag_run(run_id: int, db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
+    """【临时诊断】runner token 可读单条 run 的 trace 全文 + 判定详情,供排查判定质量。查完可删。"""
+    r = db.get(EvalRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="run 不存在")
+    # 读 trace 文件(仿 eval_judge._load_trace 的路径校验)
+    trace_obj = None
+    url = r.trace or ""
+    if url.startswith("/uploads/"):
+        rel = url[len("/uploads/"):]
+        if ".." not in rel and not rel.startswith("/") and not (len(rel) > 1 and rel[1] == ":"):
+            path = os.path.realpath(os.path.join(_UPLOADS_DIR, rel))
+            base = os.path.realpath(_UPLOADS_DIR)
+            if path == base or path.startswith(base + os.sep):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        trace_obj = json.load(f)
+                except (OSError, json.JSONDecodeError, ValueError):
+                    trace_obj = {"_error": "trace 文件读取失败"}
+    expected = None
+    if r.eval_query_id:
+        q = db.get(EvalQuery, r.eval_query_id)
+        if q:
+            expected = q.expected
+    return ok({
+        "run_id": r.id,
+        "status": getattr(r.status, "value", r.status),
+        "verdict": r.verdict,
+        "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
+        "verdict_reason": r.verdict_reason,
+        "is_abnormal": bool(r.is_abnormal),
+        "expected": expected,
+        "trace_url": r.trace,
+        "trace": trace_obj,
+        "answer": r.answer,
+    })
