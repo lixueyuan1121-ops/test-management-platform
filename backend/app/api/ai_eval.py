@@ -8,7 +8,7 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.core.enums import AiTaskStatus, ProjectRole
 from app.db.session import SessionLocal, get_db
 from app.models import AiTask, EvalQuery, Project, User
 from app.schemas.ai import EvalQueryGenIn
+from app.schemas.common import ok
 from app.services import claude_runner, generators
 
 logger = logging.getLogger("test_platform")
@@ -183,3 +184,17 @@ def gen_eval_queries(
             s.close()
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@router.get("/eval-queries")
+def list_eval_queries(
+    project_id: int = Query(...),
+    limit: int = Query(200, le=500),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """列出某项目历史生成的对话测评 query(供用例库查看 + 再次下发)。"""
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    rows = (db.query(EvalQuery).filter(EvalQuery.project_id == project_id)
+            .order_by(EvalQuery.id.desc()).limit(limit).all())
+    return ok([_to_query_out(q) for q in rows])
