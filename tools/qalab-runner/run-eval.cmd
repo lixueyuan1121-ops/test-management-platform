@@ -5,6 +5,16 @@ REM 避免覆盖 .env 造成两处配置漂移(BASE_URL/RUNNER_TOKEN/RUNNER_ID/N
 REM 首次使用前:cd eval ^&^& npm install(装 playwright 等依赖,见 eval\README.md)。
 
 setlocal
-cd /d "%~dp0eval"
+set "EVAL_DIR=%~dp0eval"
+if not exist "%EVAL_DIR%\bin\ai-eval.js" (
+  echo [run-eval] 找不到 "%EVAL_DIR%\bin\ai-eval.js"
+  echo [run-eval] 请确认在 tools\qalab-runner\ 下运行本脚本,且 eval\ 已就位。
+  exit /b 1
+)
+cd /d "%EVAL_DIR%"
+if not exist "node_modules" (
+  echo [run-eval] 首次使用请先安装依赖: cd "%EVAL_DIR%" ^&^& npm install
+  exit /b 1
+)
 echo [run-eval] starting 对话测评 executor (config from ..\.env)
-node bin/ai-eval.js platform %*
+node "%EVAL_DIR%\bin\ai-eval.js" platform %*
