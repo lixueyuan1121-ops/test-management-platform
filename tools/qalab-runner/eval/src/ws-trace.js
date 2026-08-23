@@ -34,7 +34,7 @@ function _isEmptyResult(r) {
 
 // 初始状态
 function newState() {
-  return { sessionId: null, runId: null, thinking: '', toolsById: new Map(), toolOrder: [], answer: '', artifacts: [], sawAny: false };
+  return { sessionId: null, runId: null, thinking: '', toolsById: new Map(), toolOrder: [], answer: '', artifacts: [], sawAny: false, wsConnected: false };
 }
 
 // 处理一帧(已 JSON.parse 的对象)。纯函数式副作用在 state 上。异常安全由调用方包 try。
@@ -85,6 +85,7 @@ function handleFrame(state, frame) {
 function attachWsTrace(page) {
   const state = newState();
   const onWs = (ws) => {
+    state.wsConnected = true;   // 至少挂上了一个 WS(区分"WS没挂上"vs"挂上了但本次无对话活动")
     ws.on('framereceived', (ev) => {
       try {
         const payloadStr = typeof ev === 'string' ? ev : (ev && ev.payload);
@@ -106,7 +107,7 @@ function attachWsTrace(page) {
       });
       return { session_id: state.sessionId, run_id: runId || state.runId,
                thinking: state.thinking, tool_calls, artifacts: state.artifacts,
-               answer: state.answer, ws_captured: state.sawAny };
+               answer: state.answer, ws_captured: state.sawAny, ws_connected: state.wsConnected };
     },
   };
 }

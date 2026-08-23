@@ -183,13 +183,22 @@ class DesktopPool {
         page.on('dialog', async (dg) => { try { await dg.accept(); } catch { try { await dg.dismiss(); } catch {} } });
         // 平台模式:抓会话 WebSocket 轨迹(思考/工具)。挂在主 page,收集器存到 pool 供编排取。
         // 本 while 循环拿到同一 page 后可能多次经过此处(输入框未就绪就重试),用标志确保只挂一次,避免重复注册。
-        // ⚠️ 联调必验(修复#4):page.on('websocket') 只捕获【挂载后新建】的 WS。若连的是"已运行客户端"、
-        //   且其对话长连 WS 早于本次挂载就已建立,则抓不到帧 → buildTrace 的 ws_captured=false。
-        //   现只加显式日志暴露该风险;是否需要"改挂载时机/触发 WS 重建"须真机联调确认(TODO:联调定)。
-        //   联调判据:看每条 report 日志里的 ws=<true|false>——持续 false 即命中此问题。
+        // ⚠️ page.on('websocket') 只捕获【挂载后新建】的 WS。连"已运行客户端"时对话长连早于挂载建立 →
+        //   抓不到帧 → ws_captured=false(真机实测确认)。故挂载后【主动 reload 一次】让对话 WS 重连被捕获
+        //   (实测:静观0帧、reload后30帧)。reload 只做一次(_wsReloaded 标志),避免 while 重试里反复重载。
         if (!this._wsTrace) {
           this._wsTrace = attachWsTrace(page);
-          this._log('   已挂载 WS 轨迹抓取(若连的是已运行客户端,其长连 WS 可能早于挂载已建立→trace 可能抓不到,须联调确认每条 report 的 ws_captured)');
+          this._log('   已挂载 WS 轨迹抓取');
+        }
+        if (!this._wsReloaded) {
+          this._wsReloaded = true;
+          try {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: this.readyTimeout });
+            this._log('   已 reload 对话页触发 WS 重连(确保 ws 轨迹可捕获)');
+            await this._sleep(1500);   // 给 WS 重连 + SPA 重挂一点时间
+          } catch (e) {
+            this._warn(`   reload 触发 WS 重连失败(不阻断,ws 可能抓不到): ${(e.message || '').split('\n')[0]}`);
+          }
         }
         try {
           // 自适应:有 work.n.cn iframe 走 frameLocator,否则主文档 page(不同设备对话 UI 挂载位置不同)。
@@ -310,7 +319,8 @@ class DesktopPool {
 
     // 导航后重新 resolve 主 page + 等对话输入框就绪 + 重挂 wsTrace
     await this._sleep(2000);
-    this._wsTrace = null; // 允许重挂(挂在新导航的 page 上,争取抓到切换后新建的对话 WS)
+    this._wsTrace = null;      // 允许重挂(挂在新导航的 page 上)
+    this._wsReloaded = false;  // 允许 _resolveMainPage 对新页面再 reload 一次触发 WS 重连(切设备后同样需要)
     this.mainPage = await this._resolveMainPage(this.readyTimeout);
     // 确认当前 vm 就是目标 + 输入框可用
     const nowVm = await this.currentVmId();
