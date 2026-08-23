@@ -31,7 +31,7 @@
         </el-button>
       </div>
 
-      <el-table :data="sorted" size="small" border stripe @selection-change="s => selected = s" v-loading="loading">
+      <el-table v-if="loading || queries.length" :data="sorted" size="small" border stripe @selection-change="s => selected = s" v-loading="loading">
         <el-table-column type="selection" width="42" />
         <el-table-column label="维度" width="120" align="center">
           <template #default="{ row }"><el-tag :type="DIM_TYPE[row.dimension] || 'info'" effect="plain" size="small">{{ dimLabel(row.dimension) }}</el-tag></template>
@@ -42,6 +42,9 @@
         <el-table-column label="对话组" min-width="110"><template #default="{ row }"><span class="mono">{{ row.conversation_group || '—' }}</span></template></el-table-column>
         <el-table-column label="轮次" width="64" align="center"><template #default="{ row }"><span class="mono">{{ row.turn_index ?? 0 }}</span></template></el-table-column>
         <el-table-column label="生成时间" width="160"><template #default="{ row }"><span class="mono">{{ (row.created_at || '').replace('T',' ').slice(0,19) }}</span></template></el-table-column>
+        <el-table-column label="评审态" width="90" align="center">
+          <template #default="{ row }"><el-tag size="small" :type="row.review_status==='adopted'?'success':(row.review_status==='rejected'?'danger':'info')" effect="plain">{{ RS_LABEL[row.review_status] || row.review_status || '待评审' }}</el-tag></template>
+        </el-table-column>
       </el-table>
       <el-empty v-if="!loading && !queries.length" description="该项目暂无生成的对话测评 query，去『对话测评生成』生成" />
     </el-card>
@@ -63,6 +66,7 @@ const DIMENSIONS = [
 const DIM_LABEL = Object.fromEntries(DIMENSIONS.map(d => [d.k, d.label]))
 const dimLabel = (k) => DIM_LABEL[k] || k || '—'
 const DIM_TYPE = { thinking: 'primary', tool_use: 'success', artifact: 'warning', multi_turn: 'danger', instruction: 'info' }
+const RS_LABEL = { pending: '待评审', adopted: '已采纳', rejected: '已拒绝' }
 
 const app = useAppStore()
 const projects = ref([])
