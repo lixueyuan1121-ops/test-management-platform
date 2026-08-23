@@ -95,11 +95,23 @@
           <div class="dispatch-bar">
             <span v-if="selectedQueries.length" class="sel-info">已选 {{ selectedQueries.length }} 条</span>
             <el-select
-              v-model="chosenRunner" size="small" style="width:200px"
+              v-model="chosenRunner" size="small" style="width:180px"
               :placeholder="devices.length ? '选择执行机' : '未登记设备'"
               no-data-text="去『我的设备』注册"
+              @change="loadClientDevices"
             >
               <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
+            </el-select>
+            <el-select
+              v-model="chosenDevice" size="small" style="width:200px" clearable
+              :placeholder="clientDevices.length ? '选目标设备(可空)' : '该执行机未上报设备'"
+              no-data-text="CLI platform 连客户端后自动上报"
+            >
+              <el-option
+                v-for="dev in clientDevices" :key="dev.vm_id"
+                :label="`${dev.name || dev.vm_id}${(dev.status==='online'||dev.status==='active')?' 🟢':' ⚪'}`"
+                :value="dev.vm_id"
+              />
             </el-select>
             <el-button
               type="success" size="small" :loading="dispatching"
@@ -149,7 +161,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, ChatDotRound } from '@element-plus/icons-vue'
-import { listTasks, aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries } from '@/api'
+import { listTasks, aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries, listEvalDevices } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -202,6 +214,8 @@ const meta = ref(null)
 const selectedQueries = ref([])
 const devices = ref([])            // 我的执行设备(复用 listMyDevices)
 const chosenRunner = ref('')       // 选中的 runner_id
+const clientDevices = ref([])       // 选中执行机上报的客户端设备(vm)列表
+const chosenDevice = ref('')        // 选中的目标设备 vm_id(空=用执行机当前设备)
 const dispatching = ref(false)
 
 let timer = null
@@ -231,7 +245,7 @@ onMounted(async () => {
   }
   // 我的设备(下发选 runner);默认选中第一台,便于直接下发
   devices.value = devRes.status === 'fulfilled' ? (devRes.value || []) : []
-  if (devices.value.length) chosenRunner.value = devices.value[0].runner_id
+  if (devices.value.length) { chosenRunner.value = devices.value[0].runner_id; await loadClientDevices() }
 })
 
 async function onProjectChange() {
@@ -286,6 +300,14 @@ function stop() {
 
 function cancel() { ctrl?.abort() }
 
+// 选中执行机后,拉该执行机上报的客户端设备(vm)供下拉选。执行机变了要重拉、重置已选设备。
+async function loadClientDevices() {
+  chosenDevice.value = ''
+  clientDevices.value = []
+  if (!chosenRunner.value) return
+  try { clientDevices.value = await listEvalDevices(chosenRunner.value) || [] } catch { clientDevices.value = [] }
+}
+
 // 下发选中 query 到执行机:调 /api/eval-queue/enqueue(target_engine 固定 namiwork)。
 // projectId 用本页 pid;eval_query_ids 取选中行的 id(done 帧 query 已含 DB id)。
 async function dispatchSelected() {
@@ -296,6 +318,7 @@ async function dispatchSelected() {
       project_id: pid.value,
       runner: chosenRunner.value,
       target_engine: 'namiwork',
+      target_device: chosenDevice.value || null,
       eval_query_ids: selectedQueries.value.map((q) => q.id),
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
