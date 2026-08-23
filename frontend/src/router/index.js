@@ -12,6 +12,7 @@ const routes = [
       { path: 'dashboard', name: 'dashboard', component: () => import('@/views/Dashboard.vue') },
       { path: 'ai-testgen', name: 'ai-testgen', component: () => import('@/views/AITestGen.vue') },
       { path: 'ai-eval-gen', name: 'ai-eval-gen', component: () => import('@/views/AIEvalGen.vue'), meta: { title: '对话测评生成' } },
+      { path: 'eval-library', name: 'eval-library', component: () => import('@/views/EvalLibrary.vue'), meta: { title: '对话测评用例库' } },
       { path: 'case-library', name: 'case-library', component: () => import('@/views/CaseLibrary.vue') },
       { path: 'adopted-cases', name: 'adopted-cases', component: () => import('@/views/AdoptedCases.vue') },
       { path: 'regression-cases', name: 'regression-cases', component: () => import('@/views/RegressionCases.vue'), meta: { title: '回归用例库' } },
