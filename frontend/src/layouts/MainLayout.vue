@@ -24,33 +24,31 @@
         <!-- 发版记录 -->
         <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
 
-        <!-- 测试设计:用例 生成 → 采纳 -->
-        <el-sub-menu index="design">
-          <template #title><el-icon><MagicStick /></el-icon><span>测试设计</span></template>
+        <!-- 功能测试:完整链路(生成 → 用例资产 → 派单 → 结果 → 问题) -->
+        <el-sub-menu index="func">
+          <template #title><el-icon><MagicStick /></el-icon><span>功能测试</span></template>
           <el-menu-item index="/ai-testgen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>AI 测试助手</span></el-menu-item>
-          <el-menu-item index="/ai-eval-gen" class="ai-entry"><el-icon><ChatDotRound /></el-icon><span>对话测评生成</span></el-menu-item>
-          <el-menu-item index="/eval-library"><el-icon><Collection /></el-icon><span>对话测评用例库</span></el-menu-item>
           <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
           <el-menu-item index="/adopted-cases"><el-icon><Select /></el-icon><span>已采纳用例</span></el-menu-item>
           <el-menu-item index="/regression-cases"><el-icon><RefreshRight /></el-icon><span>回归用例库</span></el-menu-item>
-          <el-menu-item index="/selectors"><el-icon><Aim /></el-icon><span>选择器管理</span></el-menu-item>
-          <el-menu-item index="/api-env"><el-icon><Connection /></el-icon><span>api 环境</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 测试执行:派单 → 结果 → 问题 -->
-        <el-sub-menu index="exec">
-          <template #title><el-icon><Checked /></el-icon><span>测试执行</span></template>
           <el-menu-item index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
           <el-menu-item index="/exec-results"><el-icon><Finished /></el-icon><span>执行结果</span></el-menu-item>
-          <el-menu-item index="/eval-results"><el-icon><ChatDotRound /></el-icon><span>对话测评结果</span></el-menu-item>
           <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
         </el-sub-menu>
 
-        <!-- 我的工作台:个人相关 -->
-        <el-sub-menu index="mine">
-          <template #title><el-icon><User /></el-icon><span>我的工作台</span></template>
-          <el-menu-item v-if="showMyReports" index="/my-reports"><el-icon><EditPen /></el-icon><span>我的日报</span></el-menu-item>
-          <el-menu-item index="/my-devices"><el-icon><Monitor /></el-icon><span>我的设备</span></el-menu-item>
+        <!-- 对话测评:独立完整链路(生成 → 用例库 → 结果) -->
+        <el-sub-menu index="eval">
+          <template #title><el-icon><ChatDotRound /></el-icon><span>对话测评</span></template>
+          <el-menu-item index="/ai-eval-gen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>测评生成</span></el-menu-item>
+          <el-menu-item index="/eval-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
+          <el-menu-item index="/eval-results"><el-icon><Finished /></el-icon><span>测评结果</span></el-menu-item>
+        </el-sub-menu>
+
+        <!-- 性能测试:nami-perfdog 采集结果下发 + 在线报告 -->
+        <el-sub-menu index="perf">
+          <template #title><el-icon><Stopwatch /></el-icon><span>性能测试</span></template>
+          <el-menu-item index="/perf-report"><el-icon><Histogram /></el-icon><span>性能报告</span></el-menu-item>
+          <el-menu-item index="/perf-dispatch"><el-icon><Promotion /></el-icon><span>任务下发</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 数据统计 -->
@@ -61,23 +59,22 @@
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
         </el-sub-menu>
 
-        <!-- 性能测试(独立顶级入口):nami-perfdog 采集结果下发 + 在线报告 -->
-        <el-sub-menu index="perf">
-          <template #title><el-icon><Stopwatch /></el-icon><span>性能测试</span></template>
-          <el-menu-item index="/perf-report"><el-icon><Histogram /></el-icon><span>性能报告</span></el-menu-item>
-          <el-menu-item index="/perf-dispatch"><el-icon><Promotion /></el-icon><span>任务下发</span></el-menu-item>
+        <!-- 我的:个人相关(避免与顶层"工作台"撞名) -->
+        <el-sub-menu index="mine">
+          <template #title><el-icon><User /></el-icon><span>我的</span></template>
+          <el-menu-item v-if="showMyReports" index="/my-reports"><el-icon><EditPen /></el-icon><span>我的日报</span></el-menu-item>
+          <el-menu-item index="/my-devices"><el-icon><Monitor /></el-icon><span>我的设备</span></el-menu-item>
         </el-sub-menu>
 
-        <!-- 测试工具广场 -->
-        <el-sub-menu index="tools">
-          <template #title><el-icon><Grid /></el-icon><span>测试工具广场</span></template>
-          <el-menu-item index="/tool-plaza"><el-icon><Histogram /></el-icon><span>工具广场</span></el-menu-item>
-          <el-menu-item v-if="auth.isPlatformAdmin" index="/tool-admin"><el-icon><Setting /></el-icon><span>工具配置</span></el-menu-item>
-        </el-sub-menu>
+        <!-- 工具广场(去父子同名,提为单项;工具配置移入系统设置) -->
+        <el-menu-item index="/tool-plaza"><el-icon><Grid /></el-icon><span>工具广场</span></el-menu-item>
 
-        <!-- 组织管理(管理员,低频,置底) -->
-        <el-sub-menu v-if="auth.isPlatformAdmin" index="org">
-          <template #title><el-icon><OfficeBuilding /></el-icon><span>组织管理</span></template>
+        <!-- 系统设置(管理员,低频配置/管理统一收拢,置底) -->
+        <el-sub-menu v-if="auth.isPlatformAdmin" index="settings">
+          <template #title><el-icon><Setting /></el-icon><span>系统设置</span></template>
+          <el-menu-item index="/selectors"><el-icon><Aim /></el-icon><span>选择器管理</span></el-menu-item>
+          <el-menu-item index="/api-env"><el-icon><Connection /></el-icon><span>API 环境</span></el-menu-item>
+          <el-menu-item index="/tool-admin"><el-icon><Grid /></el-icon><span>工具配置</span></el-menu-item>
           <el-menu-item index="/projects"><el-icon><Files /></el-icon><span>项目管理</span></el-menu-item>
           <el-menu-item index="/users"><el-icon><User /></el-icon><span>用户管理</span></el-menu-item>
         </el-sub-menu>
@@ -120,7 +117,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
-  OfficeBuilding, Checked, DataAnalysis, CaretBottom, Grid, Histogram, Setting,
+  DataAnalysis, CaretBottom, Grid, Histogram, Setting,
   Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
@@ -137,7 +134,7 @@ function toggleCollapse() {
 }
 
 const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
-const openSubs = ['org', 'exec', 'stats', 'tools', 'perf']
+const openSubs = ['func', 'eval', 'perf', 'stats', 'mine', 'settings']
 
 const avatarText = computed(() => {
   const n = auth.user?.name || auth.user?.username || '?'
