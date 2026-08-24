@@ -322,8 +322,10 @@ module.exports = {
   // 诊断逻辑与 Web 版完全复用；仅「连接方式」不同：程序带远程调试端口启动客户端，再用 CDP 连接。
   // 触发命令：node bin/ai-eval.js desktop（或双击「桌面并发验证.bat」）。
   desktop: {
-    // 客户端可执行文件路径（本机实测安装位置；换机器请改）。
-    executablePath: 'D:\\program files\\namiwork\\namiwork.exe',
+    // 客户端可执行文件路径。优先读 .env 的 NAMICLAW_EXE（各机自填，与 BASE_URL/RUNNER_* 同一份 .env）；
+    // 未配置时回退到 Windows 常见安装位置。mac 示例（指向 .app 内可执行文件）：
+    //   NAMICLAW_EXE=/Applications/Namiwork.app/Contents/MacOS/Namiwork
+    executablePath: process.env.NAMICLAW_EXE || 'D:\\program files\\namiwork\\namiwork.exe',
     cdpHost: '127.0.0.1',
     cdpPort: 9222,             // 远程调试端口（带 --remote-debugging-port 启动 + CDP 连接）
     processName: 'Namiwork.exe', // 自动重启前用 taskkill 关这个进程名

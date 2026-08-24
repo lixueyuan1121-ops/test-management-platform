@@ -14,7 +14,7 @@
 //  2. 否则：关闭现有 namiwork 进程（单实例锁会让带端口的新实例把参数转发后退出，端口开不起来），
 //     再带 --remote-debugging-port 启动（沿用默认 userData=已登录态），等端口就绪后连接。
 const { chromium } = require('playwright');
-const { spawn, execSync } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const http = require('http');
 const { attachWsTrace } = require('./ws-trace');
 const workFrame = require('./work-frame');
@@ -83,13 +83,23 @@ class DesktopPool {
     throw new Error(`调试端口 ${this.cdpUrl} 未在 ${Math.round(timeoutMs / 1000)}s 内就绪：${last ? last.message : ''}`);
   }
 
-  // 强杀现有客户端进程（Windows）。已就绪端口时不会走到这里。
+  // 强杀现有客户端进程（跨平台）。已就绪端口时不会走到这里。
+  //  · Windows：taskkill 按镜像名（processName）杀进程树；
+  //  · mac/Linux：pkill -f 按可执行文件完整路径精确匹配，杀掉 Electron 主进程即可释放单实例锁
+  //    （helper 子进程随主进程退出而自退；用完整路径而非进程名，避免误杀其它同名进程）。
+  // 用 execFileSync（参数数组、不经 shell）而非拼字符串，规避 shell 元字符/注入。
   _killExisting() {
+    const isWin = process.platform === 'win32';
     try {
-      execSync(`taskkill /IM ${this.processName} /F /T`, { stdio: 'ignore' });
-      this._log(`   已关闭现有客户端进程（${this.processName}）`);
+      if (isWin) {
+        execFileSync('taskkill', ['/IM', this.processName, '/F', '/T'], { stdio: 'ignore' });
+      } else {
+        if (!this.executablePath) return; // 无路径可匹配，跳过（mac/Linux 不用 processName）
+        execFileSync('pkill', ['-9', '-f', this.executablePath], { stdio: 'ignore' });
+      }
+      this._log(`   已关闭现有客户端进程（${isWin ? this.processName : this.executablePath}）`);
     } catch (_) {
-      // 没有在跑的进程也会返回非 0，忽略
+      // 没有在跑的进程时命令返回非 0（taskkill / pkill 皆如此），忽略
     }
   }
 
