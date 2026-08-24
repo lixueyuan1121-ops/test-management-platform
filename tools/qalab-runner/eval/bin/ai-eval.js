@@ -9,6 +9,7 @@ const DialogRunner = require('../src/dialog-runner');
 const TaskWatcher = require('../src/task-watcher');
 const DesktopPool = require('../src/desktop-pool');
 const DesktopRunner = require('../src/desktop-runner');
+const { groupIntoConversations } = require('../src/conversation-group');
 const ResultReporter = require('../src/reporter');
 const DiagnosticReporter = require('../src/diagnostic-reporter');
 const Logger = require('../src/logger');
@@ -775,67 +776,20 @@ program
       // 混合批(先 target 后空 target)时,空 target 项复用最近一次切换后的真实 pool 状态,而非循环外 stale 引用。
       let curRunner = runner;
       let curWsTrace = wsTrace;
-      for (const item of pending) {
+      // 按「会话」分组:同一 conversation_group 的多条=同一多轮会话的各轮,归一组、按 turn_index 升序;
+      // 单轮(无 group)各自成组。多轮同组各轮将在【同一对话】里顺序连发(轮次0新建、后续轮复用),
+      // 而非各自 runOne 新建对话——修正「轮次1 另起新对话、接不上轮次0 上下文」的问题。
+      // (后端 list_pending 已保证整组不被 limit 拆到不同批次,见 eval_queue._take_whole_groups。)
+      const conversations = groupIntoConversations(pending);
+      const multiCount = conversations.filter(c => c.length > 1).length;
+      if (multiCount > 0) logger.info(`   其中 ${multiCount} 个多轮会话(同组各轮将在同一对话内顺序连发)`);
+
+      // 把一轮 run 的执行结果回写平台(report + uploadTrace),并清空 WS 收集器供下一轮/下一条独立抓取。
+      // 多轮同一对话逐轮隔离靠此 reset:session_id 每帧都带,reset 后下一轮仍能复得同一 session_id。
+      const reportRun = async (runId, result, ws) => {
+        const trace = ws ? ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
         try {
-          await client.claim(item.run_id);
-        } catch (e) { logger.warn(`claim ${item.run_id} 失败(可能被他机认领): ${e.message}`); continue; }
-        // Task7-Step2: 切到本题指定的目标设备(vm)。空=不切,用当前设备(向后兼容)。切换失败 fail-closed。
-        const targetDevice = item.target_device || null;
-        if (targetDevice) {
-          try {
-            await pool.switchTo(targetDevice);
-          } catch (e) {
-            logger.warn(`run ${item.run_id} 切换设备失败,fail-closed: ${e.message}`);
-            try {
-              await client.report(item.run_id, { status: 'failed', reason: `切换目标设备失败: ${e.message}` });
-            } catch (er) { logger.error(`report failed 失败 run ${item.run_id}: ${er.message}`); }
-            continue;
-          }
-          // 切换成功→pool.mainPage/wsTrace 已推进到新 page/新收集器,重建持久 curRunner/curWsTrace 绑新状态。
-          // ⚠️ 仍传同一个 config.execution 引用(与循环外 runner 一致),保证修复#3 的"就地改 dialogOptions"仍生效。
-          curRunner = new DesktopRunner(pool.getContext(), pool.getMainPage(), config.platform, config.execution, logger);
-          curWsTrace = pool.getWsTrace();
-        }
-        // 空 target 项不进上面分支,curRunner/curWsTrace 保持"最近一次切换后的真实 pool 状态"(或初始状态)。
-        const p = item.payload || {};
-        const testCase = {
-          caseId: `RUN-${item.run_id}`, row: item.run_id, question: p.prompt || '',
-          attachments: p.attachments || [], attachmentPaths: [],
-          conversationId: p.conversation_group || `__run_${item.run_id}`, turnIndex: p.turn_index || 0,
-          account: 'desktop',
-        };
-        // 修复#2:附件下载在平台模式尚未支持(testCase.attachmentPaths 恒为空、attachments 从不下载)。
-        // 带附件的题若裸跑会产生"无附件的假成功",污染判定层输入。故 fail-closed——直接回写 failed、
-        // 不静默裸跑,继续下一条。完整附件支持留后续。
-        if (Array.isArray(p.attachments) && p.attachments.length > 0) {
-          logger.warn(`run ${item.run_id} 带附件(${p.attachments.length}个),平台模式暂不支持附件下载,跳过(标记 failed)`);
-          try {
-            await client.report(item.run_id, {
-              status: 'failed',
-              reason: '平台模式暂不支持附件下载,未执行(避免无附件裸跑污染判定)',
-            });
-          } catch (e) { logger.error(`report failed 失败 run ${item.run_id}: ${e.message}`); }
-          continue;
-        }
-        // 修复#3:应用本题下发时快照的对话选项(模型/对话模式/深度思考)。
-        // ⚠️ 必须【就地改属性】而非重新赋值 config.execution:DesktopRunner 及其内部 DialogRunner 都以引用
-        //   持有此对象,_applyDialogOptions() 每次发送现读 this.execution.dialogOptions;重新赋值会另指新对象、
-        //   两个 runner 仍读旧对象 → 不生效(串行单条执行,就地覆盖安全)。没带快照时还原执行机默认,防串题。
-        if (p.dialog_options && typeof p.dialog_options === 'object') {
-          config.execution.dialogOptions = p.dialog_options;
-        } else {
-          config.execution.dialogOptions = baseDialogOptions;
-        }
-        if (curWsTrace && curWsTrace.reset) curWsTrace.reset();     // 每条前清空 WS 收集器，避免上一条轨迹串进来
-        let result;
-        try {
-          result = await curRunner.runOne(testCase);           // DesktopRunner 单条执行（薄包装 runConcurrent，见 desktop-runner.js）
-        } catch (e) {
-          result = { success: false, incomplete: true, completeReason: 'exception', answer: `[执行异常] ${e.message}` };
-        }
-        const trace = curWsTrace ? curWsTrace.buildTrace(item.run_id) : { ws_captured: false, tool_calls: [] };
-        try {
-          await client.report(item.run_id, {
+          await client.report(runId, {
             status: result.success ? 'done' : 'failed',
             share_link: result.shareLink || null, artifact_share_link: result.artifactShareLink || null,
             answer: result.answer || null, reported_duration: result.reportedDuration || null,
@@ -844,9 +798,91 @@ program
             reason: result.success ? null : (result.completeReason || null),
             duration_ms: result.durationMs || null,
           });
-          await client.uploadTrace(item.run_id, trace);
-          logger.info(`✅ 回写 run ${item.run_id} (${result.success ? 'done' : 'failed'}, ws=${trace.ws_captured})`);
-        } catch (e) { logger.error(`回写 run ${item.run_id} 失败: ${e.message}`); }
+          await client.uploadTrace(runId, trace);
+          logger.info(`✅ 回写 run ${runId} (${result.success ? 'done' : 'failed'}, ws=${trace.ws_captured})`);
+        } catch (e) { logger.error(`回写 run ${runId} 失败: ${e.message}`); }
+        if (ws && ws.reset) ws.reset();
+      };
+      // 整组直接判失败(设备切换失败 / 带附件跳过):claim 后 report failed,不执行。
+      const failWholeGroup = async (conv, reason) => {
+        for (const it of conv) {
+          try { await client.claim(it.run_id); } catch (_) {}
+          try { await client.report(it.run_id, { status: 'failed', reason }); }
+          catch (e) { logger.error(`report failed 失败 run ${it.run_id}: ${e.message}`); }
+        }
+      };
+
+      for (const conv of conversations) {
+        const head = conv[0];
+        const headP = head.payload || {};
+        // Task7-Step2: 切到本会话指定的目标设备(vm)。同组共享一个对话→必然同一设备,用组首轮 target_device 切一次。
+        // 空=不切,用当前设备(向后兼容)。切换失败 fail-closed,整组标记 failed。
+        const targetDevice = head.target_device || null;
+        if (targetDevice) {
+          try {
+            await pool.switchTo(targetDevice);
+          } catch (e) {
+            logger.warn(`会话(首轮 run ${head.run_id})切换设备失败,fail-closed 整组标记 failed: ${e.message}`);
+            await failWholeGroup(conv, `切换目标设备失败: ${e.message}`);
+            continue;
+          }
+          // 切换成功→pool.mainPage/wsTrace 已推进到新 page/新收集器,重建持久 curRunner/curWsTrace 绑新状态。
+          // ⚠️ 仍传同一个 config.execution 引用(与循环外 runner 一致),保证修复#3 的"就地改 dialogOptions"仍生效。
+          curRunner = new DesktopRunner(pool.getContext(), pool.getMainPage(), config.platform, config.execution, logger);
+          curWsTrace = pool.getWsTrace();
+        }
+        // 修复#2:附件下载在平台模式尚未支持。带附件的题裸跑会产生"无附件的假成功"污染判定;
+        // 多轮里更甚(缺附件的一轮会连累整段上下文)。故整组任一轮带附件→整组 fail-closed,不静默裸跑。
+        const attTurns = conv.filter(it => Array.isArray((it.payload || {}).attachments) && (it.payload || {}).attachments.length > 0);
+        if (attTurns.length > 0) {
+          logger.warn(`会话(首轮 run ${head.run_id})含 ${attTurns.length} 轮带附件,平台模式暂不支持附件下载,整组跳过(标记 failed)`);
+          await failWholeGroup(conv, '平台模式暂不支持附件下载,未执行(避免无附件裸跑污染判定)');
+          continue;
+        }
+        // 修复#3:应用本会话下发时快照的对话选项(模型/对话模式/深度思考)——同组共享一对话,用组首轮快照,整段统一。
+        // ⚠️ 必须【就地改属性】config.execution.dialogOptions:DesktopRunner 及内部 DialogRunner 以引用持有
+        //   config.execution,每次发送现读 .dialogOptions;重新赋值 config.execution 会断引用→不生效。
+        //   没带快照时还原执行机默认,防串到别的会话。
+        if (headP.dialog_options && typeof headP.dialog_options === 'object') {
+          config.execution.dialogOptions = headP.dialog_options;
+        } else {
+          config.execution.dialogOptions = baseDialogOptions;
+        }
+        // claim:首轮 claim 失败(被他机认领)→整组跳过(不 report,交认领方处理);后续轮 claim 失败仅告警(尽力而为)。
+        try {
+          await client.claim(head.run_id);
+        } catch (e) { logger.warn(`claim 首轮 run ${head.run_id} 失败(可能被他机认领),整组跳过: ${e.message}`); continue; }
+        for (const it of conv.slice(1)) {
+          try { await client.claim(it.run_id); } catch (e) { logger.warn(`claim run ${it.run_id} 失败: ${e.message}`); }
+        }
+        // 构造各轮 testCase(带 run_id 供逐轮回写;conversationId/turnIndex 供多轮编排)。
+        const testCases = conv.map(it => {
+          const p = it.payload || {};
+          return {
+            caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
+            attachments: p.attachments || [], attachmentPaths: [],
+            conversationId: p.conversation_group || `__run_${it.run_id}`, turnIndex: p.turn_index || 0,
+            account: 'desktop',
+          };
+        });
+        // 逐轮完成回调:回写该轮的 run(用当前 curWsTrace,随设备切换演进)。
+        const onTurnDone = async (result, testCase) => { await reportRun(testCase.run_id, result, curWsTrace); };
+
+        if (curWsTrace && curWsTrace.reset) curWsTrace.reset(); // 会话开始前清空 WS 收集器(为首轮),避免上一会话轨迹串进来
+        try {
+          if (testCases.length === 1) {
+            // 单轮:走原有 runOne 路径(开干净对话→发送→扫列表判完成→抓取),行为与改前一致。
+            let result;
+            try { result = await curRunner.runOne(testCases[0]); }
+            catch (e) { result = { success: false, incomplete: true, completeReason: 'exception', answer: `[执行异常] ${(e.message || '').split('\n')[0]}` }; }
+            await onTurnDone(result, testCases[0]);
+          } else {
+            // 多轮:在同一对话内顺序连发(轮次0新建对话、后续轮复用),逐轮回写各自的 run。
+            await curRunner.runConversationTurns(testCases, onTurnDone);
+          }
+        } catch (e) {
+          logger.error(`会话(首轮 run ${head.run_id})执行异常: ${e.message}`);
+        }
       }
       await pool.close();     // 断开 CDP（默认 keepClient，端口仍开着，下轮可直接连）
       return pending.length;
