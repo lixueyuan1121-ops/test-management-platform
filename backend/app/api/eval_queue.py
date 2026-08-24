@@ -41,6 +41,41 @@ def _payload_of(q: EvalQuery) -> dict:
     }
 
 
+def _conv_group(r: EvalRun) -> str | None:
+    """从 run 的 payload 快照里读多轮会话分组键;单轮(空/无)返回 None。"""
+    try:
+        p = json.loads(r.payload) if r.payload else {}
+    except (ValueError, TypeError):
+        return None
+    g = p.get("conversation_group") if isinstance(p, dict) else None
+    return g or None  # 空串归一为 None(单轮)
+
+
+def _take_whole_groups(rows: list[EvalRun], limit: int) -> list[EvalRun]:
+    """从按 id 升序的 pending rows 中取约 limit 条,但绝不切分多轮会话组。
+
+    多轮会话(conversation_group 相同)的各轮必须整组下发给同一执行机、同一轮询批次:否则
+    轮次0所在对话在上批结束(pool.close)时已关,轮次1接不上上下文。故一旦纳入某组的任一轮,
+    就纳入该组全部轮(可超 limit);单轮 run 各自独立计数。达到 limit 后不再纳入下一组。
+    """
+    selected: list[EvalRun] = []
+    seen_groups: set[str] = set()
+    count = 0
+    for r in rows:
+        if count >= limit:
+            break
+        g = _conv_group(r)
+        if not g:
+            selected.append(r)
+            count += 1
+        elif g not in seen_groups:
+            group_rows = [x for x in rows if _conv_group(x) == g]  # 该组全部轮(整组不拆)
+            selected.extend(group_rows)
+            seen_groups.add(g)
+            count += len(group_rows)
+    return selected
+
+
 def _to_out(r: EvalRun) -> dict:
     return {
         "run_id": r.id,
@@ -109,10 +144,12 @@ def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
     if ctx.device is not None:
         runner = ctx.device.runner_id
         ctx.device.last_seen_at = datetime.utcnow(); db.commit()
+    # 取该 runner 全部 pending(按 id 升序),再在内存里「整组不拆」地取约 limit 条:
+    # 多轮会话各轮必须同批下发(见 _take_whole_groups),故不能用 SQL .limit() 硬切(会拦腰截断某组)。
     rows = (db.query(EvalRun)
             .filter(EvalRun.status == EvalRunStatus.pending, EvalRun.runner == runner)
-            .order_by(EvalRun.id).limit(limit).all())
-    return ok([_to_out(r) for r in rows])
+            .order_by(EvalRun.id).all())
+    return ok([_to_out(r) for r in _take_whole_groups(rows, limit)])
 
 
 @router.post("/{run_id}/claim")

@@ -114,9 +114,12 @@ module.exports = {
     durationAttrSelector: '.chat-token-cost ui-tooltip',
     durationAttrName: 'content',
 
-    // —— 算力豆消耗 → F 列（头像→“明细”，按 query 匹配“消耗来源”行，读“变动”值）——
+    // —— 算力豆消耗 → F 列（头像→“算力豆”，按 query 匹配“消耗来源”行，读“变动”值）——
     avatarSelector: '.topbar-avatar-image',
-    ledgerEntrySelector: 'text=明细',
+    // 进入算力豆账本的入口菜单项：点头像展开菜单后点它。平台已把入口从“明细”改名为“算力豆”，
+    // 故默认用正则兼容两者（新 UI“算力豆”/旧 UI“明细”）。若页面顶栏也有“算力豆”文字导致误点，
+    // 请用 F12 核对后改成菜单项专属 class（如 '.user-menu__item:has-text("算力豆")'）。
+    ledgerEntrySelector: 'text=/算力豆|明细/',
     ledgerRowSelector: '.coin-info__row',
     ledgerRowQuerySelector: '.coin-info__row-query',
     ledgerRowChangeSelector: '.coin-info__change-amount',

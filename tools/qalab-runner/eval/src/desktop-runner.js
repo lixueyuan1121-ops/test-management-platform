@@ -266,10 +266,13 @@ class DesktopRunner {
   }
 
   // 抓取当前显示对话的回填字段（复用 DialogRunner 抓取方法 + 补填）。answerOnly 时只抓正文。
-  async _extractCurrent(testCase) {
+  // opts.skipPanels=true（多轮中间轮）：跳过「开面板」类抓取（产物分享/对话分享/算力豆——开顶栏面板/
+  // 明细弹窗会改变对话视图、污染下一轮发送），只留纯 DOM 的正文/tokens/耗时；末轮再抓全字段。
+  async _extractCurrent(testCase, opts = {}) {
+    const skipPanels = !!opts.skipPanels;
     const dr = this.dr;
     dr.frame = this._fl();
-    dr._skipPanelFields = false;
+    dr._skipPanelFields = skipPanels; // 供 dr._missingFields:中间轮不把开面板字段算作「应有却为空」
     // 桌面版单 DialogRunner 复用：抓取前按「当前用例」重设带附件标记，供 extractBeanCost 精确匹配消耗来源。
     dr._hasAttachment = (testCase.attachmentPaths || []).length > 0;
     const out = {
@@ -284,13 +287,15 @@ class DesktopRunner {
       try { const copied = await dr._withCritical(() => dr.extractAnswerViaCopy()); if (copied && copied.trim()) out.answer = copied.trim(); } catch {}
     }
     if (!this.execution.answerOnly) {
-      try { const a = await dr._withCritical(() => dr.extractArtifactShareLink()); out.artifactShareLink = a.link; out.hasArtifact = a.hasCard; } catch {}
+      if (!skipPanels) { try { const a = await dr._withCritical(() => dr.extractArtifactShareLink()); out.artifactShareLink = a.link; out.hasArtifact = a.hasCard; } catch {} }
       try { const c = await dr.extractCost(); out.cost = c.cost; out.costRaw = c.raw; } catch {}
       try { const d = await dr._withCritical(() => dr.extractReportedDuration()); out.reportedDuration = d.value; out.reportedDurationRaw = d.raw; } catch {}
-      try { out.shareLink = await dr._withCritical(() => dr.extractConversationShareLink()); } catch {}
-      try { out.beanCost = (await dr._withCritical(() => dr.extractBeanCost(testCase.question))).value; } catch {}
-      // 就地补填（桌面版不做 reload 补填：会打乱其他后台任务的显示定位）
-      try { await dr._refillEmptyFields(out, testCase.question); } catch {}
+      if (!skipPanels) {
+        try { out.shareLink = await dr._withCritical(() => dr.extractConversationShareLink()); } catch {}
+        try { out.beanCost = (await dr._withCritical(() => dr.extractBeanCost(testCase.question))).value; } catch {}
+        // 就地补填（桌面版不做 reload 补填：会打乱其他后台任务的显示定位）
+        try { await dr._refillEmptyFields(out, testCase.question); } catch {}
+      }
     }
     return out;
   }
@@ -330,6 +335,64 @@ class DesktopRunner {
     // 理论不会走到(runConcurrent 每条都会收尾出 result);兜底给一个失败态,避免上层拿到 undefined。
     return { caseId: testCase.caseId, success: false, incomplete: true,
              completeReason: 'no_result', answer: '[未产出结果]' };
+  }
+
+  // 平台/桌面「多轮会话」入口:同一 conversation_group 的各轮,在【同一对话】里按 turnIndex 升序【顺序连发】。
+  // 轮次0 开一个干净新对话;后续轮【不新建对话】、复用当前对话追加提问,形成多轮上下文
+  // (修正原平台模式「每轮各自 runOne→新建对话」导致轮次1 接不上轮次0 的问题)。
+  // 每轮:发送(基线只认本轮新增的回答组/footer)→ 等本轮完成 → 抓字段(中间轮跳过开面板抓取,末轮抓全字段)
+  //      → 组装 result → onTurnDone 回调(供逐轮回写各自的 run)。整段顺序执行,不并发、不切别的对话。
+  // 复用 DialogRunner 的基线感知能力(_sendOne 发送前捕获基线、waitForResponseComplete/extract* 只认基线之后
+  // 的新增),故在多轮同一对话里能正确识别「本轮」回答,不误取上一轮旧气泡/旧 footer。
+  async runConversationTurns(turns, onTurnDone) {
+    const sorted = turns.slice().sort((a, b) => (a.turnIndex || 0) - (b.turnIndex || 0));
+    const results = [];
+    const emptyOut = () => ({
+      answer: '', shareLink: '', artifactShareLink: '', hasArtifact: false,
+      reportedDuration: '', reportedDurationRaw: '', beanCost: '', cost: '', costRaw: '', reloadRecoveredFields: []
+    });
+    const emit = async (result, testCase) => {
+      results.push(result);
+      if (onTurnDone) { try { await onTurnDone(result, testCase); } catch (e) { this._warn(`   多轮回调失败 ${testCase.caseId}: ${(e.message || '').split('\n')[0]}`); } }
+    };
+    this._log(`🔁 多轮会话:${sorted.length} 轮将在同一对话内顺序连发(轮次0新建对话,后续轮复用当前对话)`);
+    await this._focus();
+    let aborted = false, abortMsg = '';
+    for (let i = 0; i < sorted.length; i++) {
+      const testCase = sorted[i];
+      const isLast = i === sorted.length - 1;
+      // 首轮失败=对话未建立,后续轮无所依附:直接按「跳过」收尾,不再裸发(避免落到错误对话)。
+      if (aborted) {
+        await emit(this._buildResult(testCase, emptyOut(),
+          { completed: false, completeReason: 'skipped', errorMsg: abortMsg, startTime: Date.now(), endTime: Date.now() }), testCase);
+        continue;
+      }
+      const startTime = Date.now();
+      try {
+        if (i === 0) {
+          const clean = await this._openCleanConversation(); // 仅轮次0开干净新对话
+          if (!clean) throw new Error('无法打开干净的新对话(多轮首轮)');
+        }
+        // _sendOne 内先捕获发送前基线(prior turns 的回答组/footer 数),再发送本轮、确认已开始生成。
+        // 首轮基线为 0;后续轮不新建对话、在当前对话追加提问,基线=已有轮数 → 后续等待/抓取只认「本轮新增」。
+        await this._sendOne(testCase);
+        const done = await this.dr.waitForResponseComplete();          // 基线感知:等「本轮」回答完成
+        const out = await this._extractCurrent(testCase, { skipPanels: !isLast }); // 中间轮跳过开面板抓取
+        const result = this._buildResult(testCase, out,
+          { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now() });
+        const st = result.success ? '✅' : '❌';
+        this._log(`   ${st} 多轮 ${testCase.caseId}（第 ${i + 1}/${sorted.length} 轮，${(result.durationMs / 1000).toFixed(1)}s）${result.success ? '' : ' ' + result.answer}`);
+        await emit(result, testCase);
+      } catch (e) {
+        const msg = (e && e.message) ? e.message.split('\n')[0] : String(e);
+        this._warn(`   多轮第 ${i + 1}/${sorted.length} 轮失败:${testCase.caseId} - ${msg}`);
+        await emit(this._buildResult(testCase, emptyOut(),
+          { completed: false, completeReason: 'exception', errorMsg: msg, startTime, endTime: Date.now() }), testCase);
+        // 首轮失败则整组后续轮跳过;中间轮失败不中止(上下文可能仍在),继续尝试后续轮。
+        if (i === 0) { aborted = true; abortMsg = '首轮失败,多轮上下文未建立,后续轮跳过'; }
+      }
+    }
+    return results;
   }
 
   // 主入口：把一批用例作为「并发对话」在单窗口内跑起来，逐条完成即回调 onResult（用于实时回填）。
