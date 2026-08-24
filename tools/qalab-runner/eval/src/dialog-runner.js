@@ -1386,7 +1386,7 @@ class DialogRunner {
   // 便于定位失败到底是「面板没打开 / 没匹配上 / 记账还没落库」。
   async extractBeanCost(question, opts = {}) {
     const avSel = this.platform.avatarSelector;
-    const entrySel = this.platform.ledgerEntrySelector || 'text=明细';
+    const entrySel = this.platform.ledgerEntrySelector || 'text=/算力豆|明细/';  // 头像→算力豆(旧 UI 明细),正则兼容
     if (!avSel || !question) return { value: '', raw: '' };
     const ctx = this._ctx();
     const rowSel = this.platform.ledgerRowSelector || '.coin-info__row';
