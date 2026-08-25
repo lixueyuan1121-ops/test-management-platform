@@ -59,9 +59,11 @@ def _seed():
     def run(runner_id, status, project_id=1, created_at=None, verdict=None, fail_kind=None):
         r = ExecRun(runner=runner_id, status=status, project_id=project_id,
                     payload="{}", verdict=verdict, fail_kind=fail_kind)
-        if created_at is not None:
-            r.created_at = created_at
         _s.add(r)
+        _s.flush()
+        # 显式写本地时间(而非依赖 server_default):SQLite 的 CURRENT_TIMESTAMP 是 UTC,
+        # 本地过午夜后与 today(本地) 跨日错位会让 today 聚合断言随钟点漂移(生产 MySQL NOW() 为本地无此问题)
+        r.created_at = created_at or now
         return r
 
     # 设备 A: 2 running + 1 pending + 今日 1 passed(全量)+ 1 failed(今日)
