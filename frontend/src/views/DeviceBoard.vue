@@ -29,7 +29,7 @@
         <div class="kpi-lbl">在线</div>
       </div>
       <div class="kpi">
-        <div class="kpi-num run">{{ ov.running_devices }}<span class="live-pip" v-if="ov.running_devices"></span></div>
+        <div class="kpi-num running">{{ ov.running_devices }}<span class="live-pip" v-if="ov.running_devices"></span></div>
         <div class="kpi-lbl">执行中设备</div>
       </div>
       <div class="kpi">
@@ -47,7 +47,7 @@
 
       <div v-else class="grid">
         <div v-for="d in ov.devices" :key="d.id" class="card"
-             :class="{ offline: !d.online, active: d.run_counts.running > 0 }">
+             :class="{ offline: !d.online, 'is-running': d.run_counts.running > 0 }">
           <!-- 执行中：边缘扫描流光 -->
           <div v-if="d.run_counts.running > 0" class="scan"></div>
 
@@ -78,12 +78,15 @@
             </div>
           </div>
 
-          <!-- 执行中明细：当前用例 + 秒级计时 -->
+          <!-- 执行中明细：当前正在跑的用例（非批次/非历史），最多展示 3 条，超出汇总 -->
           <div v-if="d.active_runs.length" class="active">
-            <div v-for="r in d.active_runs" :key="r.run_id" class="run">
+            <div v-for="r in d.active_runs.slice(0, 3)" :key="r.run_id" class="run">
               <span class="run-pip"></span>
               <span class="run-title" :title="r.title">{{ r.title }}</span>
               <span class="run-time">{{ fmtElapsed(r.started_at) }}</span>
+            </div>
+            <div v-if="d.active_runs.length > 3" class="run-more">
+              +{{ d.active_runs.length - 3 }} 项并发执行中
             </div>
           </div>
           <div v-else class="idle">{{ d.online ? '空闲待命' : '离线' }}</div>
@@ -159,20 +162,24 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 深色科技风，对齐 Dashboard「OPERATIONS CENTER」语言 */
+/* 浅色主题：白底 + 浅灰卡片浮起；hero 保留深色科技条作顶部锚点（对齐 Dashboard 浅底+深色hero 的模式） */
 .board {
-  min-height: 100%;
-  padding: 4px 2px 40px;
-  color: #e6edf3;
+  /* 负 margin 抵消 MainLayout .main 的 20px 灰底 padding，让看板浅底铺满，与侧栏衔接处自然过渡 */
+  margin: -20px;
+  padding: 20px 20px 40px;
+  min-height: calc(100vh - 60px);
+  box-sizing: border-box;
+  background: linear-gradient(180deg, #eef1f5 0%, #f6f8fa 120px);
+  color: #1a1d21;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 .panel { border-radius: 14px; }
 
-/* ① Hero */
+/* ① Hero：深色科技条（顶部视觉锚点，网格背景 + 信号青绿点缀） */
 .hero {
   position: relative; overflow: hidden;
-  background: linear-gradient(135deg, #10151d 0%, #171e2a 60%, #101820 100%);
-  border: 1px solid #223; padding: 26px 30px;
+  background: linear-gradient(135deg, #1a2836 0%, #212f43 100%);
+  border: 1px solid rgba(255,255,255,.08); padding: 26px 30px;
   display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;
 }
 .grid-bg {
@@ -182,7 +189,7 @@ onUnmounted(() => {
 }
 .hero-l, .hero-r { position: relative; z-index: 1; }
 .eyebrow { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: 2px; color: #00e5a0; }
-.hero-hi { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: 1px; }
+.hero-hi { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: 1px; color: #fff; }
 .hero-sub { color: #8b98a9; font-size: 13px; margin-top: 6px; }
 .hero-r { text-align: right; }
 .clock { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 30px; font-weight: 700; color: #fff; line-height: 1.1; }
@@ -192,61 +199,66 @@ onUnmounted(() => {
 .status-row .dot.live { background: #00e5a0; box-shadow: 0 0 8px #00e5a0; animation: breathe 1.6s ease-in-out infinite; }
 .proj-cnt { margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5f6b7a; letter-spacing: 1px; }
 
-/* ② KPI */
+/* ② KPI：白底浮起，数字深色着色 */
 .kpi-wall { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 16px 0; }
 .kpi {
-  background: #141a23; border: 1px solid #212b38; border-radius: 12px; padding: 18px 20px;
+  background: #fff; border: 1px solid #e3e8ef; border-radius: 12px; padding: 18px 20px;
+  box-shadow: 0 2px 8px rgba(31,45,61,.05);
 }
-.kpi-num { font-family: 'JetBrains Mono', monospace; font-size: 34px; font-weight: 800; color: #fff; line-height: 1; position: relative; display: inline-block; }
-.kpi-num.on { color: #00e5a0; }
-.kpi-num.run { color: #35b6ff; }
+.kpi-num { font-family: 'JetBrains Mono', monospace; font-size: 34px; font-weight: 800; color: #1a1d21; line-height: 1; position: relative; display: inline-block; }
+.kpi-num.on { color: #00b386; }
+.kpi-num.running { color: #2f7dd1; }
 .kpi-lbl { color: #7d8a9b; font-size: 13px; margin-top: 8px; }
-.live-pip { position: absolute; top: 2px; right: -14px; width: 8px; height: 8px; border-radius: 50%; background: #35b6ff; box-shadow: 0 0 8px #35b6ff; animation: breathe 1.4s ease-in-out infinite; }
+.live-pip { position: absolute; top: 2px; right: -14px; width: 8px; height: 8px; border-radius: 50%; background: #2f7dd1; box-shadow: 0 0 8px #2f7dd1; animation: breathe 1.4s ease-in-out infinite; }
 
-/* ③ 卡片网格 */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+/* ③ 卡片：白底浮起（严格等高） */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-items: stretch; grid-auto-rows: 1fr; }
 .card {
   position: relative; overflow: hidden;
-  background: #141a23; border: 1px solid #212b38; border-radius: 12px; padding: 16px 18px;
+  height: 100%; box-sizing: border-box;   /* 配合 grid-auto-rows:1fr 强制同行卡片严格等高 */
+  display: flex; flex-direction: column;   /* 执行区 flex:1 吸收高度差 */
+  background: #fff; border: 1px solid #e3e8ef; border-radius: 12px; padding: 16px 18px;
+  box-shadow: 0 2px 8px rgba(31,45,61,.05);
   transition: border-color .3s, box-shadow .3s, opacity .3s;
 }
-.card.active { border-color: #35b6ff55; box-shadow: 0 0 0 1px #35b6ff33, 0 6px 24px -8px #35b6ff44; }
-.card.offline { opacity: .5; }
+.card.is-running { border-color: #2f7dd166; box-shadow: 0 0 0 1px #2f7dd122, 0 8px 28px -8px #2f7dd144; }
+.card.offline { opacity: .6; }
 
 /* 签名动效：执行中卡片顶部扫描流光 */
 .scan {
   position: absolute; top: 0; left: -40%; width: 40%; height: 2px;
-  background: linear-gradient(90deg, transparent, #35b6ff, transparent);
+  background: linear-gradient(90deg, transparent, #2f7dd1, transparent);
   animation: scan 2.4s linear infinite;
 }
 
 .card-hd { display: flex; align-items: center; gap: 8px; }
-.light { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.light.on { background: #00e5a0; box-shadow: 0 0 8px #00e5a0; animation: breathe 1.8s ease-in-out infinite; }
-.light.off { background: #55606e; }
-.dev-name { font-size: 15px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.runner-id { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5f6b7a; background: #1c2530; padding: 2px 7px; border-radius: 5px; flex: none; }
+.light { width: 9px; height: 9px; border-radius: 50%; flex: none; margin-top: 2px; }
+.light.on { background: #00b386; box-shadow: 0 0 7px rgba(0,179,134,.7); animation: breathe 1.8s ease-in-out infinite; }
+.light.off { background: #c0c6ce; }
+.dev-name { font-size: 15px; font-weight: 700; color: #1a1d21; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.runner-id { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #7d8a9b; background: #f0f2f5; padding: 2px 7px; border-radius: 5px; flex: none; }
 .meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: #8b98a9; }
-.meta .seen { font-family: 'JetBrains Mono', monospace; color: #708095; }
+.meta .seen { font-family: 'JetBrains Mono', monospace; color: #9aa5b1; }
 
 .counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0 4px; }
-.c { text-align: center; background: #0f141b; border-radius: 8px; padding: 8px 4px; }
-.c-n { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 800; color: #cdd7e2; line-height: 1; }
-.c-l { font-size: 11px; margin-top: 4px; color: #708095; }
-.c-run.hot .c-n { color: #35b6ff; }
-.c-pass .c-n { color: #00e5a0; }
-.c-fail .c-n { color: #ff5c6c; }
+.c { text-align: center; background: #f5f7fa; border: 1px solid #eef1f5; border-radius: 8px; padding: 8px 4px; }
+.c-n { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 800; color: #4a5568; line-height: 1; }
+.c-l { font-size: 11px; margin-top: 4px; color: #8b98a9; }
+.c-run.hot .c-n { color: #2f7dd1; }
+.c-pass .c-n { color: #00b386; }
+.c-fail .c-n { color: #e5565f; }
 
 /* 执行中明细 */
-.active { margin-top: 12px; border-top: 1px dashed #253040; padding-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+.active { margin-top: 12px; border-top: 1px dashed #e3e8ef; padding-top: 10px; display: flex; flex-direction: column; gap: 7px; flex: 1; }
 .run { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.run-pip { width: 6px; height: 6px; border-radius: 50%; background: #35b6ff; flex: none; animation: breathe 1.2s ease-in-out infinite; }
-.run-title { color: #c3cedb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.run-time { margin-left: auto; font-family: 'JetBrains Mono', monospace; color: #35b6ff; flex: none; font-variant-numeric: tabular-nums; }
-.idle { margin-top: 12px; border-top: 1px dashed #253040; padding-top: 10px; font-size: 12px; color: #5f6b7a; font-family: 'JetBrains Mono', monospace; }
+.run-more { font-size: 11px; color: #8b98a9; font-family: 'JetBrains Mono', monospace; padding-left: 14px; letter-spacing: .3px; }
+.run-pip { width: 6px; height: 6px; border-radius: 50%; background: #2f7dd1; flex: none; animation: breathe 1.2s ease-in-out infinite; }
+.run-title { color: #4a5568; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-time { margin-left: auto; font-family: 'JetBrains Mono', monospace; color: #2f7dd1; flex: none; font-variant-numeric: tabular-nums; }
+.idle { margin-top: 12px; border-top: 1px dashed #e3e8ef; padding-top: 10px; font-size: 12px; color: #9aa5b1; font-family: 'JetBrains Mono', monospace; flex: 1; }
 
 .empty { text-align: center; color: #7d8a9b; padding: 80px 20px; font-size: 14px; line-height: 2; }
-.empty-mark { font-size: 46px; color: #35455a; margin-bottom: 10px; }
+.empty-mark { font-size: 46px; color: #c0c6ce; margin-bottom: 10px; }
 
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @keyframes scan { 0% { left: -40%; } 100% { left: 100%; } }
