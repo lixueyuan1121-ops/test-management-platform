@@ -77,3 +77,66 @@ def list_abnormal(project_id: int = Query(...), db: Session = Depends(get_db), u
             .filter(EvalRun.project_id == project_id, EvalRun.is_abnormal == True)  # noqa: E712
             .order_by(EvalRun.id.desc()).all())
     return ok([_run_out(r) for r in rows])
+
+
+@router.get("/dimension-stats")
+def eval_dimension_stats(
+    project_id: int = Query(...),
+    days: int = 30,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """对话测评维度通过率聚合:以 EvalQuery.dimension 为轴,统计 verdict=pass/fail 的通过率。
+
+    time window: [today-days+1, today];  error/NULL verdict 不计。
+    dimension 为空归入"未标注"。dims 按 total 降序。overall_rate 为加权均值。
+    """
+    from datetime import date, timedelta
+    from app.models.ai_eval import EvalQuery, EvalRun
+    from sqlalchemy import func
+
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    if days <= 0 or days > 365:
+        days = 30
+    today = date.today()
+    d_from = today - timedelta(days=days - 1)
+
+    rows = (
+        db.query(EvalQuery.dimension, EvalRun.verdict, func.count(EvalRun.id))
+        .join(EvalQuery, EvalQuery.id == EvalRun.eval_query_id)
+        .filter(
+            EvalRun.project_id == project_id,
+            EvalRun.verdict.in_(["pass", "fail"]),
+            func.date(EvalRun.created_at) >= d_from,
+            func.date(EvalRun.created_at) <= today,
+        )
+        .group_by(EvalQuery.dimension, EvalRun.verdict)
+        .all()
+    )
+
+    agg: dict[str, dict] = {}
+    for dim, verdict, cnt in rows:
+        key = dim or "未标注"
+        bucket = agg.setdefault(key, {"total": 0, "passed": 0})
+        bucket["total"] += cnt
+        if verdict == "pass":
+            bucket["passed"] += cnt
+
+    dims = sorted(
+        [
+            {
+                "dimension": k,
+                "total": v["total"],
+                "passed": v["passed"],
+                "pass_rate": round(v["passed"] / v["total"] * 100, 1) if v["total"] else 0.0,
+            }
+            for k, v in agg.items()
+        ],
+        key=lambda x: (-x["total"], x["dimension"]),
+    )
+
+    judged_total = sum(d["total"] for d in dims)
+    total_passed = sum(d["passed"] for d in dims)
+    overall_rate = round(total_passed / judged_total * 100, 1) if judged_total else 0.0
+
+    return ok({"days": days, "dims": dims, "judged_total": judged_total, "overall_rate": overall_rate})
