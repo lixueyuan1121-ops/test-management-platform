@@ -47,7 +47,13 @@ def _seed():
     # 设备 B: 3 分钟前 heartbeat → 离线
     dev_b = RunnerDevice(owner_id=bob.id, runner_id="win-02", name="测试温机",
                          token="tok-b", last_seen_at=seen_now - timedelta(minutes=3))
-    _s.add_all([dev_a, dev_b])
+    # 设备 C: 10 秒前 heartbeat → 在线但无执行中任务(档位②在线空闲，用于排序覆盖)
+    dev_c = RunnerDevice(owner_id=admin.id, runner_id="lin-03", name="空闲机",
+                         token="tok-c", last_seen_at=seen_now - timedelta(seconds=10))
+    # 设备 D: 在线 + 1 running(与 A 同档①，A 有 2 running 应排在 D 前，验证档内"执行中多→少")
+    dev_d = RunnerDevice(owner_id=admin.id, runner_id="mac-04", name="次开发机",
+                         token="tok-d", last_seen_at=seen_now - timedelta(seconds=8))
+    _s.add_all([dev_a, dev_b, dev_c, dev_d])
     _s.flush()
 
     def run(runner_id, status, project_id=1, created_at=None, verdict=None, fail_kind=None):
@@ -71,6 +77,8 @@ def _seed():
     # 设备 B: 1 running + 今日 1 passed
     run("win-02", "running", project_id=30)
     run("win-02", "passed", verdict="pass")
+    # 设备 D: 1 running(档①内 running 数少于 A，应排 A 之后)
+    run("mac-04", "running", project_id=40)
 
     _s.commit()
     return admin.id, bob.id
@@ -94,13 +102,18 @@ def main():
     r = client.get("/api/devices/overview")
     assert r.status_code == 200 and r.json()["code"] == 0, r.text
     d = r.json()["data"]
-    assert d["total_devices"] == 2, d["total_devices"]
-    assert set(x["runner_id"] for x in d["devices"]) == {"mac-01", "win-02"}
-    assert d["online_devices"] == 1, d
-    assert d["running_devices"] == 2, d
+    assert d["total_devices"] == 4, d["total_devices"]
+    assert set(x["runner_id"] for x in d["devices"]) == {"mac-01", "win-02", "lin-03", "mac-04"}
+    assert d["online_devices"] == 3, d          # mac-01 + lin-03 + mac-04 在线
+    assert d["running_devices"] == 3, d         # mac-01 + mac-04 + win-02(离线但有 running)
 
     dev_a = next(x for x in d["devices"] if x["runner_id"] == "mac-01")
     dev_b = next(x for x in d["devices"] if x["runner_id"] == "win-02")
+    dev_c = next(x for x in d["devices"] if x["runner_id"] == "lin-03")
+
+    # ---- 排序：①在线且执行中(running 多→少) → ②在线空闲 → ③离线 ----
+    order = [x["runner_id"] for x in d["devices"]]
+    assert order == ["mac-01", "mac-04", "lin-03", "win-02"], f"排序错误: {order}"
 
     # ---- 在线判定(60s 阈值) ----
     assert dev_a["online"] is True, "5s 前 heartbeat 应在 60s 内在线"

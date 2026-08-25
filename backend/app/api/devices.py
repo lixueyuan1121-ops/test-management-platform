@@ -209,6 +209,20 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(require_pl
             running_cnt += 1
         out.append(dev)
 
+    # 排序：①在线且执行中 → ②在线空闲 → ③离线；档内按执行中数多→少、再按最近活跃新→旧。
+    # 用稳定排序从次要键到主要键分层：先排最次要(活跃时间)，最后排最主要(档位)。
+    # last_seen_at 是同格式 ISO 字符串(或 None)，字典序即时间序；None 视作最早("")排档内最后。
+    def _tier(dev):
+        if dev["online"] and dev["run_counts"]["running"] > 0:
+            return 0   # 在线且执行中
+        if dev["online"]:
+            return 1   # 在线空闲
+        return 2       # 离线
+
+    out.sort(key=lambda d: d["last_seen_at"] or "", reverse=True)   # 次要：最近活跃新→旧
+    out.sort(key=lambda d: -d["run_counts"]["running"])             # 其次：执行中数多→少
+    out.sort(key=_tier)                                             # 主要：档位
+
     return ok({
         "generated_at": now.isoformat(),
         "total_devices": len(devices),
