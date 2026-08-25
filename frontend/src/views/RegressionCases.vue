@@ -14,6 +14,7 @@
             >
               <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
             </el-select>
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" width="200px" @change="reload" />
             <el-select v-model="execKindFilter" multiple collapse-tags placeholder="执行类型(可多选)" size="small" clearable style="min-width:150px;max-width:240px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
@@ -104,8 +105,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listCases, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, _blobErrorMsg } from '@/api'
+import { listCases, listTasks, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, _blobErrorMsg } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import TaskPicker from '@/components/TaskPicker.vue'
 
 const app = useAppStore()
 const PRI_TYPE = { P0: 'danger', P1: 'warning', P2: 'primary', P3: 'info' }
@@ -120,6 +122,8 @@ const projects = ref([])
 const pid = ref(null)
 const pageFilter = ref(null)       // 页面筛选(回归页核心维度)
 const pageOptions = ref([])        // 页面候选:项目选择器已有 page
+const taskId = ref(null)           // 关联任务筛选(按需求维度挑回归用例)
+const tasks = ref([])              // 任务候选(TaskPicker 用,随项目切换拉取)
 const execKindFilter = ref([])    // 执行类型筛选(多选,可同时选 gui+e2e)
 const keyword = ref('')
 const rows = ref([])
@@ -157,13 +161,16 @@ onMounted(async () => {
 async function onProjectChange() {
   pageFilter.value = null
   pageOptions.value = []
+  taskId.value = null
+  tasks.value = []
   if (!pid.value) { rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
-  // 页面候选:从项目选择器(共享域)派生 distinct page,失败不影响列表。
+  // 页面候选:从项目选择器(共享域)派生 distinct page;任务候选供关联任务筛选。均失败不影响列表。
   try {
     const data = await listSelectors(pid.value)
     pageOptions.value = [...new Set((data.shared || []).map((k) => k.page).filter(Boolean))].sort()
   } catch { pageOptions.value = [] }
+  try { tasks.value = await listTasks({ project_id: pid.value }) } catch { tasks.value = [] }
   await reload()
 }
 
@@ -180,6 +187,7 @@ async function load() {
       project_id: pid.value,
       is_regression: true,               // 本页固定只看回归用例
       page: pageFilter.value || undefined,
+      task_id: taskId.value || undefined,
       exec_kind: execKindFilter.value.length ? execKindFilter.value.join(',') : undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,

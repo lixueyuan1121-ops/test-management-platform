@@ -426,6 +426,46 @@ def bulk_set_regression(
     return ok({"updated": n, "is_regression": body.is_regression})
 
 
+@router.post("/testcases/backfill")
+def backfill_testcases(
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量确定性回填「选择器待补」用例(选择器补齐后的联动更新,不调 AI)。
+
+    扫项目内 kind_reason 带待补标的用例,逐条用 revalidate_for_backfill 按**当前注册表**
+    重新校验其保留的旧 script:通过 → 恢复原意图 exec_kind(gui/e2e)、清待补标与上次失败
+    原因、按 script 用到的 key 重打页面标;不过 → 跳过(留给逐条 AI 重生)。
+    纯内存校验、同步快、幂等;SelectorAdmin 保存 key 后自动调本端点,形成
+    「补 key → 待补用例自动复活」闭环。路由须注册在 /testcases/{cid} 之前。
+    """
+    assert_project_role(db, user, project_id, _WRITE_ROLES)
+    rows = (db.query(TestCase)
+            .filter(TestCase.project_id == project_id,
+                    TestCase.kind_reason.like(f"{_SELECTOR_FIX_MARK}%"))
+            .all())
+    restored = 0
+    for tc in rows:
+        sel_fix, _keys, intended = selector_fix_info(tc.kind_reason)
+        old_script = _load_script_list(tc.script)
+        if not (sel_fix and intended in ("gui", "e2e") and old_script):
+            continue
+        norm, verr = revalidate_for_backfill(old_script, project_id=project_id)
+        if verr is not None:
+            continue
+        tc.script = json.dumps(norm, ensure_ascii=False)
+        tc.exec_kind = intended
+        tc.kind_reason = None
+        tc.last_gen_error = None
+        p = pages_for_script(norm, project_id)
+        if p:
+            tc.page = p
+        restored += 1
+    db.commit()
+    return ok({"restored": restored, "remaining": len(rows) - restored})
+
+
 @router.get("/testcases/{cid}")
 def get_testcase(
     cid: int,

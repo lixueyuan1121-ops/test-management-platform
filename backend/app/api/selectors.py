@@ -18,10 +18,11 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ProjectRole
 from app.db.session import get_db
-from app.models import SelectorKey, SelectorScope, User
+from app.models import SelectorKey, SelectorScope, TestCase, User
 from app.schemas.common import ok
 from app.schemas.selector import SelectorKeyIn, SelectorKeyPatch, SelectorScopeIn
 from app.services.selectors import resolved_registry
+from app.services.claude_runner import _SELECTOR_FIX_MARK
 from app.api.release import SUB_PRODUCTS  # 复用子产品白名单
 
 router = APIRouter(prefix="/api/selectors", tags=["selectors"])
@@ -94,8 +95,55 @@ def delete_key(kid: int, db: Session = Depends(get_db),
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key 不存在")
     assert_project_role(db, user, r.project_id, _RW)
+    # 联动降级:删 key 前把仍引用它的可执行 gui/e2e 用例降为 manual + 写标准「选择器待补」标,
+    # 而非任由 script 静默失效(执行机跑到才 fail)。格式与 parse_testcases 一致 → 待补筛选/
+    # badge/一键重生/批量回填自动适用;script 保留,重新加回 key 即可批量回填复活。
+    affected = _cases_using_key(db, r.project_id, r.key)
+    for tc in affected:
+        tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{r.key} 后即可执行 {tc.exec_kind}"[:500]
+        tc.exec_kind = "manual"
     db.delete(r); db.commit()
-    return ok({"deleted": kid})
+    return ok({"deleted": kid, "downgraded": len(affected)})
+
+
+def _cases_using_key(db: Session, project_id: int, key: str) -> list[TestCase]:
+    """项目内 script 引用了 key 的可执行(gui/e2e)用例。
+
+    SQL LIKE 粗筛(script 是大 TEXT,先缩小候选集)再 Python 解析确认 target.key 恰等,
+    避免子串误伤(如 navHome 命中 navHomeBadge)。manual 用例不收:已不可执行,降无可降。
+    """
+    rows = (db.query(TestCase)
+            .filter(TestCase.project_id == project_id,
+                    TestCase.exec_kind.in_(("gui", "e2e")),
+                    TestCase.script.like(f"%{key}%"))
+            .all())
+    out = []
+    for tc in rows:
+        try:
+            steps = json.loads(tc.script or "[]")
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(steps, list):
+            continue
+        for st in steps:
+            tgt = st.get("target") if isinstance(st, dict) else None
+            if isinstance(tgt, dict) and tgt.get("key") == key:
+                out.append(tc)
+                break
+    return out
+
+
+@router.get("/{kid}/usage")
+def key_usage(kid: int, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """该 key 被哪些可执行用例引用(删除前的影响范围预览,前端确认框展示)。"""
+    r = db.get(SelectorKey, kid)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key 不存在")
+    assert_project_role(db, user, r.project_id, _RW)
+    cases = _cases_using_key(db, r.project_id, r.key)
+    return ok({"count": len(cases),
+               "cases": [{"id": c.id, "title": c.title, "exec_kind": c.exec_kind} for c in cases]})
 
 
 @router.put("/scope")

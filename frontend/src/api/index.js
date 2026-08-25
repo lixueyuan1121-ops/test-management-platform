@@ -218,6 +218,10 @@ export const createSelector = (body) => http.post('/selectors', body)
 export const patchSelector = (id, body) => http.patch(`/selectors/${id}`, body)
 export const deleteSelector = (id) => http.delete(`/selectors/${id}`)
 export const setSelectorScope = (body) => http.put('/selectors/scope', body)
+// 删除前影响范围预览：该 key 被哪些可执行用例引用。返回 { count, cases:[{id,title,exec_kind}] }
+export const selectorUsage = (id) => http.get(`/selectors/${id}/usage`)
+// 批量确定性回填「选择器待补」用例（补 key 后联动复活，不调 AI）。返回 { restored, remaining }
+export const backfillTestcases = (project_id) => http.post('/ai/testcases/backfill', null, { params: { project_id } })
 // 导入内置纳米Work注册表（仅项目 admin）；返回 { imported, skipped }
 export const importLegacySelectors = (project_id) => http.post('/selectors/import-legacy', null, { params: { project_id } })
 

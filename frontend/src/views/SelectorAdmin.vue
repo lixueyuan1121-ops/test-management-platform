@@ -326,6 +326,7 @@ import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import {
   listSelectors, createSelector, patchSelector, deleteSelector, importLegacySelectors,
+  selectorUsage, backfillTestcases,
   listMyDevices, startProbe, getProbe,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -464,16 +465,39 @@ async function submit() {
     ElMessage.success('已保存')
     dialog.visible = false
     await reload()
+    await autoBackfill()
   } catch { /* http 拦截器已提示（如 key 冲突）*/ }
   finally { dialog.saving = false }
 }
 
+// 保存 key 后联动:批量确定性回填「选择器待补」用例(纯校验不调 AI,静默失败不打扰保存主流程)。
+// 补齐的 key 恰是某些用例缺的 → 它们自动恢复 gui/e2e,无需去用例库逐条点重生。
+async function autoBackfill() {
+  try {
+    const res = await backfillTestcases(pid.value)
+    if (res?.restored > 0) {
+      ElMessage.success(`已联动回填 ${res.restored} 条「选择器待补」用例${res.remaining ? `,仍有 ${res.remaining} 条待补` : ''}`)
+    }
+  } catch { /* 回填失败不影响保存,用例库仍可逐条重生 */ }
+}
+
 // ---- 删除 ----
 async function onDelete(row) {
+  // 删除前查影响范围:被可执行用例引用时列出明细,告知将联动降级为「选择器待补」。
+  let usage = null
+  try { usage = await selectorUsage(row.id) } catch { /* 查不到就按无引用走 */ }
+  const n = usage?.count || 0
+  const detail = n
+    ? `该 key 被 ${n} 条可执行用例引用：${usage.cases.slice(0, 5).map((c) => `「${c.title}」`).join('、')}${n > 5 ? ` 等 ${n} 条` : ''}。删除后这些用例将降级为「选择器待补」（重新补 key 可一键恢复）。`
+    : ''
   try {
-    await ElMessageBox.confirm(`删除选择器 key「${row.key}」？`, '删除', { type: 'warning' })
+    await ElMessageBox.confirm(`删除选择器 key「${row.key}」？${detail}`, '删除', { type: 'warning' })
   } catch { return }
-  try { await deleteSelector(row.id); ElMessage.success('已删除'); await reload() } catch { /* 已提示 */ }
+  try {
+    const res = await deleteSelector(row.id)
+    ElMessage.success(res?.downgraded ? `已删除,${res.downgraded} 条用例已降级为「选择器待补」` : '已删除')
+    await reload()
+  } catch { /* 已提示 */ }
 }
 
 // ---- 导入内置旧注册表（写入项目级共享）----
@@ -773,6 +797,7 @@ async function submitAddAsKey() {
     }
     add.visible = false
     await reload()
+    await autoBackfill()
   } catch { /* http 拦截器已提示（如 key 冲突）*/ }
   finally { add.saving = false }
 }
