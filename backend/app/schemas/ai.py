@@ -4,13 +4,18 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.core.enums import AiInputType, ExecKind, ReviewStatus
 
+# 需求正文（送去 AI 生成的 prompt 正文）长度上限。放宽到 5 万字以支持从网页/飞书/上传文档
+# 抓取的长需求（claude/deepseek 上下文足够）。注意：这只约束「送去生成的正文」、不入库；
+# 存库的 input_ref 仍单独截断到 20000（MySQL TEXT 列 64KB 上限保护，见 api/ai.py）。
+REQUIREMENT_MAX_LEN = 50000
+
 
 class TestCaseGenIn(BaseModel):
     project_id: int
     task_id: int | None = None
     input_type: AiInputType = AiInputType.text
     provider: str | None = None  # 生成引擎 claude/deepseek/...；空/非法由后端 normalize 回落 claude
-    requirement: str = Field(min_length=1, max_length=20000)  # M1：需求正文（url/file 由前端取文后填此字段）
+    requirement: str = Field(min_length=1, max_length=REQUIREMENT_MAX_LEN)  # M1：需求正文（url/file 由前端取文后填此字段）
     pages: list[str] | None = None  # 目标页面(选择器管理里的 page):①收窄注入的 key ②给该批无 key 用例兜底打页面标
 
 
@@ -19,7 +24,7 @@ class EvalQueryGenIn(BaseModel):
     task_id: int | None = None
     input_type: AiInputType = AiInputType.text
     provider: str | None = None  # claude/deepseek;空/非法后端 normalize 回落
-    requirement: str = Field(min_length=1, max_length=20000)  # 需求正文(url/file 由前端取文后填)
+    requirement: str = Field(min_length=1, max_length=REQUIREMENT_MAX_LEN)  # 需求正文(url/file 由前端取文后填)
     dimensions: list[str] = Field(min_length=1)  # 至少一个对话测评维度
 
 
