@@ -779,3 +779,89 @@ def get_run(
         "stats": _aggregate_batch(db, fr.project_id, fr.batch_id),
         "items": items,
     })
+
+
+@router.get("/defense-calendar")
+def defense_calendar(
+    weeks: int = 12,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """回归防线日历:GitHub 贡献墙式，按天展示反馈回归跑批状态(绿/红/灰)及连续值守天数。
+
+    green=当天有跑批且 failed+blocked==0；red=有跑批但有失败；gray=当天没跑批。
+    streak:从今天往回数连续非 gray 天数（今天若 gray 从昨天起算）。
+    全用户可见;无 project_id 过滤(反馈是平台级模块,专属项目)。
+    """
+    from datetime import date, timedelta
+    from sqlalchemy import func
+    from app.models.feedback import FeedbackRun
+
+    if weeks <= 0 or weeks > 26:
+        weeks = 12
+    today = date.today()
+    d_from = today - timedelta(days=weeks * 7 - 1)
+
+    # 窗口内每天的 FeedbackRun → batch_id 集合
+    fb_rows = (
+        db.query(func.date(FeedbackRun.created_at), FeedbackRun.batch_id,
+                 func.count(FeedbackRun.id))
+        .filter(func.date(FeedbackRun.created_at) >= d_from,
+                func.date(FeedbackRun.created_at) <= today)
+        .group_by(func.date(FeedbackRun.created_at), FeedbackRun.batch_id)
+        .all()
+    )
+    by_day: dict[str, dict] = {}  # date_str → {runs, batches, cases}
+    for dt_str, batch_id, cnt in fb_rows:
+        rec = by_day.setdefault(str(dt_str), {"runs": 0, "batches": set(), "cases": 0})
+        rec["runs"] += cnt
+        rec["batches"].add(batch_id)
+        rec["cases"] += cnt  # 近似：FeedbackRun.case_count 未在这里聚合
+
+    # 这些 batch 下 exec_run 的 failed/blocked 数
+    all_batches: list[str] = []
+    for v in by_day.values():
+        all_batches.extend(v["batches"])
+
+    fail_by_batch: dict[str, int] = {}
+    if all_batches:
+        for batch, cnt in (
+            db.query(ExecRun.batch_id, func.count(ExecRun.id))
+            .filter(ExecRun.batch_id.in_(all_batches),
+                    ExecRun.status.in_(["failed", "blocked"]))
+            .group_by(ExecRun.batch_id).all()
+        ):
+            fail_by_batch[batch] = cnt
+
+    # 构建每天列表
+    days = []
+    total_guard = 0
+    for i in range(weeks * 7):
+        dt = d_from + timedelta(days=i)
+        ds = str(dt)
+        rec = by_day.get(ds)
+        if rec is None:
+            days.append({"date": ds, "runs": 0, "cases": 0, "failed": 0, "state": "gray"})
+        else:
+            failed = sum(fail_by_batch.get(b, 0) for b in rec["batches"])
+            state = "red" if failed > 0 else "green"
+            total_guard += 1
+            days.append({"date": ds, "runs": rec["runs"], "cases": rec["cases"],
+                         "failed": failed, "state": state})
+
+    # streak:从今天往回连续非 gray（今天若 gray 从昨天起）
+    streak = 0
+    for i in range(len(days) - 1, -1, -1):
+        if days[i]["state"] != "gray":
+            streak += 1
+        elif i == len(days) - 1:
+            continue  # 今天 gray，从昨天起算，继续向前
+        else:
+            break
+
+    return ok({
+        "from": str(d_from), "to": str(today),
+        "days": days,
+        "streak": streak,
+        "total_guard_days": total_guard,
+    })
