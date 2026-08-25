@@ -201,6 +201,9 @@ export const correctExecVerdict = (runId, verdict, reason) =>
 // 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
 export const listReleases = (params) => http.get('/releases', { params })
 export const releaseStats = (project_id) => http.get('/releases/stats', { params: { project_id } })
+// 版本质量档案：每版一张记分卡(通过率/真bug/遗留问题/红黄绿)
+export const releaseQuality = (project_id, limit = 6) =>
+  http.get('/releases/quality', { params: { project_id, limit } })
 export const getRelease = (id) => http.get(`/releases/${id}`)
 export const createRelease = (data) => http.post('/releases', data)
 export const updateRelease = (id, data) => http.patch(`/releases/${id}`, data)

@@ -19,6 +19,31 @@
         <div class="stat-card"><div class="stat-num">{{ stats.this_month }}</div><div class="stat-label">本月发版</div></div>
         <div class="stat-card"><div class="stat-num sm">{{ stats.latest_date || '—' }}</div><div class="stat-label">最近发版日期</div></div>
       </div>
+      <!-- 版本质量档案:每版一张红黄绿记分卡(选中项目时显示) -->
+      <div v-if="quality.length" class="rq-row">
+        <div v-for="q in quality" :key="q.release_id" class="rq-card" :class="`rq-${q.grade}`">
+          <div class="rq-hd">
+            <span class="rq-light" :class="q.grade"></span>
+            <span class="rq-ver" :title="q.version">{{ q.version }}</span>
+            <span class="rq-date">{{ q.release_date.slice(5) }}</span>
+          </div>
+          <div class="rq-mid">
+            <svg viewBox="0 0 44 44" class="rq-ring">
+              <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="4"/>
+              <circle v-if="q.pass_rate != null" cx="22" cy="22" r="18" fill="none"
+                      :stroke="rqRateColor(q.pass_rate)" stroke-width="4" stroke-linecap="round"
+                      :stroke-dasharray="`${(q.pass_rate * 1.131).toFixed(1)} 113.1`" transform="rotate(-90 22 22)"/>
+              <text x="22" y="26" text-anchor="middle" fill="#fff" font-size="12"
+                    font-family="'JetBrains Mono',monospace" font-weight="700">{{ q.pass_rate != null ? Math.round(q.pass_rate) : '--' }}</text>
+            </svg>
+            <div class="rq-rl">执行通过率<br/><span class="rq-sub">{{ q.exec_passed }}/{{ q.exec_total }} · {{ q.req_count }} 需求</span></div>
+          </div>
+          <div class="rq-ft">
+            <span class="rq-bug" :class="{ zero: !q.bugs_found }">{{ q.bugs_found }} bug</span>
+            <span class="rq-iss" :class="{ zero: !(q.issues_open.blocker + q.issues_open.major) }">{{ q.issues_open.blocker + q.issues_open.major }} 高危遗留</span>
+          </div>
+        </div>
+      </div>
       <div class="chart-wrap">
         <div class="chart-title">近 12 个月发版趋势</div>
         <div ref="chartEl" class="chart" />
@@ -135,7 +160,7 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import { CanvasRenderer } from 'echarts/renderers'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
-import { listReleases, releaseStats, getRelease, createRelease, updateRelease, deleteRelease } from '@/api'
+import { listReleases, releaseStats, releaseQuality, getRelease, createRelease, updateRelease, deleteRelease } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { renderMarkdown } from '@/utils/markdown'
 
@@ -216,7 +241,17 @@ async function loadStats() {
   const s = await releaseStats(pid.value || undefined)
   Object.assign(stats, s)
   renderChart()
+  // 质量档案:选中具体项目才有(全部项目视图不出)。失败静默,不拖垮统计区。
+  if (pid.value) {
+    try { quality.value = (await releaseQuality(pid.value)).items } catch { quality.value = [] }
+  } else {
+    quality.value = []
+  }
 }
+
+// 版本质量档案(红黄绿记分卡)
+const quality = ref([])
+function rqRateColor(r) { return r >= 90 ? '#00e5a0' : r >= 70 ? '#e8a23d' : '#ff5c6c' }
 
 function renderChart() {
   if (!chart) return
@@ -310,6 +345,31 @@ async function onDel(row) {
 .stat-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 30px; font-weight: 700; background: linear-gradient(90deg, #00e5a0, #3b9ad9); -webkit-background-clip: text; background-clip: text; color: transparent; line-height: 1.1; }
 .stat-num.sm { font-size: 18px; }
 .stat-label { margin-top: 6px; font-size: 13px; color: #bfcbd9; }
+/* 版本质量档案:深色 board 内横排记分卡 */
+.rq-row { display: flex; gap: 12px; overflow-x: auto; margin-top: 14px; padding-bottom: 4px; }
+.rq-card { flex: 0 0 220px; background: rgba(255,255,255,.06); border: 1px solid rgba(79,216,196,.18);
+  border-radius: 10px; padding: 12px 14px; }
+.rq-card.rq-red { border-color: rgba(255,92,108,.45); }
+.rq-card.rq-yellow { border-color: rgba(232,162,61,.4); }
+.rq-hd { display: flex; align-items: center; gap: 8px; }
+.rq-light { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.rq-light.green { background: #00e5a0; box-shadow: 0 0 7px rgba(0,229,160,.7); }
+.rq-light.yellow { background: #e8a23d; box-shadow: 0 0 7px rgba(232,162,61,.7); }
+.rq-light.red { background: #ff5c6c; box-shadow: 0 0 8px rgba(255,92,108,.8); animation: rq-breathe 1.4s ease-in-out infinite; }
+.rq-ver { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 15px; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rq-date { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: rgba(255,255,255,.55); flex: none; }
+.rq-mid { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.rq-ring { width: 46px; height: 46px; flex: none; }
+.rq-rl { font-size: 11px; color: rgba(255,255,255,.65); line-height: 1.6; }
+.rq-sub { font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,.45); }
+.rq-ft { display: flex; gap: 10px; margin-top: 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.rq-bug { color: #ff5c6c; }
+.rq-iss { color: #e8a23d; }
+.rq-bug.zero, .rq-iss.zero { color: rgba(255,255,255,.35); }
+@keyframes rq-breathe { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .rq-light.red { animation: none; } }
+
 .chart-wrap { background: rgba(255,255,255,.04); border-radius: 8px; padding: 14px 12px 6px; }
 .chart-title { font-size: 13px; color: #bfcbd9; margin: 0 0 6px 8px; }
 .chart { height: 260px; }
