@@ -107,6 +107,40 @@
           </div>
         </div>
 
+        <!-- 价值漏斗：生成 → 采纳 → 可自动化 → 已执行 → 通过 -->
+        <div class="panel funnel-panel" v-if="funnel.funnel.length">
+          <div class="grid-bg"></div>
+          <div style="position:relative;z-index:2">
+            <div class="row-head">
+              <div class="row-title">AI 价值漏斗 · 生成到执行的转化</div>
+              <div class="fp-range">// {{ funnel.from }} → {{ funnel.to }}</div>
+            </div>
+            <div class="fp-body">
+              <div class="fp-steps">
+                <div v-for="(s, i) in funnel.funnel" :key="s.stage" class="fp-step"
+                     :style="{ width: stepWidth(i), background: STEP_COLORS[i] }">
+                  <div class="fp-num">{{ s.count }}</div>
+                  <div class="fp-lbl">{{ s.label }}<span v-if="i > 0" class="fp-rate">{{ convRate(i) }}%</span></div>
+                </div>
+              </div>
+              <div class="fp-side">
+                <div class="fp-card">
+                  <div class="fp-n bug">{{ funnel.bugs_found }}</div>
+                  <div class="fp-l">揪出真 Bug</div>
+                </div>
+                <div class="fp-card">
+                  <div class="fp-n pend">{{ funnel.selector_pending }}</div>
+                  <div class="fp-l">选择器待补 <span class="fp-hint">补齐即自动执行</span></div>
+                </div>
+                <div class="fp-card">
+                  <div class="fp-n save">{{ funnel.saved_hours }}<span class="fp-u">h</span></div>
+                  <div class="fp-l">已省人工(按5min/条)</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 主图：生成 vs 采纳 趋势（categorical 双线 + hover） -->
         <div class="panel trend">
           <div class="grid-bg"></div>
@@ -240,7 +274,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { aiStats } from '@/api'
+import { aiStats, aiFunnel } from '@/api'
 import TargetMark from '@/components/TargetMark.vue'
 
 const stats = ref(null)
@@ -249,6 +283,21 @@ const hoverIdx = ref(-1)
 const factor = ref(Number(localStorage.getItem('tp_ai_save_factor')) || 0.5)
 const range = ref('30d')            // '7d'|'30d'|'90d'|'mtd'|'custom'
 const customRange = ref([])
+
+// 价值漏斗（/stats/ai-funnel，按 days 窗口；随范围选择联动）
+const funnel = ref({ funnel: [], bugs_found: 0, selector_pending: 0, saved_hours: 0, from: '', to: '' })
+const STEP_COLORS = ['#2a78d6', '#3f8fc9', '#31a3ab', '#19b394', '#00b386']
+
+function stepWidth(i) {
+  const max = funnel.value.funnel[0]?.count || 1
+  const c = funnel.value.funnel[i]?.count || 0
+  return Math.max(18, Math.round((c / max) * 100)) + '%'   // 最窄 18% 保证数字可读
+}
+function convRate(i) {
+  const prev = funnel.value.funnel[i - 1]?.count || 0
+  const cur = funnel.value.funnel[i]?.count || 0
+  return prev ? Math.round((cur / prev) * 100) : 0
+}
 
 const pad = (n) => String(n).padStart(2, '0')
 const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -268,7 +317,17 @@ function calcFromTo() {
 async function load() {
   loading.value = true
   hoverIdx.value = -1
-  try { stats.value = await aiStats(calcFromTo()) }
+  // 漏斗窗口跟随范围：from/to 差值换算 days（自定义区间也适用）
+  const { from, to } = calcFromTo()
+  const days = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
+  try {
+    const [s, f] = await Promise.all([
+      aiStats({ from, to }),
+      aiFunnel(days).catch(() => null),   // 漏斗失败不拖垮整页
+    ])
+    stats.value = s
+    if (f) funnel.value = f
+  }
   catch { stats.value = null }
   finally { loading.value = false }
 }
@@ -550,6 +609,29 @@ const tv = computed(() => {
 .prio-legend { display:flex; gap:14px; margin-top:10px; font-family:var(--mono); font-size:11px; color:var(--muted); flex-wrap:wrap; }
 .prio-legend span { display:inline-flex; align-items:center; gap:5px; }
 .prio-legend i { width:9px; height:9px; border-radius:2px; }
+
+/* 价值漏斗 */
+.funnel-panel { padding:20px 24px; }
+.fp-range { font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.5px; }
+.fp-body { display:grid; grid-template-columns: 1fr 220px; gap:20px; align-items:center; }
+.fp-steps { display:flex; flex-direction:column; gap:6px; }
+.fp-step { position:relative; min-height:46px; border-radius:6px; padding:6px 14px;
+  display:flex; align-items:center; gap:12px; color:#fff;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
+  transition: width .5s cubic-bezier(.22,1,.36,1); }
+.fp-num { font-family:var(--mono); font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1; }
+.fp-lbl { font-size:12px; opacity:.92; display:flex; align-items:center; gap:8px; }
+.fp-rate { font-family:var(--mono); font-size:11px; background:rgba(255,255,255,.22); border-radius:4px; padding:1px 6px; }
+.fp-side { display:flex; flex-direction:column; gap:10px; }
+.fp-card { background:var(--surface-2); border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
+.fp-n { font-family:var(--mono); font-size:26px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
+.fp-n.bug { color:var(--status-critical); }
+.fp-n.pend { color:var(--status-warn); }
+.fp-n.save { color:var(--signal); }
+.fp-u { font-size:14px; margin-left:2px; color:var(--dim); }
+.fp-l { font-size:11px; color:var(--muted); margin-top:6px; font-family:var(--mono); letter-spacing:.3px; }
+.fp-hint { color:var(--dim); font-size:10px; }
+@media (max-width: 1080px) { .fp-body { grid-template-columns:1fr; } .fp-side { flex-direction:row; } .fp-card { flex:1; } }
 
 .foot-note { margin-top:6px; font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.5px; text-align:center; }
 

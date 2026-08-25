@@ -476,7 +476,10 @@ def ai_funnel(
                        TestCase.created_at).scalar() or 0
 
     def _run_q(*flt):
-        return db.query(func.count(ExecRun.id)).filter(ExecRun.project_id.in_(pids), *flt)
+        # 漏斗的执行阶段只统计 AI 用例的执行(test_case_id 非空)——
+        # 排除反馈回归/清单直挂等非 AI 链路,否则后级会大于前级、漏斗破形。
+        return db.query(func.count(ExecRun.id)).filter(
+            ExecRun.project_id.in_(pids), ExecRun.test_case_id.isnot(None), *flt)
 
     executed = _win(_run_q(ExecRun.status.in_(["passed", "failed", "blocked"])),
                     ExecRun.created_at).scalar() or 0

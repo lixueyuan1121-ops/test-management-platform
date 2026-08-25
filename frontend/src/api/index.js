@@ -40,6 +40,8 @@ export const workloadStats = (project_id, from, to) => http.get('/stats/workload
 
 // AI 战绩墙聚合（返回已解包 data）；params: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
 export const aiStats = (params) => http.get('/stats/ai', { params })
+// AI 价值漏斗：生成→采纳→可自动化→执行→通过 + 真bug/选择器卡点/省时
+export const aiFunnel = (days = 30) => http.get('/stats/ai-funnel', { params: { days } })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
 export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
 

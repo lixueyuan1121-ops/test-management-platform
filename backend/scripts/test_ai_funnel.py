@@ -52,21 +52,26 @@ def _seed():
     _s.flush()
     old.created_at = datetime.now() - timedelta(days=90)
 
-    def run(status, fail_kind=None, days_ago=0):
-        r = ExecRun(project_id=p.id, runner="m", payload="{}", status=status, fail_kind=fail_kind)
+    def run(status, fail_kind=None, days_ago=0, tc_id=None):
+        r = ExecRun(project_id=p.id, runner="m", payload="{}", status=status,
+                    fail_kind=fail_kind, test_case_id=tc_id)
         _s.add(r)
         if days_ago:
             _s.flush()
             r.created_at = datetime.now() - timedelta(days=days_ago)
 
-    # 窗口内：2 passed + 1 failed(business) + 1 blocked(selector) + 1 running(不计 executed)
-    run("passed")
+    # AI 链路执行(挂 test_case_id)——窗口内：2 passed + 1 failed(business) + 1 blocked + 1 running
+    aid = _s.query(TestCase.id).first()[0]
+    run("passed", tc_id=aid)
+    run("passed", tc_id=aid)
+    run("failed", "business", tc_id=aid)
+    run("blocked", "selector", tc_id=aid)
+    run("running", tc_id=aid)
+    # 窗口外(40 天前)：1 passed 不计
+    run("passed", days_ago=40, tc_id=aid)
+    # 非 AI 链路执行(test_case_id 为空,如反馈回归/清单直挂)——不得计入漏斗 executed
     run("passed")
     run("failed", "business")
-    run("blocked", "selector")
-    run("running")
-    # 窗口外(40 天前)：1 passed 不计
-    run("passed", days_ago=40)
     _s.commit()
 
 
