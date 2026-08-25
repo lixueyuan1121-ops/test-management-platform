@@ -24,6 +24,9 @@
         <!-- 发版记录 -->
         <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
 
+        <!-- 设备看板:全平台执行机监控大屏(仅平台管理员) -->
+        <el-menu-item v-if="auth.isPlatformAdmin" index="/device-board"><el-icon><Cpu /></el-icon><span>设备看板</span></el-menu-item>
+
         <!-- 功能测试:完整链路(生成 → 用例资产 → 派单 → 结果 → 问题) -->
         <el-sub-menu index="func">
           <template #title><el-icon><MagicStick /></el-icon><span>功能测试</span></template>
@@ -127,7 +130,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 

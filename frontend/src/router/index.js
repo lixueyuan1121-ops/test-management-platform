@@ -22,6 +22,7 @@ const routes = [
       { path: 'tasks', name: 'tasks', component: () => import('@/views/Tasks.vue') },
       { path: 'my-reports', name: 'my-reports', component: () => import('@/views/MyReports.vue') },
       { path: 'my-devices', name: 'my-devices', component: () => import('@/views/MyDevices.vue') },
+      { path: 'device-board', name: 'device-board', component: () => import('@/views/DeviceBoard.vue'), meta: { title: '设备看板', platformAdmin: true } },
       { path: 'exec-results', name: 'exec-results', component: () => import('@/views/ExecResults.vue') },
       { path: 'eval-results', name: 'eval-results', component: () => import('@/views/EvalResults.vue'), meta: { title: '对话测评结果' } },
       { path: 'feedback-imports', name: 'feedback-imports', component: () => import('@/views/FeedbackImports.vue'), meta: { title: '反馈导入记录' } },
