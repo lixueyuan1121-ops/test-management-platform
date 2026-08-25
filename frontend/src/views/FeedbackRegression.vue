@@ -1,5 +1,27 @@
 <template>
   <div class="feedback-regression">
+    <!-- 回归防线日历墙:GitHub 贡献墙式 + 连续值守大数字 -->
+    <div class="dc-panel">
+      <div class="dc-left">
+        <div class="dc-eyebrow">// DEFENSE LINE · 回归防线</div>
+        <div class="dc-streak" :class="{ inactive: !cal.streak }">{{ cal.streak }}</div>
+        <div class="dc-streak-lbl">{{ cal.streak > 0 ? '连续值守(天)' : '防线待激活' }}</div>
+        <div class="dc-total">窗口内值守 {{ cal.total_guard_days }} 天</div>
+      </div>
+      <div class="dc-wall-wrap">
+        <div class="dc-wall">
+          <span v-for="d in cal.days" :key="d.date" class="dc-cell" :class="`dc-${d.state}`"
+                :style="d.state === 'green' ? { opacity: dcOpacity(d.runs) } : {}"
+                :title="`${d.date} · ${d.runs} 批` + (d.failed ? ` · ${d.failed} 失败` : d.state === 'gray' ? ' · 未跑' : ' · 全过')"/>
+        </div>
+        <div class="dc-legend">
+          <span class="dc-lg"><i class="dc-cell dc-green"></i>全过</span>
+          <span class="dc-lg"><i class="dc-cell dc-red"></i>有失败</span>
+          <span class="dc-lg"><i class="dc-cell dc-gray"></i>未跑</span>
+        </div>
+      </div>
+    </div>
+
     <el-card>
       <template #header>
         <div class="header">
@@ -123,7 +145,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   feedbackSets, createFeedbackSet, updateFeedbackSet, deleteFeedbackSet,
   feedbackSetCases, removeFeedbackSetCases, runFeedbackSet, setFeedbackSchedule, listMyDevices,
+  defenseCalendar,
 } from '@/api'
+
+// 回归防线日历墙
+const cal = ref({ days: [], streak: 0, total_guard_days: 0 })
+function dcOpacity(runs) { return runs >= 3 ? 1 : runs >= 2 ? 0.75 : 0.55 }
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const KIND_TYPE = { gui: 'success', api: 'warning', cli: 'info', e2e: 'primary', manual: 'info' }
@@ -255,10 +282,35 @@ async function del(row) {
 onMounted(async () => {
   reload()
   try { myDevices.value = await listMyDevices() } catch { /* ignore */ }
+  try { cal.value = await defenseCalendar() } catch { /* 日历失败静默,不影响回归集管理 */ }
 })
 </script>
 
 <style scoped>
+/* 回归防线日历墙 */
+.dc-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px;
+  padding: 20px 24px; margin-bottom: 16px; color: #e6edf3;
+  display: flex; gap: 28px; align-items: center; }
+.dc-left { flex: none; min-width: 150px; }
+.dc-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #00e5a0; }
+.dc-streak { font-family: 'JetBrains Mono', monospace; font-size: 46px; font-weight: 800; color: #00e5a0;
+  line-height: 1.1; margin-top: 8px; }
+.dc-streak.inactive { color: #e8a23d; }
+.dc-streak-lbl { font-size: 12px; color: #8b98a9; margin-top: 2px; }
+.dc-total { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5f6b7a; margin-top: 8px; }
+.dc-wall-wrap { flex: 1; min-width: 0; }
+.dc-wall { display: grid; grid-template-rows: repeat(7, 13px); grid-auto-flow: column; grid-auto-columns: 13px;
+  gap: 3px; overflow-x: auto; padding-bottom: 4px; }
+.dc-cell { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.dc-green { background: #00b386; }
+.dc-red { background: #e5565f; }
+.dc-gray { background: rgba(255,255,255,.1); }
+.dc-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: #8b98a9;
+  font-family: 'JetBrains Mono', monospace; }
+.dc-lg { display: inline-flex; align-items: center; gap: 5px; }
+.dc-lg .dc-cell { width: 10px; height: 10px; }
+@media (max-width: 800px) { .dc-panel { flex-direction: column; align-items: flex-start; } }
+
 .header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .intro { margin-bottom: 12px; }

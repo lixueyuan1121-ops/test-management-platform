@@ -402,3 +402,5 @@ export const setFeedbackSchedule = (sid, cron, enabled) => http.patch(`/feedback
 // 回归结果
 export const feedbackRuns = (set_id) => http.get('/feedback/runs', { params: { set_id } })
 export const feedbackRunDetail = (rid) => http.get(`/feedback/runs/${rid}`)
+// 回归防线日历(GitHub 贡献墙式:每天跑批状态 + 连续值守天数)
+export const defenseCalendar = (weeks = 12) => http.get('/feedback/defense-calendar', { params: { weeks } })
