@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     MULTICA_TOKEN: str = ""            # http 模式:Bearer token(如需)
     MULTICA_CLI_TEMPLATE: str = ""     # cli 模式:命令模板,如 'multica push --link {share_link} --run {run_id}'
 
+    # ---- 反馈测试模块（机器人推 md/zip 对接）----
+    # 机器人无人值守，用独立长期 token 鉴权（与用户 JWT 分离，仿 RUNNER_TOKEN）。空则拒绝一切 ingest。
+    FEEDBACK_BOT_TOKEN: str = ""
+    # 反馈用例归属的固定专用项目（startup 自动 ensure，机器人侧无需知道 project_id）。
+    FEEDBACK_PROJECT_CODE: str = "__feedback__"
+    FEEDBACK_PROJECT_NAME: str = "反馈测试"
+    # 反馈用例补 script / 下发执行时借用的「被测产品」选择器来源项目 code（反馈项目自己不建选择器）。
+    # 空则回退用反馈项目自身（通常无选择器）。生产应指向纳米Work功能测试项目的 code。
+    FEEDBACK_SELECTOR_PROJECT_CODE: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

@@ -378,7 +378,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     if not _slots.acquire(blocking=False):
         return [], "AI 生成繁忙(已达并发上限),请稍后重试"
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=tempfile.gettempdir())
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=tempfile.gettempdir())
     except subprocess.TimeoutExpired:
         return [], f"生成超时(>{timeout}s)"
     except OSError as e:
@@ -396,7 +396,11 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     m = _FENCE_RE.search(text)
     blob = m.group(1) if m else None
     if blob is None:
-        s, e = text.find("["), text.rfind("]")
+        # 定位真正的 JSON 数组起点:'[' 后紧跟(可空白){或"，跳过 claude 偶发的
+        # `[object Object]` 等非 JSON 前缀污染(fast mode 下实测出现,否则 find('[') 会抓到污染)。
+        m2 = re.search(r"\[\s*[\{\"]", text)
+        s = m2.start() if m2 else text.find("[")
+        e = text.rfind("]")
         blob = text[s:e + 1] if (s != -1 and e > s) else None
     if not blob:
         return [], "未解析出 script 数组"
@@ -508,6 +512,8 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,   # 合并，非 JSON 行由 _parse_line 忽略，避免 PIPE 死锁
             text=True,
+            encoding="utf-8",           # claude 输出为 UTF-8；Windows 默认 gbk 会解码崩溃（踩过）
+            errors="replace",
             bufsize=1,
             cwd=tempfile.gettempdir(),  # 隔离：不在项目目录运行，避免读到 CLAUDE.md/触发 project hook
         )

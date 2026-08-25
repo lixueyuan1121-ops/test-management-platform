@@ -44,6 +44,15 @@
           <el-menu-item index="/eval-results"><el-icon><Finished /></el-icon><span>测评结果</span></el-menu-item>
         </el-sub-menu>
 
+        <!-- 反馈测试:机器人推送反馈用例 → 拆解 → 回归集 → 定时/手动回归 -->
+        <el-sub-menu index="feedback">
+          <template #title><el-icon><ChatLineSquare /></el-icon><span>反馈测试</span></template>
+          <el-menu-item index="/feedback-imports"><el-icon><UploadFilled /></el-icon><span>导入记录</span></el-menu-item>
+          <el-menu-item index="/feedback-cases"><el-icon><Collection /></el-icon><span>反馈用例库</span></el-menu-item>
+          <el-menu-item index="/feedback-regression"><el-icon><RefreshRight /></el-icon><span>回归用例集</span></el-menu-item>
+          <el-menu-item index="/feedback-results"><el-icon><Finished /></el-icon><span>回归结果</span></el-menu-item>
+        </el-sub-menu>
+
         <!-- 性能测试:nami-perfdog 采集结果下发 + 在线报告 -->
         <el-sub-menu index="perf">
           <template #title><el-icon><Stopwatch /></el-icon><span>性能测试</span></template>
@@ -118,7 +127,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
@@ -134,7 +143,7 @@ function toggleCollapse() {
 }
 
 const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
-const openSubs = ['func', 'eval', 'perf', 'stats', 'mine', 'settings']
+const openSubs = ['func', 'eval', 'feedback', 'perf', 'stats', 'mine', 'settings']
 
 const avatarText = computed(() => {
   const n = auth.user?.name || auth.user?.username || '?'

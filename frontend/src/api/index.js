@@ -5,7 +5,8 @@ export const login = (username, password) =>
 
 export const getMe = () => http.get('/auth/me')
 
-export const listProjects = () => http.get('/projects')
+export const listProjects = (includeInternal = false) =>
+  http.get('/projects', { params: includeInternal ? { include_internal: true } : {} })
 export const createProject = (data) => http.post('/projects', data)
 export const updateProject = (id, data) => http.patch(`/projects/${id}`, data)
 
@@ -364,3 +365,30 @@ export async function streamEvalQueries(payload, { onDelta, onDone, onError, sig
     onError?.(e.name === 'AbortError' ? '已取消' : '读取流失败')
   }
 }
+
+// ===== 反馈测试模块 =====
+// 导入记录（机器人 ingest 批次；手动上传兜底见页面 fetch multipart）
+export const feedbackImports = () => http.get('/feedback/imports')
+// 重新触发某批次补 script（续补中断的）
+export const refillScripts = (iid) => http.post(`/feedback/imports/${iid}/refill`)
+// 反馈用例
+export const feedbackCases = (params) => http.get('/feedback/cases', { params })
+export const feedbackCase = (cid) => http.get(`/feedback/cases/${cid}`)
+export const updateFeedbackCase = (cid, data) => http.patch(`/feedback/cases/${cid}`, data)
+// 重补 script 同步调 claude CLI，耗时数十秒~数分钟，单独放大超时（全局默认 15s 不够）
+export const regenFeedbackScript = (cid) => http.post(`/feedback/cases/${cid}/gen-script`, null, { timeout: 300000 })
+export const deleteFeedbackCase = (cid) => http.delete(`/feedback/cases/${cid}`)
+export const runFeedbackCases = (case_ids, runner) => http.post('/feedback/cases/run', { case_ids, runner })
+// 回归用例集
+export const feedbackSets = () => http.get('/feedback/sets')
+export const createFeedbackSet = (data) => http.post('/feedback/sets', data)
+export const updateFeedbackSet = (sid, data) => http.patch(`/feedback/sets/${sid}`, data)
+export const deleteFeedbackSet = (sid) => http.delete(`/feedback/sets/${sid}`)
+export const feedbackSetCases = (sid) => http.get(`/feedback/sets/${sid}/cases`)
+export const addFeedbackSetCases = (sid, case_ids) => http.post(`/feedback/sets/${sid}/cases`, { case_ids })
+export const removeFeedbackSetCases = (sid, case_ids) => http.delete(`/feedback/sets/${sid}/cases`, { data: { case_ids } })
+export const runFeedbackSet = (sid) => http.post(`/feedback/sets/${sid}/run`)
+export const setFeedbackSchedule = (sid, cron, enabled) => http.patch(`/feedback/sets/${sid}/schedule`, { cron, enabled })
+// 回归结果
+export const feedbackRuns = (set_id) => http.get('/feedback/runs', { params: { set_id } })
+export const feedbackRunDetail = (rid) => http.get(`/feedback/runs/${rid}`)

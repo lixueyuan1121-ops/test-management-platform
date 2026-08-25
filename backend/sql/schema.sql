@@ -536,6 +536,108 @@ CREATE TABLE `perf_run` (
   CONSTRAINT `fk_perfrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ---------- 反馈测试模块（机器人推 md/zip → 结构化用例 → 回归集 → 下发 exec_run）----------
+-- 与 test_case 体系完全隔离；exec_run 零改动（靠专用项目 project_id 隔离 + batch_id 聚合）。
+-- 结构化数据（script/steps/expected/feedback_summary）用 TEXT 存，兼容 MySQL 5.6。
+CREATE TABLE `feedback_import` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `source_bot` VARCHAR(64) DEFAULT NULL,
+  `filename` VARCHAR(255) DEFAULT NULL,
+  `file_count` INT NOT NULL DEFAULT 0,
+  `case_count` INT NOT NULL DEFAULT 0,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'parsing',
+  `script_done` INT NOT NULL DEFAULT 0,
+  `script_total` INT NOT NULL DEFAULT 0,
+  `note` TEXT,
+  `error` TEXT,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fbimport_project` (`project_id`),
+  CONSTRAINT `fk_fbimport_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `feedback_case` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `import_id` BIGINT NOT NULL,
+  `project_id` BIGINT NOT NULL,
+  `req_title` VARCHAR(512) DEFAULT NULL,
+  `req_url` VARCHAR(1024) DEFAULT NULL,
+  `feedback_summary` TEXT,
+  `point_code` VARCHAR(32) DEFAULT NULL,
+  `point_title` VARCHAR(255) DEFAULT NULL,
+  `case_no` VARCHAR(16) DEFAULT NULL,
+  `title` VARCHAR(512) NOT NULL,
+  `precondition` TEXT,
+  `steps` TEXT,
+  `expected` TEXT,
+  `category` VARCHAR(16) DEFAULT NULL,
+  `priority` VARCHAR(8) DEFAULT NULL,
+  `auto_feasible` VARCHAR(8) NOT NULL DEFAULT 'no',
+  `auto_reason` TEXT,
+  `exec_kind` VARCHAR(8) NOT NULL DEFAULT 'manual',
+  `script` TEXT,
+  `script_error` TEXT,
+  `page` VARCHAR(255) DEFAULT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'draft',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fbcase_import` (`import_id`),
+  KEY `idx_fbcase_project` (`project_id`),
+  KEY `idx_fbcase_status` (`status`),
+  CONSTRAINT `fk_fbcase_import` FOREIGN KEY (`import_id`) REFERENCES `feedback_import`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_fbcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `feedback_regression_set` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `name` VARCHAR(255) NOT NULL,
+  `description` TEXT,
+  `schedule_cron` VARCHAR(64) DEFAULT NULL,
+  `schedule_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
+  `last_run_at` DATETIME DEFAULT NULL,
+  `next_run_at` DATETIME DEFAULT NULL,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fbset_project` (`project_id`),
+  CONSTRAINT `fk_fbset_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_fbset_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `feedback_set_case` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `set_id` BIGINT NOT NULL,
+  `case_id` BIGINT NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_feedback_set_case` (`set_id`,`case_id`),
+  KEY `idx_fbsetcase_set` (`set_id`),
+  KEY `idx_fbsetcase_case` (`case_id`),
+  CONSTRAINT `fk_fbsetcase_set` FOREIGN KEY (`set_id`) REFERENCES `feedback_regression_set`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_fbsetcase_case` FOREIGN KEY (`case_id`) REFERENCES `feedback_case`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `feedback_run` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `set_id` BIGINT DEFAULT NULL,
+  `batch_id` VARCHAR(32) NOT NULL,
+  `trigger` VARCHAR(8) NOT NULL DEFAULT 'manual',
+  `case_count` INT NOT NULL DEFAULT 0,
+  `started_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fbrun_project` (`project_id`),
+  KEY `idx_fbrun_set` (`set_id`),
+  KEY `idx_fbrun_batch` (`batch_id`),
+  CONSTRAINT `fk_fbrun_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_fbrun_set` FOREIGN KEY (`set_id`) REFERENCES `feedback_regression_set`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_fbrun_user` FOREIGN KEY (`started_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 -- 种子数据：默认平台管理员 admin / admin123 （生产请改密）
 -- password_hash = bcrypt('admin123')，首次启动后端也会用同样逻辑种入。

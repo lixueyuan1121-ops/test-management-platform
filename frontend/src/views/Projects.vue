@@ -53,7 +53,7 @@
 <script setup>
 import { reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { createProject, updateProject } from '@/api'
+import { createProject, updateProject, listProjects } from '@/api'
 import { useAppStore } from '@/store/app'
 
 const app = useAppStore()
@@ -67,7 +67,8 @@ function platformLabel(v) { return { pc: 'PC端', app: 'APP端' }[v] || '—' }
 
 async function load() {
   loading.value = true
-  try { projects.value = await app.fetchProjects(true) } finally { loading.value = false }
+  // 管理页直调（带内部项目，如反馈测试专用项目），不走 fetchProjects 缓存——避免污染生成页的下拉
+  try { projects.value = await listProjects(true) } finally { loading.value = false }
 }
 onMounted(load)
 
