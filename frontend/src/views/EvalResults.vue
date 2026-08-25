@@ -1,5 +1,36 @@
 <template>
   <div class="eval-results">
+    <!-- 维度能力画像雷达(选中项目且有判定数据时显示) -->
+    <div v-if="dimStats.dims.length" class="dr-panel">
+      <div class="dr-head">
+        <div class="dr-eyebrow">// CAPABILITY PROFILE · 测评维度能力画像</div>
+        <div class="dr-overall">
+          <span class="dr-rate">{{ dimStats.overall_rate }}<span class="dr-u">%</span></span>
+          <span class="dr-lbl">综合通过率 · {{ dimStats.judged_total }} 条判定</span>
+        </div>
+      </div>
+      <div class="dr-body">
+        <!-- 维度 ≥ 3 用雷达图；< 3 退化为水平条形 -->
+        <div v-if="dimStats.dims.length >= 3" ref="radarEl" class="dr-chart"></div>
+        <div v-else class="dr-bars">
+          <div v-for="d in dimStats.dims" :key="d.dimension" class="dr-bar-row">
+            <span class="dr-bar-lbl">{{ d.dimension }}</span>
+            <div class="dr-bar-track">
+              <div class="dr-bar-fill" :style="{ width: d.pass_rate + '%', background: drColor(d.pass_rate) }"></div>
+            </div>
+            <span class="dr-bar-val" :style="{ color: drColor(d.pass_rate) }">{{ d.pass_rate }}%</span>
+          </div>
+        </div>
+        <div class="dr-dims">
+          <div v-for="d in dimStats.dims" :key="d.dimension" class="dr-dim">
+            <span class="dr-dim-dot" :style="{ background: drColor(d.pass_rate) }"></span>
+            <span class="dr-dim-name">{{ d.dimension }}</span>
+            <span class="dr-dim-rate" :style="{ color: drColor(d.pass_rate) }">{{ d.pass_rate }}%</span>
+            <span class="dr-dim-n">({{ d.total }})</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <el-card>
       <template #header>
         <div class="header">
@@ -125,10 +156,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
@@ -195,6 +226,7 @@ async function onProjectChange() {
   if (!pid.value) { rows.value = []; multicaPending.value = 0; return }
   setLastProjectId(pid.value)
   await load()
+  loadDimStats()   // 维度雷达:独立加载不阻塞列表
 }
 
 async function load() {
@@ -275,9 +307,81 @@ async function doPushMultica() {
   } catch { /* http 拦截器已提示 */ }
   finally { pushingMultica.value = false }
 }
+
+// ==== 维度能力画像雷达 ====
+import * as echarts from 'echarts/core'
+import { RadarChart } from 'echarts/charts'
+import { TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+echarts.use([RadarChart, TooltipComponent, LegendComponent, CanvasRenderer])
+
+const dimStats = ref({ dims: [], judged_total: 0, overall_rate: 0 })
+const radarEl = ref(null)
+let radarChart = null
+
+function drColor(r) { return r >= 90 ? '#00b386' : r >= 70 ? '#e8a23d' : '#e5565f' }
+
+function drawRadar() {
+  if (!radarEl.value || dimStats.value.dims.length < 3) return
+  if (!radarChart) radarChart = echarts.init(radarEl.value)
+  const dims = dimStats.value.dims
+  radarChart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'item', formatter: (p) => p.data.value.map((v, i) => `${dims[i].dimension}: ${v}%`).join('<br/>') },
+    radar: {
+      indicator: dims.map((d) => ({ name: d.dimension, max: 100 })),
+      radius: '65%',
+      splitArea: { areaStyle: { color: ['rgba(0,179,134,.05)', 'rgba(0,179,134,.02)'] } },
+      axisName: { color: '#7d8a9b', fontSize: 12 },
+      splitLine: { lineStyle: { color: 'rgba(0,179,134,.2)' } },
+      axisLine: { lineStyle: { color: 'rgba(0,179,134,.2)' } },
+    },
+    series: [{
+      type: 'radar',
+      data: [{ name: '通过率', value: dims.map((d) => d.pass_rate) }],
+      symbol: 'circle', symbolSize: 5,
+      lineStyle: { color: '#00b386', width: 2 },
+      areaStyle: { color: 'rgba(0,179,134,.3)' },
+      itemStyle: { color: '#00b386' },
+    }],
+  })
+}
+
+async function loadDimStats() {
+  if (!pid.value) { dimStats.value = { dims: [], judged_total: 0, overall_rate: 0 }; return }
+  try { dimStats.value = await evalDimensionStats(pid.value) } catch { /* 静默 */ }
+  await nextTick()
+  drawRadar()
+}
+
+onBeforeUnmount(() => { if (radarChart) { radarChart.dispose(); radarChart = null } })
 </script>
 
 <style scoped>
+/* 维度能力画像雷达 */
+.dr-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px; padding: 20px 24px; margin-bottom: 16px; color: #e6edf3; }
+.dr-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.dr-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #00e5a0; }
+.dr-overall { text-align: right; }
+.dr-rate { font-family: 'JetBrains Mono', monospace; font-size: 36px; font-weight: 800; color: #fff; }
+.dr-u { font-size: 18px; color: #7d8a9b; }
+.dr-lbl { font-size: 12px; color: #8b98a9; display: block; margin-top: 2px; }
+.dr-body { display: grid; grid-template-columns: 1fr 200px; gap: 24px; align-items: center; }
+.dr-chart { width: 100%; height: 260px; }
+.dr-bars { display: flex; flex-direction: column; gap: 10px; }
+.dr-bar-row { display: flex; align-items: center; gap: 10px; }
+.dr-bar-lbl { font-size: 12px; color: #a7b4c4; width: 64px; flex: none; font-family: 'JetBrains Mono', monospace; }
+.dr-bar-track { flex: 1; height: 14px; background: rgba(255,255,255,.08); border-radius: 4px; overflow: hidden; }
+.dr-bar-fill { height: 100%; border-radius: 4px; transition: width .5s ease; }
+.dr-bar-val { font-family: 'JetBrains Mono', monospace; font-size: 12px; width: 40px; text-align: right; flex: none; }
+.dr-dims { display: flex; flex-direction: column; gap: 8px; }
+.dr-dim { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.dr-dim-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dr-dim-name { color: #a7b4c4; }
+.dr-dim-rate { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+.dr-dim-n { color: #5f6b7a; font-size: 11px; }
+@media (max-width: 900px) { .dr-body { grid-template-columns: 1fr; } .dr-chart { height: 220px; } }
+
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .foot-hint { margin-top: 8px; color: #90a4ae; font-size: 12px; }

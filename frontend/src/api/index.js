@@ -208,6 +208,9 @@ export const getRelease = (id) => http.get(`/releases/${id}`)
 export const createRelease = (data) => http.post('/releases', data)
 export const updateRelease = (id, data) => http.patch(`/releases/${id}`, data)
 export const deleteRelease = (id) => http.delete(`/releases/${id}`)
+// 对话测评维度通过率(能力画像雷达)
+export const evalDimensionStats = (project_id, days = 30) =>
+  http.get('/eval-judge/dimension-stats', { params: { project_id, days } })
 // ===== 选择器注册表（语义选择器单源）=====
 // listSelectors 返回 { shared:[...], by_sub:{ 子产品: [...] } }；每个 key_out 含 candidates(数组)。
 export const listSelectors = (project_id) => http.get('/selectors/manage', { params: { project_id } })
