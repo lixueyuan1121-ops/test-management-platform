@@ -61,6 +61,17 @@ def init_db() -> None:
             db.add(admin)
             db.commit()
             logger.info("已创建种子管理员: %s", settings.SEED_ADMIN_USERNAME)
+        # 反馈用例归属的固定专用项目（幂等，机器人 ingest 无需知道 project_id）
+        from app.models import Project
+        fb = db.query(Project).filter_by(code=settings.FEEDBACK_PROJECT_CODE).first()
+        if not fb:
+            db.add(Project(
+                name=settings.FEEDBACK_PROJECT_NAME,
+                code=settings.FEEDBACK_PROJECT_CODE,
+                description="机器人反馈用例自动导入的专用项目",
+            ))
+            db.commit()
+            logger.info("已创建反馈测试专用项目: %s", settings.FEEDBACK_PROJECT_CODE)
     finally:
         db.close()
 
@@ -86,6 +97,20 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup():
         init_db()
+        # 反馈定时回归调度器（APScheduler）：建表后启动 + 从 DB enabled 集重建 job
+        try:
+            from app.services.scheduler import start_scheduler
+            start_scheduler()
+        except Exception:
+            logger.exception("启动反馈定时调度器失败（不影响主服务）")
+
+    @app.on_event("shutdown")
+    def _shutdown():
+        try:
+            from app.services.scheduler import shutdown_scheduler
+            shutdown_scheduler()
+        except Exception:
+            logger.exception("关闭反馈定时调度器失败")
 
     _mount_uploads(app)
     _mount_frontend(app)

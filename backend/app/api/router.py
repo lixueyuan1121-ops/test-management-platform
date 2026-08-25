@@ -1,7 +1,7 @@
 """集中注册所有路由。"""
 from fastapi import APIRouter
 
-from app.api import auth, issues, members, projects, reports, stats, tasks, tools, users, ai, checklist, exec_queue, devices, release, selectors, probe, api_env, perf, ai_eval, eval_queue, eval_judge, eval_export, eval_devices
+from app.api import auth, issues, members, projects, reports, stats, tasks, tools, users, ai, checklist, exec_queue, devices, release, selectors, probe, api_env, perf, ai_eval, eval_queue, eval_judge, eval_export, eval_devices, feedback
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -27,3 +27,4 @@ api_router.include_router(selectors.router)
 api_router.include_router(probe.router)
 api_router.include_router(api_env.router)
 api_router.include_router(perf.router)
+api_router.include_router(feedback.router)

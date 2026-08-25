@@ -16,6 +16,9 @@ from app.models.api_env import ApiEnv
 from app.models.perf import PerfRun
 from app.models.perf_report_set import PerfReportSet
 from app.models.ai_eval import EvalQuery, EvalRun, EvalClientDevice
+from app.models.feedback import (
+    FeedbackImport, FeedbackCase, FeedbackRegressionSet, FeedbackSetCase, FeedbackRun,
+)
 
 __all__ = [
     "User",
@@ -45,4 +48,9 @@ __all__ = [
     "EvalQuery",
     "EvalRun",
     "EvalClientDevice",
+    "FeedbackImport",
+    "FeedbackCase",
+    "FeedbackRegressionSet",
+    "FeedbackSetCase",
+    "FeedbackRun",
 ]

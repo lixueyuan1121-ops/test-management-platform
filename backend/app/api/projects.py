@@ -27,14 +27,22 @@ def _norm_platform(v: str | None) -> str | None:
 
 @router.get("")
 def list_projects(
+    include_internal: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """平台管理员看全部；普通用户只看自己是成员的项目。"""
+    """平台管理员看全部；普通用户只看自己是成员的项目。
+
+    默认排除系统内部项目（如反馈测试专用项目 __feedback__）——它只在「反馈测试」模块内部使用，
+    不应出现在功能测试/对话测评等常规项目下拉里。include_internal=true 可显式包含（如项目管理页）。
+    """
     if user.is_platform_admin:
         rows = db.query(Project).order_by(Project.id.desc()).all()
     else:
         rows = _member_projects(db, user.id)
+    if not include_internal:
+        from app.core.config import settings
+        rows = [p for p in rows if p.code != settings.FEEDBACK_PROJECT_CODE]
     return ok([ProjectOut.model_validate(p).model_dump() for p in rows])
 
 

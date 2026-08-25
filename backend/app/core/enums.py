@@ -134,6 +134,19 @@ class EvalVerdict(str, enum.Enum):
     error = "error"        # 判定本身出错（轨迹缺失/判定引擎异常）
 
 
+class FeedbackImportStatus(str, enum.Enum):
+    """一次机器人推送批次(md/zip)的解析生命周期。"""
+    parsing = "parsing"    # 解析中(含后台补 script)
+    done = "done"          # 解析完成并落库
+    failed = "failed"      # 整批失败(如非法文件)
+
+
+class FeedbackCaseStatus(str, enum.Enum):
+    """反馈用例的就绪状态。"""
+    draft = "draft"        # 刚解析(尚未补 script / manual 未定稿)
+    ready = "ready"        # script 就绪或 manual 定稿,可下发
+
+
 # 所有项目级角色的集合，便于权限校验
 ALL_PROJECT_ROLES = {ProjectRole.admin, ProjectRole.member, ProjectRole.guest}
 WRITE_ROLES = {ProjectRole.admin, ProjectRole.member}  # guest 不可写
