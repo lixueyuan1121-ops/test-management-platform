@@ -38,12 +38,15 @@ def _seed():
     _s.flush()
 
     now = datetime.now()
+    # last_seen_at 必须模拟真实 runner 的写入方式：exec_queue/perf/eval/probe 均用 datetime.utcnow()。
+    # 用 utcnow 而非 now，才能覆盖"写入用 UTC、判定也须用 UTC"的时区一致性（否则本地测试会假绿）。
+    seen_now = datetime.utcnow()
     # 设备 A: 5 秒前 heartbeat → 在线
     dev_a = RunnerDevice(owner_id=admin.id, runner_id="mac-01", name="主开发机",
-                         token="tok-a", last_seen_at=now - timedelta(seconds=5))
+                         token="tok-a", last_seen_at=seen_now - timedelta(seconds=5))
     # 设备 B: 3 分钟前 heartbeat → 离线
     dev_b = RunnerDevice(owner_id=bob.id, runner_id="win-02", name="测试温机",
-                         token="tok-b", last_seen_at=now - timedelta(minutes=3))
+                         token="tok-b", last_seen_at=seen_now - timedelta(minutes=3))
     _s.add_all([dev_a, dev_b])
     _s.flush()
 

@@ -112,9 +112,12 @@ def delete_device(device_id: int, db: Session = Depends(get_db), user: User = De
 _COUNT_STATUSES = ("running", "pending", "passed", "failed", "blocked")
 
 
-def _overview_device_out(d: RunnerDevice, owner_name: str, now: datetime,
+def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
                          counts: dict, today: dict, active: list) -> dict:
-    online = bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() <= ONLINE_WINDOW_SEC)
+    # 在线判定必须用 UTC：last_seen_at 由 runner 拉取时以 datetime.utcnow() 写入
+    # （见 exec_queue/perf/eval_queue/probe），判定端若用本地 now() 会凭空多算时区偏移
+    # （CST 差 8h → 永远离线）。故此处与写入侧统一用 utcnow。
+    online = bool(d.last_seen_at and (utc_now - d.last_seen_at).total_seconds() <= ONLINE_WINDOW_SEC)
     return {
         "id": d.id,
         "runner_id": d.runner_id,
@@ -144,6 +147,7 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(require_pl
     模型的固有限制,不在本只读看板内区分)。
     """
     now = datetime.now()
+    utc_now = datetime.utcnow()   # 在线判定专用：对齐 last_seen_at 的 utcnow 写入（避免时区偏移误判离线）
     devices = db.query(RunnerDevice).order_by(RunnerDevice.id).all()
     # owner 姓名批量取(避免逐设备查 user)
     owner_ids = {d.owner_id for d in devices}
@@ -198,7 +202,7 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(require_pl
         counts = counts_by_runner.get(d.runner_id, {})
         today = today_by_runner.get(d.runner_id, {})
         active = active_by_runner.get(d.runner_id, [])
-        dev = _overview_device_out(d, owner_names.get(d.owner_id, ""), now, counts, today, active)
+        dev = _overview_device_out(d, owner_names.get(d.owner_id, ""), utc_now, counts, today, active)
         if dev["online"]:
             online_cnt += 1
         if dev["run_counts"]["running"] > 0:
