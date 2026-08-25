@@ -163,3 +163,48 @@ test("resetOrBlock:注册表未登记任何首页/登录锚点 → 放行(不误
   const r = await resetOrBlock(gui, () => {}, { readyTimeout: 200, pollMs: 20 });
   assert.equal(r.ok, true, "注册表无就绪锚点时无从判断,应尽力而为放行而非阻塞");
 });
+
+// ---- 复位自愈(本次修复):首页 reload 后没停稳时,点侧栏「新建任务/新建对话」开干净会话再探一次 ----
+// 根因:e2e 用例可能把客户端停在某会话/任务详情里,reload 只是重载了同一 SPA 路由,首页问候标题始终
+// 不出现 → 每条后续用例都被判「首页没停稳」blocked。人工纠偏时点侧栏「新建任务」即回到干净首页。
+// 修复:门禁在首页锚点超时后,不直接 blocked,先点 newTask/newChat 强制开干净会话,再探就绪;仍不行才 blocked。
+
+test("resetOrBlock:首页未就绪→点侧栏新建任务后就绪→自愈放行", async () => {
+  let clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, loginModal: {}, newTask: {} },
+    async resetHome() {},
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    // 点了新建任务后首页才就绪(模拟卡在详情页 → 开干净会话回首页)
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 80, pollMs: 20 });
+  assert.equal(clickedNew, true, "首页没停稳时应尝试点新建任务自愈");
+  assert.equal(r.ok, true, "自愈后首页就绪应放行,不再 blocked");
+});
+
+test("resetOrBlock:首页未就绪、点新建任务仍不就绪 → 阻塞(reason 提到自愈已试)", async () => {
+  const gui = {
+    registry: { homepageTitle: {}, newChat: {} },
+    async resetHome() {},
+    async click() { return {}; },  // 点了也没用
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(r.ok, false);
+  assert.equal(r.result.fail_kind, "selector", "自愈也救不回属环境阻塞,不计功能失败率");
+  assert.ok(/新建|首页/.test(r.result.reason), r.result.reason);
+});
+
+test("resetOrBlock:掉登录时不触发新建任务自愈(应提示重新登录)", async () => {
+  let clicked = false;
+  const gui = {
+    registry: { homepageTitle: {}, loginModal: {}, newTask: {} },
+    async resetHome() {},
+    async click() { clicked = true; return {}; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "loginModal"); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 80, pollMs: 20 });
+  assert.equal(clicked, false, "掉登录是会话过期,点新建任务无意义,不应触发自愈");
+  assert.ok(/登录/.test(r.result.reason), r.result.reason);
+});

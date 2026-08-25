@@ -16,7 +16,7 @@
 
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
-  "assert_text", "assert_visible", "judge",
+  "assert_text", "assert_visible", "assert_absent", "judge",
 ]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
@@ -98,14 +98,34 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         case "assert_visible": {
           const r = await gui.assertVisible(target);
           steps.push({ action, ...r, desc });
-          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言可见失败:${desc || target.key || target.selector}(${r.error || ""})`, "business");
+          if (!r.pass) {
+            // 定位不到(locatable=false)= 选择器/候选没覆盖 → selector(阻塞,不计功能失败率);
+            // 定位到但不可见(locatable=true 或未提供)= 该可见却没可见 → business(真功能问题)。
+            const kind = r.locatable === false ? "selector" : "business";
+            const why = r.locatable === false ? "元素定位不到(选择器/key 未覆盖)" : (r.error || "");
+            return await failAt(i, action, desc, `step${i + 1} 断言可见失败:${desc || target.key || target.selector}(${why})`, kind);
+          }
           const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
           break;
         }
-        case "assert_text": {
-          const r = await gui.assertText({ ...target, expected: args.expected, contains: args.contains });
+        case "assert_absent": {
+          // 否定式可见断言:元素消失即通过。仍可见 → business(本应消失却还在)。
+          const r = await gui.assertAbsent(target);
           steps.push({ action, ...r, desc });
-          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言文本失败:期望${r.mode === "contains" ? "包含" : "等于"}「${args.expected}」,实际「${r.actual}」`, "business");
+          if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言消失失败:${desc || target.key || target.selector}(元素仍可见,未按预期消失)`, "business");
+          const rep = rec(i, action, desc, true); await capShot(rep);
+          break;
+        }
+        case "assert_text": {
+          const r = await gui.assertText({ ...target, expected: args.expected, contains: args.contains, negate: args.negate });
+          steps.push({ action, ...r, desc });
+          if (!r.pass) {
+            const rel = `${r.negate ? "不" : ""}${r.mode === "contains" ? "包含" : "等于"}`;
+            const rep = rec(i, action, desc, false, `step${i + 1} 断言文本失败:期望${rel}「${args.expected}」,实际「${r.actual}」`);
+            rep.check = { actual: r.actual, expected: args.expected, mode: r.mode, negate: !!r.negate };  // 结构化证据,供纠偏一眼分辨真假 fail
+            await capShot(rep);
+            return { verdict: "fail", fail_kind: "business", reason: rep.error, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps, report };
+          }
           const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
           break;
         }

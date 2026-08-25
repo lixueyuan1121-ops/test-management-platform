@@ -3,15 +3,20 @@ import assert from "node:assert/strict";
 import { runScript } from "./step-executor.mjs";
 
 // 假 gui:记录 shotBuffer 调用次数;可控 assertVisible 成败。返回 Buffer 模拟截图。
-function fakeGui({ visibleOk = true, clickThrow = false, hoverThrow = false } = {}) {
+// visibleOk=false 时按 visibleLocatable 区分:true=元素定位到但不可见(business);false=定位不到(selector)。
+function fakeGui({ visibleOk = true, visibleLocatable = true, clickThrow = false, hoverThrow = false, absentGone = true, textPass = true } = {}) {
   const calls = { shot: 0, hover: 0 };
   return {
     calls,
     async connect() { return { connected: true }; },
     async click() { if (clickThrow) throw new Error("未命中 key「navTasks」"); return { clicked: true }; },
     async hover(t) { if (hoverThrow) throw new Error("未命中 key「taskMenuButton」"); calls.hover += 1; return { hovered: t.key || t.selector }; },
-    async assertVisible() { return visibleOk ? { pass: true } : { pass: false, error: "元素不可见" }; },
-    async assertText() { return { pass: true, mode: "contains", actual: "x" }; },
+    async assertVisible() {
+      if (visibleOk) return { pass: true, locatable: true };
+      return { pass: false, error: visibleLocatable ? "元素已定位但不可见" : '未命中 key「x」', locatable: visibleLocatable };
+    },
+    async assertAbsent() { return absentGone ? { pass: true, locatable: false } : { pass: false, locatable: true }; },
+    async assertText(a) { return { pass: textPass, mode: a.contains ? "contains" : "equals", negate: !!a.negate, actual: "x", expected: a.expected }; },
     async shotBuffer() { calls.shot += 1; return Buffer.from([0x89, 0x50, 0x4e, 0x47]); },
   };
 }
@@ -49,15 +54,58 @@ test("fail:失败步必截 + 标 ok=false + error", async () => {
   assert.equal(gui.calls.shot, 1, "失败现场截 1 张");
 });
 
-test("fail_kind:断言不通过 → business(真 bug)", async () => {
-  const gui = fakeGui({ visibleOk: false });
+test("fail_kind:断言可见但元素已定位(隐藏)→ business(真功能问题)", async () => {
+  const gui = fakeGui({ visibleOk: false, visibleLocatable: true });
   const script = [
     { action: "connect", desc: "连接" },
     { action: "assert_visible", target: { key: "x" }, desc: "看X" },
   ];
   const r = await runScript(gui, script, () => {}, null);
   assert.equal(r.verdict, "fail");
-  assert.equal(r.fail_kind, "business", "断言不通过应归 business(功能失败)");
+  assert.equal(r.fail_kind, "business", "定位到但不可见应归 business(该可见却没可见)");
+});
+
+test("fail_kind:断言可见但元素定位不到 → selector(选择器阻塞,非功能失败)", async () => {
+  const gui = fakeGui({ visibleOk: false, visibleLocatable: false });
+  const script = [
+    { action: "connect", desc: "连接" },
+    { action: "assert_visible", target: { key: "composeAddMenuExpertViewAll" }, desc: "看查看更多专家" },
+  ];
+  const r = await runScript(gui, script, () => {}, null);
+  assert.equal(r.verdict, "fail");
+  assert.equal(r.fail_kind, "selector", "定位不到(key 候选没覆盖)应归 selector,不计功能失败率");
+});
+
+test("assert_absent:元素已消失 → pass", async () => {
+  const gui = fakeGui({ absentGone: true });
+  const script = [
+    { action: "connect", desc: "连接" },
+    { action: "assert_absent", target: { key: "composeAddMenuExpertChip" }, desc: "断言专家 Chip 已移除" },
+  ];
+  const r = await runScript(gui, script, () => {}, null);
+  assert.equal(r.verdict, "pass", r.reason);
+});
+
+test("assert_absent:元素仍在 → business(本应消失却还在)", async () => {
+  const gui = fakeGui({ absentGone: false });
+  const script = [
+    { action: "connect", desc: "连接" },
+    { action: "assert_absent", target: { key: "composeAddMenuExpertChip" }, desc: "断言专家 Chip 已移除" },
+  ];
+  const r = await runScript(gui, script, () => {}, null);
+  assert.equal(r.verdict, "fail");
+  assert.equal(r.fail_kind, "business");
+});
+
+test("assert_text negate:否定断言透传 negate 到 gui.assertText", async () => {
+  const gui = fakeGui({ textPass: true });
+  const script = [
+    { action: "connect", desc: "连接" },
+    { action: "assert_text", target: { key: "expertRow" }, args: { expected: "纳米Work", negate: true }, desc: "断言右侧不显示纳米Work" },
+  ];
+  const r = await runScript(gui, script, () => {}, null);
+  assert.equal(r.verdict, "pass", r.reason);
+  assert.equal(r.steps.find((s) => s.action === "assert_text").negate, true);
 });
 
 test("fail_kind:定位/操作抛错 → selector(阻塞,非功能失败)", async () => {
