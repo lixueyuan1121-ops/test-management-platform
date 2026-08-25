@@ -421,31 +421,35 @@ export function createGuiCore(opts = {}) {
       return { pass, actual: actual.slice(0, 200), expected: args.expected, mode: args.contains ? "contains" : "equals", negate: !!args.negate, via: hit };
     },
     // 断言元素可见。失败时区分两种性质(供调用方归类 fail_kind):
-    //   - locatable=false:元素在 DOM 里压根定位不到(key 未注册/候选没覆盖)→ 选择器阻塞(selector)。
+    //   - locatable=false:元素在 DOM 里压根定位不到(key 未注册/候选没覆盖/selector 0 匹配)→ 选择器阻塞(selector)。
     //   - locatable=true :元素在 DOM 里但不可见(隐藏/未渲染出来)→ 真功能问题(business,"该可见却没可见")。
+    // 基于 count()+isVisible() 判定,对 key 与裸 selector 都可靠(裸 selector 经 resolveTarget 不抛错,
+    // 必须显式查 count,否则会误判"可见")。
     async assertVisible(args) {
       await ensureConnected();
-      try {
-        await resolveTarget(args, { requireVisible: true });
-        return { pass: true, target: args.key || args.selector, locatable: true };
-      } catch (e) {
-        // 二次探测:不要求可见,仅看元素是否在 DOM 中,以区分"定位不到"与"定位到但隐藏"。
-        let locatable = false;
-        try { await resolveTarget({ ...args, timeout_ms: 800 }, { requireVisible: false }); locatable = true; }
-        catch { /* 仍定位不到 → 选择器阻塞 */ }
-        return { pass: false, target: args.key || args.selector, error: e.message, locatable };
-      }
+      let loc;
+      try { ({ loc } = await resolveTarget(args, { requireVisible: false })); }
+      catch (e) { return { pass: false, target: args.key || args.selector, error: e.message, locatable: false }; }
+      const cnt = await loc.count().catch(() => 0);
+      if (cnt === 0) return { pass: false, target: args.key || args.selector, error: "元素定位不到(选择器/key 未覆盖)", locatable: false };
+      const visible = await loc.isVisible().catch(() => false);
+      if (visible) return { pass: true, target: args.key || args.selector, locatable: true };
+      return { pass: false, target: args.key || args.selector, error: "元素已定位但不可见", locatable: true };
     },
-    // 断言元素「不存在/不可见」(否定式可见断言)。定位不到即通过(这正是期望);
-    // 若元素仍可见 → 不通过(business:本应消失却还在)。用于"移除后 Chip 消失""菜单关闭后消失"等。
+    // 断言元素「不存在/不可见」(否定式可见断言)。定位不到 / 0 匹配 / 存在但不可见 → 通过(这正是期望);
+    // 仍可见 → 不通过(business:本应消失却还在)。对 key 与裸 selector 都可靠。
+    // 用短超时:不存在的元素不必等满 DEFAULT_TIMEOUT(它本就该没有)。用于"移除后 Chip 消失""菜单关闭后消失"。
     async assertAbsent(args) {
       await ensureConnected();
-      try {
-        await resolveTarget(args, { requireVisible: true });
-        return { pass: false, target: args.key || args.selector, locatable: true };  // 还能可见 → 未消失
-      } catch {
-        return { pass: true, target: args.key || args.selector, locatable: false };  // 定位不到 → 已不存在,符合预期
-      }
+      let loc;
+      try { ({ loc } = await resolveTarget({ ...args, timeout_ms: Math.min(args.timeout_ms || 1500, 2000) }, { requireVisible: false })); }
+      catch { return { pass: true, target: args.key || args.selector, locatable: false }; }  // 定位不到 → 已不存在
+      const cnt = await loc.count().catch(() => 0);
+      if (cnt === 0) return { pass: true, target: args.key || args.selector, locatable: false };  // 0 匹配 → 不存在
+      const visible = await loc.isVisible().catch(() => false);
+      return visible
+        ? { pass: false, target: args.key || args.selector, locatable: true }   // 仍可见 → 未消失
+        : { pass: true, target: args.key || args.selector, locatable: false };  // 存在但隐藏 → 视作已消失
     },
     async screenshot(path) {
       await ensureConnected();
