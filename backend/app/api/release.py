@@ -1,5 +1,5 @@
 """发版记录 API:列表/看板/详情所有登录用户,增改删仅平台管理员。"""
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -7,9 +7,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, require_platform_admin
-from app.core.enums import ProjectRole
+from app.core.enums import IssueStatus, ProjectRole
 from app.db.session import get_db
-from app.models import Project, ProjectMember, ReleaseRecord, User
+from app.models import ExecRun, Project, ProjectMember, ReleaseRecord, RemainingIssue, User
 from app.schemas.common import ok
 
 router = APIRouter(prefix="/api/releases", tags=["releases"])
@@ -180,6 +180,79 @@ def release_stats(
         "this_month": this_month, "latest_date": str(latest_date) if latest_date else None,
         "trend": trend,
     })
+
+
+@router.get("/quality")
+def release_quality(
+    project_id: int = Query(...),
+    limit: int = Query(6),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """版本质量档案:每个版本一张记分卡(窗口=上版发布日到本版发布日]。
+
+    执行通过率 + 真bug数 + 窗口内仍 open 的遗留问题按严重度 + 红黄绿定级。现算不建表。
+    注意:本静态路由必须注册在 GET /{rid} 之前,否则 "quality" 会被当 rid 解析成 422。
+    """
+    assert_project_role(db, user, project_id, _ALL_ROLES)
+    limit = min(max(limit, 1), 20)
+    rows = (
+        db.query(ReleaseRecord)
+        .filter(ReleaseRecord.project_id == project_id)
+        .order_by(ReleaseRecord.release_date.desc(), ReleaseRecord.id.desc())
+        .limit(limit + 1).all()   # 多取 1 个,给最老一版当窗起点
+    )
+    items = []
+    for i, rel in enumerate(rows[:limit]):
+        prev = rows[i + 1] if i + 1 < len(rows) else None
+        w_to = rel.release_date
+        w_from = prev.release_date if prev else (w_to - timedelta(days=14))
+        # 执行统计:窗口 (w_from, w_to]
+        st_rows = (
+            db.query(ExecRun.status, func.count(ExecRun.id))
+            .filter(ExecRun.project_id == project_id,
+                    func.date(ExecRun.created_at) > w_from,
+                    func.date(ExecRun.created_at) <= w_to)
+            .group_by(ExecRun.status).all()
+        )
+        cnt = {getattr(s, "value", s): n for s, n in st_rows}
+        done = cnt.get("passed", 0) + cnt.get("failed", 0) + cnt.get("blocked", 0)
+        pass_rate = round(cnt.get("passed", 0) / done * 100, 1) if done else None
+        bugs = (
+            db.query(func.count(ExecRun.id))
+            .filter(ExecRun.project_id == project_id, ExecRun.fail_kind == "business",
+                    func.date(ExecRun.created_at) > w_from,
+                    func.date(ExecRun.created_at) <= w_to)
+            .scalar() or 0
+        )
+        sev_rows = (
+            db.query(RemainingIssue.severity, func.count(RemainingIssue.id))
+            .filter(RemainingIssue.project_id == project_id,
+                    RemainingIssue.status == IssueStatus.open,
+                    func.date(RemainingIssue.created_at) > w_from,
+                    func.date(RemainingIssue.created_at) <= w_to)
+            .group_by(RemainingIssue.severity).all()
+        )
+        sev = {getattr(s, "value", s): n for s, n in sev_rows}
+        issues_open = {"blocker": sev.get("blocker", 0), "major": sev.get("major", 0),
+                       "minor": sev.get("minor", 0)}
+        # 红黄绿:red=有 blocker 或通过率<70;yellow=有 major 或无执行数据或<90;否则 green
+        if issues_open["blocker"] or (pass_rate is not None and pass_rate < 70):
+            grade = "red"
+        elif issues_open["major"] or pass_rate is None or pass_rate < 90:
+            grade = "yellow"
+        else:
+            grade = "green"
+        items.append({
+            "release_id": rel.id, "version": rel.version,
+            "release_date": str(rel.release_date),
+            "window_from": str(w_from), "window_to": str(w_to),
+            "req_count": rel.req_count,
+            "exec_total": done, "exec_passed": cnt.get("passed", 0),
+            "pass_rate": pass_rate, "bugs_found": bugs,
+            "issues_open": issues_open, "grade": grade,
+        })
+    return ok({"items": items})
 
 
 @router.get("/{rid}")
