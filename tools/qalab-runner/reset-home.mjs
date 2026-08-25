@@ -14,6 +14,9 @@ export async function resetHomeWithRetry(gui, log = () => {}, attempts = 2) {
 const HOME_READY_KEYS = ["homepageTitle", "homeGreetingTitle"];
 // 登录弹窗锚点候选 key(掉登录检测)。
 const LOGIN_MODAL_KEYS = ["loginModal"];
+// 复位自愈入口候选 key:首页 reload 后没停稳时,点侧栏「新建任务/新建对话」强制开一个干净会话回首页。
+// 对齐人工纠偏动作(卡在会话/详情里 → 点侧栏新建任务)。按注册存在性过滤,注册表没登记则跳过。
+const NEW_CONVERSATION_KEYS = ["newTask", "newChat"];
 
 // 从候选名里挑出「当前注册表确实登记了」的 key。
 // 关键:isKeyVisible 对**未注册的 key 也返回 false**,无法区分「注册表压根没这个锚点」与「注册了但
@@ -26,11 +29,37 @@ function registeredKeys(gui, names) {
   return names.filter((k) => reg[k]);
 }
 
+// 轮询探首页/登录锚点就绪:返回 { login, ready }。login=任一登录弹窗可见(掉登录);
+// ready=首页锚点可见(或没有首页锚点可探时视作就绪)。掉登录优先,一探到立即返回。
+async function probeReady(gui, loginKeys, homeKeys, { readyTimeout, pollMs }) {
+  const deadline = Date.now() + readyTimeout;
+  const probe = [...loginKeys, ...homeKeys];
+  for (;;) {
+    const { verify } = (await gui.verifyKeys?.(probe)) || { verify: {} };
+    const v = verify || {};
+    if (loginKeys.some((k) => v[k])) return { login: true, ready: false };
+    if (!homeKeys.length || homeKeys.some((k) => v[k])) return { login: false, ready: true };
+    if (Date.now() >= deadline) return { login: false, ready: false };
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
+
+// 首页没停稳时的自愈:依次点侧栏「新建任务/新建对话」(注册表里登记了的),开一个干净会话回首页。
+// 返回被点击的 key(供日志),都不可用则返回 null。gui.click 不可用(老 gui)也返回 null。
+async function clickNewConversation(gui, log) {
+  if (typeof gui.click !== "function") return null;
+  for (const key of registeredKeys(gui, NEW_CONVERSATION_KEYS)) {
+    try { await gui.click({ key }); log(`  首页没停稳:已点「${key}」开干净会话,重探就绪`); return key; }
+    catch (e) { log(`  自愈点「${key}」失败:${e.message || e}`); }
+  }
+  return null;
+}
+
 // 复位 + 掉登录检测 + 首页就绪门禁,产出「放行或阻塞」决策(接后端 L2 的 blocked 归类)。
 // - 复位(reload+就绪)重试仍失败 → { ok:false, result }:环境问题,fail_kind=selector,不计功能失败率。
 // - 复位成功但检测到登录弹窗可见(会话过期)→ { ok:false, result }:提示执行机需重新登录。
-// - 复位成功、未掉登录,但注册表登记的首页锚点在超时内始终不可见 → { ok:false, result }:首页没停稳,
-//   不空跑(避免在未就绪首页上跑 wait_for 产生瞬态 fail);记 blocked(fail_kind=selector)。
+// - 复位成功、未掉登录,但注册表登记的首页锚点在超时内始终不可见 → 先点侧栏「新建任务/新建对话」自愈
+//   再探一次;仍不就绪才 → { ok:false, result }:首页没停稳,不空跑(避免在未就绪首页上跑 wait_for)。
 // - 注册表未登记任何首页/登录锚点(无从判断就绪)或探测本身抛错(probe 基建问题)→ { ok:true }:
 //   尽力而为放行(与 gui-core resetHome 缺 readyKey 时跳过就绪等的宽容语义一致)。
 // - 否则 → { ok:true }:放行执行本条用例。
@@ -45,24 +74,28 @@ export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, p
   // 注册表未登记任何登录/首页锚点 → 无从判断就绪,尽力而为放行(不阻塞)。
   if (!loginKeys.length && !homeKeys.length) return { ok: true };
   try {
-    const deadline = Date.now() + readyTimeout;
-    const probe = [...loginKeys, ...homeKeys];
-    for (;;) {
-      const { verify } = (await gui.verifyKeys?.(probe)) || { verify: {} };
-      const v = verify || {};
-      // 掉登录优先:任一登录弹窗可见 → 立即阻塞(不等首页)。
-      if (loginKeys.some((k) => v[k])) {
-        log("  复位后检测到登录弹窗:会话可能过期");
+    let st = await probeReady(gui, loginKeys, homeKeys, { readyTimeout, pollMs });
+    // 掉登录优先:任一登录弹窗可见 → 立即阻塞(不等首页、不自愈:会话过期只能重登)。
+    if (st.login) {
+      log("  复位后检测到登录弹窗:会话可能过期");
+      return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "复位后检测到登录弹窗:执行机会话可能已过期,请在执行机重新登录被测客户端", duration_ms: 1 } };
+    }
+    if (st.ready) return { ok: true };
+    // 首页锚点已登记但超时仍不可见:reload 可能只重载了停在会话/详情里的同一路由。
+    // 自愈:点侧栏「新建任务/新建对话」开干净会话,再探一次就绪(readyTimeout 减半,别拖太久)。
+    log("  复位后首页问候标题未就绪:尝试点侧栏新建任务/对话自愈");
+    const healed = await clickNewConversation(gui, log);
+    if (healed) {
+      st = await probeReady(gui, loginKeys, homeKeys, { readyTimeout: Math.max(1000, Math.floor(readyTimeout / 2)), pollMs });
+      if (st.login) {
         return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "复位后检测到登录弹窗:执行机会话可能已过期,请在执行机重新登录被测客户端", duration_ms: 1 } };
       }
-      // 首页锚点:无锚点可探 或 任一可见 → 首页已停稳,放行。
-      if (!homeKeys.length || homeKeys.some((k) => v[k])) return { ok: true };
-      if (Date.now() >= deadline) break;
-      await new Promise((r) => setTimeout(r, pollMs));
+      if (st.ready) { log("  自愈成功:新建会话后首页已停稳,放行"); return { ok: true }; }
     }
-    // 首页锚点已登记但超时仍不可见 = 首页没停稳 → 阻塞,不空跑。
-    log("  复位后首页问候标题未就绪:首页可能没停稳");
-    return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "复位后首页未停稳(问候标题未就绪):跳过执行以免在未就绪首页上空跑", duration_ms: 1 } };
+    // 自愈无门(无新建入口/gui.click 不可用)或自愈后仍不就稳 → 阻塞,不空跑。
+    const tail = healed ? "(已点新建任务/对话自愈仍未回稳)" : "";
+    log("  复位后首页未停稳:首页可能没停稳" + tail);
+    return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: `复位后首页未停稳(问候标题未就绪)${tail}:跳过执行以免在未就绪首页上空跑`, duration_ms: 1 } };
   } catch {
     // 掉登录/就绪检测尽力而为:probe 不可用不阻断已成功的复位。
     return { ok: true };

@@ -354,7 +354,24 @@ export function createGuiCore(opts = {}) {
     async fill(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args);
-      await loc.fill(args.text, { timeout: DEFAULT_TIMEOUT });
+      try {
+        await loc.fill(args.text, { timeout: DEFAULT_TIMEOUT });
+      } catch (e) {
+        // 富文本/自定义元素(如纳米 Work 的 <chat-compose-rich-textarea>)不是标准 <input>/<textarea>,
+        // Playwright 的 fill 直接拒绝。兜底:先找元素内部的 contenteditable/textarea 填;找不到就
+        // click 聚焦后用键盘逐字输入。兜底再失败则抛原错(退化为当前的 selector 阻塞,不比原来差)。
+        if (!/not an\b|contenteditable|is not an <input>|Element is not/i.test(e.message || "")) throw e;
+        const inner = loc.locator('[contenteditable="true"], [contenteditable=""], textarea, input').first();
+        if (await inner.count().catch(() => 0)) {
+          try { await inner.fill(args.text, { timeout: DEFAULT_TIMEOUT }); }
+          catch { await inner.click({ timeout: DEFAULT_TIMEOUT }); await page.keyboard.type(args.text); }
+        } else {
+          await loc.click({ timeout: DEFAULT_TIMEOUT });
+          await page.keyboard.press("Control+A").catch(() => {});   // 清空已有内容再输入
+          await page.keyboard.type(args.text);
+        }
+        return { filled: args.key || args.selector, via: hit, fallback: "contenteditable" };
+      }
       return { filled: args.key || args.selector, via: hit };
     },
     async getText(args) {
@@ -392,21 +409,42 @@ export function createGuiCore(opts = {}) {
         await new Promise((r) => setTimeout(r, 1000));
       }
     },
-    // 断言文本:返回 {pass, actual, expected, mode, via}(不抛错,由调用方按 pass 判定)
+    // 断言文本:返回 {pass, actual, expected, mode, negate, via}(不抛错,由调用方按 pass 判定)。
+    // negate=true 表示「否定断言」:期望文本**不**等于/不包含 expected(用于"不显示/已关闭/不含 X")。
+    // 物理上无法用正向 equals 表达否定(元素不存在时 textContent 为空,equals 恒失败 → 假 fail),故显式支持。
     async assertText(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args, { requireVisible: false });
-      const actual = (await loc.textContent()) ?? "";
-      const pass = args.contains ? actual.includes(args.expected) : actual.trim() === args.expected;
-      return { pass, actual: actual.trim().slice(0, 200), expected: args.expected, mode: args.contains ? "contains" : "equals", via: hit };
+      const actual = ((await loc.textContent()) ?? "").trim();
+      const matched = args.contains ? actual.includes(args.expected) : actual === args.expected;
+      const pass = args.negate ? !matched : matched;
+      return { pass, actual: actual.slice(0, 200), expected: args.expected, mode: args.contains ? "contains" : "equals", negate: !!args.negate, via: hit };
     },
+    // 断言元素可见。失败时区分两种性质(供调用方归类 fail_kind):
+    //   - locatable=false:元素在 DOM 里压根定位不到(key 未注册/候选没覆盖)→ 选择器阻塞(selector)。
+    //   - locatable=true :元素在 DOM 里但不可见(隐藏/未渲染出来)→ 真功能问题(business,"该可见却没可见")。
     async assertVisible(args) {
       await ensureConnected();
       try {
         await resolveTarget(args, { requireVisible: true });
-        return { pass: true, target: args.key || args.selector };
+        return { pass: true, target: args.key || args.selector, locatable: true };
       } catch (e) {
-        return { pass: false, target: args.key || args.selector, error: e.message };
+        // 二次探测:不要求可见,仅看元素是否在 DOM 中,以区分"定位不到"与"定位到但隐藏"。
+        let locatable = false;
+        try { await resolveTarget({ ...args, timeout_ms: 800 }, { requireVisible: false }); locatable = true; }
+        catch { /* 仍定位不到 → 选择器阻塞 */ }
+        return { pass: false, target: args.key || args.selector, error: e.message, locatable };
+      }
+    },
+    // 断言元素「不存在/不可见」(否定式可见断言)。定位不到即通过(这正是期望);
+    // 若元素仍可见 → 不通过(business:本应消失却还在)。用于"移除后 Chip 消失""菜单关闭后消失"等。
+    async assertAbsent(args) {
+      await ensureConnected();
+      try {
+        await resolveTarget(args, { requireVisible: true });
+        return { pass: false, target: args.key || args.selector, locatable: true };  // 还能可见 → 未消失
+      } catch {
+        return { pass: true, target: args.key || args.selector, locatable: false };  // 定位不到 → 已不存在,符合预期
       }
     },
     async screenshot(path) {

@@ -109,6 +109,12 @@
               <span class="step-desc">{{ s.desc || '' }}</span>
             </div>
             <div v-if="s.error" class="step-err">{{ s.error }}</div>
+            <div v-if="s.check" class="step-check">
+              期望{{ s.check.negate ? '不' : '' }}{{ s.check.mode === 'contains' ? '包含' : '等于' }}
+              <code class="exp">{{ s.check.expected }}</code>
+              <span class="vs">实际</span>
+              <code class="act">{{ s.check.actual || '(空)' }}</code>
+            </div>
             <img v-if="s.shot" :src="s.shot" class="step-shot" alt="步骤截图" @click="zoom(s.shot)" />
           </li>
         </ol>
@@ -388,6 +394,11 @@ async function saveCorrect() {
 .step-act { font-weight: 600; color: #334; }
 .step-desc { color: #5a6b7b; }
 .step-err { color: #c45656; font-size: 12px; margin: 4px 0 4px 26px; }
+.step-check { font-size: 12px; margin: 4px 0 4px 26px; color: #5a6b7b; }
+.step-check code { padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.step-check .exp { background: #eef4ff; color: #3a5ccc; }
+.step-check .act { background: #fff3e6; color: #c47a1e; }
+.step-check .vs { margin: 0 6px; color: #90a4ae; }
 .step-shot { display: block; max-width: 360px; max-height: 220px; margin: 6px 0 2px 26px; border: 1px solid #e4e7ed; border-radius: 4px; cursor: zoom-in; }
 .shot-full { width: 100%; height: auto; }
 </style>
