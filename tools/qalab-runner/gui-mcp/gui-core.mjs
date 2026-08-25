@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
+import { pressOsEscape } from "../os-key.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
@@ -373,6 +374,20 @@ export function createGuiCore(opts = {}) {
         return { filled: args.key || args.selector, via: hit, fallback: "contenteditable" };
       }
       return { filled: args.key || args.selector, via: hit };
+    },
+    // 页面层 ESC:page.keyboard 发 Escape,关网页模态/浮层/下拉(只作用于被测页面内部)。快、无害。
+    // 复位自愈第一招:首页疑似被网页弹窗挡住时先按它清障再重探。
+    async pressEscapePage() {
+      await ensureConnected();
+      await page.keyboard.press("Escape");
+      return { escaped: true, layer: "page" };
+    },
+    // OS 级 ESC:向操作系统前台窗口发 Escape,关被测页面之外的系统窗(如误触发的文件资源管理器/原生
+    // 文件选择框)。走 os-key 的 pressOsEscape(平台命令,尽力而为、绝不抛);powershell 冷启动约数秒,
+    // 故仅作页面层 ESC 未果后的升级手段(见 reset-home 分层自愈)。escaped=是否真发出(不支持/超时→false)。
+    async pressEscapeOs() {
+      const os = await pressOsEscape();
+      return { escaped: os, layer: "os" };
     },
     async getText(args) {
       await ensureConnected();

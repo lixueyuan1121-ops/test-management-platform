@@ -196,15 +196,120 @@ test("resetOrBlock:首页未就绪、点新建任务仍不就绪 → 阻塞(reas
   assert.ok(/新建|首页/.test(r.result.reason), r.result.reason);
 });
 
-test("resetOrBlock:掉登录时不触发新建任务自愈(应提示重新登录)", async () => {
-  let clicked = false;
+test("resetOrBlock:掉登录时不触发 ESC/新建会话自愈(应提示重新登录)", async () => {
+  let clicked = false, escaped = false;
   const gui = {
     registry: { homepageTitle: {}, loginModal: {}, newTask: {} },
     async resetHome() {},
+    async pressEscapePage() { escaped = true; return { escaped: true }; },
+    async pressEscapeOs() { escaped = true; return { escaped: true }; },
     async click() { clicked = true; return {}; },
     async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "loginModal"); return { verify: v }; },
   };
   const r = await resetOrBlock(gui, () => {}, { readyTimeout: 80, pollMs: 20 });
-  assert.equal(clicked, false, "掉登录是会话过期,点新建任务无意义,不应触发自愈");
+  assert.equal(escaped, false, "掉登录时不应发 ESC(会话过期只能重登)");
+  assert.equal(clicked, false, "掉登录时不应点新建会话");
   assert.ok(/登录/.test(r.result.reason), r.result.reason);
+});
+
+// ---- 复位自愈(本次新增):首页没停稳时分层清障——页面层 ESC → OS 级 ESC → 点新建会话,逐招重探 ----
+// 根因:e2e 用例可能残留网页模态、或误触发文件资源管理器/原生文件选择框等系统窗挡住首页,reload 关不掉
+// → 首页锚点始终不可见。修复:首页锚点超时后分层自愈,从「快且无害」到「慢/有副作用」递增,先救回先放行:
+//   ①页面层 ESC(pressEscapePage,关网页模态/浮层,快)②OS 级 ESC(pressEscapeOs,关系统窗,powershell
+//   冷启动约数秒)③点新建会话(clickNewConversation,开干净会话,有副作用)。ESC 排在开新会话前(无副作用)。
+
+test("resetOrBlock:首页未就绪→页面层 ESC 后就绪→放行(不触发慢的 OS 级 ESC、不点新建会话)", async () => {
+  let page = false, os = false, clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, loginModal: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { page = true; return { escaped: true }; },
+    async pressEscapeOs() { os = true; return { escaped: true }; },
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    // 页面层 ESC 关掉网页模态后首页就绪
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && page); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 80, pollMs: 20 });
+  assert.equal(page, true, "首页没停稳应先试页面层 ESC");
+  assert.equal(os, false, "页面层 ESC 已救回则不触发慢的 OS 级 ESC");
+  assert.equal(clickedNew, false, "已救回则不点新建会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:页面层 ESC 没救回→OS 级 ESC 后就绪→放行(不点新建会话)", async () => {
+  let os = false, clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { os = true; return { escaped: true }; },
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    // 仅 OS 级 ESC 关掉系统窗后首页才就绪
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && os); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(os, true, "页面层 ESC 没救回应升级到 OS 级 ESC");
+  assert.equal(clickedNew, false, "OS 级 ESC 已救回则不点新建会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:页面层+OS 级 ESC 都没救回→点新建会话→就绪→放行", async () => {
+  let clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(clickedNew, true, "两层 ESC 都救不回应继续点新建会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:OS 级 ESC 未生效(escaped=false)→跳过其重探,继续点新建会话自愈", async () => {
+  let osTried = false, clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    // OS 级 ESC「试了但没发出」(平台不支持/超时):escaped:false,不应白等一次重探,直接下一招
+    async pressEscapeOs() { osTried = true; return { escaped: false }; },
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(osTried, true, "仍会尝试 OS 级 ESC");
+  assert.equal(clickedNew, true, "OS 级 ESC 未生效应继续点新建会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:老 gui 无 pressEscapePage/pressEscapeOs → 跳过 ESC 直接点新建会话(向后兼容,不报错)", async () => {
+  let clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, newTask: {} },
+    async resetHome() {},
+    // 无 pressEscapePage/pressEscapeOs(老 gui)
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(clickedNew, true, "无 ESC 能力应跳过继续点新建会话,不因缺方法崩");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:pressEscapePage/pressEscapeOs 抛错 → 不阻断,继续点新建会话自愈", async () => {
+  let clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { throw new Error("keyboard 不可用"); },
+    async pressEscapeOs() { throw new Error("spawn 失败"); },
+    async click({ key }) { if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(clickedNew, true, "ESC 抛错不应阻断后续自愈");
+  assert.equal(r.ok, true);
 });

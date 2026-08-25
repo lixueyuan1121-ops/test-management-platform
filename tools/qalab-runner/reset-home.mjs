@@ -55,11 +55,32 @@ async function clickNewConversation(gui, log) {
   return null;
 }
 
+// 掉登录(会话过期)的阻塞结果:只能重登,自愈无意义。复位流程多处复用(初探/ESC 后/新建会话后),抽此消重。
+function loginBlocked() {
+  return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "复位后检测到登录弹窗:执行机会话可能已过期,请在执行机重新登录被测客户端", duration_ms: 1 } };
+}
+
+// 调用 gui 上某个「尽力而为」的自愈动作,返回是否「试过且生效」:方法不存在(老 gui)→ false 跳过;
+// 抛错 → false 不阻断后续自愈;返回 { escaped:false }(如 OS 级 ESC 平台不支持/超时)→ false 跳过其重探。
+async function tryGuiHeal(gui, method, desc, log) {
+  if (typeof gui[method] !== "function") return false;
+  try {
+    const r = await gui[method]();
+    if (r && r.escaped === false) { log(`  自愈「${desc}」未生效,跳过`); return false; }
+    log(`  首页没停稳:已${desc},重探就绪`);
+    return true;
+  } catch (e) {
+    log(`  自愈「${desc}」失败:${e.message || e}`);
+    return false;
+  }
+}
+
 // 复位 + 掉登录检测 + 首页就绪门禁,产出「放行或阻塞」决策(接后端 L2 的 blocked 归类)。
 // - 复位(reload+就绪)重试仍失败 → { ok:false, result }:环境问题,fail_kind=selector,不计功能失败率。
 // - 复位成功但检测到登录弹窗可见(会话过期)→ { ok:false, result }:提示执行机需重新登录。
-// - 复位成功、未掉登录,但注册表登记的首页锚点在超时内始终不可见 → 先点侧栏「新建任务/新建对话」自愈
-//   再探一次;仍不就绪才 → { ok:false, result }:首页没停稳,不空跑(避免在未就绪首页上跑 wait_for)。
+// - 复位成功、未掉登录,但注册表登记的首页锚点在超时内始终不可见 → 依次自愈:先按 ESC 关掉可能挡路的
+//   弹窗/系统窗、再点侧栏「新建任务/新建对话」,每招后重探一次;仍不就绪才 → { ok:false, result }:
+//   首页没停稳,不空跑(避免在未就绪首页上跑 wait_for)。
 // - 注册表未登记任何首页/登录锚点(无从判断就绪)或探测本身抛错(probe 基建问题)→ { ok:true }:
 //   尽力而为放行(与 gui-core resetHome 缺 readyKey 时跳过就绪等的宽容语义一致)。
 // - 否则 → { ok:true }:放行执行本条用例。
@@ -76,24 +97,29 @@ export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, p
   try {
     let st = await probeReady(gui, loginKeys, homeKeys, { readyTimeout, pollMs });
     // 掉登录优先:任一登录弹窗可见 → 立即阻塞(不等首页、不自愈:会话过期只能重登)。
-    if (st.login) {
-      log("  复位后检测到登录弹窗:会话可能过期");
-      return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "复位后检测到登录弹窗:执行机会话可能已过期,请在执行机重新登录被测客户端", duration_ms: 1 } };
-    }
+    if (st.login) { log("  复位后检测到登录弹窗:会话可能过期"); return loginBlocked(); }
     if (st.ready) return { ok: true };
-    // 首页锚点已登记但超时仍不可见:reload 可能只重载了停在会话/详情里的同一路由。
-    // 自愈:点侧栏「新建任务/新建对话」开干净会话,再探一次就绪(readyTimeout 减半,别拖太久)。
-    log("  复位后首页问候标题未就绪:尝试点侧栏新建任务/对话自愈");
-    const healed = await clickNewConversation(gui, log);
-    if (healed) {
-      st = await probeReady(gui, loginKeys, homeKeys, { readyTimeout: Math.max(1000, Math.floor(readyTimeout / 2)), pollMs });
-      if (st.login) {
-        return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "复位后检测到登录弹窗:执行机会话可能已过期,请在执行机重新登录被测客户端", duration_ms: 1 } };
-      }
-      if (st.ready) { log("  自愈成功:新建会话后首页已停稳,放行"); return { ok: true }; }
+    // 首页锚点已登记但超时仍不可见:reload 可能只重载了停在会话/详情里的同一路由,或页面被弹窗/系统窗挡住。
+    log("  复位后首页问候标题未就绪,开始分层自愈");
+    // 分层自愈,从「快且无害」到「慢/有副作用」递增,每招后重探一次,先救回先放行:
+    //   ①页面层 ESC(关网页模态/浮层,快、无害)②OS 级 ESC(关系统窗,powershell 冷启动约数秒)
+    //   ③点侧栏新建会话(开干净会话,有副作用)。ESC 排在开新会话前(无副作用)。
+    const heals = [
+      { label: "页面层 ESC", run: () => tryGuiHeal(gui, "pressEscapePage", "按页面层 ESC 关网页弹窗/浮层", log) },
+      { label: "OS 级 ESC", run: () => tryGuiHeal(gui, "pressEscapeOs", "按 OS 级 ESC 关系统窗(如文件资源管理器)", log) },
+      { label: "新建会话", run: () => clickNewConversation(gui, log).then(Boolean) },
+    ];
+    const reprobeTimeout = Math.max(1000, Math.floor(readyTimeout / 3));
+    const tried = [];
+    for (const { label, run } of heals) {
+      if (!(await run())) continue;
+      tried.push(label);
+      st = await probeReady(gui, loginKeys, homeKeys, { readyTimeout: reprobeTimeout, pollMs });
+      if (st.login) return loginBlocked();
+      if (st.ready) { log(`  自愈成功(${label}后首页已停稳),放行`); return { ok: true }; }
     }
-    // 自愈无门(无新建入口/gui.click 不可用)或自愈后仍不就稳 → 阻塞,不空跑。
-    const tail = healed ? "(已点新建任务/对话自愈仍未回稳)" : "";
+    // 逐招都救不回(无自愈入口/gui 能力缺失,或自愈后仍不就稳)→ 阻塞,不空跑。
+    const tail = tried.length ? `(已试自愈:${tried.join(" → ")},仍未回稳)` : "";
     log("  复位后首页未停稳:首页可能没停稳" + tail);
     return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: `复位后首页未停稳(问候标题未就绪)${tail}:跳过执行以免在未就绪首页上空跑`, duration_ms: 1 } };
   } catch {
