@@ -4,10 +4,10 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.core.enums import AiInputType, ExecKind, ReviewStatus
 
-# 需求正文（送去 AI 生成的 prompt 正文）长度上限。放宽到 5 万字以支持从网页/飞书/上传文档
+# 需求正文（送去 AI 生成的 prompt 正文）长度上限。放宽到 6 万字以支持从网页/飞书/上传文档
 # 抓取的长需求（claude/deepseek 上下文足够）。注意：这只约束「送去生成的正文」、不入库；
 # 存库的 input_ref 仍单独截断到 20000（MySQL TEXT 列 64KB 上限保护，见 api/ai.py）。
-REQUIREMENT_MAX_LEN = 50000
+REQUIREMENT_MAX_LEN = 60000
 
 
 class TestCaseGenIn(BaseModel):
