@@ -5,10 +5,11 @@ from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
-from app.core.enums import IssueStatus, ProjectRole, TaskStatus
+from app.core.enums import IssueStatus, ProjectRole, ReviewStatus, TaskStatus
 from app.db.session import get_db
-from app.models import DailyReport, Project, ProjectMember, RemainingIssue, Task, User
+from app.models import DailyReport, ExecRun, Project, ProjectMember, RemainingIssue, Task, TestCase, User
 from app.schemas.common import ok
+from app.services.claude_runner import _SELECTOR_FIX_MARK
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -441,4 +442,63 @@ def ai_stats(
         "total_reviewed": int(total_reviewed), "total_adopted": int(total_adopted),
         "adopt_rate": adopt_rate, "prio": prio, "trend": trend,
         "by_provider": by_provider,
+    })
+
+
+@router.get("/ai-funnel")
+def ai_funnel(
+    days: int = 30,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """AI 全链路价值漏斗:生成→采纳→可自动化→已执行→通过,附真bug数/选择器卡点/省时。
+
+    时间窗 [today-days+1, today];项目范围 = 当前用户可见项目。全部现算不建表。
+    selector_pending 是当前存量卡点(不限时间窗)。saved_hours 按每条执行折算 5 分钟人工。
+    """
+    if days <= 0 or days > 365:
+        days = 30
+    pids = _visible_project_ids(db, user)
+    today = date.today()
+    d_from = today - timedelta(days=days - 1)
+
+    def _win(q, col):
+        return q.filter(func.date(col) >= d_from, func.date(col) <= today)
+
+    def _tc_q(*flt):
+        return db.query(func.count(TestCase.id)).filter(TestCase.project_id.in_(pids), *flt)
+
+    generated = _win(_tc_q(), TestCase.created_at).scalar() or 0
+    adopted = _win(_tc_q(TestCase.review_status == ReviewStatus.adopted),
+                   TestCase.created_at).scalar() or 0
+    automatable = _win(_tc_q(TestCase.review_status == ReviewStatus.adopted,
+                             TestCase.exec_kind != "manual"),
+                       TestCase.created_at).scalar() or 0
+
+    def _run_q(*flt):
+        return db.query(func.count(ExecRun.id)).filter(ExecRun.project_id.in_(pids), *flt)
+
+    executed = _win(_run_q(ExecRun.status.in_(["passed", "failed", "blocked"])),
+                    ExecRun.created_at).scalar() or 0
+    passed = _win(_run_q(ExecRun.status == "passed"), ExecRun.created_at).scalar() or 0
+    bugs_found = _win(_run_q(ExecRun.fail_kind == "business"), ExecRun.created_at).scalar() or 0
+
+    selector_pending = _tc_q(
+        TestCase.review_status == ReviewStatus.adopted,
+        TestCase.kind_reason.like(f"{_SELECTOR_FIX_MARK}%"),
+    ).scalar() or 0
+
+    return ok({
+        "from": str(d_from), "to": str(today), "days": days,
+        "funnel": [
+            {"stage": "generated", "label": "AI 生成", "count": generated},
+            {"stage": "adopted", "label": "已采纳", "count": adopted},
+            {"stage": "automatable", "label": "可自动化", "count": automatable},
+            {"stage": "executed", "label": "已执行", "count": executed},
+            {"stage": "passed", "label": "执行通过", "count": passed},
+        ],
+        "adopt_rate": round(adopted / generated * 100, 1) if generated else 0.0,
+        "bugs_found": bugs_found,
+        "selector_pending": selector_pending,
+        "saved_hours": round(executed * 5 / 60, 1),
     })
