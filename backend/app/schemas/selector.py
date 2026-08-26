@@ -14,14 +14,30 @@ def _validate_candidates(v: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return v
 
 
+_PLATFORMS = ("web", "android", "ios")
+
+
+def _validate_platform(v: str) -> str:
+    if v not in _PLATFORMS:
+        raise ValueError(f"platform 须为 {_PLATFORMS} 之一")
+    return v
+
+
 class SelectorKeyIn(BaseModel):
     project_id: int
     sub_product: str = ""
+    # platform: web(PC端) / android / ios；默认 web 保持向后兼容。
+    platform: str = "web"
     key: str = Field(min_length=1, max_length=64)
     frame: str = "auto"
     page: str = ""
     desc: str = ""
     candidates: list[dict[str, Any]] = []
+
+    @field_validator("platform")
+    @classmethod
+    def _v_platform(cls, v):
+        return _validate_platform(v)
 
     @field_validator("candidates")
     @classmethod
@@ -30,10 +46,16 @@ class SelectorKeyIn(BaseModel):
 
 
 class SelectorKeyPatch(BaseModel):
+    platform: str | None = None
     frame: str | None = None
     page: str | None = None
     desc: str | None = None
     candidates: list[dict[str, Any]] | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def _v_platform(cls, v):
+        return v if v is None else _validate_platform(v)
 
     @field_validator("candidates")
     @classmethod

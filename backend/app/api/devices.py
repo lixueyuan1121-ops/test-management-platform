@@ -33,6 +33,8 @@ ACTIVE_RUNS_LIMIT = 8
 class DeviceIn(BaseModel):
     runner_id: str = Field(..., min_length=1, max_length=64)
     name: str = Field(..., min_length=1, max_length=128)
+    # platform: web(PC端) / android / ios；默认 web 保持向后兼容。
+    platform: str = Field("web", pattern="^(web|android|ios)$")
 
 
 def _mask(token: str) -> str:
@@ -47,6 +49,7 @@ def _to_out(d: RunnerDevice, *, reveal_token: bool = False) -> dict:
         "id": d.id,
         "runner_id": d.runner_id,
         "name": d.name,
+        "platform": d.platform,
         "token": d.token if reveal_token else _mask(d.token),  # 仅注册/重置时给明文
         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
@@ -78,6 +81,7 @@ def register_device(body: DeviceIn, db: Session = Depends(get_db), user: User = 
         owner_id=user.id,
         runner_id=body.runner_id.strip(),
         name=body.name.strip(),
+        platform=body.platform,
         token=secrets.token_hex(32),   # 64 位十六进制长随机串
     )
     db.add(device)
@@ -122,6 +126,7 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
         "id": d.id,
         "runner_id": d.runner_id,
         "name": d.name,
+        "platform": d.platform,
         "owner": {"id": d.owner_id, "name": owner_name},
         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "online": online,

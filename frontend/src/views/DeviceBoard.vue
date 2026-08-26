@@ -55,6 +55,7 @@
             <span class="light" :class="d.online ? 'on' : 'off'"></span>
             <div class="dev-name" :title="d.name">{{ d.name }}</div>
             <div class="runner-id">{{ d.runner_id }}</div>
+            <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain" class="plat-tag">{{ d.platform.toUpperCase() }}</el-tag>
           </div>
 
           <div class="meta">
@@ -237,6 +238,7 @@ onUnmounted(() => {
 .light.off { background: #c0c6ce; }
 .dev-name { font-size: 15px; font-weight: 700; color: #1a1d21; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .runner-id { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #7d8a9b; background: #f0f2f5; padding: 2px 7px; border-radius: 5px; flex: none; }
+.plat-tag { margin-left: 4px; flex: none; }
 .meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: #8b98a9; }
 .meta .seen { font-family: 'JetBrains Mono', monospace; color: #9aa5b1; }
 
