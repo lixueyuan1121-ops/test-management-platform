@@ -404,3 +404,52 @@ test("resetOrBlock:掉登录时不触发点首页导航自愈(应提示重新登
   assert.equal(navHome, false, "掉登录时不应点首页导航(会话过期只能重登)");
   assert.ok(/登录/.test(r.result.reason), r.result.reason);
 });
+
+// ---- 复位自愈(本次改造):三招「来回反复」多轮尝试,而非走一遍就放弃 ----
+// 需求:实际执行中「ESC 关系统弹窗 → 点两次主导航『首页』→ 点新建任务」单遍走一次常救不回,需来回反复几轮
+// 才能稳住首页,确保用例间衔接顺滑。改为外层最多 maxHealRounds 轮循环:一轮走完仍不就绪就再来一轮;
+// 某轮内全无可用招式则提前止损、不空转。
+
+test("resetOrBlock:一轮自愈没救回→第二轮继续反复→就绪→放行(来回反复多轮)", async () => {
+  let navHomeClicks = 0;
+  const gui = {
+    registry: { homepageTitle: {}, navHome: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "navHome") navHomeClicks++; return { clicked: key }; },
+    // 每轮点 2 次首页导航;累计点满 3 次(即进入第二轮后)才就绪 → 必须跨轮反复
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && navHomeClicks >= 3); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20, maxHealRounds: 3 });
+  assert.ok(navHomeClicks >= 3, `应跨轮反复点首页导航直到就绪,实际点了 ${navHomeClicks} 次`);
+  assert.equal(r.ok, true, "多轮反复后首页就绪应放行");
+});
+
+test("resetOrBlock:一轮内所有招式都不生效→提前止损,不空转多轮(OS ESC 不被反复调)", async () => {
+  let osCalls = 0;
+  const gui = {
+    registry: { homepageTitle: {} },   // 无 navHome/newTask,唯一招式 OS ESC 且不生效
+    async resetHome() {},
+    async pressEscapeOs() { osCalls++; return { escaped: false }; },  // 存在但每次都「未生效」
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20, maxHealRounds: 3 });
+  assert.equal(r.ok, false, "反复也救不回应 blocked");
+  assert.equal(r.result.fail_kind, "selector");
+  assert.equal(osCalls, 1, "一轮内无任一招生效应提前止损,OS ESC 不该被反复调 3 轮");
+});
+
+test("resetOrBlock:多轮反复仍救不回→阻塞(reason 含反复痕迹与轮次标记)", async () => {
+  const gui = {
+    registry: { homepageTitle: {}, navHome: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async click({ key }) { return { clicked: key }; },   // 点了也不就绪
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 30, pollMs: 10, maxHealRounds: 2 });
+  assert.equal(r.ok, false);
+  assert.equal(r.result.fail_kind, "selector", "多轮救不回属环境阻塞,不计功能失败率");
+  assert.ok(/#2/.test(r.result.reason), `reason 应含第 2 轮轮次标记,实际:${r.result.reason}`);
+});
