@@ -24,11 +24,11 @@
         <!-- 发版记录 -->
         <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
 
-        <!-- 设备看板:全平台执行机监控大屏(仅平台管理员) -->
-        <el-menu-item v-if="auth.isPlatformAdmin" index="/device-board"><el-icon><Cpu /></el-icon><span>设备看板</span></el-menu-item>
+        <!-- 设备看板:全平台执行机监控大屏 -->
+        <el-menu-item index="/device-board"><el-icon><Cpu /></el-icon><span>设备看板</span></el-menu-item>
 
-        <!-- 作战大屏:全平台质量脉搏整合页(仅平台管理员) -->
-        <el-menu-item v-if="auth.isPlatformAdmin" index="/war-room"><el-icon><DataBoard /></el-icon><span>作战大屏</span></el-menu-item>
+        <!-- 作战大屏:全平台质量脉搏整合页 -->
+        <el-menu-item index="/war-room"><el-icon><DataBoard /></el-icon><span>作战大屏</span></el-menu-item>
 
         <!-- 功能测试:完整链路(生成 → 用例资产 → 派单 → 结果 → 问题) -->
         <el-sub-menu index="func">
