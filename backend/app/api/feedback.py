@@ -24,6 +24,7 @@ from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import (
     ExecKind, ExecStatus, FeedbackCaseStatus, FeedbackImportStatus, ProjectRole,
 )
+from app.core.security import decode_token
 from app.db.session import get_db
 from app.models import (
     ExecRun, FeedbackCase, FeedbackImport, FeedbackRegressionSet, FeedbackRun,
@@ -42,10 +43,32 @@ _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 _READ_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 
 
-def require_bot_token(x_bot_token: str | None = Header(default=None)):
-    """机器人对接鉴权：与用户 JWT 分离的独立长期 token（仿 RUNNER_TOKEN）。空配置则拒绝一切。"""
-    if not settings.FEEDBACK_BOT_TOKEN or x_bot_token != settings.FEEDBACK_BOT_TOKEN:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="bot token 无效")
+def require_ingest_auth(
+    x_bot_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """机器人对接鉴权：X-Bot-Token 或 平台账号 JWT，任一通过即可。
+
+    - 现有机器人调 tasks 用的是平台账号 JWT，直接带同一个 `Authorization: Bearer <token>`
+      即可调本接口，零改动。
+    - 也兼容独立 X-Bot-Token（FEEDBACK_BOT_TOKEN），供无账号的机器人使用。
+    两者都没有/都不对 → 401。
+    """
+    # ① X-Bot-Token（配了才校验）
+    if settings.FEEDBACK_BOT_TOKEN and x_bot_token == settings.FEEDBACK_BOT_TOKEN:
+        return
+    # ② 平台账号 JWT（access token）——与机器人调 tasks 同一套鉴权
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        payload = decode_token(token)
+        if payload and payload.get("type") == "access":
+            uid = payload.get("sub")
+            user = db.get(User, int(uid)) if uid else None
+            if user and user.status.value == "active":
+                return
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                        detail="需要有效的 X-Bot-Token 或平台账号令牌")
 
 
 def get_feedback_project(db: Session) -> Project:
@@ -84,7 +107,7 @@ async def ingest(
     note: str | None = Form(default=None),
     source_bot: str | None = Form(default=None),
     db: Session = Depends(get_db),
-    _: None = Depends(require_bot_token),
+    _: None = Depends(require_ingest_auth),
 ):
     """机器人推 md/zip：解析落 feedback_import + feedback_case。立即返回，不等补 script。"""
     data = await file.read()
