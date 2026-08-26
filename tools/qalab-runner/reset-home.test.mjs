@@ -313,3 +313,94 @@ test("resetOrBlock:pressEscapePage/pressEscapeOs 抛错 → 不阻断,继续点�
   assert.equal(clickedNew, true, "ESC 抛错不应阻断后续自愈");
   assert.equal(r.ok, true);
 });
+
+// ---- 复位自愈(本次新增):首页没停稳、两层 ESC 无效时,点侧栏主导航「首页」(navHome)切回首页 Tab ----
+// 根因:e2e 用例可能把客户端停在专家/项目/文件等其它一级 Tab 或某会话详情里,reload 只重载同一 SPA 路由、
+// ESC 也关不掉(不是弹窗/系统窗挡着,而是压根不在首页路由)→ 首页问候标题始终不可见。人工纠偏时直接点侧栏
+// 『首页』导航即回到首页 Tab。修复:两层 ESC 后先点 navHome(无副作用),再探就绪;它排在「新建会话」(有副作用)前。
+
+test("resetOrBlock:两层 ESC 没救回→点主导航『首页』后就绪→放行(不开新会话)", async () => {
+  let navHome = false, clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, navHome: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "navHome") navHome = true; if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    // 仅点了首页导航后首页才就绪(模拟停在其它 Tab → 切回首页)
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && navHome); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(navHome, true, "两层 ESC 没救回应先点主导航『首页』(无副作用)");
+  assert.equal(clickedNew, false, "点首页导航已救回则不再开新会话");
+  assert.equal(r.ok, true);
+});
+
+// ---- 复位自愈(本次新增):点一次主导航『首页』没救回→再点一次(第一次可能落在过渡态/只收起面板) ----
+// 根因:从某些深层详情/多级面板切首页,第一次点击可能只收起了当前面板、或落在路由过渡态,首页问候标题
+// 仍不可见。人工也常「多点一下」才回到位。修复:自愈链排两次「点首页导航」,点一次重探仍不就绪就补一击,
+// 都无副作用(不像开新会话),再不行才兜底新建会话。
+
+test("resetOrBlock:点一次『首页』导航没救回→再点一次后就绪→放行(不开新会话)", async () => {
+  let navHomeCount = 0, clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, navHome: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "navHome") navHomeCount++; if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    // 点满两次首页导航后首页才就绪(模拟第一次点只收起面板/落在过渡态)
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && navHomeCount >= 2); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(navHomeCount, 2, "点一次没救回应再点一次首页导航");
+  assert.equal(clickedNew, false, "两次首页导航救回则不再开新会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:点『首页』导航仍不就绪→兜底点新建会话→就绪→放行", async () => {
+  let navHome = false, clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, navHome: {}, newTask: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "navHome") navHome = true; if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    // 首页导航没救回(如导航项本身失效),点新建会话才就绪
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(navHome, true, "先试点主导航『首页』");
+  assert.equal(clickedNew, true, "首页导航救不回应兜底开新会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:注册表未登记 navHome → 跳过该招,直接兜底新建会话(向后兼容)", async () => {
+  let clickedNew = false;
+  const gui = {
+    registry: { homepageTitle: {}, newTask: {} },   // 无 navHome
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "navHome") throw new Error("不该点未注册的 navHome"); if (key === "newTask") clickedNew = true; return { clicked: key }; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "homepageTitle" && clickedNew); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 60, pollMs: 20 });
+  assert.equal(clickedNew, true, "navHome 未注册应跳过,继续兜底新建会话");
+  assert.equal(r.ok, true);
+});
+
+test("resetOrBlock:掉登录时不触发点首页导航自愈(应提示重新登录)", async () => {
+  let navHome = false;
+  const gui = {
+    registry: { homepageTitle: {}, loginModal: {}, navHome: {} },
+    async resetHome() {},
+    async pressEscapePage() { return { escaped: true }; },
+    async pressEscapeOs() { return { escaped: true }; },
+    async click({ key }) { if (key === "navHome") navHome = true; return {}; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = (k === "loginModal"); return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 80, pollMs: 20 });
+  assert.equal(navHome, false, "掉登录时不应点首页导航(会话过期只能重登)");
+  assert.ok(/登录/.test(r.result.reason), r.result.reason);
+});

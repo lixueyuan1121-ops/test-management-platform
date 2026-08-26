@@ -17,6 +17,10 @@ const LOGIN_MODAL_KEYS = ["loginModal"];
 // 复位自愈入口候选 key:首页 reload 后没停稳时,点侧栏「新建任务/新建对话」强制开一个干净会话回首页。
 // 对齐人工纠偏动作(卡在会话/详情里 → 点侧栏新建任务)。按注册存在性过滤,注册表没登记则跳过。
 const NEW_CONVERSATION_KEYS = ["newTask", "newChat"];
+// 复位自愈入口候选 key:点侧栏主导航「首页」切回首页 Tab(无副作用,不开新会话)。
+// 对齐人工纠偏动作(卡在会话/详情/其它 Tab 里 → 点侧栏『首页』导航)。reload 只重载同一 SPA 路由、
+// 关不掉时,显式导航回首页最贴合意图;按注册存在性过滤,注册表没登记则跳过。
+const NAV_HOME_KEYS = ["navHome"];
 
 // 从候选名里挑出「当前注册表确实登记了」的 key。
 // 关键:isKeyVisible 对**未注册的 key 也返回 false**,无法区分「注册表压根没这个锚点」与「注册了但
@@ -44,15 +48,25 @@ async function probeReady(gui, loginKeys, homeKeys, { readyTimeout, pollMs }) {
   }
 }
 
-// 首页没停稳时的自愈:依次点侧栏「新建任务/新建对话」(注册表里登记了的),开一个干净会话回首页。
+// 首页没停稳时的自愈:依次点候选 key(注册表里登记了的)里第一个可点成功的,回首页/开干净会话。
 // 返回被点击的 key(供日志),都不可用则返回 null。gui.click 不可用(老 gui)也返回 null。
-async function clickNewConversation(gui, log) {
+async function clickFirstAvailable(gui, keys, okLog, log) {
   if (typeof gui.click !== "function") return null;
-  for (const key of registeredKeys(gui, NEW_CONVERSATION_KEYS)) {
-    try { await gui.click({ key }); log(`  首页没停稳:已点「${key}」开干净会话,重探就绪`); return key; }
+  for (const key of registeredKeys(gui, keys)) {
+    try { await gui.click({ key }); log(okLog(key)); return key; }
     catch (e) { log(`  自愈点「${key}」失败:${e.message || e}`); }
   }
   return null;
+}
+
+// 点侧栏主导航「首页」切回首页 Tab(无副作用)。都不可用返回 null。
+async function clickNavHome(gui, log) {
+  return clickFirstAvailable(gui, NAV_HOME_KEYS, (k) => `  首页没停稳:已点主导航「${k}」切回首页,重探就绪`, log);
+}
+
+// 点侧栏「新建任务/新建对话」开干净会话回首页(有副作用)。都不可用返回 null。
+async function clickNewConversation(gui, log) {
+  return clickFirstAvailable(gui, NEW_CONVERSATION_KEYS, (k) => `  首页没停稳:已点「${k}」开干净会话,重探就绪`, log);
 }
 
 // 掉登录(会话过期)的阻塞结果:只能重登,自愈无意义。复位流程多处复用(初探/ESC 后/新建会话后),抽此消重。
@@ -103,10 +117,14 @@ export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, p
     log("  复位后首页问候标题未就绪,开始分层自愈");
     // 分层自愈,从「快且无害」到「慢/有副作用」递增,每招后重探一次,先救回先放行:
     //   ①页面层 ESC(关网页模态/浮层,快、无害)②OS 级 ESC(关系统窗,powershell 冷启动约数秒)
-    //   ③点侧栏新建会话(开干净会话,有副作用)。ESC 排在开新会话前(无副作用)。
+    //   ③点侧栏主导航「首页」(切回首页 Tab,无副作用——卡在其它 Tab/详情时最贴合人工纠偏)
+    //   ④再点一次主导航「首页」(第一次可能落在过渡态/只收起了面板,补一击;仍无副作用)
+    //   ⑤点侧栏新建会话(开干净会话,有副作用兜底)。无副作用的排在有副作用的开新会话前。
     const heals = [
       { label: "页面层 ESC", run: () => tryGuiHeal(gui, "pressEscapePage", "按页面层 ESC 关网页弹窗/浮层", log) },
       { label: "OS 级 ESC", run: () => tryGuiHeal(gui, "pressEscapeOs", "按 OS 级 ESC 关系统窗(如文件资源管理器)", log) },
+      { label: "点首页导航", run: () => clickNavHome(gui, log).then(Boolean) },
+      { label: "再点首页导航", run: () => clickNavHome(gui, log).then(Boolean) },
       { label: "新建会话", run: () => clickNewConversation(gui, log).then(Boolean) },
     ];
     const reprobeTimeout = Math.max(1000, Math.floor(readyTimeout / 3));
