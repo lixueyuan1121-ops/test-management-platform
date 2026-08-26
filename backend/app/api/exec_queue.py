@@ -29,19 +29,36 @@ router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 
-def _get_runner_platform(db: Session, runner_id: str) -> str | None:
-    """取 runner 设备的 platform；若未登记（旧 runner/未注册设备）返回 None 不阻塞。"""
-    rd = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).first()
+def _get_runner_platform(db: Session, runner_id: str, owner_id: int | None = None) -> str | None:
+    """取 runner 设备的 platform；若未登记（旧 runner/未注册设备）返回 None 不阻塞。
+
+    优先按 (runner_id, owner_id) 精确匹配当前用户的设备；若 owner_id 未传则全局首条兜底，
+    但此时只在明确移动端时才参与校验（见 _check_platform），避免跨用户同名设备误判。
+    """
+    q = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id)
+    if owner_id is not None:
+        rd = q.filter(RunnerDevice.owner_id == owner_id).first()
+        if rd:
+            return rd.platform
+    # 兜底：全局找同名设备（可能跨用户）；只返回明确移动端值，web 统一视为不阻塞
+    rd = q.first()
     return rd.platform if rd else None
 
 
-def _check_platform(runner_id: str, tc_platform: str, db: Session) -> None:
-    """派单前校验 runner 平台 vs 用例平台；平台不匹配时拒绝（400）。
+def _check_platform(runner_id: str, tc_platform: str, db: Session, owner_id: int | None = None) -> None:
+    """派单前校验 runner 平台 vs 用例平台；仅在双方均为移动端且不一致时拒绝。
 
-    未登记设备（平台未知）不阻塞——旧数据/外部 runner 保持向后兼容。
+    规则：
+    - 未登记设备（rd_platform=None）→ 不阻塞（旧 runner/外部 runner 向后兼容）
+    - 任一方为 web → 不阻塞（存量 PC 用例默认 web，不影响现有 PC 端流程）
+    - 双方都是移动端（android/ios）且不同 → 400 拒绝（如 android 用例发给 ios 设备）
     """
-    rd_platform = _get_runner_platform(db, runner_id)
-    if rd_platform is not None and rd_platform != tc_platform:
+    rd_platform = _get_runner_platform(db, runner_id, owner_id)
+    if rd_platform is None:
+        return   # 未登记设备，不阻塞
+    if rd_platform == "web" or tc_platform == "web":
+        return   # 任一方为 PC/Web，不阻塞
+    if rd_platform != tc_platform:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             detail=f"用例平台({tc_platform})与执行机平台({rd_platform})不匹配，请选择同平台设备",
@@ -169,7 +186,7 @@ def enqueue(
                 detail=f"清单项 {cid} 对应用例为『人工/不可自动化(manual)』,不能下发到执行机",
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
-        _check_platform(body.runner, tc_platform, db)
+        _check_platform(body.runner, tc_platform, db, owner_id=user.id)
         row = ExecRun(
             checklist_item_id=it.id,
             test_case_id=it.test_case_id,
@@ -217,7 +234,7 @@ def enqueue_cases(
                 detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
-        _check_platform(body.runner, tc_platform, db)
+        _check_platform(body.runner, tc_platform, db, owner_id=user.id)
 
     created = []
     batch_id = _new_batch_id()   # 回归批次号,该批所有 run 共享(结果页按批汇总)
