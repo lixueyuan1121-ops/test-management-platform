@@ -57,6 +57,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "expected": tc.expected,
         "priority": tc.priority,
         "exec_kind": getattr(tc, "exec_kind", "gui"),
+        "platform": getattr(tc, "platform", "web"),
         "provider": getattr(tc, "provider", "claude"),
         "kind_reason": kind_reason,
         "selector_fix": sel_fix,            # True=仅补选择器即可自动化(前端据此显标签/筛选)
@@ -333,6 +334,7 @@ def list_cases(
     review_status: ReviewStatus | None = Query(None),
     category: str | None = Query(None),
     exec_kind: str | None = Query(None),
+    platform: str | None = Query(None),
     provider: str | None = Query(None),
     selector_fix: bool | None = Query(None),
     page: str | None = Query(None),
@@ -363,6 +365,11 @@ def list_cases(
             kinds = [k.strip() for k in exec_kind.split(",") if k.strip()]
             if kinds:
                 q = q.filter(TestCase.exec_kind.in_(kinds))
+        if platform:
+            # platform 支持逗号分隔多值(如 android,ios):按并集过滤。
+            plats = [p.strip() for p in platform.split(",") if p.strip()]
+            if plats:
+                q = q.filter(TestCase.platform.in_(plats))
         if provider:
             q = q.filter(TestCase.provider == provider)
         if selector_fix:
@@ -388,7 +395,7 @@ def list_cases(
         db.query(
             TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
             TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
-            TestCase.priority, TestCase.exec_kind, TestCase.provider, TestCase.kind_reason,
+            TestCase.priority, TestCase.exec_kind, TestCase.platform, TestCase.provider, TestCase.kind_reason,
             TestCase.page, TestCase.is_regression,
             TestCase.adopted, TestCase.review_status, TestCase.reviewed_at, TestCase.created_at,
         )
