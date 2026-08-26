@@ -15,7 +15,8 @@
 //   PNG Buffer 挂在该步 shotBuf。runner 负责把 shotBuf 逐张上传换成 URL(step-executor 不碰网络)。
 
 const DETERMINISTIC = new Set([
-  "connect", "click", "hover", "fill", "wait_for", "wait_response", "get_text", "screenshot", "goto",
+  "connect", "click", "hover", "fill", "type", "press",
+  "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible", "assert_absent", "judge",
 ]);
 
@@ -69,6 +70,12 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         case "click": { const r = await gui.click(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "hover": { const r = await gui.hover(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "fill": { const r = await gui.fill({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        // type: 逐字符追加输入，不清空原有内容。先 click 聚焦元素，再模拟键盘打字。
+        // 用于：在已有内容末尾追加、或对 fill 不兼容的富文本组件输入。
+        case "type": { const r = await gui.type({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        // press: 向目标元素（或全局页面）发送单个按键（如 End / Home / Enter / Escape / Tab）。
+        // target 有值时先 click 聚焦再按键；用 args.key_name 指定按键名。
+        case "press": { const r = await gui.pressKey({ ...target, key_name: args.key_name }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_response": {
           const r = await gui.waitResponse({ timeout_ms: args.timeout_ms });

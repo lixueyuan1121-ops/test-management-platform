@@ -375,6 +375,33 @@ export function createGuiCore(opts = {}) {
       }
       return { filled: args.key || args.selector, via: hit };
     },
+    // type —— 逐字符追加输入（不清空原有内容）。
+    // 先 click 聚焦目标；支持 key/selector 定位；文本末尾不发送，只模拟键盘打字。
+    // 适用于：需要在输入框现有内容后追加文本、或对 fill 兼容性差的富文本组件二次输入。
+    async type(args) {
+      await ensureConnected();
+      const { loc, hit } = await resolveTarget(args);
+      await loc.click({ timeout: DEFAULT_TIMEOUT });   // 聚焦，光标保留原位（通常末尾）
+      await page.keyboard.type(String(args.text ?? ""));
+      return { typed: args.key || args.selector, via: hit };
+    },
+    // pressKey —— 向目标元素（或全局页面）发送单个按键（如 End / Home / Enter / Escape / Tab）。
+    // args.key_name: 必填，Playwright 按键名（如 "End"/"Home"/"Enter"/"Escape"/"Tab"/"Control+A"）。
+    // args.target_key / args.selector: 可选；有值时先 click 聚焦再按键，无值时向全局页面发。
+    // 常与 type 配合：pressKey(End) → type(追加文字)，或 pressKey(Enter) 提交表单。
+    async pressKey(args) {
+      await ensureConnected();
+      const key = String(args.key_name || "");
+      if (!key) throw new Error("pressKey: 缺少 key_name（如 End / Enter / Escape）");
+      // 有定位目标时先聚焦；target_key 是选择器语义 key，selector 是 CSS/XPath。
+      if (args.target_key || args.selector) {
+        const targetArgs = args.target_key ? { key: args.target_key } : { selector: args.selector };
+        const { loc } = await resolveTarget(targetArgs);
+        await loc.click({ timeout: DEFAULT_TIMEOUT });
+      }
+      await page.keyboard.press(key);
+      return { pressed: key };
+    },
     // 页面层 ESC:page.keyboard 发 Escape,关网页模态/浮层/下拉(只作用于被测页面内部)。快、无害。
     // 复位自愈第一招:首页疑似被网页弹窗挡住时先按它清障再重探。
     async pressEscapePage() {
