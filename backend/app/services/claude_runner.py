@@ -264,7 +264,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    - 后端/接口行为若在界面上有可观察结果（如"创建后列表出现该项""删除后该项消失""出错时界面弹出某提示文案"），**优先设计成 gui/e2e**（在界面触发操作并断言界面结果），而不是判 api。
    - 只有确无界面入口可验证、且非主观感受时，才考虑 api/cli；连客观断言都给不出的，才判 manual。
 5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
-   - action 只能取：connect（第一步必须，连接客户端）、click、hover（鼠标悬停到元素，触发悬浮态）、fill、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - action 只能取：connect（第一步必须，连接客户端）、click、hover（鼠标悬停到元素，触发悬浮态）、fill、type（追加输入不清空）、press（发送按键如 End/Enter/Escape）、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、assert_absent、screenshot
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
    - **hover 用于"悬停才显示"的元素**（如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip）：先 hover 到承载元素，再 wait_for 等浮层出现，然后 click/assert；hover 本身不做断言
    - **wait_for 是"等某个元素出现"，必须带 target（key 或 selector）**——它不是纯计时等待；只想等异步结果（发消息/提交后等生成）用 wait_response，不要写没有 target 的 wait_for
@@ -346,7 +346,7 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 输出要求:
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
 2. 每步一个对象 {{action, target?, args?, desc}}:
-   - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、assert_absent、screenshot
    - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
    - **hover 用于"悬停才显示"的元素**(列表项 hover 出的更多/菜单按钮、tooltip):先 hover 承载元素→wait_for 等浮层→再 click/assert;hover 本身不断言
    - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
@@ -924,7 +924,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     return out
 
 
-_VALID_ACTIONS = {"connect", "click", "hover", "fill", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot"}
+_VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot"}
 
 # gui/e2e 因"选择器未注册"降级 manual 时的 kind_reason 前缀标识。
 # 前端据此前缀渲染「补选择器可自动化」标签(见 CaseLibrary.vue),故改此串须同步前端。
