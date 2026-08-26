@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     AI_ENABLED: bool = True
     CLAUDE_BIN: str = ""            # 空则运行时 shutil.which("claude")
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
-    AI_TIMEOUT_SECONDS: int = 600  # 单次生成硬超时(P3 后 prompt 大、需产 script;配合 SSE 心跳防网关空闲切断)
+    AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
     AI_MAX_CONCURRENCY: int = 2    # 全局并发上限（控成本，超出即拒绝）
     # gui/e2e 用例生成时注入的语义选择器注册表路径（runner 侧 gui-mcp/selectors.json）。
     # 空则用默认：相对本仓库 tools/qalab-runner/gui-mcp/selectors.json。让 AI 只用库内 key 写 script。
