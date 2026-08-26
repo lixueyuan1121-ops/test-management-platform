@@ -394,3 +394,36 @@ def ensure_eval_run_target_device() -> None:
     if "target_device" not in _columns("eval_run"):
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_device VARCHAR(64) NULL"))
+
+
+def ensure_platform_columns() -> None:
+    """selector_key / test_case / runner_device 三表补 platform 列（APP 端支持）。
+
+    platform 值域：web(PC端) / android / ios。默认 web 保证所有存量数据语义不变。
+    新表由 create_all 自带，老库在此补列（幂等：ADD 前先探列）。
+    同步建索引 idx_selkey_platform / idx_testcase_platform / idx_runnerdev_platform
+    便于按平台筛选选择器、用例、设备。
+    """
+    sk_cols = _columns("selector_key")
+    if sk_cols and "platform" not in sk_cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE selector_key ADD COLUMN platform VARCHAR(16) NOT NULL DEFAULT 'web'"
+            ))
+        _ensure_index("selector_key", "idx_selkey_platform", "platform")
+
+    tc_cols = _columns("test_case")
+    if tc_cols and "platform" not in tc_cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE test_case ADD COLUMN platform VARCHAR(16) NOT NULL DEFAULT 'web'"
+            ))
+        _ensure_index("test_case", "idx_testcase_platform", "platform")
+
+    rd_cols = _columns("runner_device")
+    if rd_cols and "platform" not in rd_cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE runner_device ADD COLUMN platform VARCHAR(16) NOT NULL DEFAULT 'web'"
+            ))
+        _ensure_index("runner_device", "idx_runnerdev_platform", "platform")

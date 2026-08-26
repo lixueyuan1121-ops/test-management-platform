@@ -16,6 +16,11 @@
       <el-table :data="devices" v-loading="loading" size="small" border stripe empty-text="还没有登记设备,点右上角『注册设备』">
         <el-table-column prop="runner_id" label="runner_id" min-width="140" />
         <el-table-column prop="name" label="设备名" min-width="140" />
+        <el-table-column label="平台" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="PLATFORM_TYPE[row.platform || 'web']" size="small" effect="plain">{{ PLATFORM_LABEL[row.platform || 'web'] }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="token" min-width="140">
           <template #default="{ row }"><span class="mono">{{ row.token }}</span></template>
         </el-table-column>
@@ -39,6 +44,14 @@
         </el-form-item>
         <el-form-item label="设备名" required>
           <el-input v-model="dialog.name" placeholder="如 我的 MacBook" />
+        </el-form-item>
+        <el-form-item label="平台" required>
+          <el-radio-group v-model="dialog.platform">
+            <el-radio-button value="web">PC/Web</el-radio-button>
+            <el-radio-button value="android">Android</el-radio-button>
+            <el-radio-button value="ios">iOS</el-radio-button>
+          </el-radio-group>
+          <div class="form-hint">决定该设备能执行哪类用例（web=PC端 GUI/E2E）</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -67,9 +80,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, CopyDocument } from '@element-plus/icons-vue'
 import { listMyDevices, registerDevice, resetDeviceToken, deleteDevice } from '@/api'
 
+const PLATFORM_LABEL = { web: 'PC/Web', android: 'Android', ios: 'iOS' }
+const PLATFORM_TYPE = { web: '', android: 'success', ios: 'warning' }
+
 const devices = ref([])
 const loading = ref(false)
-const dialog = reactive({ visible: false, runner_id: '', name: '', saving: false })
+const dialog = reactive({ visible: false, runner_id: '', name: '', platform: 'web', saving: false })
 const tokenDlg = reactive({ visible: false, token: '' })
 
 async function load() {
@@ -81,6 +97,7 @@ onMounted(load)
 function openRegister() {
   dialog.runner_id = ''
   dialog.name = ''
+  dialog.platform = 'web'
   dialog.visible = true
 }
 
@@ -88,7 +105,7 @@ async function doRegister() {
   if (!dialog.runner_id.trim() || !dialog.name.trim()) { ElMessage.warning('请填写 runner_id 与设备名'); return }
   dialog.saving = true
   try {
-    const d = await registerDevice(dialog.runner_id.trim(), dialog.name.trim())
+    const d = await registerDevice(dialog.runner_id.trim(), dialog.name.trim(), dialog.platform)
     dialog.visible = false
     showToken(d.token)
     await load()
@@ -140,4 +157,5 @@ function fmtTime(s) {
 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #5a6b7b; }
 .token-box { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #f5f7fa; border-radius: 6px; }
 .token-text { word-break: break-all; flex: 1; }
+.form-hint { font-size: 12px; color: #909399; margin-top: 4px; }
 </style>

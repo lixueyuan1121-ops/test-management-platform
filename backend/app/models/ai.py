@@ -63,6 +63,9 @@ class TestCase(Base):
     # 自动化执行类型：gui/api/cli/e2e/manual（下发到 runner 时决定 Claude Code 怎么跑）。
     # 缺省 gui（被测客户端主要是 Electron GUI）。老库由 migrate.ensure_testcase_columns 补列。
     exec_kind: Mapped[str] = mapped_column(String(8), default="gui", server_default="gui")
+    # 平台：web(PC端) / android / ios。默认 web 保持 PC 端存量数据不变。
+    # 控制用例派给哪类 runner；与 exec_kind 正交（web+gui、android+gui 都合法）。
+    platform: Mapped[str] = mapped_column(String(16), default="web", server_default="web", index=True)
     # AI 判定该 kind 的理由（供人工复核参考；P2 由生成侧填充）
     kind_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 结构化可执行步骤 JSON（步骤 DSL；P3 由生成侧填充，runner 确定性执行）。存 Text-JSON 兼容 MySQL 5.6。

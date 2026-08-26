@@ -18,6 +18,9 @@
             <el-select v-model="execKindFilter" multiple collapse-tags placeholder="执行类型(可多选)" size="small" clearable style="min-width:150px;max-width:240px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
+            <el-select v-model="platformFilter" placeholder="平台" size="small" clearable style="width:110px" @change="reload">
+              <el-option v-for="p in PLATFORMS" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
             <el-input v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px" @keyup.enter="reload" @clear="reload" />
           </div>
         </div>
@@ -117,6 +120,11 @@ const EXEC_KINDS = [
   { value: 'gui', label: 'GUI' }, { value: 'api', label: 'API' }, { value: 'cli', label: 'CLI' },
   { value: 'e2e', label: 'E2E' }, { value: 'manual', label: '人工' },
 ]
+const PLATFORMS = [
+  { value: 'web', label: 'PC/Web' },
+  { value: 'android', label: 'Android' },
+  { value: 'ios', label: 'iOS' },
+]
 
 const projects = ref([])
 const pid = ref(null)
@@ -125,6 +133,7 @@ const pageOptions = ref([])        // 页面候选:项目选择器已有 page
 const taskId = ref(null)           // 关联任务筛选(按需求维度挑回归用例)
 const tasks = ref([])              // 任务候选(TaskPicker 用,随项目切换拉取)
 const execKindFilter = ref([])    // 执行类型筛选(多选,可同时选 gui+e2e)
+const platformFilter = ref(null)   // 平台筛选(null=全部):web/android/ios
 const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
@@ -163,6 +172,7 @@ async function onProjectChange() {
   pageOptions.value = []
   taskId.value = null
   tasks.value = []
+  platformFilter.value = null
   if (!pid.value) { rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
   // 页面候选:从项目选择器(共享域)派生 distinct page;任务候选供关联任务筛选。均失败不影响列表。
@@ -189,6 +199,7 @@ async function load() {
       page: pageFilter.value || undefined,
       task_id: taskId.value || undefined,
       exec_kind: execKindFilter.value.length ? execKindFilter.value.join(',') : undefined,
+      platform: platformFilter.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,

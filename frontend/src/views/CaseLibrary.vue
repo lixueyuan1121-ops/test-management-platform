@@ -20,6 +20,9 @@
             <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
+            <el-select v-model="platformFilter" placeholder="平台" size="small" clearable style="width:110px" @change="reload">
+              <el-option v-for="p in PLATFORMS" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
             <el-select
               v-if="pageOptions.length" v-model="pageFilter" placeholder="页面" size="small"
               clearable filterable style="width:130px" @change="reload"
@@ -236,6 +239,11 @@ const EXEC_KINDS = [
   { value: 'e2e', label: 'E2E' },
   { value: 'manual', label: '人工' },
 ]
+const PLATFORMS = [
+  { value: 'web', label: 'PC/Web' },
+  { value: 'android', label: 'Android' },
+  { value: 'ios', label: 'iOS' },
+]
 
 const app = useAppStore()
 const router = useRouter()
@@ -251,6 +259,7 @@ const keyword = ref('')
 const rows = ref([])
 const loading = ref(false)
 const execKindFilter = ref(null)   // 执行类型筛选(null=全部),下推后端
+const platformFilter = ref(null)   // 平台筛选(null=全部):web/android/ios
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
@@ -360,6 +369,7 @@ async function load() {
       review_status: reviewStatus.value || undefined,
       category: category.value || undefined,
       exec_kind: execKindFilter.value || undefined,
+      platform: platformFilter.value || undefined,
       page: pageFilter.value || undefined,
       keyword: keyword.value.trim() || undefined,
       limit: pageSize.value,

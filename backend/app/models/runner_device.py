@@ -29,6 +29,8 @@ class RunnerDevice(Base):
     )
     runner_id: Mapped[str] = mapped_column(String(64), index=True)   # 下发写入 exec_run.runner;runner .env 的 RUNNER_ID
     name: Mapped[str] = mapped_column(String(128))                   # 展示名(如「我的 Mac」)
+    # platform: web(PC端) / android / ios。标识该执行机能运行哪类用例，派单时做匹配检查。
+    platform: Mapped[str] = mapped_column(String(16), default="web", server_default="web", index=True)
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True)  # 专属长期 token(runner 鉴权)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 最近一次该设备 runner 拉取时间
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

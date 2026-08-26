@@ -234,6 +234,14 @@
         <el-form-item label="key" required>
           <el-input v-model="dialog.key" :disabled="!!dialog.id" placeholder="语义 key，如 login_button" />
         </el-form-item>
+        <el-form-item label="平台">
+          <el-radio-group v-model="dialog.platform">
+            <el-radio-button value="web">PC/Web</el-radio-button>
+            <el-radio-button value="android">Android</el-radio-button>
+            <el-radio-button value="ios">iOS</el-radio-button>
+          </el-radio-group>
+          <div class="form-hint">该 key 适用的平台；PC 端留 PC/Web，移动端按实际选择</div>
+        </el-form-item>
         <el-form-item label="frame">
           <el-input v-model="dialog.frame" placeholder="shell / vm / auto / url:<iframe host>，缺省 auto" />
         </el-form-item>
@@ -428,15 +436,15 @@ function fmtTime(s) {
 }
 
 // ---- 新增 / 编辑 ----
-const dialog = reactive({ visible: false, id: null, key: '', frame: '', page: '', desc: '', candidatesText: '[]', saving: false })
+const dialog = reactive({ visible: false, id: null, key: '', frame: '', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false })
 
 function openCreate() {
-  Object.assign(dialog, { id: null, key: '', frame: 'auto', page: '', desc: '', candidatesText: '[]', saving: false, visible: true })
+  Object.assign(dialog, { id: null, key: '', frame: 'auto', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false, visible: true })
 }
 function openEdit(row) {
   Object.assign(dialog, {
     id: row.id, key: row.key, frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
-    candidatesText: JSON.stringify(row.candidates || [], null, 2), saving: false, visible: true,
+    candidatesText: JSON.stringify(row.candidates || [], null, 2), platform: row.platform || 'web', saving: false, visible: true,
   })
 }
 
@@ -455,10 +463,10 @@ async function submit() {
   dialog.saving = true
   try {
     if (dialog.id) {
-      await patchSelector(dialog.id, { frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
+      await patchSelector(dialog.id, { platform: dialog.platform, frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
     } else {
       await createSelector({
-        project_id: pid.value, sub_product: subProduct.value, key: dialog.key.trim(),
+        project_id: pid.value, sub_product: subProduct.value, platform: dialog.platform, key: dialog.key.trim(),
         frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates,
       })
     }
@@ -779,7 +787,7 @@ async function submitAddAsKey() {
   try {
     if (add.mode === 'create') {
       await createSelector({
-        project_id: pid.value, sub_product: subProduct.value, key: add.key.trim(),
+        project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: add.key.trim(),
         frame: add.frame || 'auto', page: add.page || '', desc: add.desc.trim(), candidates: [add.cand],
       })
       ElMessage.success('已新建 key')

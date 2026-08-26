@@ -22,6 +22,8 @@ class SelectorKey(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
     sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    # platform: web(PC端) / android / ios。默认 web 保持存量数据语义不变。
+    platform: Mapped[str] = mapped_column(String(16), default="web", server_default="web", index=True)
     key: Mapped[str] = mapped_column(String(64))
     frame: Mapped[str] = mapped_column(String(128), default="auto", server_default="auto")
     page: Mapped[str] = mapped_column(String(64), default="", server_default="")

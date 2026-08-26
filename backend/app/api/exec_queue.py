@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
 from app.db.session import get_db
-from app.models import ChecklistItem, ExecRun, TestCase, User
+from app.models import ChecklistItem, ExecRun, RunnerDevice, TestCase, User
 from app.schemas.common import ok
 from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn, ExecCorrectIn
 
@@ -29,9 +29,23 @@ router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 
-def _new_batch_id() -> str:
-    """一次 enqueue 的批次号:YYYYmmdd-HHMMSS-<4hex>,人读友好 + 同批唯一。"""
-    return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+def _get_runner_platform(db: Session, runner_id: str) -> str | None:
+    """取 runner 设备的 platform；若未登记（旧 runner/未注册设备）返回 None 不阻塞。"""
+    rd = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).first()
+    return rd.platform if rd else None
+
+
+def _check_platform(runner_id: str, tc_platform: str, db: Session) -> None:
+    """派单前校验 runner 平台 vs 用例平台；平台不匹配时拒绝（400）。
+
+    未登记设备（平台未知）不阻塞——旧数据/外部 runner 保持向后兼容。
+    """
+    rd_platform = _get_runner_platform(db, runner_id)
+    if rd_platform is not None and rd_platform != tc_platform:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"用例平台({tc_platform})与执行机平台({rd_platform})不匹配，请选择同平台设备",
+        )
 
 
 # test_case.exec_kind（若存在）→ ExecKind；缺省 gui。exec_kind 列由 migrate 补，
@@ -154,6 +168,8 @@ def enqueue(
                 status.HTTP_400_BAD_REQUEST,
                 detail=f"清单项 {cid} 对应用例为『人工/不可自动化(manual)』,不能下发到执行机",
             )
+        tc_platform = getattr(tc, "platform", "web") or "web"
+        _check_platform(body.runner, tc_platform, db)
         row = ExecRun(
             checklist_item_id=it.id,
             test_case_id=it.test_case_id,
@@ -200,6 +216,8 @@ def enqueue_cases(
                 status.HTTP_400_BAD_REQUEST,
                 detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
             )
+        tc_platform = getattr(tc, "platform", "web") or "web"
+        _check_platform(body.runner, tc_platform, db)
 
     created = []
     batch_id = _new_batch_id()   # 回归批次号,该批所有 run 共享(结果页按批汇总)

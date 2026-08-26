@@ -242,6 +242,7 @@ CREATE TABLE `test_case` (
   `review_status` VARCHAR(16) NOT NULL DEFAULT 'pending',
   `reviewed_at` DATETIME DEFAULT NULL,
   `exec_kind` VARCHAR(8) NOT NULL DEFAULT 'gui',
+  `platform` VARCHAR(16) NOT NULL DEFAULT 'web',
   `kind_reason` TEXT NULL,
   `script` TEXT NULL,
   `last_gen_error` TEXT NULL,
@@ -393,6 +394,7 @@ CREATE TABLE `runner_device` (
   `owner_id` BIGINT NOT NULL,
   `runner_id` VARCHAR(64) NOT NULL,
   `name` VARCHAR(128) NOT NULL,
+  `platform` VARCHAR(16) NOT NULL DEFAULT 'web',
   `token` VARCHAR(128) NOT NULL,
   `last_seen_at` DATETIME DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -400,6 +402,7 @@ CREATE TABLE `runner_device` (
   UNIQUE KEY `uk_owner_runner` (`owner_id`,`runner_id`),
   UNIQUE KEY `uk_device_token` (`token`),
   KEY `idx_device_owner` (`owner_id`),
+  KEY `idx_runnerdev_platform` (`platform`),
   CONSTRAINT `fk_device_owner` FOREIGN KEY (`owner_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -428,6 +431,7 @@ CREATE TABLE IF NOT EXISTS `selector_key` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `project_id` INT NOT NULL,
   `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `platform` VARCHAR(16) NOT NULL DEFAULT 'web',
   `key` VARCHAR(64) NOT NULL,
   `frame` VARCHAR(128) NOT NULL DEFAULT 'auto',
   `page` VARCHAR(64) NOT NULL DEFAULT '',
@@ -437,7 +441,8 @@ CREATE TABLE IF NOT EXISTS `selector_key` (
   `updated_at` DATETIME DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_selkey_scope_key` (`project_id`,`sub_product`,`key`),
-  KEY `idx_selkey_scope` (`project_id`,`sub_product`)
+  KEY `idx_selkey_scope` (`project_id`,`sub_product`),
+  KEY `idx_selkey_platform` (`platform`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 每个 (project_id, sub_product) 域的 vm_iframe 配置
