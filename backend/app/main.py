@@ -73,6 +73,9 @@ def init_db() -> None:
             ))
             db.commit()
             logger.info("已创建反馈测试专用项目: %s", settings.FEEDBACK_PROJECT_CODE)
+        # 每个项目 ensure 一个「线上回归」常驻任务（幂等；反馈专用项目跳过）
+        from app.services.regression_task import ensure_all_regression_tasks
+        ensure_all_regression_tasks(db)
     finally:
         db.close()
 

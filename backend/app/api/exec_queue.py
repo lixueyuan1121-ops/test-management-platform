@@ -29,6 +29,11 @@ router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 
+def _new_batch_id() -> str:
+    """一次 enqueue 的批次号:YYYYmmdd-HHMMSS-<4hex>,人读友好 + 同批唯一。"""
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+
+
 def _get_runner_platform(db: Session, runner_id: str, owner_id: int | None = None) -> str | None:
     """取 runner 设备的 platform；若未登记（旧 runner/未注册设备）返回 None 不阻塞。
 

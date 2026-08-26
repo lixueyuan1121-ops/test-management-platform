@@ -430,6 +430,9 @@ def bulk_set_regression(
          .filter(TestCase.id.in_(ids), TestCase.project_id == project_id)
          .update({TestCase.is_regression: body.is_regression}, synchronize_session=False))
     db.commit()
+    # 同步「线上回归任务 ↔ 用例」关联（标记回归→挂上，取消→摘除）
+    from app.services.regression_task import sync_regression_link
+    sync_regression_link(db, ids, body.is_regression)
     return ok({"updated": n, "is_regression": body.is_regression})
 
 
@@ -571,6 +574,10 @@ def review_testcase(
 
     db.commit()
     db.refresh(tc)
+    # 若本次改了回归标记，同步「线上回归任务 ↔ 用例」关联
+    if body.is_regression is not None:
+        from app.services.regression_task import sync_regression_link
+        sync_regression_link(db, [tc.id], body.is_regression)
     return ok(_to_case_out(tc))
 
 

@@ -77,6 +77,7 @@ CREATE TABLE `task` (
   `assigned_date` DATE NOT NULL,
   `status` ENUM('pending','testing','blocked','online','closed') NOT NULL DEFAULT 'pending',
   `status_locked` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_regression_task` TINYINT(1) NOT NULL DEFAULT 0,
   `online_at` DATETIME DEFAULT NULL,
   `closed_at` DATETIME DEFAULT NULL,
   `close_note` TEXT,
