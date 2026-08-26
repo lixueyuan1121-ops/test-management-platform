@@ -136,8 +136,8 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
 
 
 @router.get("/overview")
-def devices_overview(db: Session = Depends(get_db), _: User = Depends(require_platform_admin)):
-    """全平台设备只读看板聚合(仅平台管理员)。
+def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """全平台设备只读看板聚合(所有注册用户可查看)。
 
     一次性返回:全量设备 + owner + 在线状态 + 各状态 exec_run 计数 + 今日终态 + 执行中明细。
     前端定时轮询本端点渲染看板(无任何写操作)。
