@@ -3,11 +3,11 @@
 // ⚠️ value 必须与客户端页面下拉选项的真实文案一致——执行器按文本匹配点选
 // (见 tools/qalab-runner/eval config.platform 选择器段与 dialog-runner._applyDialogOptions)。
 
-// 对话模式:页面选项文案为「智能模式/计划模式/目标模式」,label 补口语化说明便于选择
+// 对话模式:值=客户端页面下拉选项的真实文案(2026-08 现网确认),执行器按文本一字不差匹配点选
 export const CHAT_MODES = [
-  { value: '智能模式', label: '智能模式（边想边做）' },
-  { value: '计划模式', label: '计划模式（先规划，再执行）' },
-  { value: '目标模式', label: '目标模式（盯住目标做到底）' },
+  { value: '边想边做', label: '边想边做' },
+  { value: '先规划，再执行', label: '先规划，再执行' },
+  { value: '盯住目标做到底', label: '盯住目标做到底' },
 ]
 
 // 思考深度:值即页面选项文案
