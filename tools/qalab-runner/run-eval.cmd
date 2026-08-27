@@ -17,4 +17,10 @@ if not exist "node_modules" (
   exit /b 1
 )
 echo [run-eval] starting 对话测评 executor (config from ..\.env)
+REM 退出码 75 = 执行器自更新完成(平台 /api/runner/bundle 包已解压覆盖),循环重启进新代码
+:run_loop
 node "%EVAL_DIR%\bin\ai-eval.js" platform %*
+if %errorlevel%==75 (
+  echo [run-eval] executor updated, restarting
+  goto run_loop
+)

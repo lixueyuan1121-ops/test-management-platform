@@ -750,6 +750,33 @@ program
     const client = new PlatformClient(config.platformApi || {}); // 平台对接凭据（缺 BASE_URL/RUNNER_TOKEN 即抛错，快速失败）
     const pollMs = (config.platformApi && config.platformApi.pollMs) || 5000;
 
+    // —— 自更新:与功能测试 runner 共用 /api/runner/bundle 通道(包内已含 eval 源码)——
+    // 启动时检查一次;常驻轮询中每 30 分钟在两轮之间再查(不打断执行中的任务)。
+    // 有更新 → self-update 解压覆盖 tools/qalab-runner 根(eval/ 为其子目录) → exit 75,
+    // 由 run-eval.cmd/sh 外层循环重启进新代码。失败安全:检查/下载失败只告警不影响执行。
+    const UPDATE_EVERY_MS = 30 * 60 * 1000;
+    let lastUpdateCheck = 0;
+    const checkSelfUpdate = async () => {
+      lastUpdateCheck = Date.now();
+      const api = config.platformApi || {};
+      if (!api.baseUrl || !api.token) return;
+      try {
+        // 本文件是 CommonJS、self-update.mjs 是 ESM:动态 import,Windows 路径须转 file:// URL
+        const { pathToFileURL } = require('node:url');
+        const mod = await import(pathToFileURL(path.resolve(__dirname, '..', '..', 'self-update.mjs')).href);
+        const r = await mod.selfUpdate({
+          baseUrl: api.baseUrl, token: api.token,
+          dir: path.resolve(__dirname, '..', '..'),
+          log: (m) => logger.info(m),
+        });
+        if (r === 'updated') {
+          logger.info('[update] eval 执行器已更新,退出码 75 交由 run-eval 脚本重启');
+          process.exit(75);
+        }
+      } catch (e) { logger.warn(`[update] 自更新检查失败(忽略): ${e.message}`); }
+    };
+    await checkSelfUpdate();
+
     const runOnce = async () => {
       const pending = await client.fetchPending(parseInt(opts.limit, 10) || 5);
       if (!pending || !pending.length) { logger.info('平台无待执行任务'); return 0; }
@@ -901,6 +928,8 @@ program
     logger.info('平台模式常驻轮询(Ctrl-C 退出)...');
     for (;;) {
       try { await runOnce(); } catch (e) { logger.error(`轮询异常: ${e.message}`); }
+      // 两轮执行之间检查更新(执行中不查,绝不打断任务);有新版本 → exit 75 重启进新代码
+      if (Date.now() - lastUpdateCheck > UPDATE_EVERY_MS) await checkSelfUpdate();
       await new Promise(r => setTimeout(r, pollMs));
     }
   });

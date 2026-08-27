@@ -6,4 +6,12 @@
 set -e
 cd "$(dirname "$0")/eval"
 echo "[run-eval] starting 对话测评 executor (config from ../.env)"
-node bin/ai-eval.js platform "$@"
+# 退出码 75 = 执行器自更新完成(平台 /api/runner/bundle 包已解压覆盖),循环重启进新代码
+while true; do
+  set +e
+  node bin/ai-eval.js platform "$@"
+  code=$?
+  set -e
+  [ "$code" = "75" ] || exit "$code"
+  echo "[run-eval] executor updated, restarting"
+done
