@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import String, Integer, Text, DateTime, UniqueConstraint, Index
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -61,7 +62,10 @@ class ProbeRequest(Base):
     runner: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
     params: Mapped[str] = mapped_column(Text, default="{}")
-    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # result 存整页探测结果 JSON（groups×elements×candidates）。真实复杂页面单帧可达数百元素，
+    # JSON 常 200KB+，远超 MySQL TEXT 的 64KB 上限（会截断成坏 JSON）→ MySQL 用 LONGTEXT；
+    # SQLite 的 TEXT 无长度限制，variant 只对 mysql 生效。老库由 migrate.ensure_probe_result_longtext 放宽。
+    result: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=True)
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     screenshot_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)

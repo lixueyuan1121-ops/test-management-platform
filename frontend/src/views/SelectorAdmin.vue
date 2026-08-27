@@ -63,8 +63,8 @@
       <el-empty v-if="!probe.done && !probe.running" description="选择在线设备后点「探测」，会扫描该设备当前页面的可交互元素" :image-size="80" />
       <div v-else-if="probe.running" class="probe-loading" v-loading="true" element-loading-text="探测中，请在设备上停留在目标页面…" style="min-height:120px" />
 
-      <!-- discover 结果：按 shell/vm/iframe 分组；组内 新增/可更新 排前、已存在垫底，可一键隐藏已存在 -->
-      <template v-else-if="probe.mode === 'discover' && probe.result">
+      <!-- discover/box 结果：按 shell/vm/iframe 分组；组内 新增/可更新 排前、已存在垫底，可一键隐藏已存在 -->
+      <template v-else-if="(probe.mode === 'discover' || probe.mode === 'box') && probe.result">
         <div v-if="!enrichedGroups.length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
         <template v-else>
           <div v-if="probe.screenshotUrl && shotBoxes.length" class="shot-panel">
@@ -86,6 +86,8 @@
                   class="shot-overlay" :class="{ 'box-selecting': boxMode }"
                   @mousedown="onBoxDown" @mousemove="onBoxMove" @mouseup="onBoxUp" @mouseleave="onBoxUp"
                 >
+                  <!-- 框选提交后:标注本次框选区(醒目高亮),让用户看清"选了这里 → 命中下面高亮的元素框" -->
+                  <div v-if="probe.mode === 'box' && selectedRegionStyle" class="box-selected-region" :style="selectedRegionStyle"></div>
                   <div
                     v-for="box in shotBoxes" :key="box.uid"
                     class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx }]"
@@ -560,6 +562,7 @@ async function runProbe(mode, extraParams = {}) {
   if (!pid.value || !probe.runner) { ElMessage.warning('请先选择项目和在线设备'); return }
   stopPoll()
   probe.mode = mode
+  if (mode !== 'box') lastBox.value = null   // 非框选:清掉上次的框选标注
   probe.running = true
   probe.done = false
   probe.result = null
@@ -580,6 +583,14 @@ async function runProbe(mode, extraParams = {}) {
       stopPoll()
       probe.running = false; probe.done = true; probe.result = r.result || {}
       probe.screenshotUrl = r.screenshot_url || ''
+      // 成功/失败提示(尤其框选:让用户明确知道识别到没有、识别了几个)。
+      const n = (probe.result.groups || []).reduce((s, g) => s + (g.elements || []).length, 0)
+      if (mode === 'box') {
+        if (n) ElMessage.success(`框选识别到 ${n} 个元素，已在下方截图高亮标注(点框/点行可加为 key)`)
+        else ElMessage.warning('框内未识别到可交互元素,试试把框画大一点或换个区域')
+      } else if (mode === 'discover') {
+        ElMessage.success(`探测完成,共识别 ${n} 个元素`)
+      }
     } else if (r.status === 'failed') {
       stopPoll()
       probe.running = false; probe.done = true; probe.result = null
@@ -599,6 +610,7 @@ function onVerify() { runProbe('verify', { mode: 'verify' }) }
 const boxMode = ref(false)          // 框选模式开关
 const boxRect = ref(null)           // 拖拽中的矩形样式(overlay 百分比定位),null=未画
 let boxStart = null                 // 拖拽起点(overlay 内像素)
+const lastBox = ref(null)           // 上次提交的框选区(整页绝对坐标),供结果截图上标注"选中区"
 
 function toggleBoxMode() {
   if (!boxMode.value) {
@@ -645,7 +657,8 @@ function onBoxUp(e) {
     w: Math.round((pw / ow) * ps.w), h: Math.round((ph / oh) * ps.h),
   }
   boxMode.value = false; boxRect.value = null
-  runProbe('box', { bbox })
+  lastBox.value = bbox   // 记住框选区,结果截图上标注选中区
+  runProbe('box', { bbox, screenshot: true })   // 带截图:框内结果叠回整页图(同源 pageSize，坐标一致)
 }
 
 // ---- 探测元素 vs 已入库对比标识(#3)----
@@ -710,7 +723,7 @@ const keyIndex = computed(() => {
 // discover 结果按标识增强：每元素附 _status/_hitCands/_hitFrame；组内计数；排序 新增→可更新→已存在；可隐藏已存在。
 const STATUS_ORDER = { new: 0, update: 1, exists: 2, none: 3 }
 const enrichedGroups = computed(() => {
-  if (probe.mode !== 'discover' || !probe.result) return []
+  if ((probe.mode !== 'discover' && probe.mode !== 'box') || !probe.result) return []
   const kIdx = keyIndex.value
   return (probe.result.groups || []).map((g, gi) => {
     let els = (g.elements || []).map((el, ei) => {
@@ -765,6 +778,17 @@ const shotBoxes = computed(() => {
     }
   }
   return boxes
+})
+
+// 框选提交区的截图标注样式(整页绝对坐标 → 截图百分比,与 shotBoxes 同源 pageSize)。null=不画。
+const selectedRegionStyle = computed(() => {
+  const ps = probe.result?.pageSize
+  const b = lastBox.value
+  if (!ps || !ps.w || !ps.h || !b) return null
+  return {
+    left: `${(b.x / ps.w) * 100}%`, top: `${(b.y / ps.h) * 100}%`,
+    width: `${(b.w / ps.w) * 100}%`, height: `${(b.h / ps.h) * 100}%`,
+  }
 })
 
 // 表格行 class 高亮当前 hover 的元素；cell hover 设 hoverKey（框↔行双向联动）。
@@ -908,6 +932,9 @@ async function submitAddAsKey() {
 .shot-overlay.box-selecting { pointer-events: auto; cursor: crosshair; }
 .shot-overlay.box-selecting .el-box { pointer-events: none; }
 .box-select-rect { position: absolute; box-sizing: border-box; border: 2px dashed #e6a23c; background: rgba(230,162,60,.15); z-index: 5; pointer-events: none; }
+/* 框选提交区标注:聚光灯高亮"你选的这块"(overflow:hidden 把外扩遮罩裁在截图内)。z-index:0 垫底,
+   命中的元素框(el-box,DOM 在其后)叠加显示在上层,一眼看清"选了这里 → 识别到这几个元素" */
+.box-selected-region { position: absolute; box-sizing: border-box; border: 2px solid #409eff; background: rgba(64,158,255,.08); box-shadow: 0 0 0 9999px rgba(0,0,0,.14); border-radius: 3px; z-index: 0; pointer-events: none; }
 :deep(.el-table .row-hi) { background: #ecf5ff; }
 :deep(.el-table .row-match) { background: #fdf6ec; }
 :deep(.el-table .row-match td:first-child) { box-shadow: inset 3px 0 0 0 #e6a23c; }

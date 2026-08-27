@@ -336,6 +336,21 @@ def ensure_probe_screenshot_column() -> None:
             conn.execute(text("ALTER TABLE probe_request ADD COLUMN screenshot_path VARCHAR(255) NULL"))
 
 
+def ensure_probe_result_longtext() -> None:
+    """probe_request.result 放宽 TEXT→LONGTEXT。
+
+    真实复杂页面(如 namiclaw 业务 iframe)单帧可交互元素达数百个，探测结果 JSON
+    (groups×elements×candidates)常 200KB+，超 MySQL TEXT 的 64KB 上限会截断成坏 JSON，
+    前端解析失败→空白。SQLite TEXT 无长度限制，仅 MySQL 需 MODIFY。幂等：重复 MODIFY 安全。
+    """
+    cols = _columns("probe_request")
+    if not cols or "result" not in cols:
+        return  # 表尚未建
+    if engine.dialect.name == "mysql":
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE probe_request MODIFY COLUMN `result` LONGTEXT NULL"))
+
+
 def ensure_selector_tables(engine=None) -> None:
     """建 selector_key / selector_scope(幂等)。
 

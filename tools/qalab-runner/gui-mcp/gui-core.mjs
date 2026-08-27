@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
-import { rectIntersect } from "./probe-collect.mjs";
+import { rectInsideRatio } from "./probe-collect.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
 
@@ -303,7 +303,11 @@ export function createGuiCore(opts = {}) {
     },
     async probe({ contains = "", bbox = null, limit = 0, screenshot = false } = {}) {
       const relax = !!bbox;               // 框选：放宽采集(穿透+不过滤白名单/去重)
-      const cap = limit || (bbox ? 200 : 40);   // 框选放宽后可能多，放大上限
+      // 每 frame 返回上限。默认放大到 1000：真实复杂应用(如 namiclaw vm iframe)单帧可交互元素
+      // 常达数百个(聊天消息+导航+输入区),旧默认 40 会按 DOM 顺序把靠底部的输入区控件(如「边想边做」
+      // 在去重后第 486 位)截断——采到却切掉、传不到前端,组头还显示全量 total 造成"共 N 个却只有 40 行"
+      // 的误导。框选(bbox)已先按框空间过滤，剩余通常远小于 300。需更精准时用框选或 contains 过滤。
+      const cap = limit || (bbox ? 300 : 1000);
       await ensureConnected();
       // 多级页面:遍历页面所有 frame(Playwright 的 page.frames() 已含任意深度的嵌套 iframe),
       // 逐 frame 跑发现脚本。主框架标 shell;主 vm iframe(.work.n.cn)标 vm;其余嵌套 iframe 标 iframe。
@@ -359,8 +363,9 @@ export function createGuiCore(opts = {}) {
         for (const el of els) {
           if (el.rect) { el.absRect = { x: frameBox.x + el.rect.x + mainScroll.x, y: frameBox.y + el.rect.y + mainScroll.y, w: el.rect.w, h: el.rect.h }; if (approx) el.absApprox = true; }
         }
-        // 框选:按整页绝对坐标与 bbox 求交筛选(absRect 已就绪,含 iframe 偏移;absApprox 的近似框也参与)。
-        if (bbox) els = els.filter((e) => rectIntersect(e.absRect, bbox));
+        // 框选:只留"大部分落在框内"的元素(insideRatio≥0.5)。any-overlap 会把盖住框的页面级大容器
+        // (.shell/.chat-main 等,仅极小比例与框相交)全放进来,淹没目标小控件;按占比过滤精准得多。
+        if (bbox) els = els.filter((e) => rectInsideRatio(e.absRect, bbox) >= 0.5);
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
         if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, cap) });
       }

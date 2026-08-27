@@ -488,7 +488,7 @@ CREATE TABLE IF NOT EXISTS `probe_request` (
   `runner` VARCHAR(64) NOT NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
   `params` TEXT,
-  `result` TEXT,
+  `result` LONGTEXT,   -- 探测结果 JSON 可达 200KB+（复杂页数百元素），超 TEXT 64KB 上限，用 LONGTEXT
   `error` VARCHAR(500) DEFAULT NULL,
   `screenshot_path` VARCHAR(255) DEFAULT NULL,
   `created_by` INT DEFAULT NULL,
