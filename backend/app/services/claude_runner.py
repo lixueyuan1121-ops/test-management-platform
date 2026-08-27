@@ -289,6 +289,16 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    正例(gui,单点,含进入)：connect → click(navTasks) → wait_for(任务页锚点) → assert_visible(目标元素)
    正例(e2e,多步,含进入)：connect → click(navTasks) → click(新建按钮) → fill(表单字段) → click(提交) → wait_for(结果锚点) → assert_text(结果文案,contains)
    登录单列(其它用例默认已登录)：connect → fill(loginUserName) → fill(loginPassword) → click(loginAgree) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle)
+   - **mock_route 使用场景（重要——主动生成这类用例，覆盖真实请求难以构造的状态）**：凡依赖后端返回特定数据才能验证的前端行为，优先用 mock_route 注入数据、在客户端内断言渲染结果。典型场景：
+     · **空状态**：mock 接口返回空列表/空数据，验证前端展示"暂无数据"提示，如 {{"code":0,"data":[]}}
+     · **多数据/分页**：mock 返回大量条目（如 50 条），验证列表滚动、分页控件、数量展示是否正确
+     · **异常数据**：mock 返回超长文本、特殊字符、极端数值，验证前端截断/溢出/格式化是否健壮
+     · **后端报错**：mock 返回 {{"code":-1,"msg":"服务器异常"}} 或 HTTP 500，验证前端是否展示错误提示而非白屏/崩溃
+     · **权限不足**：mock 返回 {{"code":403,"msg":"无权限"}}，验证无权限时的降级展示
+     · **字段缺失**：mock 返回缺少部分字段的对象，验证前端容错（不崩溃、字段缺失时有兜底展示）
+     · mock_route 必须在用例结尾前加 unmock_route 还原，避免影响后续用例
+     正例(mock空状态,gui)：connect → click(navTasks) → mock_route(**/api/tasks,{code:0,data:[]}) → wait_for(任务列表锚点) → assert_text("暂无数据",contains) → unmock_route(**/api/tasks)
+     正例(mock报错,gui)：connect → click(navTasks) → mock_route(**/api/tasks,status=500) → wait_for(错误提示锚点) → assert_visible(错误提示) → unmock_route(**/api/tasks)
 {keys_block}
 7. {_API_SCRIPT_SPEC}
 {api_contract_block}
@@ -357,6 +367,14 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
    - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入通常 2-5 步'}
    - **用例自治**:connect 后先用导航/入口 key 显式进入目标页(不假设当前页,默认已登录主界面),自治靠这一步自导航保证;**用例到操作与断言为止,不要加关弹窗/清输入/导航回首页之类的收尾还原步**(结尾还原步常因锚点不稳而整条失败)
    - **进入段只写一步真实导航动作**,**严禁**"刷新页面/重新加载""确认当前在首页/确认已在主界面""确保已登录/检查登录状态""回到首页再开始"这类环境确认或复位步——它们不是被测点且锚点不稳,直接 connect→导航到目标页,不做任何页面状态前置确认或刷新
+   - **mock_route 使用场景(主动生成这类用例,覆盖真实请求难以构造的状态)**:凡依赖后端返回特定数据才能验证的前端行为,优先用 mock_route 注入数据、在客户端内断言渲染结果。典型场景:
+     · **空状态**:mock 接口返回空列表/空数据,验证前端展示"暂无数据"等提示,如 {{"code":0,"data":[]}}
+     · **多数据/分页**:mock 返回大量条目(如 50 条),验证列表滚动、分页控件、数量展示是否正确
+     · **异常数据**:mock 返回超长文本、特殊字符、极端数值,验证前端截断/溢出/格式化是否健壮
+     · **后端报错**:mock 返回 {{"code":-1,"msg":"服务器异常"}} 或 HTTP 500,验证前端是否展示错误提示而非白屏/崩溃
+     · **权限不足**:mock 返回 {{"code":403,"msg":"无权限"}},验证无权限时的降级展示
+     · **字段缺失**:mock 返回缺少部分字段的对象,验证前端容错(不崩溃、有兜底展示)
+     · mock_route 必须在用例结尾前加 unmock_route 还原,避免影响后续用例
 3. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
