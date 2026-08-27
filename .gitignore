@@ -2,7 +2,26 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
-# frontend/dist/ 需入库：服务器无 Node，前端产物在开发机构建后提交，供后端同源托管
+
+# 前端构建产物（本地/CI 产物，不入库）。线上前端自行构建：
+#   · docker：frontend 容器 Dockerfile 内 npm run build
+#   · 裸机（如 :4173 vite preview / 有 Node 的机器）：开发机 npm run build 后本地起
+# 若改用「服务器无 Node、纯 uvicorn 同源托管 dist」的部署，需另行在服务器构建或恢复入库。
+frontend/dist/
+.vite/
+
+# Python 打包 / 测试 / 类型检查缓存
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 测试运行产物（Playwright 等）
+playwright-report/
+test-results/
+
 .env
 backend/.env
 *.db

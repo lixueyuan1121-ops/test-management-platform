@@ -1,4 +1,6 @@
 node_modules
-# dist 需入库：服务器无 Node，前端产物在开发机构建后提交，供后端同源托管
+# 构建产物：不入库（线上 docker 容器 / 有 Node 的机器自行 npm run build）
+dist
+.vite
 .DS_Store
 *.log

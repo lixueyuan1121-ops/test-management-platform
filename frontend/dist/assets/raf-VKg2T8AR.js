@@ -1,1 +1,0 @@
-import{di as o}from"./index-B8tTcl71.js";const e="update:modelValue",s="change",i="input",n=t=>o?window.requestAnimationFrame(t):setTimeout(t,16),c=t=>o?window.cancelAnimationFrame(t):clearTimeout(t);export{s as C,i as I,e as U,c,n as r};
