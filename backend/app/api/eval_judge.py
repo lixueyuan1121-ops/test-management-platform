@@ -55,11 +55,14 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
     q = db.query(EvalRun).filter(EvalRun.project_id == body.project_id)
     if body.run_ids:
+        # 空列表等同于未指定，避免 in_([]) 在部分数据库下报错
         q = q.filter(EvalRun.id.in_(body.run_ids))
     else:
         from app.core.enums import EvalRunStatus
         q = q.filter(EvalRun.status == EvalRunStatus.done)
     rows = q.all()
+    if not rows:
+        return ok({"judged": 0, "results": []})
     results = []
     for r in rows:
         try:
