@@ -469,7 +469,17 @@ async function tick() {
         if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
         // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
         // 复位失败或复位后掉登录 → 记 blocked(fail_kind=selector,环境阻塞,不计功能失败率),不空跑脏态用例。
-        const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log) : { ok: true };
+        // restartClientFn 作为兜底注入:reload 复位全失败 / 多轮自愈后仍未回稳时,退出客户端重新启动再复位一次。
+        const restartClientFn = async () => {
+          await guiCore.close?.();       // 断开 CDP 连接,让 ensureNamiclaw 重建
+          await coldStartClient();       // 杀旧进程 + 重新启动带 CDP 参数
+          for (let i = 0; i < 15; i++) {
+            await sleep(2000);
+            if (await cdpAlive()) { log(`  客户端 CDP 就绪(${(i + 1) * 2}s)`); return; }
+          }
+          throw new Error("重启后 CDP 超时,9222 未就绪");
+        };
+        const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log, { restartClientFn }) : { ok: true };
         if (!gate.ok) {
           result = gate.result;
         } else {

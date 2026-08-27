@@ -8,6 +8,7 @@ export async function resetHomeWithRetry(gui, log = () => {}, attempts = 2) {
   return false;
 }
 
+
 // 首页「就绪锚点」候选 key:不同被测产品/注册表命名不一 —— 内置注册表用 homepageTitle,
 // 新版 home 用 homeGreetingTitle(线上导入的注册表)。按注册存在性过滤后任一可见即算首页停稳。
 // 新增命名时在此登记别名即可(单点)。
@@ -90,21 +91,41 @@ async function tryGuiHeal(gui, method, desc, log) {
 }
 
 // 复位 + 掉登录检测 + 首页就绪门禁,产出「放行或阻塞」决策(接后端 L2 的 blocked 归类)。
-// - 复位(reload+就绪)重试仍失败 → { ok:false, result }:环境问题,fail_kind=selector,不计功能失败率。
+// - 复位(reload+就绪)重试仍失败 → 兜底:调 restartClientFn 重启客户端 + 重复复位一次;若仍失败 → { ok:false, result }
 // - 复位成功但检测到登录弹窗可见(会话过期)→ { ok:false, result }:提示执行机需重新登录。
 // - 复位成功、未掉登录,但注册表登记的首页锚点在超时内始终不可见 → 三招「来回反复」多轮自愈:每轮依次
 //   按 ESC(页面层+OS 级)关弹窗 → 点两次侧栏主导航「首页」→ 点「新建任务/新建对话」,每招后重探一次;
 //   一轮走完仍不就绪就再来一轮(最多 maxHealRounds 轮)。某轮内全无可用招式则提前止损、不空转多轮。
-//   多轮仍不就绪的收尾:**点过『首页』导航**则疑似就绪锚点(css 类名)失效而非真没回首页 → 降级放行
-//   { ok:true, degraded:true }(让用例进入段自导航去跑,避免锚点失效令整条队列假 blocked);**从没点成
-//   导航**(navHome 不可用)才 → { ok:false, result }:无从确认回首页,保守阻塞不空跑。
-// - 注册表未登记任何首页/登录锚点(无从判断就绪)或探测本身抛错(probe 基建问题)→ { ok:true }:
-//   尽力而为放行(与 gui-core resetHome 缺 readyKey 时跳过就绪等的宽容语义一致)。
+//   多轮仍不就绪的收尾:先尝试 restartClientFn 重启客户端 + 再次复位;若复位成功放行,否则:
+//   **点过『首页』导航**则疑似就绪锚点(css 类名)失效而非真没回首页 → 降级放行
+//   { ok:true, degraded:true };**从没点成导航**(navHome 不可用)才 → { ok:false, result }
+// - 注册表未登记任何首页/登录锚点(无从判断就绪)或探测本身抛错(probe 基建问题)→ { ok:true }
 // - 否则 → { ok:true }:放行执行本条用例。
-// 门禁只探「当前注册表里登记了的」锚点(见 registeredKeys),并对首页锚点做带超时轮询 —— reload 后
-// 首页(改版 home)需要一点时间渲染,轮询给足就绪时间,避免探太早误判没停稳。
-export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, pollMs = 300, maxHealRounds = 3 } = {}) {
+//
+// restartClientFn: 可选的「退出客户端 + 重新启动」异步回调(由 runner 注入,不含参数)。
+// 传入时在两处兜底中被调用:①复位重试全失败后;②多轮自愈后仍不就绪时。
+// 不传(undefined/null)时跳过重启步骤,行为与旧版相同。
+export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, pollMs = 300, maxHealRounds = 3, restartClientFn } = {}) {
+  // 内部helper:调 restartClientFn 重启客户端,等 CDP 就绪后再尝试一次 resetHome。
+  // 成功返回 true;无 restartClientFn / 重启失败 / 复位仍失败均返回 false。
+  async function tryRestartAndReset(label) {
+    if (typeof restartClientFn !== "function") return false;
+    try {
+      log(`  ${label}:尝试退出客户端并重新启动…`);
+      await restartClientFn();
+      log(`  客户端已重启,重新复位中…`);
+      const ok = await resetHomeWithRetry(gui, log);
+      if (ok) { log(`  重启后复位成功,放行`); return true; }
+      log(`  重启后复位仍失败`);
+    } catch (e) {
+      log(`  重启客户端出错:${e.message || e}`);
+    }
+    return false;
+  }
+
   if (!(await resetHomeWithRetry(gui, log))) {
+    // 兜底:复位重试全失败 → 尝试重启客户端 + 再复位一次
+    if (await tryRestartAndReset("复位重试全失败")) return { ok: true };
     return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: "用例前复位(reload)失败,跳过执行以免脏态污染", duration_ms: 1 } };
   }
   const loginKeys = registeredKeys(gui, LOGIN_MODAL_KEYS);
@@ -145,11 +166,13 @@ export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, p
       }
       if (!anyTried) break;   // 本轮无任何可用招式(老 gui/未注册 key),反复也救不回,提前止损不空转
     }
-    // 反复多轮仍探不到首页锚点。区分两种情形,避免"锚点失效"被误当"没回首页"而整条队列假 blocked:
+    // 反复多轮仍探不到首页锚点。先尝试重启客户端 + 再次复位(最强兜底)，成功则放行。
+    // 重启失败或复位仍失败后，区分两种情形：
     //  - 点过『首页』导航(尝试过应用内回首页):很可能已在首页、只是就绪锚点(css 类名)失效探不到 →
     //    降级放行(非阻塞),让用例进入段自导航去跑;真不在首页,用例自身断言会 fail(business),不误记环境阻塞。
     //  - 从没点成『首页』导航(navHome 未注册/定位不到):无从确认是否回到首页 → 保守阻塞,不空跑脏态。
     const tail = tried.length ? `(已试自愈:${tried.join(" → ")},仍未回稳)` : "";
+    if (await tryRestartAndReset("多轮自愈仍未回稳")) return { ok: true };
     const navigatedHome = tried.some((t) => t.startsWith("点首页导航") || t.startsWith("再点首页导航"));
     if (navigatedHome) {
       log("  首页就绪锚点探不到,但已点『首页』导航回首页:疑似就绪锚点失效,降级放行(非阻塞)" + tail);
