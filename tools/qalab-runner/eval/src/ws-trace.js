@@ -4,6 +4,56 @@
 // nami_panel 是信封,内层在 payload.data,需展开一层。mcp 靠 originalToolName 的 mcp__<server>__<tool> 前缀。
 // 同一 toolCallId 跨 start/update/result 多帧,按 id 聚合。
 
+// ---- 对话文本清洗(子项3: 修复特殊字符/转义导致关键内容截断问题) ----
+// 与后端 claude_runner.sanitize_dialog_text / split_think_blocks 同语义(单一逻辑,两端各自实现)。
+const _B64_EMPTY_TEXT_BLOCK = 'eyJ0eXBlIjoidGV4dCIsInRleHQiOiIifQ==';
+const _THINK_BLOCK_RE = /<\s*(think|thinking|thought)\s*>([\s\S]*?)<\s*\/\s*\1\s*>/gi;
+const _THINK_OPEN_TAIL_RE = /<\s*(think|thinking|thought)\s*>(?![\s\S]*<\s*\/\s*\1\s*>)([\s\S]*)\s*$/i;
+const _CTRL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
+/**
+ * 去控制字符、去 base64 空块占位串(含流式被截断的前缀形态)、统一换行。
+ * 与后端 sanitize_dialog_text 口径一致。
+ */
+function sanitizeDialogText(s) {
+  if (!s) return '';
+  s = String(s).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // 完整占位串
+  while (s.includes(_B64_EMPTY_TEXT_BLOCK)) {
+    s = s.replace(_B64_EMPTY_TEXT_BLOCK, '');
+  }
+  // 流式收尾只吐出前半截:按">=16 字符前缀"删
+  for (let cut = _B64_EMPTY_TEXT_BLOCK.length - 1; cut >= 16; cut--) {
+    const prefix = _B64_EMPTY_TEXT_BLOCK.slice(0, cut);
+    if (s.endsWith(prefix)) { s = s.slice(0, -prefix.length); break; }
+  }
+  return s.replace(_CTRL_CHARS_RE, '');
+}
+
+/**
+ * 把正文里内联的 <think>/<thinking>/<thought> 块剥出来。
+ * 返回 { body: string, thinking: string }。
+ * 与后端 split_think_blocks 口径一致。
+ */
+function splitThinkBlocks(s) {
+  s = String(s || '');
+  if (!s.includes('<')) return { body: s, thinking: '' };
+  const thinks = [];
+  let body = s.replace(_THINK_BLOCK_RE, (_, _tag, content) => {
+    const t = content.trim();
+    if (t) thinks.push(t);
+    return '';
+  });
+  // 未闭合的 <think> 开标签:开标签到文末归思考
+  const m = _THINK_OPEN_TAIL_RE.exec(body);
+  if (m) {
+    const tail = (m[2] || '').trim();
+    if (tail) thinks.push(tail);
+    body = body.slice(0, m.index);
+  }
+  return { body: body.trim(), thinking: thinks.join('\n') };
+}
+
 function _unwrapPanel(payload) {
   // nami_panel 信封:真正字段在 payload.data(内层可能又是 {stream,data,...})。展开一层。
   if (payload && payload.stream === 'nami_panel' && payload.data && typeof payload.data === 'object') {
@@ -209,9 +259,14 @@ function attachWsTrace(page) {
       });
       // answer:优先权威 final(收口完整);缺失才拼流式段(段 + 未切的当前段)。
       const streamedAnswer = [...state.answerSegments, state.answerCur].filter(Boolean).join('\n').trim();
-      const answer = state.finalAnswer || streamedAnswer;
-      // thinking:优先 final message 里的 thinking 块;缺失才用流式 thinking 快照。
-      const thinking = state.finalThinking || state.thinkingStream;
+      const rawAnswer = state.finalAnswer || streamedAnswer;
+      // 清洗(子项3):去控制字符/base64 占位噪声,再把内联 <think> 块剥进 thinking——
+      // 修复"答案中途夹思考标签→判定侧把答案误读为被截断/思考为空"两类误判。
+      const cleanedAnswer = sanitizeDialogText(rawAnswer);
+      const { body: answer, thinking: inlineThink } = splitThinkBlocks(cleanedAnswer);
+      // thinking:优先 final message 里的 thinking 块;缺失才用流式 thinking 快照;再兜底答案里剥出的内联思考。
+      let thinking = sanitizeDialogText(state.finalThinking || state.thinkingStream);
+      if (!thinking.trim() && inlineThink) thinking = inlineThink;
       return { session_id: state.sessionId, run_id: runId || state.runId,
                thinking, tool_calls, artifacts: state.artifacts,
                answer, ws_captured: state.sawAny, ws_connected: state.wsConnected };
@@ -219,4 +274,4 @@ function attachWsTrace(page) {
   };
 }
 
-module.exports = { attachWsTrace, handleFrame, newState, _isMcp, _mcpServer, _isEmptyResult, _msgAnswer, _msgThinking, _assistantStreamText, _thinkingStreamText };
+module.exports = { attachWsTrace, handleFrame, newState, sanitizeDialogText, splitThinkBlocks, _isMcp, _mcpServer, _isEmptyResult, _msgAnswer, _msgThinking, _assistantStreamText, _thinkingStreamText };

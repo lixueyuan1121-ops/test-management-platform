@@ -335,6 +335,7 @@ CREATE TABLE `eval_run` (
   `eval_query_id` BIGINT NULL,
   `project_id` BIGINT NOT NULL,
   `batch_id` VARCHAR(32) NULL,
+  `eval_task_id` BIGINT NULL,
   `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
   `device_kind` VARCHAR(8) NOT NULL DEFAULT 'web',
   `target_engine` VARCHAR(32) NULL,
@@ -371,6 +372,28 @@ CREATE TABLE `eval_run` (
   CONSTRAINT `fk_evalrun_query` FOREIGN KEY (`eval_query_id`) REFERENCES `eval_query` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_evalrun_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_evalrun_user` FOREIGN KEY (`enqueued_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 对话测评任务(一组定制用例集合,可整体执行+AI综合评价)
+CREATE TABLE `eval_task` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `name` VARCHAR(128) NOT NULL,
+  `description` TEXT NULL,
+  `query_ids` TEXT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'draft',
+  `last_batch_id` VARCHAR(32) NULL,
+  `summary_html` TEXT NULL,
+  `summary_status` VARCHAR(16) NULL,
+  `summary_provider` VARCHAR(16) NULL,
+  `summary_at` DATETIME NULL,
+  `created_by` BIGINT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_evaltask_project` (`project_id`),
+  CONSTRAINT `fk_evaltask_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_evaltask_user` FOREIGN KEY (`created_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 执行机连上的纳米 Work 客户端可切换设备(vm)快照:CLI 上报,前端下发时下拉选

@@ -10,6 +10,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -184,6 +185,95 @@ def gen_eval_queries(
             s.close()
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@router.get("/eval-dimensions")
+def list_eval_dimensions(user: User = Depends(get_current_user)):
+    """对话测评维度注册表(key/中文标签/说明)。前端各测评页从这里取,免两端硬编码漂移。"""
+    dims = [
+        {"key": k, "label": claude_runner.EVAL_DIM_LABELS.get(k, k), "desc": v}
+        for k, v in claude_runner.EVAL_DIMENSIONS.items()
+    ]
+    return ok({"dimensions": dims})
+
+
+class EvalQueryManualIn(BaseModel):
+    """手工录入/编辑一条测评用例(测评任务的「定制用例」入口;ai_task_id 为空区别于 AI 生成)。"""
+    project_id: int
+    title: str = Field(..., min_length=1, max_length=512)
+    prompt: str = Field(..., min_length=1)
+    dimension: str | None = None
+    expected: str | None = None
+    conversation_group: str | None = Field(None, max_length=64)
+    turn_index: int = 0
+
+
+class EvalQueryUpdateIn(BaseModel):
+    title: str | None = Field(None, min_length=1, max_length=512)
+    prompt: str | None = Field(None, min_length=1)
+    dimension: str | None = None
+    expected: str | None = None
+    conversation_group: str | None = Field(None, max_length=64)
+    turn_index: int | None = None
+
+
+def _norm_dimension(dim: str | None) -> str | None:
+    return dim if dim in claude_runner.EVAL_DIMENSIONS else None
+
+
+@router.post("/eval-queries/manual")
+def create_eval_query_manual(body: EvalQueryManualIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    if not db.get(Project, body.project_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    q = EvalQuery(
+        project_id=body.project_id,
+        title=body.title.strip(),
+        prompt=body.prompt.strip(),
+        dimension=_norm_dimension(body.dimension),
+        expected=(body.expected or "").strip() or None,
+        conversation_group=(body.conversation_group or "").strip() or None,
+        turn_index=max(0, body.turn_index or 0),
+        provider="manual",
+    )
+    db.add(q); db.commit(); db.refresh(q)
+    # 手工单轮题补唯一组名(与 AI 生成落库口径一致,避免与别的题混组)
+    if not q.conversation_group:
+        q.conversation_group = f"m{q.id}"
+        db.commit(); db.refresh(q)
+    return ok(_to_query_out(q))
+
+
+@router.patch("/eval-queries/{query_id}")
+def update_eval_query(query_id: int, body: EvalQueryUpdateIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    q = db.get(EvalQuery, query_id)
+    if not q:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评用例不存在")
+    assert_project_role(db, user, q.project_id, _WRITE_ROLES)
+    if body.title is not None:
+        q.title = body.title.strip()
+    if body.prompt is not None:
+        q.prompt = body.prompt.strip()
+    if body.dimension is not None:
+        q.dimension = _norm_dimension(body.dimension)
+    if body.expected is not None:
+        q.expected = body.expected.strip() or None
+    if body.conversation_group is not None:
+        q.conversation_group = body.conversation_group.strip() or None
+    if body.turn_index is not None:
+        q.turn_index = max(0, body.turn_index)
+    db.commit(); db.refresh(q)
+    return ok(_to_query_out(q))
+
+
+@router.delete("/eval-queries/{query_id}")
+def delete_eval_query(query_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    q = db.get(EvalQuery, query_id)
+    if not q:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评用例不存在")
+    assert_project_role(db, user, q.project_id, _WRITE_ROLES)
+    db.delete(q); db.commit()
+    return ok({"deleted": query_id})
 
 
 @router.get("/eval-queries")

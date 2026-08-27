@@ -14,7 +14,7 @@
         <div v-if="dimStats.dims.length >= 3" ref="radarEl" class="dr-chart"></div>
         <div v-else class="dr-bars">
           <div v-for="d in dimStats.dims" :key="d.dimension" class="dr-bar-row">
-            <span class="dr-bar-lbl">{{ d.dimension }}</span>
+            <span class="dr-bar-lbl">{{ dimLabel(d.dimension) }}</span>
             <div class="dr-bar-track">
               <div class="dr-bar-fill" :style="{ width: d.pass_rate + '%', background: drColor(d.pass_rate) }"></div>
             </div>
@@ -24,7 +24,7 @@
         <div class="dr-dims">
           <div v-for="d in dimStats.dims" :key="d.dimension" class="dr-dim">
             <span class="dr-dim-dot" :style="{ background: drColor(d.pass_rate) }"></span>
-            <span class="dr-dim-name">{{ d.dimension }}</span>
+            <span class="dr-dim-name">{{ dimLabel(d.dimension) }}</span>
             <span class="dr-dim-rate" :style="{ color: drColor(d.pass_rate) }">{{ d.pass_rate }}%</span>
             <span class="dr-dim-n">({{ d.total }})</span>
           </div>
@@ -79,7 +79,7 @@
               </div>
               <template v-else>
                 <div class="dims">
-                  <div v-for="d in DIMS" :key="d.k" class="dim">
+                  <div v-for="d in rowDims(row)" :key="d.k" class="dim">
                     <div class="dim-head">
                       <el-icon v-if="dimPass(row, d.k) === true" class="ok"><CircleCheck /></el-icon>
                       <el-icon v-else-if="dimPass(row, d.k) === false" class="ng"><CircleClose /></el-icon>
@@ -99,6 +99,12 @@
         <el-table-column prop="run_id" label="#" width="64" align="center" />
         <el-table-column label="query" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ queryTitle(row) }}</template>
+        </el-table-column>
+        <el-table-column label="维度" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.dimension" :type="DIM_TAG_TYPE[row.dimension] || 'info'" size="small" effect="plain">{{ dimLabel(row.dimension) }}</el-tag>
+            <span v-else class="dim-muted">—</span>
+          </template>
         </el-table-column>
         <el-table-column label="执行" width="96" align="center">
           <template #default="{ row }">
@@ -159,16 +165,38 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
-// 三维（键与后端 parse_eval_verdict 一致）
+// 判定核心三维（键与后端 parse_eval_verdict 一致）；dimension_ok 第四维按行动态追加
 const DIMS = [
   { k: 'thinking_complete', label: '思考推理' },
   { k: 'tools_ok', label: '工具 / MCP 调用' },
   { k: 'artifact_expected', label: '产物 / 答案' },
 ]
+// 行内展示的判定维度：核心三维 + 该行有 dimension_ok 时补一格「主考维度」
+const rowDims = (row) => {
+  const base = [...DIMS]
+  if (row.verdict_dims?.dimension_ok) {
+    base.push({ k: 'dimension_ok', label: `主考维度${row.dimension ? '·' + dimLabel(row.dimension) : ''}` })
+  }
+  return base
+}
+// 测评维度注册表(服务端拉取,雷达/列表统一用中文标签;失败用内置兜底)
+const DIM_META = ref({
+  thinking: '思考推理', tool_use: '工具·MCP调用', artifact: '产物生成',
+  multi_turn: '多轮追问', instruction: '指令遵循',
+  workflow: '工作流', clarification: '反问澄清', context: '上下文记忆',
+  safety: '安全合规', refusal: '拒答质量',
+  hallucination: '事实可靠', creativity: '创意生成', consistency: '一致性',
+})
+const dimLabel = (k) => (k ? (DIM_META.value[k] || k) : '未标注')
+const DIM_TAG_TYPE = {
+  thinking: 'primary', tool_use: 'success', artifact: 'warning', multi_turn: 'danger', instruction: 'info',
+  workflow: 'warning', clarification: 'primary', context: 'success', safety: 'danger', refusal: 'info',
+  hallucination: 'warning', creativity: 'primary', consistency: 'success',
+}
 // eval_run 生命周期（EvalRunStatus）
 const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败' }
 const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judging: 'warning', judged: 'success', failed: 'danger' }
@@ -213,7 +241,12 @@ const dimNote = (row, k) => row.verdict_dims?.[k]?.note
 const canJudge = (row) => row.status === 'done' || row.status === 'judged' || !!row.verdict
 
 onMounted(async () => {
-  projects.value = await app.fetchProjects()
+  // 维度注册表(标签映射)与项目列表并行拉;注册表失败沿用内置兜底
+  const [projRes, dimRes] = await Promise.allSettled([app.fetchProjects(), listEvalDimensions()])
+  if (dimRes.status === 'fulfilled' && dimRes.value?.dimensions?.length) {
+    DIM_META.value = Object.fromEntries(dimRes.value.dimensions.map((d) => [d.key, d.label]))
+  }
+  projects.value = projRes.status === 'fulfilled' ? (projRes.value || []) : []
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await onProjectChange()
@@ -327,9 +360,9 @@ function drawRadar() {
   const dims = dimStats.value.dims
   radarChart.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'item', formatter: (p) => p.data.value.map((v, i) => `${dims[i].dimension}: ${v}%`).join('<br/>') },
+    tooltip: { trigger: 'item', formatter: (p) => p.data.value.map((v, i) => `${dimLabel(dims[i].dimension)}: ${v}%`).join('<br/>') },
     radar: {
-      indicator: dims.map((d) => ({ name: d.dimension, max: 100 })),
+      indicator: dims.map((d) => ({ name: dimLabel(d.dimension), max: 100 })),
       radius: '65%',
       splitArea: { areaStyle: { color: ['rgba(0,179,134,.05)', 'rgba(0,179,134,.02)'] } },
       axisName: { color: '#7d8a9b', fontSize: 12 },

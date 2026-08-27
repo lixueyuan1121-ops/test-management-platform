@@ -134,7 +134,7 @@
         <el-table-column type="selection" width="42" />
         <el-table-column label="维度" width="120" align="center">
           <template #default="{ row }">
-            <el-tag :type="DIM_TYPE[row.dimension] || 'info'" effect="plain" size="small">{{ dimLabel(row.dimension) }}</el-tag>
+            <el-tag :type="dimTagType(row.dimension)" effect="plain" size="small">{{ dimLabel(row.dimension) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="标题" min-width="180">
@@ -161,22 +161,38 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, ChatDotRound } from '@element-plus/icons-vue'
-import { listTasks, aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries, listEvalDevices } from '@/api'
+import { listTasks, aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries, listEvalDevices, listEvalDimensions } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
-// 测评维度:值(与后端 claude_runner.EVAL_DIMENSIONS 一致) → 中文标签 + el-tag 配色
-const DIMENSIONS = [
+// 测评维度(从服务端动态拉取,前后端单一事实来源)。拉取前用内置兜底,拉取成功后替换。
+const DIMENSIONS_DEFAULT = [
   { k: 'thinking', label: '思考推理' },
   { k: 'tool_use', label: '工具·MCP调用' },
   { k: 'artifact', label: '产物生成' },
   { k: 'multi_turn', label: '多轮追问' },
   { k: 'instruction', label: '指令遵循' },
+  { k: 'workflow', label: '工作流' },
+  { k: 'clarification', label: '反问澄清' },
+  { k: 'context', label: '上下文记忆' },
+  { k: 'safety', label: '安全合规' },
+  { k: 'refusal', label: '拒答质量' },
+  { k: 'hallucination', label: '事实可靠' },
+  { k: 'creativity', label: '创意生成' },
+  { k: 'consistency', label: '一致性' },
 ]
-const DIM_LABEL = Object.fromEntries(DIMENSIONS.map((d) => [d.k, d.label]))
-const dimLabel = (k) => DIM_LABEL[k] || k || '—'
-const DIM_TYPE = { thinking: 'primary', tool_use: 'success', artifact: 'warning', multi_turn: 'danger', instruction: 'info' }
+const DIMENSIONS = ref(DIMENSIONS_DEFAULT)
+const DIM_TYPE_MAP = {
+  thinking: 'primary', tool_use: 'success', artifact: 'warning',
+  multi_turn: 'danger', instruction: 'info',
+  workflow: 'warning', clarification: 'primary', context: 'success',
+  safety: 'danger', refusal: 'info',
+  hallucination: 'warning', creativity: 'primary', consistency: 'success',
+}
+const DIM_LABEL_MAP = computed(() => Object.fromEntries(DIMENSIONS.value.map((d) => [d.k, d.label])))
+const dimLabel = (k) => DIM_LABEL_MAP.value[k] || k || '—'
+const dimTagType = (k) => DIM_TYPE_MAP[k] || 'info'
 // 生成引擎 → 选择器友好名 + 圆点色(与 AITestGen 口径一致)；未知引擎回落 id + 灰点
 const ENGINE_META = {
   claude: { label: 'Claude', dot: '#f59e0b' },
@@ -229,11 +245,15 @@ const sortedQueries = computed(() =>
     || (a.turn_index ?? 0) - (b.turn_index ?? 0)))
 
 onMounted(async () => {
-  // aiStatus / 项目列表 / 我的设备 互无依赖，并行拉取
-  const [aiRes, projRes, devRes] = await Promise.allSettled([aiStatus(), app.fetchProjects(), listMyDevices()])
+  // aiStatus / 项目列表 / 我的设备 / 维度注册表 互无依赖，并行拉取
+  const [aiRes, projRes, devRes, dimRes] = await Promise.allSettled([aiStatus(), app.fetchProjects(), listMyDevices(), listEvalDimensions()])
   const aiData = aiRes.status === 'fulfilled' ? (aiRes.value || {}) : {}
   aiAvailable.value = !!aiData.available
   providers.value = aiData.providers || []
+  // 维度注册表:服务端为准(key→k/label 映射),失败保持内置兜底
+  if (dimRes.status === 'fulfilled' && dimRes.value?.dimensions?.length) {
+    DIMENSIONS.value = dimRes.value.dimensions.map((d) => ({ k: d.key, label: d.label }))
+  }
   // 默认选中:后端 default 若可用则用它,否则第一个可用引擎,再兜底 claude
   const firstAvail = providers.value.find((p) => p.available)
   const dft = providers.value.find((p) => p.id === aiData.default && p.available)

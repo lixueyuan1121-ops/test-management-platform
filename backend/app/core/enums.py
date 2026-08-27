@@ -134,6 +134,14 @@ class EvalVerdict(str, enum.Enum):
     error = "error"        # 判定本身出错（轨迹缺失/判定引擎异常）
 
 
+class EvalTaskStatus(str, enum.Enum):
+    """测评任务的生命周期。"""
+    draft = "draft"        # 草稿（定义中，未执行）
+    running = "running"    # 执行中
+    done = "done"          # 执行完毕（各用例已执行，可看汇总评价）
+    archived = "archived"  # 已归档
+
+
 class FeedbackImportStatus(str, enum.Enum):
     """一次机器人推送批次(md/zip)的解析生命周期。"""
     parsing = "parsing"    # 解析中(含后台补 script)

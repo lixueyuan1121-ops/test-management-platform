@@ -49,12 +49,14 @@ def _load_trace(run: EvalRun) -> dict:
 
 
 def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
-    """判定一条 eval_run:读 trace+expected → 引擎 → 三维 → 落库。返回判定结果 dict。"""
+    """判定一条 eval_run:读 trace+expected+主考维度 → 引擎 → 多维 → 落库。返回判定结果 dict。"""
     expected = ""
+    dimension = None
     if run.eval_query_id:
         q = db.get(EvalQuery, run.eval_query_id)
         if q:
             expected = q.expected or ""
+            dimension = q.dimension
     trace = _load_trace(run)
 
     provider_id = generators.normalize_provider(provider)
@@ -76,7 +78,7 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
     try:
         for evt in engine.stream_generate(
             expected or "判定",
-            prompt_builder=lambda: claude_runner.build_eval_judge_prompt(trace, expected, None),
+            prompt_builder=lambda: claude_runner.build_eval_judge_prompt(trace, expected, dimension),
             system_prompt=claude_runner.EVAL_JUDGE_SYSTEM_PROMPT,
         ):
             et = evt.get("type")
@@ -103,9 +105,13 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
         db.commit()
         return {"verdict": "error", "reason": run.verdict_reason}
 
-    # 三维任一 fail → fail;有 None(未判维)按合理性:只要有明确 false 即 fail;全 true 才 pass
+    # 组合判定:核心三维 + 可选主考维(dimension_ok,判定 prompt 注入了主考维度时才有)。
+    # 任一明确 false → fail;核心三维全 true(且主考维不为 false)→ pass;
+    # 核心维有 None(未判)且无明确 false → error 供复核,不误判 pass。
     passes = [dims[k]["pass"] for k in ("thinking_complete", "tools_ok", "artifact_expected")]
-    if any(p is False for p in passes):
+    opt = dims.get("dimension_ok")
+    opt_pass = opt.get("pass") if isinstance(opt, dict) else None
+    if any(p is False for p in passes) or opt_pass is False:
         verdict = EvalVerdict.failed.value  # "fail"
     elif all(p is True for p in passes):
         verdict = EvalVerdict.passed.value  # "pass"

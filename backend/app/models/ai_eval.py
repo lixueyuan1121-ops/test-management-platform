@@ -1,4 +1,4 @@
-"""对话测评链路的数据模型：eval_query（测评题）+ eval_run（一次执行+判定）。
+"""对话测评链路的数据模型：eval_query（测评题）+ eval_run（一次执行+判定）+ eval_task（测评任务）。
 
 与 models/ai.py 的 test_case（功能测试点）是不同领域，故独立文件。
 生成任务复用现有 AiTask（kind='eval_query_gen'），此处不重复建生成任务表。
@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import EvalDeviceKind, EvalRunStatus, ReviewStatus
+from app.core.enums import EvalDeviceKind, EvalRunStatus, EvalTaskStatus, ReviewStatus
 from app.db.session import Base
 
 
@@ -61,6 +61,10 @@ class EvalRun(Base):
     )
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # 一次下发一批
+    # 所属测评任务(可空;仅测评任务执行的 run 有值,普通下发为 NULL)。任务删了执行记录留痕。
+    eval_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("eval_task.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     runner: Mapped[str] = mapped_column(String(64), default="mac-01", server_default="mac-01", index=True)
     device_kind: Mapped[EvalDeviceKind] = mapped_column(
         Enum(EvalDeviceKind, length=8), default=EvalDeviceKind.web, server_default="web"
@@ -96,6 +100,39 @@ class EvalRun(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 执行失败/未完成原因
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 墙钟耗时
     enqueued_by: Mapped[int | None] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EvalTask(Base):
+    """对话测评的「测评任务」子分类:一组定制用例的集合,可整体执行。
+
+    除逐条 eval_run 结果外,还产出一份 AI 整理的综合评价(summary_html,HTML 片段,前端渲染)。
+    query_ids 用 Text 存 JSON 数组(有序,兼容 MySQL5.6);执行=把这些 query 入 eval_run 队列并盖上
+    eval_task_id + batch;同一任务可反复执行,summary 针对 last_batch_id 那次。
+    """
+
+    __tablename__ = "eval_task"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_ids: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [eval_query_id, ...] 有序
+    status: Mapped[EvalTaskStatus] = mapped_column(
+        Enum(EvalTaskStatus, length=16), default=EvalTaskStatus.draft, server_default="draft"
+    )
+    last_batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 最近一次执行批次
+    # AI 综合评价(整理评价):HTML 片段,入库前服务端已消毒(去 script/事件属性)。
+    summary_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # running/done/failed;NULL=未生成
+    summary_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

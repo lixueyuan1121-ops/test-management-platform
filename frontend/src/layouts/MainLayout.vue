@@ -43,11 +43,12 @@
           <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
         </el-sub-menu>
 
-        <!-- 对话测评:独立完整链路(生成 → 用例库 → 结果) -->
+        <!-- 对话测评:独立完整链路(生成 → 用例库 → 测评任务 → 结果) -->
         <el-sub-menu index="eval">
           <template #title><el-icon><ChatDotRound /></el-icon><span>对话测评</span></template>
           <el-menu-item index="/ai-eval-gen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>测评生成</span></el-menu-item>
           <el-menu-item index="/eval-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
+          <el-menu-item index="/eval-tasks"><el-icon><Tickets /></el-icon><span>测评任务</span></el-menu-item>
           <el-menu-item index="/eval-results"><el-icon><Finished /></el-icon><span>测评结果</span></el-menu-item>
         </el-sub-menu>
 
@@ -134,7 +135,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked, Tickets,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 

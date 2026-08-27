@@ -55,17 +55,25 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Collection } from '@element-plus/icons-vue'
-import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries } from '@/api'
+import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
-const DIMENSIONS = [
+// 维度:服务端注册表为准(onMounted 拉取),失败用内置兜底
+const DIMENSIONS = ref([
   { k: 'thinking', label: '思考推理' }, { k: 'tool_use', label: '工具·MCP调用' },
   { k: 'artifact', label: '产物生成' }, { k: 'multi_turn', label: '多轮追问' }, { k: 'instruction', label: '指令遵循' },
-]
-const DIM_LABEL = Object.fromEntries(DIMENSIONS.map(d => [d.k, d.label]))
-const dimLabel = (k) => DIM_LABEL[k] || k || '—'
-const DIM_TYPE = { thinking: 'primary', tool_use: 'success', artifact: 'warning', multi_turn: 'danger', instruction: 'info' }
+  { k: 'workflow', label: '工作流' }, { k: 'clarification', label: '反问澄清' }, { k: 'context', label: '上下文记忆' },
+  { k: 'safety', label: '安全合规' }, { k: 'refusal', label: '拒答质量' },
+  { k: 'hallucination', label: '事实可靠' }, { k: 'creativity', label: '创意生成' }, { k: 'consistency', label: '一致性' },
+])
+const DIM_LABEL = computed(() => Object.fromEntries(DIMENSIONS.value.map(d => [d.k, d.label])))
+const dimLabel = (k) => DIM_LABEL.value[k] || k || '—'
+const DIM_TYPE = {
+  thinking: 'primary', tool_use: 'success', artifact: 'warning', multi_turn: 'danger', instruction: 'info',
+  workflow: 'warning', clarification: 'primary', context: 'success', safety: 'danger', refusal: 'info',
+  hallucination: 'warning', creativity: 'primary', consistency: 'success',
+}
 const RS_LABEL = { pending: '待评审', adopted: '已采纳', rejected: '已拒绝' }
 
 const app = useAppStore()
@@ -84,9 +92,12 @@ const sorted = computed(() => [...queries.value].sort((a, b) =>
   String(a.conversation_group || '').localeCompare(String(b.conversation_group || '')) || (a.turn_index ?? 0) - (b.turn_index ?? 0)))
 
 onMounted(async () => {
-  const [projRes, devRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices()])
+  const [projRes, devRes, dimRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices(), listEvalDimensions()])
   projects.value = projRes.status === 'fulfilled' ? (projRes.value || []) : []
   devices.value = devRes.status === 'fulfilled' ? (devRes.value || []) : []
+  if (dimRes.status === 'fulfilled' && dimRes.value?.dimensions?.length) {
+    DIMENSIONS.value = dimRes.value.dimensions.map((d) => ({ k: d.key, label: d.label }))
+  }
   if (devices.value.length) { chosenRunner.value = devices.value[0].runner_id; await loadClientDevices() }
   if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await onProjectChange() }
 })

@@ -396,6 +396,21 @@ def ensure_eval_run_target_device() -> None:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_device VARCHAR(64) NULL"))
 
 
+def ensure_eval_task_tables() -> None:
+    """建 eval_task 表(幂等) + eval_run 补 eval_task_id 列(测评任务子分类)。
+
+    新库 create_all 自带;老库这里显式补表/补列(与 ensure_selector_tables 同款套路)。
+    eval_task_id 不加 FK(老库 ALTER 加 FK 在 MySQL 上易因既有数据/引擎设置失败,查询按 id 关联即可)。
+    """
+    from app.models.ai_eval import EvalTask
+    EvalTask.__table__.create(bind=engine, checkfirst=True)
+    cols = _columns("eval_run")
+    if cols and "eval_task_id" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN eval_task_id BIGINT NULL"))
+        _ensure_index("eval_run", "idx_evalrun_task", "eval_task_id")
+
+
 def ensure_platform_columns() -> None:
     """selector_key / test_case / runner_device 三表补 platform 列（APP 端支持）。
 

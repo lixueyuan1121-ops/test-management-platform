@@ -29,11 +29,13 @@ def _new_batch_id() -> str:
 
 
 def _payload_of(q: EvalQuery) -> dict:
-    """下发 payload 快照:执行器驱动对话要用的字段(避免执行时配置漂移)。"""
+    """下发 payload 快照:执行器驱动对话要用的字段(避免执行时配置漂移)。
+    dimension 一并快照:执行器不用,但结果页/判定按下发那一刻的维度展示与聚焦。"""
     return {
         "eval_query_id": q.id,
         "title": q.title,
         "prompt": q.prompt,
+        "dimension": q.dimension,
         "attachments": json.loads(q.attachments) if q.attachments else [],
         "dialog_options": json.loads(q.dialog_options) if q.dialog_options else {},
         "conversation_group": q.conversation_group,
@@ -82,6 +84,7 @@ def _to_out(r: EvalRun) -> dict:
         "eval_query_id": r.eval_query_id,
         "project_id": r.project_id,
         "batch_id": r.batch_id,
+        "eval_task_id": r.eval_task_id,
         "runner": r.runner,
         "target_engine": r.target_engine,
         "target_device": r.target_device,
@@ -241,4 +244,17 @@ def list_history(project_id: int = Query(...), limit: int = Query(100, le=500),
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     rows = (db.query(EvalRun).filter(EvalRun.project_id == project_id)
             .order_by(EvalRun.id.desc()).limit(limit).all())
-    return ok([_to_out(r) for r in rows])
+    # 维度:优先 payload 快照(下发那一刻);老 run 的快照没有 dimension → 批量回查 eval_query 补上
+    out = [_to_out(r) for r in rows]
+    need = [(i, rows[i].eval_query_id) for i, d in enumerate(out)
+            if not (d.get("payload") or {}).get("dimension") and rows[i].eval_query_id]
+    dim_map = {}
+    if need:
+        ids = list({qid for _, qid in need})
+        for qid, dim in db.query(EvalQuery.id, EvalQuery.dimension).filter(EvalQuery.id.in_(ids)).all():
+            dim_map[qid] = dim
+    for d in out:
+        d["dimension"] = (d.get("payload") or {}).get("dimension")
+    for i, qid in need:
+        out[i]["dimension"] = dim_map.get(qid)
+    return ok(out)

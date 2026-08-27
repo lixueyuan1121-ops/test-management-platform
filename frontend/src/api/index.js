@@ -124,6 +124,72 @@ export const listEvalQueries = (projectId) => http.get('/ai/eval-queries', { par
 // ===== 对话测评判定（读 trace + 引擎判三维：思考/工具/产物）=====
 // 单条触发判定；provider 可空（后端按默认引擎）。返回已解包的 _run_out（含 verdict/verdict_dims/is_abnormal）。
 // 判定同步调 AI 引擎，较慢（常 30-60s），单独放宽超时到 90s（覆盖全局 15s 默认）。
+// 对话测评维度注册表(从服务端拉取,避免前后端硬编码漂移)
+export const listEvalDimensions = () => http.get('/ai/eval-dimensions')
+
+// 对话测评用例手工 CRUD
+export const createEvalQueryManual = (payload) => http.post('/ai/eval-queries/manual', payload)
+export const updateEvalQuery = (id, payload) => http.patch(`/ai/eval-queries/${id}`, payload)
+export const deleteEvalQuery = (id) => http.delete(`/ai/eval-queries/${id}`)
+
+// 测评任务(子分类:定制用例集合 + 整体执行 + 综合评价)
+export const listEvalTasks = (projectId) => http.get('/eval-tasks', { params: { project_id: projectId } })
+export const createEvalTask = (payload) => http.post('/eval-tasks', payload)
+export const updateEvalTask = (id, payload) => http.patch(`/eval-tasks/${id}`, payload)
+export const deleteEvalTask = (id) => http.delete(`/eval-tasks/${id}`)
+export const runEvalTask = (id, payload) => http.post(`/eval-tasks/${id}/run`, payload)
+export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
+
+export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, onError, signal } = {}) {
+  let resp
+  try {
+    resp = await fetch(`/api/eval-tasks/${taskId}/summarize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('tp_token') || ''}`,
+      },
+      body: JSON.stringify(payload),
+      signal,
+    })
+  } catch (e) {
+    onError?.(e.name === 'AbortError' ? '已取消' : '网络错误')
+    return
+  }
+  if (!resp.ok || !resp.body) {
+    let msg = `请求失败（${resp.status}）`
+    try { const j = await resp.json(); if (j?.msg) msg = j.msg } catch { /* 非 JSON 忽略 */ }
+    onError?.(msg)
+    return
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'))
+        if (!dataLine) continue
+        const jsonStr = dataLine.slice(5).trim()
+        if (!jsonStr) continue
+        let evt
+        try { evt = JSON.parse(jsonStr) } catch { continue }
+        if (evt.type === 'delta') onDelta?.(evt.text)
+        else if (evt.type === 'done') onDone?.(evt)
+        else if (evt.type === 'error') onError?.(evt.msg)
+      }
+    }
+  } catch (e) {
+    onError?.(e.name === 'AbortError' ? '已取消' : '读取流失败')
+  }
+}
+
 export const judgeEvalRun = (runId, provider) => http.post(`/eval-judge/${runId}`, { provider }, { timeout: 90000 })
 // 批量判定；payload: { project_id, run_ids?（空则判该项目所有 done）, provider? } → { judged, results:[...] }
 // 批量逐条同步判定，可能判很多条，放宽到 5 分钟。
