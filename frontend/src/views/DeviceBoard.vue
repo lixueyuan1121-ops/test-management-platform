@@ -54,6 +54,8 @@
           <div class="card-hd">
             <span class="light" :class="d.online ? 'on' : 'off'"></span>
             <div class="dev-name" :title="d.name">{{ d.name }}</div>
+            <!-- 正在执行的任务类型标识(去重):功能测试/测评任务/…(未知类型显示原文,便于扩展) -->
+            <span v-for="k in runKinds(d)" :key="k" class="kind-tag" :class="'k-' + k">{{ KIND_LABEL[k] || k }}</span>
             <div class="runner-id">{{ d.runner_id }}</div>
             <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain" class="plat-tag">{{ d.platform.toUpperCase() }}</el-tag>
           </div>
@@ -81,8 +83,9 @@
 
           <!-- 执行中明细：当前正在跑的用例（非批次/非历史），最多展示 3 条，超出汇总 -->
           <div v-if="d.active_runs.length" class="active">
-            <div v-for="r in d.active_runs.slice(0, 3)" :key="r.run_id" class="run">
-              <span class="run-pip"></span>
+            <div v-for="r in d.active_runs.slice(0, 3)" :key="(r.kind || 'func') + r.run_id" class="run">
+              <span class="run-pip" :class="{ 'pip-eval': r.kind === 'eval' }"></span>
+              <span class="run-kind" :class="'k-' + (r.kind || 'func')">{{ KIND_SHORT[r.kind] || r.kind || '功能' }}</span>
               <span class="run-title" :title="r.title">{{ r.title }}</span>
               <span class="run-time">{{ fmtElapsed(r.started_at) }}</span>
             </div>
@@ -106,6 +109,12 @@ const ONLINE_STATE = { online_devices: 0, total_devices: 0, running_devices: 0, 
 const ov = ref({ ...ONLINE_STATE })
 const loading = ref(true)
 const lastAt = ref('—')
+
+// 执行类型标识:后端 active_runs[].kind → 展示文案(卡片头全称/明细行短标)。
+// 老数据无 kind 按 func 兜底;未知新类型直接显示原文,后端扩展类型时前端无需先行发版。
+const KIND_LABEL = { func: '功能测试', eval: '测评任务' }
+const KIND_SHORT = { func: '功能', eval: '测评' }
+const runKinds = (d) => [...new Set((d.active_runs || []).map((r) => r.kind || 'func'))]
 
 // 每秒 tick：驱动时钟与"执行中"计时器（用统一 now 让所有卡片同步跳动）
 const now = ref(Date.now())
@@ -239,6 +248,12 @@ onUnmounted(() => {
 .dev-name { font-size: 15px; font-weight: 700; color: #1a1d21; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .runner-id { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #7d8a9b; background: #f0f2f5; padding: 2px 7px; border-radius: 5px; flex: none; }
 .plat-tag { margin-left: 4px; flex: none; }
+/* 任务类型标识:卡片头全称 tag + 明细行短标。功能=蓝系、测评=紫系;新类型在 KIND_* 与此处补一组即可 */
+.kind-tag { flex: none; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 5px; letter-spacing: .5px; }
+.run-kind { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; letter-spacing: .3px; }
+.k-func { background: #e8f1fb; color: #2f7dd1; }
+.k-eval { background: #f1ebfa; color: #7a4fd0; }
+.pip-eval { background: #7a4fd0; }
 .meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: #8b98a9; }
 .meta .seen { font-family: 'JetBrains Mono', monospace; color: #9aa5b1; }
 

@@ -8,6 +8,7 @@
 沿用全项目约定:{code,msg,data} 信封(ok)、手写 _to_out、用户 JWT(get_current_user)。
 归属:一切操作只作用于 owner_id==当前用户 的设备(平台管理员不特殊,设备是私人的)。
 """
+import json
 import secrets
 from datetime import datetime, timedelta
 
@@ -17,8 +18,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_platform_admin
+from app.core.enums import EvalRunStatus
 from app.db.session import get_db
-from app.models import ExecRun, Project, RunnerDevice, TestCase, User
+from app.models import EvalRun, ExecRun, Project, RunnerDevice, TestCase, User
 from app.schemas.common import ok
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -116,6 +118,11 @@ def delete_device(device_id: int, db: Session = Depends(get_db), user: User = De
 
 _COUNT_STATUSES = ("running", "pending", "passed", "failed", "blocked")
 
+# eval_run 状态并入看板计数的归一映射:running/pending 原样(设备忙闲口径);done/judged 归 passed、
+# failed 归 failed(取"执行成败",判定结论不在看板范畴)。judging 是服务端大模型判定、不占设备,不计。
+_EVAL_STATUS_MAP = {"pending": "pending", "running": "running",
+                    "done": "passed", "judged": "passed", "failed": "failed"}
+
 
 def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
                          counts: dict, today: dict, active: list) -> dict:
@@ -150,10 +157,12 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
 def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """全平台设备只读看板聚合(所有注册用户可查看)。
 
-    一次性返回:全量设备 + owner + 在线状态 + 各状态 exec_run 计数 + 今日终态 + 执行中明细。
+    一次性返回:全量设备 + owner + 在线状态 + 各状态 run 计数 + 今日终态 + 执行中明细。
+    计数与明细合并两类执行:功能测试(exec_run)与对话测评(eval_run,状态经 _EVAL_STATUS_MAP 归一);
+    明细每条带 kind 类型标识(func/eval,新执行类型在收集处追加即可扩展)。
     前端定时轮询本端点渲染看板(无任何写操作)。
 
-    关联口径:exec_run 按 `runner`(字符串,= runner_id)归拢——沿用现有下发/拉取的
+    关联口径:exec_run/eval_run 均按 `runner`(字符串,= runner_id)归拢——沿用现有下发/拉取的
     runner_id 字符串匹配口径。若两名成员登记了同名 runner_id,其执行计数会合并(既有数据
     模型的固有限制,不在本只读看板内区分)。
     """
@@ -166,13 +175,21 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         db.query(User.id, User.name).filter(User.id.in_(owner_ids)).all()
     ) if owner_ids else {}
 
-    # 全量计数:group by (runner, status)
+    # 全量计数:group by (runner, status)——功能测试 + 对话测评(状态归一后)累加
     counts_by_runner: dict[str, dict] = {}
     for runner, st, cnt in (
         db.query(ExecRun.runner, ExecRun.status, func.count(ExecRun.id))
         .group_by(ExecRun.runner, ExecRun.status).all()
     ):
         counts_by_runner.setdefault(runner, {})[getattr(st, "value", st)] = cnt
+    for runner, st, cnt in (
+        db.query(EvalRun.runner, EvalRun.status, func.count(EvalRun.id))
+        .group_by(EvalRun.runner, EvalRun.status).all()
+    ):
+        key = _EVAL_STATUS_MAP.get(getattr(st, "value", st))
+        if key:
+            m = counts_by_runner.setdefault(runner, {})
+            m[key] = m.get(key, 0) + cnt
 
     # 今日计数:同上但限定 created_at 为当天
     today_by_runner: dict[str, dict] = {}
@@ -182,9 +199,19 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         .group_by(ExecRun.runner, ExecRun.status).all()
     ):
         today_by_runner.setdefault(runner, {})[getattr(st, "value", st)] = cnt
+    for runner, st, cnt in (
+        db.query(EvalRun.runner, EvalRun.status, func.count(EvalRun.id))
+        .filter(func.date(EvalRun.created_at) == now.date())
+        .group_by(EvalRun.runner, EvalRun.status).all()
+    ):
+        key = _EVAL_STATUS_MAP.get(getattr(st, "value", st))
+        if key:
+            m = today_by_runner.setdefault(runner, {})
+            m[key] = m.get(key, 0) + cnt
 
-    # 执行中明细:join Project/TestCase 取名字;按 runner 归拢(每设备截断 ACTIVE_RUNS_LIMIT)
-    active_by_runner: dict[str, list] = {}
+    # 执行中明细:功能测试(kind=func) + 对话测评(kind=eval)合并;新执行类型在此追加收集即可扩展。
+    # 统一按开始时间排序后再按 runner 截断(ACTIVE_RUNS_LIMIT),并发混跑时两类不偏科。
+    all_active: list[tuple[str, dict]] = []   # (runner, item)
     running_rows = (
         db.query(ExecRun, Project.name, TestCase.title)
         .outerjoin(Project, Project.id == ExecRun.project_id)
@@ -193,18 +220,43 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         .order_by(ExecRun.created_at).all()
     )
     for r, proj_name, tc_title in running_rows:
-        lst = active_by_runner.setdefault(r.runner, [])
-        if len(lst) >= ACTIVE_RUNS_LIMIT:
-            continue
         elapsed = int((now - r.created_at).total_seconds() * 1000) if r.created_at else None
-        lst.append({
+        all_active.append((r.runner, {
             "run_id": r.id,
+            "kind": "func",
             "title": tc_title or "(无用例快照)",
             "project": r.project_id,          # 项目 id(测试契约)
             "project_name": proj_name,        # 项目名(前端展示用)
             "started_at": r.created_at.isoformat() if r.created_at else None,
             "elapsed_ms": elapsed,
-        })
+        }))
+    eval_running_rows = (
+        db.query(EvalRun, Project.name)
+        .outerjoin(Project, Project.id == EvalRun.project_id)
+        .filter(EvalRun.status == EvalRunStatus.running)
+        .order_by(EvalRun.created_at).all()
+    )
+    for r, proj_name in eval_running_rows:
+        try:
+            payload = json.loads(r.payload) if r.payload else {}
+        except (ValueError, TypeError):
+            payload = {}
+        elapsed = int((now - r.created_at).total_seconds() * 1000) if r.created_at else None
+        all_active.append((r.runner, {
+            "run_id": r.id,
+            "kind": "eval",
+            "title": payload.get("title") or payload.get("prompt") or f"测评 run#{r.id}",
+            "project": r.project_id,
+            "project_name": proj_name,
+            "started_at": r.created_at.isoformat() if r.created_at else None,
+            "elapsed_ms": elapsed,
+        }))
+    all_active.sort(key=lambda t: t[1]["started_at"] or "")
+    active_by_runner: dict[str, list] = {}
+    for runner, item in all_active:
+        lst = active_by_runner.setdefault(runner, [])
+        if len(lst) < ACTIVE_RUNS_LIMIT:
+            lst.append(item)
 
     out = []
     online_cnt = 0
