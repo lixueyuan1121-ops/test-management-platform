@@ -26,6 +26,13 @@
           <el-option v-for="dev in clientDevices" :key="dev.vm_id"
             :label="`${dev.name || dev.vm_id}${(dev.status==='online'||dev.status==='active')?' 🟢':' ⚪'}`" :value="dev.vm_id" />
         </el-select>
+        <el-select v-model="chosenChatMode" size="small" style="width:200px" clearable placeholder="对话模式(默认)">
+          <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
+        </el-select>
+        <el-input v-model="chosenModel" size="small" style="width:220px" clearable :placeholder="MODEL_PLACEHOLDER" />
+        <el-select v-model="chosenDepth" size="small" style="width:130px" clearable placeholder="思考深度(默认)">
+          <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
+        </el-select>
         <el-button type="success" size="small" :loading="dispatching" :disabled="!chosenRunner" @click="dispatch">
           下发选中到执行机
         </el-button>
@@ -58,6 +65,7 @@ import { Collection } from '@element-plus/icons-vue'
 import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions } from '@/utils/dialogOptions'
 
 // 维度:服务端注册表为准(onMounted 拉取),失败用内置兜底
 const DIMENSIONS = ref([
@@ -87,6 +95,10 @@ const chosenRunner = ref('')
 const clientDevices = ref([])
 const chosenDevice = ref('')
 const dispatching = ref(false)
+// 对话选项(三项全空=不指定,客户端保持页面默认)
+const chosenChatMode = ref('')
+const chosenModel = ref('')
+const chosenDepth = ref('')
 
 const sorted = computed(() => [...queries.value].sort((a, b) =>
   String(a.conversation_group || '').localeCompare(String(b.conversation_group || '')) || (a.turn_index ?? 0) - (b.turn_index ?? 0)))
@@ -124,6 +136,9 @@ async function dispatch() {
     const res = await enqueueEvalQueries({
       project_id: pid.value, runner: chosenRunner.value, target_engine: 'namiwork',
       target_device: chosenDevice.value || null, eval_query_ids: selected.value.map(q => q.id),
+      dialog_options: buildDialogOptions({
+        chatMode: chosenChatMode.value, model: chosenModel.value, thinkingDepth: chosenDepth.value,
+      }),
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
   } catch { /* 拦截器已提示 */ }
@@ -138,7 +153,7 @@ async function dispatch() {
 .title-icon { font-size: 24px; color: #00b386; }
 .title { font-size: 16px; font-weight: 600; color: #1f2d3d; }
 .subtitle { font-size: 12px; color: #8a94a6; margin-top: 2px; }
-.dispatch-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.dispatch-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .sel-info { font-weight: 600; color: #00926e; font-size: 13px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #5a6b7b; }

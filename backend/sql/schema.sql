@@ -381,6 +381,7 @@ CREATE TABLE `eval_task` (
   `name` VARCHAR(128) NOT NULL,
   `description` TEXT NULL,
   `query_ids` TEXT NULL,
+  `dialog_options` TEXT NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'draft',
   `last_batch_id` VARCHAR(32) NULL,
   `summary_html` TEXT NULL,

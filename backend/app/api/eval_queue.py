@@ -28,16 +28,38 @@ def _new_batch_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
-def _payload_of(q: EvalQuery) -> dict:
+_DIALOG_OPTION_KEYS = ("model", "chatMode", "thinkingDepth")
+
+
+def _clean_dialog_options(raw: dict | None) -> dict:
+    """清洗下发时指定的对话选项:只留三个已知键、值须为非空字符串(截 64 字符防超长)。
+
+    chatMode/thinkingDepth 的值必须与被测客户端页面下拉选项文案一致(执行器按文本匹配点选,
+    见 qalab-runner eval config: 智能模式/计划模式/目标模式;低/中/标准/高/超高),此处不枚举校验,
+    客户端选项改文案时免于两头同步——点不中仅告警不阻断(见 dialog-runner._pickDropdownOption)。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k in _DIALOG_OPTION_KEYS:
+        v = raw.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()[:64]
+    return out
+
+
+def _payload_of(q: EvalQuery, dialog_options: dict | None = None) -> dict:
     """下发 payload 快照:执行器驱动对话要用的字段(避免执行时配置漂移)。
-    dimension 一并快照:执行器不用,但结果页/判定按下发那一刻的维度展示与聚焦。"""
+    dimension 一并快照:执行器不用,但结果页/判定按下发那一刻的维度展示与聚焦。
+    dialog_options:下发时用户指定的优先(整份替换),否则用题面存量(生成侧刻意留空,通常为 {})。"""
     return {
         "eval_query_id": q.id,
         "title": q.title,
         "prompt": q.prompt,
         "dimension": q.dimension,
         "attachments": json.loads(q.attachments) if q.attachments else [],
-        "dialog_options": json.loads(q.dialog_options) if q.dialog_options else {},
+        "dialog_options": dialog_options if dialog_options
+        else (json.loads(q.dialog_options) if q.dialog_options else {}),
         "conversation_group": q.conversation_group,
         "turn_index": q.turn_index,
     }
@@ -126,6 +148,7 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"测评题 {qid} 不属于该项目")
     created = []
     batch_id = _new_batch_id()
+    opts = _clean_dialog_options(body.dialog_options)
     for qid in ids:
         q = found[qid]
         row = EvalRun(
@@ -133,7 +156,7 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
             runner=body.runner, target_engine=body.target_engine,
             target_device=body.target_device,
             device_kind=EvalDeviceKind.desktop,
-            status=EvalRunStatus.pending, payload=json.dumps(_payload_of(q), ensure_ascii=False),
+            status=EvalRunStatus.pending, payload=json.dumps(_payload_of(q, opts), ensure_ascii=False),
             enqueued_by=user.id,
         )
         db.add(row); db.flush(); created.append(row.id)

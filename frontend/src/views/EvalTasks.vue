@@ -31,6 +31,12 @@
         <el-table-column label="用例数" width="80" align="center">
           <template #default="{ row }"><span class="mono">{{ row.query_ids.length }}</span></template>
         </el-table-column>
+        <el-table-column label="对话选项" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="fmtDialogOptions(row.dialog_options)" class="opts">{{ fmtDialogOptions(row.dialog_options) }}</span>
+            <span v-else class="muted">默认</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="TS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ TS_LABEL[row.status] || row.status }}</el-tag>
@@ -133,6 +139,19 @@
             <el-option v-for="dev in clientDevices" :key="dev.vm_id" :label="`${dev.name || dev.vm_id}${(dev.status==='online'||dev.status==='active')?' 🟢':' ⚪'}`" :value="dev.vm_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="对话模式">
+          <el-select v-model="runForm.chat_mode" clearable style="width:100%" placeholder="留空=客户端默认">
+            <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="模型">
+          <el-input v-model="runForm.model" clearable :placeholder="MODEL_PLACEHOLDER" />
+        </el-form-item>
+        <el-form-item label="思考深度">
+          <el-select v-model="runForm.thinking_depth" clearable style="width:100%" placeholder="留空=客户端默认">
+            <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
+          </el-select>
+        </el-form-item>
         <el-alert type="info" :closable="false" show-icon
           :title="`将下发 ${runTask?.query_ids?.length || 0} 条用例到执行机;重复执行会生成新批次,综合评价需重新生成`" />
       </el-form>
@@ -148,6 +167,7 @@
         <div class="d-meta">
           <el-tag :type="TS_TYPE[detail.task.status] || 'info'" effect="plain">{{ TS_LABEL[detail.task.status] || detail.task.status }}</el-tag>
           <span v-if="detail.task.last_batch_id" class="mono">批次 {{ detail.task.last_batch_id }}</span>
+          <span v-if="fmtDialogOptions(detail.task.dialog_options)" class="opts">{{ fmtDialogOptions(detail.task.dialog_options) }}</span>
           <span class="muted">{{ detail.task.description || '' }}</span>
           <div class="d-actions">
             <el-button size="small" :icon="Refresh" @click="refreshDetail">刷新</el-button>
@@ -219,6 +239,7 @@ import {
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions } from '@/utils/dialogOptions'
 
 const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', archived: '已归档' }
 const TS_TYPE = { draft: 'info', running: 'warning', done: 'success', archived: 'info' }
@@ -258,7 +279,7 @@ const customSaving = ref(false)
 // 执行
 const runVisible = ref(false)
 const runTask = ref(null)
-const runForm = ref({ runner: '', target_device: '' })
+const runForm = ref({ runner: '', target_device: '', chat_mode: '', model: '', thinking_depth: '' })
 const devices = ref([])
 const clientDevices = ref([])
 const running = ref(false)
@@ -357,6 +378,11 @@ async function removeTask(row) {
 async function openRun(row) {
   if (!row.query_ids.length) { ElMessage.warning('任务内还没有用例，先编辑添加'); return }
   runTask.value = row
+  // 回填该任务最近一次执行的对话选项(没有则清空=默认)
+  const d = row.dialog_options || {}
+  runForm.value.chat_mode = d.chatMode || ''
+  runForm.value.model = d.model || ''
+  runForm.value.thinking_depth = d.thinkingDepth || ''
   runVisible.value = true
   if (runForm.value.runner) await loadClientDevices()
 }
@@ -375,6 +401,9 @@ async function doRun() {
       runner: runForm.value.runner,
       target_engine: 'namiwork',
       target_device: runForm.value.target_device || null,
+      dialog_options: buildDialogOptions({
+        chatMode: runForm.value.chat_mode, model: runForm.value.model, thinkingDepth: runForm.value.thinking_depth,
+      }),
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条（批次 ${res.batch_id}）`)
     runVisible.value = false
@@ -441,6 +470,7 @@ function genSummary() {
 .tname { color: #00926e; cursor: pointer; }
 .tname:hover { text-decoration: underline; }
 .batch { line-height: 1.5; color: #5a6b7b; }
+.opts { color: #5a6b7b; font-size: 12px; }
 /* 用例选择 */
 .qpick { width: 100%; }
 .qpick-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; color: #5a6b7b; }

@@ -123,6 +123,8 @@ class EvalTask(Base):
     name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     query_ids: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [eval_query_id, ...] 有序
+    # 最近一次执行时指定的对话选项 JSON({model?,chatMode?,thinkingDepth?});NULL=默认。列表展示+再执行回填。
+    dialog_options: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[EvalTaskStatus] = mapped_column(
         Enum(EvalTaskStatus, length=16), default=EvalTaskStatus.draft, server_default="draft"
     )

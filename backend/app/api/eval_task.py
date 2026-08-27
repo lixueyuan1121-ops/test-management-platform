@@ -81,6 +81,7 @@ def _to_out(task: EvalTask, db: Session) -> dict:
         "name": task.name,
         "description": task.description,
         "query_ids": qids,
+        "dialog_options": json.loads(task.dialog_options) if task.dialog_options else None,
         "status": getattr(task.status, "value", task.status),
         "last_batch_id": task.last_batch_id,
         "summary_html": task.summary_html,
@@ -172,12 +173,14 @@ class EvalTaskRunIn(BaseModel):
     runner: str = Field(..., max_length=64)
     target_engine: str = Field("namiwork", max_length=32)
     target_device: str | None = Field(None, max_length=64)
+    # 本次执行统一指定的对话选项 {model?,chatMode?,thinkingDepth?}；None/空=客户端默认
+    dialog_options: dict | None = None
 
 
 @router.post("/{task_id}/run")
 def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """把任务内全部用例入 eval_run 队列(盖 eval_task_id + 新批次),复用 eval-queue 的下发口径。"""
-    from app.api.eval_queue import _new_batch_id, _payload_of
+    from app.api.eval_queue import _clean_dialog_options, _new_batch_id, _payload_of
     from app.core.enums import EvalDeviceKind
 
     task = db.get(EvalTask, task_id)
@@ -195,6 +198,7 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
 
     batch_id = _new_batch_id()
     created = []
+    opts = _clean_dialog_options(body.dialog_options)
     for qid in qids:
         q = found[qid]
         row = EvalRun(
@@ -204,12 +208,14 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
             target_device=body.target_device,
             device_kind=EvalDeviceKind.desktop,
             status=EvalRunStatus.pending,
-            payload=json.dumps(_payload_of(q), ensure_ascii=False),
+            payload=json.dumps(_payload_of(q, opts), ensure_ascii=False),
             enqueued_by=user.id,
         )
         db.add(row); db.flush(); created.append(row.id)
     task.last_batch_id = batch_id
     task.status = EvalTaskStatus.running
+    # 记录本次执行的对话选项(列表展示+下次执行回填);没指定则清空=默认,始终反映最近一次执行
+    task.dialog_options = json.dumps(opts, ensure_ascii=False) if opts else None
     # 换批执行后旧综合评价作废(针对旧批次)
     task.summary_status = None
     db.commit()

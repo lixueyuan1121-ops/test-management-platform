@@ -424,6 +424,11 @@ def ensure_eval_task_tables() -> None:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN eval_task_id BIGINT NULL"))
         _ensure_index("eval_run", "idx_evalrun_task", "eval_task_id")
+    # eval_task 补 dialog_options 列(最近一次执行的对话选项快照;建表早于该字段的老库走 ALTER)
+    tcols = _columns("eval_task")
+    if tcols and "dialog_options" not in tcols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN dialog_options TEXT NULL"))
 
 
 def ensure_platform_columns() -> None:
