@@ -127,11 +127,12 @@ export function createGuiCore(opts = {}) {
 
   let browser = null;
   let page = null;
+  let ctx = null;   // BrowserContext — 与 browser/page 同生命周期; mockRoute/unmockRoute 需要 context 级拦截
 
   async function ensureConnected() {
     if (browser && browser.isConnected() && page && !page.isClosed()) return;
     browser = await chromium.connectOverCDP(CDP_URL);
-    const ctx = browser.contexts()[0] || (await browser.newContext());
+    ctx = browser.contexts()[0] || (await browser.newContext());
     // 冷启动竞态:CDP 端口先活、渲染进程的页面 target 后注册,刚连上时 ctx.pages() 可能仍空。
     // 此时若直接 ctx.newPage() 会撞 Electron 的 Target.createTarget: Not supported(不支持建 target),
     // 导致冷启动首条用例复位失败。故轮询等页面 target 出现(≤PAGE_READY_TIMEOUT),拿到就用;
@@ -571,6 +572,10 @@ export function createGuiCore(opts = {}) {
     // urlPattern: glob 模式，如 "**/api/tasks" 或 "**/api/**"。
     // body: 将被 JSON.stringify 后作为响应体，contentType 固定 application/json。
     // status: HTTP 状态码，默认 200。
+    // 用 ctx.route（BrowserContext 级）而非 page.route：
+    //   Electron 客户端业务逻辑在嵌套 iframe（<vm_id>.work.n.cn）里发起 fetch，
+    //   page.route 只拦截顶层 Page 的请求，不覆盖跨域 iframe 内的请求；
+    //   ctx.route 覆盖整个 BrowserContext 下所有 Frame，才能真正拦截到 iframe 内请求。
     // 多次调用同一 pattern 会叠加；用 unmockRoute 清除。
     async mockRoute(args) {
       await ensureConnected();
@@ -578,7 +583,7 @@ export function createGuiCore(opts = {}) {
       if (!pattern) throw new Error("mockRoute: 缺少 url（glob 模式，如 **/api/tasks）");
       const status = Number(args.status ?? 200);
       const body = JSON.stringify(args.body ?? {});
-      await page.route(pattern, (route) => {
+      await ctx.route(pattern, (route) => {
         route.fulfill({ status, contentType: "application/json", body });
       });
       return { mocked: pattern, status };
@@ -588,7 +593,7 @@ export function createGuiCore(opts = {}) {
       await ensureConnected();
       const pattern = String(args.url || "");
       if (!pattern) throw new Error("unmockRoute: 缺少 url");
-      await page.unroute(pattern);
+      await ctx.unroute(pattern);
       return { unrouted: pattern };
     },
     async close() {

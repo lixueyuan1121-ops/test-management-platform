@@ -297,8 +297,10 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
      · **权限不足**：mock 返回 {{"code":403,"msg":"无权限"}}，验证无权限时的降级展示
      · **字段缺失**：mock 返回缺少部分字段的对象，验证前端容错（不崩溃、字段缺失时有兜底展示）
      · mock_route 必须在用例结尾前加 unmock_route 还原，避免影响后续用例
-     正例(mock空状态,gui)：connect → click(navTasks) → mock_route(**/api/tasks,{code:0,data:[]}) → wait_for(任务列表锚点) → assert_text("暂无数据",contains) → unmock_route(**/api/tasks)
-     正例(mock报错,gui)：connect → click(navTasks) → mock_route(**/api/tasks,status=500) → wait_for(错误提示锚点) → assert_visible(错误提示) → unmock_route(**/api/tasks)
+     正例(mock空状态,gui)：connect → mock_route(**/api/tasks) → click(navTasks) → wait_for(任务列表锚点) → assert_text("暂无数据",contains) → unmock_route(**/api/tasks)
+     正例(mock报错,gui)：connect → mock_route(**/api/tasks,status=500) → click(navTasks) → wait_for(错误提示锚点) → assert_visible(错误提示) → unmock_route(**/api/tasks)
+     **mock 时序（重要）**：mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束；若断言依赖首屏接口数据，正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert，而非 connect → click → mock_route（拦截器注册晚于请求，必然无效）。
+     **时间敏感文本（重要）**：问候语时间段前缀（早上好/下午好/晚上好等）由客户端按本地时间实时计算，断言中**严禁**写死时间段，否则非对应时段执行必然失败。只断言稳定部分，如称呼"小马"（contains），或断言不含默认文案（negate）。
 {keys_block}
 7. {_API_SCRIPT_SPEC}
 {api_contract_block}
@@ -375,6 +377,8 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
      · **权限不足**:mock 返回 {{"code":403,"msg":"无权限"}},验证无权限时的降级展示
      · **字段缺失**:mock 返回缺少部分字段的对象,验证前端容错(不崩溃、有兜底展示)
      · mock_route 必须在用例结尾前加 unmock_route 还原,避免影响后续用例
+     **mock 时序（重要）**：mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束；若断言依赖首屏接口数据，正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert，而非 connect → click → mock_route（拦截器注册晚于请求，必然无效）。
+     **时间敏感文本（重要）**：问候语时间段前缀（早上好/下午好/晚上好等）由客户端按本地时间实时计算，断言中**严禁**写死时间段，否则非对应时段执行必然失败。只断言稳定部分，如称呼"小马"（contains），或断言不含默认文案（negate）。
 3. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
