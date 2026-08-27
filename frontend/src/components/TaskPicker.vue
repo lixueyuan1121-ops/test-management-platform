@@ -6,9 +6,9 @@
     size="small"
     clearable
     filterable
-    fit-input-width
     :filter-method="filterMethod"
     :style="{ width: width }"
+    :popper-class="'tp-popper'"
     @update:model-value="(v) => $emit('update:modelValue', v)"
     @change="(v) => $emit('change', v)"
     @visible-change="(v) => { if (v) kw = '' }"
@@ -69,8 +69,14 @@ const groups = computed(() => {
 </script>
 
 <style scoped>
-.tp-opt { display: flex; align-items: center; gap: 8px; }
+.tp-opt { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .tp-tag { flex: none; }
 .tp-date { flex: none; color: #90a4ae; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
-.tp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+
+<!-- 弹出层全局样式：宽度自适应内容，最小不小于触发器，最大不超出视口 -->
+<style>
+.tp-popper { min-width: 280px !important; max-width: min(540px, 90vw) !important; width: auto !important; }
+.tp-popper .el-select-dropdown__item { max-width: none; }
 </style>
