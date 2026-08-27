@@ -9,13 +9,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
+import { rectIntersect } from "./probe-collect.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
 // 页面探测脚本(浏览器 context 内执行):扫可见可交互元素 + 按稳定性打分的候选选择器。
-export const DISCOVER_SCRIPT = function () {
+export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
   const isVisible = (el) => {
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
@@ -47,19 +48,35 @@ export const DISCOVER_SCRIPT = function () {
     if (type) cands.push({ sel: `${tag}[type="${type}"]`, score: 30, by: "css", value: `${tag}[type="${type}"]` });
     return cands.sort((a, b) => b.score - a.score);
   };
-  const sel = "a, button, [role=button], [role=tab], [role=menuitem], input, textarea, select, [contenteditable=true], [onclick], [class*=btn], [class*=action], [class*=nav__item], [class*=menu-item]";
-  const set = new Set(document.querySelectorAll(sel));
-  for (const el of document.querySelectorAll("body *")) {
-    if (set.has(el)) continue;
-    try { if (getComputedStyle(el).cursor === "pointer") set.add(el); } catch { /* 忽略 */ }
-  }
-  const elements = [...set].filter((el) => {
-    const t = (el.innerText || "").trim();
-    for (let p = el.parentElement; p; p = p.parentElement) {
-      if (set.has(p) && (p.innerText || "").trim() === t) return false;
+  // 递归收集所有元素,穿透 open shadowRoot(与 probe-collect.mjs 的 collectDeep 同款,evaluate 内不能 import 故内联)。
+  const collectDeep = (root) => {
+    const acc = [];
+    for (const el of root.querySelectorAll("*")) {
+      acc.push(el);
+      if (el.shadowRoot) { for (const s of collectDeep(el.shadowRoot)) acc.push(s); }
     }
-    return true;
-  });
+    return acc;
+  };
+  const all = collectDeep(document);
+  let elements;
+  if (relax) {
+    // 框选放宽:框内全量——不套白名单、不做父级去重、不判 cursor;只留可见(有候选在末尾筛)。
+    elements = all;
+  } else {
+    // 全页扫描:白名单选择器 + cursor:pointer 补充,再按父级同文本去重(原逻辑,但采集根已穿 shadow)。
+    const sel = "a, button, [role=button], [role=tab], [role=menuitem], input, textarea, select, [contenteditable=true], [onclick], [class*=btn], [class*=action], [class*=nav__item], [class*=menu-item]";
+    const set = new Set();
+    for (const el of all) {
+      try { if (el.matches(sel) || getComputedStyle(el).cursor === "pointer") set.add(el); } catch { /* 忽略 */ }
+    }
+    elements = [...set].filter((el) => {
+      const t = (el.innerText || "").trim();
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (set.has(p) && (p.innerText || "").trim() === t) return false;
+      }
+      return true;
+    });
+  }
   const out = [];
   for (const el of elements) {
     if (!isVisible(el)) continue;
@@ -257,7 +274,9 @@ export function createGuiCore(opts = {}) {
     listKeys() {
       return { count: Object.keys(REGISTRY).length, keys: Object.entries(REGISTRY).map(([k, v]) => ({ key: k, frame: v.frame, desc: v.desc })) };
     },
-    async probe({ contains = "", limit = 40, screenshot = false } = {}) {
+    async probe({ contains = "", bbox = null, limit = 0, screenshot = false } = {}) {
+      const relax = !!bbox;               // 框选：放宽采集(穿透+不过滤白名单/去重)
+      const cap = limit || (bbox ? 200 : 40);   // 框选放宽后可能多，放大上限
       await ensureConnected();
       // 多级页面:遍历页面所有 frame(Playwright 的 page.frames() 已含任意深度的嵌套 iframe),
       // 逐 frame 跑发现脚本。主框架标 shell;主 vm iframe(.work.n.cn)标 vm;其余嵌套 iframe 标 iframe。
@@ -301,7 +320,7 @@ export function createGuiCore(opts = {}) {
         }
         let els = [];
         try {
-          els = await target.evaluate(DISCOVER_SCRIPT);
+          els = await target.evaluate(DISCOVER_SCRIPT, { relax });
         } catch (e) {
           // 跨域/已卸载的 frame evaluate 会抛错;记为一组错误、跳过,不中断其它 frame。
           groups.push({ frame, frameMatch: fmatch, url: target.url(), error: e.message, elements: [] });
@@ -313,8 +332,10 @@ export function createGuiCore(opts = {}) {
         for (const el of els) {
           if (el.rect) { el.absRect = { x: frameBox.x + el.rect.x + mainScroll.x, y: frameBox.y + el.rect.y + mainScroll.y, w: el.rect.w, h: el.rect.h }; if (approx) el.absApprox = true; }
         }
+        // 框选:按整页绝对坐标与 bbox 求交筛选(absRect 已就绪,含 iframe 偏移;absApprox 的近似框也参与)。
+        if (bbox) els = els.filter((e) => rectIntersect(e.absRect, bbox));
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
-        if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, limit) });
+        if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, cap) });
       }
       return { groups, pageSize, screenshotBuffer };
     },
