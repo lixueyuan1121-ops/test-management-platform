@@ -137,9 +137,9 @@ def _mount_uploads(app: FastAPI) -> None:
 def _mount_frontend(app: FastAPI) -> None:
     """托管前端构建产物（frontend/dist）。
 
-    dist 不入库（见根 .gitignore）：docker 部署由 frontend 容器自行 npm run build 并经
-    nginx 托管；若要用 uvicorn 单进程同源托管（`/` 页面 + `/api` 接口），需在该机器先
-    `cd frontend && npm run build` 生成 dist。dist 不存在时静默跳过（纯后端开发用 vite dev + 代理）。
+    前端在开发机用 `npm run build` 生成 dist 并提交入库；服务器无需 Node，
+    uvicorn 单进程即可同源服务页面(`/`)与接口(`/api`)。dist 不存在时静默跳过
+    （纯本地后端开发仍可用 vite dev + 代理）。
     """
     # app/main.py -> app -> backend -> 仓库根 -> frontend/dist
     dist_dir = os.path.join(
