@@ -6,6 +6,8 @@
 版本号 = 打包清单内所有文件 (相对路径, mtime_ns, size) 的 sha256 前 8 位:
 不需要人工维护版本号,服务器 git pull 后文件一变,版本随之变化。
 打包排除运行时本地产物与机器私有配置(.env/node_modules/evidence 等),
+也排除启动脚本(run.sh/run.cmd/run-eval.*)——它们由人工分发,用户会在本机
+填入真实 RUNNER_TOKEN 等配置,绝不能被升级包的仓库占位版覆盖;
 runner 端解压覆盖时同样绝不触碰本机 .env 与 node_modules。
 """
 import hashlib
@@ -27,7 +29,12 @@ _RUNNER_DIR = os.path.join(_REPO_ROOT, "tools", "qalab-runner")
 
 # 排除规则：目录名（任意层级命中即剪枝）与文件名模式
 _EXCLUDE_DIRS = {"node_modules", "evidence", "eval", "cases", "platform", "__pycache__", ".git", ".remember"}
-_EXCLUDE_FILES = {".env", ".DS_Store", "selectors.json.bak", ".runner-version"}
+# 启动脚本走人工分发、.mjs 走升级通道：run.cmd/run.sh 内含用户手工填入的
+# RUNNER_TOKEN 等本机配置，若进包会被 Expand-Archive -Force 用占位版覆盖 → 静默 401。
+_EXCLUDE_FILES = {
+    ".env", ".DS_Store", "selectors.json.bak", ".runner-version",
+    "run.sh", "run.cmd", "run-eval.sh", "run-eval.cmd",
+}
 _EXCLUDE_SUFFIXES = (".test.mjs", ".zip", ".log")
 
 
