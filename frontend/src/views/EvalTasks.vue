@@ -180,10 +180,20 @@
           </div>
         </div>
 
-        <el-table :data="detail.runs" size="small" border stripe class="d-table">
-          <el-table-column prop="run_id" label="#" width="60" align="center" />
+        <el-table :data="groupedDetailRuns" size="small" border stripe class="d-table"
+          row-key="run_id" :tree-props="{ children: 'children' }">
+          <el-table-column label="#" width="80" align="center">
+            <template #default="{ row }">
+              <span v-if="row.isGroup" class="muted">会话组</span>
+              <span v-else>{{ row.run_id }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="用例" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.payload?.title || row.payload?.prompt || `query#${row.eval_query_id}` }}</template>
+            <template #default="{ row }">
+              <el-tag v-if="row.isGroup" size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>
+              <el-tag v-else-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>
+              {{ row.payload?.title || row.payload?.prompt || `query#${row.eval_query_id}` }}
+            </template>
           </el-table-column>
           <el-table-column label="维度" width="104" align="center">
             <template #default="{ row }">
@@ -213,7 +223,7 @@
           </el-table-column>
           <el-table-column label="操作" width="96" align="center">
             <template #default="{ row }">
-              <el-popconfirm v-if="row.status === 'running' || row.status === 'pending'"
+              <el-popconfirm v-if="!row.isGroup && (row.status === 'running' || row.status === 'pending')"
                 title="标记为执行失败？(会话未回填/执行中断时用于收口)" width="240" @confirm="markFailed(row)">
                 <template #reference><el-button size="small" type="danger" text>标记失败</el-button></template>
               </el-popconfirm>
@@ -249,6 +259,7 @@ import {
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions } from '@/utils/dialogOptions'
+import { groupEvalRuns } from '@/utils/evalRunGroups'
 
 const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', archived: '已归档' }
 const TS_TYPE = { draft: 'info', running: 'warning', done: 'success', archived: 'info' }
@@ -301,6 +312,8 @@ const summarizing = ref(false)
 const summaryStream = ref('')
 
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
+// 详情表:多轮会话聚合成组行树形展开(公共逻辑见 utils/evalRunGroups),单轮原样
+const groupedDetailRuns = computed(() => groupEvalRuns(detail.value?.runs || []))
 const judgeableRuns = computed(() =>
   (detail.value?.runs || []).filter((r) => r.status === 'done' || r.status === 'judged'))
 const canSummarize = computed(() => {
@@ -493,6 +506,7 @@ function genSummary() {
 .tname:hover { text-decoration: underline; }
 .batch { line-height: 1.5; color: #5a6b7b; }
 .opts { color: #5a6b7b; font-size: 12px; }
+.turn-tag { margin-right: 6px; }
 /* 用例选择 */
 .qpick { width: 100%; }
 .qpick-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; color: #5a6b7b; }

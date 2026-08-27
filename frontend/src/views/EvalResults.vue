@@ -111,7 +111,7 @@
               <el-tag size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>{{ queryTitle(row) }}
             </template>
             <template v-else>
-              <el-tag v-if="row.payload?.conversation_group" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>{{ queryTitle(row) }}
+              <el-tag v-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>{{ queryTitle(row) }}
             </template>
           </template>
         </el-table-column>
@@ -185,6 +185,7 @@ import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, Que
 import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { groupEvalRuns } from '@/utils/evalRunGroups'
 
 // 判定核心三维（键与后端 parse_eval_verdict 一致）；dimension_ok 第四维按行动态追加
 const DIMS = [
@@ -249,51 +250,8 @@ const matchFilter = (r) => {
   return r.verdict === verdictFilter.value
 }
 
-// —— 多轮会话分组:同 conversation_group 的各轮在同一对话里连续发送,是一次完整会话——
-// 聚成一行树形展开(children=各轮,按轮次升序),避免平铺时"多数轮没有分享链接"的割裂观感;
-// 分享链接/状态/判定在组行聚合(链接取任一轮抓到的那条,同一对话本就同一链接)。
-const groupedRows = computed(() => {
-  const byGroup = new Map()
-  for (const r of rows.value) {
-    const g = r.payload?.conversation_group
-    if (g) { if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(r) }
-  }
-  const out = []
-  const seen = new Set()
-  for (const r of rows.value) {
-    const g = r.payload?.conversation_group
-    if (!g || (byGroup.get(g) || []).length <= 1) {
-      if (matchFilter(r)) out.push(r)
-      continue
-    }
-    if (seen.has(g)) continue
-    seen.add(g)
-    const turns = [...byGroup.get(g)].sort((a, b) => (a.payload?.turn_index ?? 0) - (b.payload?.turn_index ?? 0))
-    if (!turns.some(matchFilter)) continue   // 任一轮命中筛选才保留整组(展开可见明细)
-    out.push(makeGroupRow(g, turns))
-  }
-  return out
-})
-
-// 组行聚合:执行取"最落后"的轮(running>pending>failed>done),判定任一 fail 即 fail、全 pass 才 pass
-function makeGroupRow(g, turns) {
-  const share = turns.map((t) => t.share_link).find((u) => /^https?:\/\//i.test(u || '')) || null
-  const st = turns.some((t) => t.status === 'running') ? 'running'
-    : turns.some((t) => t.status === 'pending') ? 'pending'
-    : turns.some((t) => t.status === 'failed') ? 'failed'
-    : turns.every((t) => t.status === 'judged') ? 'judged' : 'done'
-  const vs = turns.map((t) => t.verdict)
-  const verdict = vs.includes('fail') ? 'fail'
-    : vs.includes('error') ? 'error'
-    : (vs.length && vs.every((v) => v === 'pass')) ? 'pass' : null
-  return {
-    run_id: `grp-${g}`, isGroup: true, conversation_group: g,
-    children: turns,
-    payload: turns[0].payload, dimension: turns[0].dimension, eval_query_id: turns[0].eval_query_id,
-    status: st, verdict, is_abnormal: turns.some((t) => t.is_abnormal),
-    share_link: share, verdict_dims: null,
-  }
-}
+// 多轮会话分组(公共逻辑见 utils/evalRunGroups):组行树形展开,单轮原样平铺
+const groupedRows = computed(() => groupEvalRuns(rows.value, matchFilter))
 
 const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query #${row.eval_query_id ?? '—'}`
 // 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
