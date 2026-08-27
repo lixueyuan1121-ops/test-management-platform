@@ -13,7 +13,7 @@ import io
 import os
 import zipfile
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from starlette.responses import StreamingResponse
 
 from app.core.deps import require_runner_ctx
@@ -27,8 +27,14 @@ _RUNNER_DIR = os.path.join(_REPO_ROOT, "tools", "qalab-runner")
 
 # 排除规则：目录名（任意层级命中即剪枝）与文件名模式
 _EXCLUDE_DIRS = {"node_modules", "evidence", "eval", "cases", "platform", "__pycache__", ".git", ".remember"}
-_EXCLUDE_FILES = {".env", ".env.example", ".DS_Store", "selectors.json.bak"}
+_EXCLUDE_FILES = {".env", ".DS_Store", "selectors.json.bak"}
 _EXCLUDE_SUFFIXES = (".test.mjs", ".zip", ".log")
+
+
+def _ensure_runner_dir() -> None:
+    """分发目录不存在时报 503,避免静默返回空哈希/空 zip(docker 只打包 backend/ 时会踩中)。"""
+    if not os.path.isdir(_RUNNER_DIR):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="runner 分发目录不存在")
 
 
 def _iter_bundle_files():
@@ -57,12 +63,14 @@ def _bundle_version() -> str:
 
 @router.get("/version")
 def runner_version(_=Depends(require_runner_ctx)):
+    _ensure_runner_dir()
     return ok({"version": _bundle_version()})
 
 
 @router.get("/bundle")
 def runner_bundle(_=Depends(require_runner_ctx)):
     """实时打包 zip 到内存并流式返回。包体量级 ~几百 KB，内存打包足够。"""
+    _ensure_runner_dir()
     ver = _bundle_version()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
