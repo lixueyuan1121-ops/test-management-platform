@@ -67,14 +67,17 @@
         </div>
       </template>
 
-      <el-empty v-if="!filteredRows.length" :description="loading ? '加载中…' : '暂无测评执行记录'" :image-size="70" />
+      <el-empty v-if="!groupedRows.length" :description="loading ? '加载中…' : '暂无测评执行记录'" :image-size="70" />
 
-      <el-table v-else :data="filteredRows" v-loading="loading" size="small" border stripe row-key="run_id"
-        :expand-row-keys="expanded" @expand-change="onExpand">
+      <el-table v-else :data="groupedRows" v-loading="loading" size="small" border stripe row-key="run_id"
+        :tree-props="{ children: 'children' }" :expand-row-keys="expanded" @expand-change="onExpand">
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="verdict-detail">
-              <div v-if="!row.verdict_dims" class="no-dims">
+              <div v-if="row.isGroup" class="no-dims">
+                <el-text type="info">多轮会话（{{ row.children.length }} 轮，同一对话内连续发送）：点行首「▸」展开逐轮查看判定。</el-text>
+              </div>
+              <div v-else-if="!row.verdict_dims" class="no-dims">
                 <el-text type="info">尚未判定或无三维结果。点右侧「判定」触发。</el-text>
               </div>
               <template v-else>
@@ -96,9 +99,21 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="run_id" label="#" width="64" align="center" />
+        <el-table-column label="#" width="84" align="center">
+          <template #default="{ row }">
+            <span v-if="row.isGroup" class="dim-muted">会话组</span>
+            <span v-else>{{ row.run_id }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="query" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">{{ queryTitle(row) }}</template>
+          <template #default="{ row }">
+            <template v-if="row.isGroup">
+              <el-tag size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>{{ queryTitle(row) }}
+            </template>
+            <template v-else>
+              <el-tag v-if="row.payload?.conversation_group" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>{{ queryTitle(row) }}
+            </template>
+          </template>
         </el-table-column>
         <el-table-column label="维度" width="110" align="center">
           <template #default="{ row }">
@@ -132,11 +147,13 @@
         <el-table-column label="操作" width="96" align="center">
           <template #default="{ row }">
             <el-button
+              v-if="!row.isGroup"
               size="small" type="primary" text
               :loading="judgingIds.has(row.run_id)"
               :disabled="!canJudge(row)"
               @click="judgeOne(row)"
             >{{ row.verdict ? '重判' : '判定' }}</el-button>
+            <span v-else class="dim-muted">逐轮判</span>
           </template>
         </el-table-column>
       </el-table>
@@ -226,11 +243,57 @@ const multicaPending = ref(0)
 const doneCount = computed(() => rows.value.filter((r) => r.status === 'done').length)
 const judgedCount = computed(() => rows.value.filter((r) => r.verdict).length)
 const abnormalCount = computed(() => rows.value.filter((r) => r.is_abnormal).length)
-const filteredRows = computed(() => {
-  if (!verdictFilter.value) return rows.value
-  if (verdictFilter.value === '__none__') return rows.value.filter((r) => !r.verdict)
-  return rows.value.filter((r) => r.verdict === verdictFilter.value)
+const matchFilter = (r) => {
+  if (!verdictFilter.value) return true
+  if (verdictFilter.value === '__none__') return !r.verdict
+  return r.verdict === verdictFilter.value
+}
+
+// —— 多轮会话分组:同 conversation_group 的各轮在同一对话里连续发送,是一次完整会话——
+// 聚成一行树形展开(children=各轮,按轮次升序),避免平铺时"多数轮没有分享链接"的割裂观感;
+// 分享链接/状态/判定在组行聚合(链接取任一轮抓到的那条,同一对话本就同一链接)。
+const groupedRows = computed(() => {
+  const byGroup = new Map()
+  for (const r of rows.value) {
+    const g = r.payload?.conversation_group
+    if (g) { if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(r) }
+  }
+  const out = []
+  const seen = new Set()
+  for (const r of rows.value) {
+    const g = r.payload?.conversation_group
+    if (!g || (byGroup.get(g) || []).length <= 1) {
+      if (matchFilter(r)) out.push(r)
+      continue
+    }
+    if (seen.has(g)) continue
+    seen.add(g)
+    const turns = [...byGroup.get(g)].sort((a, b) => (a.payload?.turn_index ?? 0) - (b.payload?.turn_index ?? 0))
+    if (!turns.some(matchFilter)) continue   // 任一轮命中筛选才保留整组(展开可见明细)
+    out.push(makeGroupRow(g, turns))
+  }
+  return out
 })
+
+// 组行聚合:执行取"最落后"的轮(running>pending>failed>done),判定任一 fail 即 fail、全 pass 才 pass
+function makeGroupRow(g, turns) {
+  const share = turns.map((t) => t.share_link).find((u) => /^https?:\/\//i.test(u || '')) || null
+  const st = turns.some((t) => t.status === 'running') ? 'running'
+    : turns.some((t) => t.status === 'pending') ? 'pending'
+    : turns.some((t) => t.status === 'failed') ? 'failed'
+    : turns.every((t) => t.status === 'judged') ? 'judged' : 'done'
+  const vs = turns.map((t) => t.verdict)
+  const verdict = vs.includes('fail') ? 'fail'
+    : vs.includes('error') ? 'error'
+    : (vs.length && vs.every((v) => v === 'pass')) ? 'pass' : null
+  return {
+    run_id: `grp-${g}`, isGroup: true, conversation_group: g,
+    children: turns,
+    payload: turns[0].payload, dimension: turns[0].dimension, eval_query_id: turns[0].eval_query_id,
+    status: st, verdict, is_abnormal: turns.some((t) => t.is_abnormal),
+    share_link: share, verdict_dims: null,
+  }
+}
 
 const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query #${row.eval_query_id ?? '—'}`
 // 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
@@ -419,6 +482,7 @@ onBeforeUnmount(() => { if (radarChart) { radarChart.dispose(); radarChart = nul
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .foot-hint { margin-top: 8px; color: #90a4ae; font-size: 12px; }
 .dim-muted { color: #c0c4cc; }
+.turn-tag { margin-right: 6px; }
 /* 三维展开 */
 .verdict-detail { padding: 8px 16px; background: #fafcfe; }
 .no-dims { padding: 8px 0; }
