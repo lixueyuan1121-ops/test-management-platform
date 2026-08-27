@@ -239,6 +239,32 @@ export function createGuiCore(opts = {}) {
     return false;
   }
 
+  // reload 后确保回到首页:探首页锚点(多别名),已在首页直接返回;不在则点侧栏『首页』导航回去,再等就绪。
+  // 关键——SPA reload 只重载当前路由(客户端常驻不重启),上一条用例把路由停在任务详情/其它 Tab 时,
+  // reload 回不到首页,必须应用内导航(点 navHome)才回得去。navHome 定位不到/点不上就跳过(尽力而为,
+  // 交上层 resetOrBlock 多轮自愈兜底);首页锚点探不到不抛错(不阻断复位)。
+  async function ensureOnHome(readyKeyCandidates, readyTimeout) {
+    const homeKeys = [...new Set(readyKeyCandidates)].filter((k) => k && REGISTRY[k]);
+    if (!homeKeys.length) return;                        // 注册表无首页锚点,无从判断,不折腾
+    const onHome = async () => {
+      for (const k of homeKeys) if (await isKeyVisible(k)) return true;
+      return false;
+    };
+    if (await onHome()) return;                          // reload 后已在首页,无需导航
+    if (REGISTRY.navHome) {                               // 不在首页:点侧栏『首页』导航回去
+      try {
+        const { loc } = await resolveKey("navHome", { timeout: 3000, requireVisible: true });
+        await loc.click({ timeout: DEFAULT_TIMEOUT });
+      } catch { /* navHome 定位不到/点不上,跳过,交上层自愈 */ }
+    }
+    const end = Date.now() + readyTimeout;               // 等首页锚点就绪(尽力,不抛)
+    for (;;) {
+      if (await onHome()) return;
+      if (Date.now() >= end) return;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+
   // ---- 对外操作(server 和 StepExecutor 共用)----
   return {
     get registry() { return REGISTRY; },
@@ -340,17 +366,15 @@ export function createGuiCore(opts = {}) {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       return { url: page.url(), title: await page.title() };
     },
-    // 用例间硬复位:reload 顶层回初始加载态(清全部前端瞬态:选中/展开/弹窗/输入残留/焦点),
-    // 等 vm iframe 就绪(waitForContentFrame,不依赖业务选择器);可选再等首页锚点就绪(尽力,失败不阻断)。
-    // 串行执行时每条 gui/e2e 前调,消除上一条遗留状态污染,让进入段自导航从初始主界面开始。
+    // 用例间硬复位:reload 顶层清前端瞬态(选中/展开/弹窗/输入残留/焦点),等 vm iframe 就绪,再**主动
+    // 导航回首页**——reload 只重载当前 SPA 路由(客户端常驻),上一条用例可能把路由停在任务详情/其它 Tab,
+    // 故 reload 后探首页锚点、不在首页就点『首页』导航回去(见 ensureOnHome)。串行执行每条 gui/e2e 前调,
+    // 让进入段自导航从首页开始。首页锚点尽力等,探不到不抛(交上层就绪门禁/自愈裁决)。
     async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
       await ensureConnected();
       await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       await waitForContentFrame();
-      if (readyKey && REGISTRY[readyKey]) {
-        try { await resolveKey(readyKey, { timeout: readyTimeout, requireVisible: true }); }
-        catch { /* 首页锚点尽力而为,不阻断复位 */ }
-      }
+      await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);
       return { reset: true, url: page.url() };
     },
     async click(args) {

@@ -387,11 +387,19 @@
     },
     "homepageTitle": {
       "frame": "auto",
-      "desc": "首页问候标题(早上好，X，今天干点什么)",
+      "desc": "首页问候标题(早上好，X，今天干点什么)。首页独有的『在首页』就绪信号;精确类名优先,模糊类名兜底以容忍版本改名",
       "candidates": [
         {
           "by": "css",
           "value": "h1.home-revamp-title__text"
+        },
+        {
+          "by": "css",
+          "value": "[class*=\"home-revamp-title\"]"
+        },
+        {
+          "by": "css",
+          "value": "[class*=\"homepage-title__text\"]"
         }
       ]
     },

@@ -440,16 +440,27 @@ test("resetOrBlock:一轮内所有招式都不生效→提前止损,不空转多
   assert.equal(osCalls, 1, "一轮内无任一招生效应提前止损,OS ESC 不该被反复调 3 轮");
 });
 
-test("resetOrBlock:多轮反复仍救不回→阻塞(reason 含反复痕迹与轮次标记)", async () => {
+test("resetOrBlock:多轮点『首页』导航仍探不到锚点→降级放行(疑似锚点失效,非阻塞)", async () => {
   const gui = {
     registry: { homepageTitle: {}, navHome: {} },
     async resetHome() {},
     async pressEscapePage() { return { escaped: true }; },
-    async click({ key }) { return { clicked: key }; },   // 点了也不就绪
+    async click({ key }) { return { clicked: key }; },   // 点了也不就绪(模拟就绪锚点 css 类名失效)
     async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
   };
   const r = await resetOrBlock(gui, () => {}, { readyTimeout: 30, pollMs: 10, maxHealRounds: 2 });
-  assert.equal(r.ok, false);
-  assert.equal(r.result.fail_kind, "selector", "多轮救不回属环境阻塞,不计功能失败率");
-  assert.ok(/#2/.test(r.result.reason), `reason 应含第 2 轮轮次标记,实际:${r.result.reason}`);
+  assert.equal(r.ok, true, "点过『首页』导航但锚点探不到→疑似锚点失效,应降级放行而非 blocked");
+  assert.equal(r.degraded, true, "降级放行应标记 degraded");
+});
+
+test("resetOrBlock:无导航手段(navHome 未注册)、点新建会话仍不就绪→保守阻塞(未点过首页导航)", async () => {
+  const gui = {
+    registry: { homepageTitle: {}, newChat: {} },   // 无 navHome,只有新建会话
+    async resetHome() {},
+    async click({ key }) { return { clicked: key }; },
+    async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
+  };
+  const r = await resetOrBlock(gui, () => {}, { readyTimeout: 30, pollMs: 10, maxHealRounds: 2 });
+  assert.equal(r.ok, false, "从没点成『首页』导航→无从确认回首页,应保守阻塞");
+  assert.equal(r.result.fail_kind, "selector");
 });

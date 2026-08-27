@@ -94,8 +94,10 @@ async function tryGuiHeal(gui, method, desc, log) {
 // - 复位成功但检测到登录弹窗可见(会话过期)→ { ok:false, result }:提示执行机需重新登录。
 // - 复位成功、未掉登录,但注册表登记的首页锚点在超时内始终不可见 → 三招「来回反复」多轮自愈:每轮依次
 //   按 ESC(页面层+OS 级)关弹窗 → 点两次侧栏主导航「首页」→ 点「新建任务/新建对话」,每招后重探一次;
-//   一轮走完仍不就绪就再来一轮(最多 maxHealRounds 轮),都救不回才 → { ok:false, result }:
-//   首页没停稳,不空跑(避免在未就绪首页上跑 wait_for)。某轮内全无可用招式则提前止损、不空转多轮。
+//   一轮走完仍不就绪就再来一轮(最多 maxHealRounds 轮)。某轮内全无可用招式则提前止损、不空转多轮。
+//   多轮仍不就绪的收尾:**点过『首页』导航**则疑似就绪锚点(css 类名)失效而非真没回首页 → 降级放行
+//   { ok:true, degraded:true }(让用例进入段自导航去跑,避免锚点失效令整条队列假 blocked);**从没点成
+//   导航**(navHome 不可用)才 → { ok:false, result }:无从确认回首页,保守阻塞不空跑。
 // - 注册表未登记任何首页/登录锚点(无从判断就绪)或探测本身抛错(probe 基建问题)→ { ok:true }:
 //   尽力而为放行(与 gui-core resetHome 缺 readyKey 时跳过就绪等的宽容语义一致)。
 // - 否则 → { ok:true }:放行执行本条用例。
@@ -143,8 +145,16 @@ export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, p
       }
       if (!anyTried) break;   // 本轮无任何可用招式(老 gui/未注册 key),反复也救不回,提前止损不空转
     }
-    // 反复多轮都救不回(无自愈入口/gui 能力缺失,或每招每轮都救不回)→ 阻塞,不空跑。
+    // 反复多轮仍探不到首页锚点。区分两种情形,避免"锚点失效"被误当"没回首页"而整条队列假 blocked:
+    //  - 点过『首页』导航(尝试过应用内回首页):很可能已在首页、只是就绪锚点(css 类名)失效探不到 →
+    //    降级放行(非阻塞),让用例进入段自导航去跑;真不在首页,用例自身断言会 fail(business),不误记环境阻塞。
+    //  - 从没点成『首页』导航(navHome 未注册/定位不到):无从确认是否回到首页 → 保守阻塞,不空跑脏态。
     const tail = tried.length ? `(已试自愈:${tried.join(" → ")},仍未回稳)` : "";
+    const navigatedHome = tried.some((t) => t.startsWith("点首页导航") || t.startsWith("再点首页导航"));
+    if (navigatedHome) {
+      log("  首页就绪锚点探不到,但已点『首页』导航回首页:疑似就绪锚点失效,降级放行(非阻塞)" + tail);
+      return { ok: true, degraded: true };
+    }
     log("  复位后首页未停稳:多轮反复自愈仍未回稳" + tail);
     return { ok: false, result: { verdict: "fail", fail_kind: "selector", reason: `复位后首页未停稳(问候标题未就绪)${tail}:跳过执行以免在未就绪首页上空跑`, duration_ms: 1 } };
   } catch {
