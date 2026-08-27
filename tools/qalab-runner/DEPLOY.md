@@ -60,6 +60,15 @@ CLAUDE_TIMEOUT_MS=240000
 
 启动后应看到:`runner 启动 base=... runner=<你的id> dry=false`,之后每 5s 轮询。
 
+## 五点五、自升级(无需再人肉拷文件)
+
+run.sh / run.cmd 启动时会自动向平台检查 runner 新版本:
+- 有新版本 → 自动下载覆盖本目录代码文件(`.env`、`gui-mcp/node_modules`、`evidence/` 不受影响)后用新版本启动;
+- 已最新 / 平台连不上 → 直接正常启动(更新失败绝不阻塞执行)。
+
+因此**手动同步只需要这一次**:拿到 run.sh(Mac)/run.cmd(Windows)与初始目录后,后续升级全自动。
+若 gui-mcp/package.json 依赖有变化(罕见),仍需在 gui-mcp 下重新 npm install——启动日志会因 import 失败明确报错。
+
 ## 六、平台侧怎么下发到你
 
 在**用例库 / 已采纳用例 / 任务清单**勾选用例 → 执行机下拉选**你自己的设备** → 发送。你的 runner 会拉到并执行、回写结果。
