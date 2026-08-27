@@ -942,7 +942,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     return out
 
 
-_VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot"}
+_VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot", "mock_route", "unmock_route"}
 
 # gui/e2e 因"选择器未注册"降级 manual 时的 kind_reason 前缀标识。
 # 前端据此前缀渲染「补选择器可自动化」标签(见 CaseLibrary.vue),故改此串须同步前端。
@@ -1019,6 +1019,8 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
                 return [], f"step「{action}」用了未注册的 key「{k}」(不在 selectors.json 注册表内)"
         if action == "assert_text" and not (st.get("args") or {}).get("expected"):
             return [], "assert_text 缺 args.expected"
+        if action in ("mock_route", "unmock_route") and not (st.get("args") or {}).get("url"):
+            return [], f"{action} 缺 args.url"
         if action in ("assert_text", "assert_visible", "assert_absent"):
             has_assert = True
         norm.append({"action": action, "target": target, "args": st.get("args") or {}, "desc": str(st.get("desc") or "")[:200]})
