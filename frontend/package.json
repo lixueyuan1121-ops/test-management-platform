@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:clean": "node -e \"require('fs').rmSync('dist/assets',{recursive:true,force:true})\" && vite build",
     "build:watch": "vite build --watch",
     "preview": "vite preview"
   },
