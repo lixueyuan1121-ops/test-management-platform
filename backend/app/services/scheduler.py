@@ -12,6 +12,7 @@ from datetime import datetime
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 
@@ -58,6 +59,39 @@ def run_regression_job(set_id: int) -> None:
         db.close()
 
 
+def reap_stale_eval_runs() -> None:
+    """周期收口:running 超 6 小时的对话测评 run 自动标记失败(模块级,供 job store 序列化)。
+
+    执行器单条上限 5 小时(responseTimeout),超 6 小时仍 running 必是执行机中断/回写失败的
+    僵尸条目——不收口则设备看板长期显示「执行中」(线上出现过卡 89h 的案例)、任务永远收不了口。
+    只收 running 不收 pending:pending 是排队,执行机重新上线仍会拉走执行,不算死。
+    created_at 由数据库 func.now() 生成(SQLite/docker MySQL 均为 UTC),比较用 utcnow 对齐。
+    """
+    from datetime import timedelta
+
+    from app.core.enums import EvalRunStatus
+    from app.db.session import SessionLocal
+    from app.models import EvalRun
+
+    cutoff = datetime.utcnow() - timedelta(hours=6)
+    db = SessionLocal()
+    try:
+        rows = (db.query(EvalRun)
+                .filter(EvalRun.status == EvalRunStatus.running, EvalRun.created_at < cutoff)
+                .all())
+        for r in rows:
+            r.status = EvalRunStatus.failed
+            r.reason = "自动收口:执行超 6 小时未回填(执行机中断),标记失败"
+        if rows:
+            db.commit()
+            logger.info("自动收口 %d 条超龄 running eval_run: %s", len(rows), [r.id for r in rows])
+    except Exception:
+        logger.exception("自动收口超龄 eval_run 失败")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
     """启动调度器 + 从 DB 现有 enabled 集重建 job。startup 调用（幂等）。"""
     global _scheduler
@@ -69,6 +103,12 @@ def start_scheduler() -> None:
     )
     _scheduler.start()
     logger.info("反馈定时调度器已启动")
+
+    # 固定周期 job:自动收口超龄 running 的测评 run(每 30 分钟;replace_existing 幂等,重启不重复)
+    _scheduler.add_job(
+        reap_stale_eval_runs, trigger=IntervalTrigger(minutes=30), id="evalrun-reaper",
+        replace_existing=True, misfire_grace_time=600,
+    )
 
     # 从 DB 重建 job（job store 里可能已有持久化 job；这里以 DB 集状态为准覆盖，避免漂移）
     from app.db.session import SessionLocal
