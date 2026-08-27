@@ -39,17 +39,9 @@ def _run_out(r: EvalRun) -> dict:
     }
 
 
-@router.post("/{run_id}")
-def judge_one(run_id: int, body: JudgeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    r = db.get(EvalRun, run_id)
-    if not r:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
-    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
-    eval_judge.judge_run(db, r, provider=body.provider)
-    db.refresh(r)
-    return ok(_run_out(r))
-
-
+# ⚠️ /batch 必须注册在 /{run_id} 之前:FastAPI 按注册顺序匹配,若 /{run_id} 在前,
+# POST /eval-judge/batch 会被它捕获、把 "batch" 当 run_id 转 int → 422 参数校验失败
+# (此前顺序反了,批量判定端点上线以来从未被真正命中过)。
 @router.post("/batch")
 def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
@@ -76,6 +68,17 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
         except Exception as e:  # noqa: BLE001 单条失败不断批
             results.append({"run_id": r.id, "error": str(e)})
     return ok({"judged": len(results), "results": results})
+
+
+@router.post("/{run_id}")
+def judge_one(run_id: int, body: JudgeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    r = db.get(EvalRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    eval_judge.judge_run(db, r, provider=body.provider)
+    db.refresh(r)
+    return ok(_run_out(r))
 
 
 @router.get("/abnormal")
