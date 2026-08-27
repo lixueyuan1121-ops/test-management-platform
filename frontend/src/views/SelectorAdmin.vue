@@ -30,6 +30,10 @@
               :disabled="!pid || !probe.runner || probe.running" @click="onDiscover"
             >探测(扫当前页)</el-button>
             <el-button
+              size="small" :type="boxMode ? 'warning' : 'default'"
+              :disabled="!pid || !probe.runner || probe.running" @click="toggleBoxMode"
+            >{{ boxMode ? '框选中…点击取消' : '框选探测' }}</el-button>
+            <el-button
               size="small" :loading="probe.running && probe.mode === 'verify'"
               :disabled="!pid || !probe.runner || probe.running" @click="onVerify"
             >校验失效 key</el-button>
@@ -78,7 +82,10 @@
             <div class="shot-viewport">
               <div class="shot-wrap" :style="{ width: (zoom * 100) + '%' }">
                 <img :src="probe.screenshotUrl" class="shot-img" alt="页面截图" />
-                <div class="shot-overlay">
+                <div
+                  class="shot-overlay" :class="{ 'box-selecting': boxMode }"
+                  @mousedown="onBoxDown" @mousemove="onBoxMove" @mouseup="onBoxUp" @mouseleave="onBoxUp"
+                >
                   <div
                     v-for="box in shotBoxes" :key="box.uid"
                     class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx }]"
@@ -86,6 +93,8 @@
                     @mouseenter="hoverKey = box.uid" @mouseleave="hoverKey = ''"
                     @click="openAddAsKey(box.el, box.frameMatch)"
                   ></div>
+                  <!-- 框选中的矩形(拖拽实时) -->
+                  <div v-if="boxRect" class="box-select-rect" :style="boxRect"></div>
                 </div>
               </div>
             </div>
@@ -586,6 +595,59 @@ async function runProbe(mode, extraParams = {}) {
 function onDiscover() { probe.updateTarget = ''; runProbe('discover') }
 function onVerify() { runProbe('verify', { mode: 'verify' }) }
 
+// ---- 框选探测:先「扫当前页」出截图,再在截图上拖框 → 对框内 DOM 放宽探测(穿 iframe/shadow)----
+const boxMode = ref(false)          // 框选模式开关
+const boxRect = ref(null)           // 拖拽中的矩形样式(overlay 百分比定位),null=未画
+let boxStart = null                 // 拖拽起点(overlay 内像素)
+
+function toggleBoxMode() {
+  if (!boxMode.value) {
+    // 需要先有截图才能框选(截图 = 页面绝对坐标基准)
+    if (!probe.screenshotUrl || !probe.result?.pageSize?.w) {
+      ElMessage.warning('请先点「探测(扫当前页)」出页面截图,再框选'); return
+    }
+    boxMode.value = true
+  } else {
+    boxMode.value = false; boxRect.value = null; boxStart = null
+  }
+}
+
+function onBoxDown(e) {
+  if (!boxMode.value) return
+  const rect = e.currentTarget.getBoundingClientRect()
+  boxStart = { x: e.clientX - rect.left, y: e.clientY - rect.top, ow: rect.width, oh: rect.height }
+  boxRect.value = { left: '0%', top: '0%', width: '0%', height: '0%' }
+}
+function onBoxMove(e) {
+  if (!boxMode.value || !boxStart) return
+  const rect = e.currentTarget.getBoundingClientRect()
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top
+  const x = Math.min(boxStart.x, cx), y = Math.min(boxStart.y, cy)
+  const w = Math.abs(cx - boxStart.x), h = Math.abs(cy - boxStart.y)
+  boxRect.value = {
+    left: `${(x / boxStart.ow) * 100}%`, top: `${(y / boxStart.oh) * 100}%`,
+    width: `${(w / boxStart.ow) * 100}%`, height: `${(h / boxStart.oh) * 100}%`,
+  }
+}
+function onBoxUp(e) {
+  if (!boxMode.value || !boxStart) return
+  const rect = e.currentTarget.getBoundingClientRect()
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top
+  const px = Math.min(boxStart.x, cx), py = Math.min(boxStart.y, cy)
+  const pw = Math.abs(cx - boxStart.x), ph = Math.abs(cy - boxStart.y)
+  const ow = boxStart.ow, oh = boxStart.oh
+  boxStart = null
+  if (pw < 5 || ph < 5) { boxRect.value = null; return }   // 太小视为误触
+  // overlay 像素 → 整页绝对坐标(overlay 显示尺寸对应 pageSize)
+  const ps = probe.result.pageSize
+  const bbox = {
+    x: Math.round((px / ow) * ps.w), y: Math.round((py / oh) * ps.h),
+    w: Math.round((pw / ow) * ps.w), h: Math.round((ph / oh) * ps.h),
+  }
+  boxMode.value = false; boxRect.value = null
+  runProbe('box', { bbox })
+}
+
 // ---- 探测元素 vs 已入库对比标识(#3)----
 // 口径:按候选定位器 by+value 重叠判定。对当前作用域已登记的 key 建索引:
 //   candKey(c) = `${by} ${value}` → 该候选属于哪个 key。
@@ -842,6 +904,10 @@ async function submitAddAsKey() {
 .el-box.box-exists { border-color: rgba(103,194,58,.5); background: rgba(103,194,58,.06); }
 .el-box.approx { border-style: dashed; }
 .el-box.active { border-width: 2px; box-shadow: 0 0 0 2px rgba(64,158,255,.35); background: rgba(64,158,255,.18); z-index: 2; }
+/* 框选模式:overlay 接管鼠标(盖住元素框),十字光标;拖拽出的矩形 */
+.shot-overlay.box-selecting { pointer-events: auto; cursor: crosshair; }
+.shot-overlay.box-selecting .el-box { pointer-events: none; }
+.box-select-rect { position: absolute; box-sizing: border-box; border: 2px dashed #e6a23c; background: rgba(230,162,60,.15); z-index: 5; pointer-events: none; }
 :deep(.el-table .row-hi) { background: #ecf5ff; }
 :deep(.el-table .row-match) { background: #fdf6ec; }
 :deep(.el-table .row-match td:first-child) { box-shadow: inset 3px 0 0 0 #e6a23c; }
