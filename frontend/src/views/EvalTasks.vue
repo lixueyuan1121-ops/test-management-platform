@@ -211,6 +211,15 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
+          <el-table-column label="操作" width="96" align="center">
+            <template #default="{ row }">
+              <el-popconfirm v-if="row.status === 'running' || row.status === 'pending'"
+                title="标记为执行失败？(会话未回填/执行中断时用于收口)" width="240" @confirm="markFailed(row)">
+                <template #reference><el-button size="small" type="danger" text>标记失败</el-button></template>
+              </el-popconfirm>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
         </el-table>
 
         <!-- 综合评价 -->
@@ -235,7 +244,7 @@ import { Tickets, Plus, Refresh } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch,
+  listEvalDimensions, judgeEvalBatch, markEvalRunFailed,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -425,14 +434,15 @@ async function refreshDetail() {
   try { detail.value = await listEvalTaskRuns(detail.value.task.id) } catch { /* 拦截器已提示 */ }
 }
 
-async function judgeAll() {
-  const runs = judgeableRuns.value
+async function judgeAll() {  const runs = judgeableRuns.value
   if (!runs.length) return
   batchJudging.value = true
   try {
     // 只传 done 状态的 run_ids（judged 的也允许重判）；用任务的 project_id 而非全局 pid
     const taskProjectId = detail.value?.task?.project_id || pid.value
-    const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id)
+    if (!taskProjectId) { ElMessage.warning('缺少项目信息，请刷新页面后重试'); return }
+    // 双保险过滤非法 id：任何 null/undefined 混入都会触发后端 422「参数校验失败」
+    const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id).filter((id) => Number.isInteger(id))
     if (!runIds.length) { ElMessage.warning('没有待判定的用例（done 状态）'); return }
     const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds })
     // 逐条结果里可能有 error(单条异常)/skipped(未执行完)/verdict=error(未回填、引擎不可用等):
@@ -443,6 +453,14 @@ async function judgeAll() {
     await refreshDetail()
   } catch { /* 拦截器已提示 */ }
   finally { batchJudging.value = false }
+}
+
+async function markFailed(row) {
+  try {
+    await markEvalRunFailed(detail.value.task.id, row.run_id)
+    ElMessage.success(`run ${row.run_id} 已标记失败`)
+    await refreshDetail()
+  } catch { /* 拦截器已提示 */ }
 }
 
 function genSummary() {

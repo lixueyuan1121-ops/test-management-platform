@@ -138,6 +138,8 @@ export const createEvalTask = (payload) => http.post('/eval-tasks', payload)
 export const updateEvalTask = (id, payload) => http.patch(`/eval-tasks/${id}`, payload)
 export const deleteEvalTask = (id) => http.delete(`/eval-tasks/${id}`)
 export const runEvalTask = (id, payload) => http.post(`/eval-tasks/${id}/run`, payload)
+// 手动把卡在 pending/running 的未回填 run 标记为失败（收口用；已回填的后端会拒绝）
+export const markEvalRunFailed = (taskId, runId) => http.post(`/eval-tasks/${taskId}/runs/${runId}/mark-failed`)
 export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
 
 export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, onError, signal } = {}) {

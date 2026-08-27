@@ -222,6 +222,32 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     return ok({"run_ids": created, "batch_id": batch_id})
 
 
+@router.post("/{task_id}/runs/{run_id}/mark-failed")
+def mark_run_failed(task_id: int, run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """把卡在 pending/running 的未回填 run 手动标记为失败。
+
+    执行机中断/回写失败时 run 会永远停在 running:任务收不了口、批量判定跳过它、
+    综合评价也排除它——除重跑外没有任何收口手段。此端点给人工一个明确出口;
+    已回填(done/judging/judged/failed)的不允许改,防误伤真实结果。
+    """
+    from app.api.eval_queue import _to_out as _run_out
+
+    task = db.get(EvalTask, task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
+    assert_project_role(db, user, task.project_id, _WRITE_ROLES)
+    r = db.get(EvalRun, run_id)
+    if not r or r.eval_task_id != task.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在或不属于该任务")
+    st = getattr(r.status, "value", r.status)
+    if st not in ("pending", "running"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"仅 pending/running 可标记失败(当前 {st})")
+    r.status = EvalRunStatus.failed
+    r.reason = "手动标记失败(会话未回填/执行中断)"
+    db.commit(); db.refresh(r)
+    return ok(_run_out(r))
+
+
 @router.get("/{task_id}/runs")
 def task_runs(task_id: int, batch_id: str | None = Query(None),
               db: Session = Depends(get_db), user: User = Depends(get_current_user)):

@@ -23,9 +23,17 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def validation_exc(_: Request, exc: RequestValidationError):
         # jsonable_encoder：自定义 validator 抛 ValueError 时，errors() 的 ctx 会带
         # 不可 JSON 序列化的异常对象，直接塞进 JSONResponse 会 500——先编码成可序列化形式。
+        errors = jsonable_encoder(exc.errors())
+        # msg 里带上首条错误的字段路径与原因:光「参数校验失败」五个字无法定位是哪个参数——
+        # 前端信封只弹 msg,data 里的细节实际没人看(线上排障只看得到 msg,实测踩过)。
+        hint = ""
+        if errors:
+            e0 = errors[0]
+            loc = ".".join(str(x) for x in (e0.get("loc") or []))
+            hint = f"({loc}: {e0.get('msg', '')})" if loc else ""
         return JSONResponse(
             status_code=422,
-            content={"code": 422, "msg": "参数校验失败", "data": jsonable_encoder(exc.errors())},
+            content={"code": 422, "msg": f"参数校验失败{hint}", "data": errors},
         )
 
     @app.exception_handler(Exception)
