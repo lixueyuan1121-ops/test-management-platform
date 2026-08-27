@@ -546,6 +546,30 @@ export function createGuiCore(opts = {}) {
         return null;
       }
     },
+    // mockRoute —— 拦截匹配 urlPattern 的 fetch/XHR 请求，直接返回 args 指定的 status+body。
+    // urlPattern: glob 模式，如 "**/api/tasks" 或 "**/api/**"。
+    // body: 将被 JSON.stringify 后作为响应体，contentType 固定 application/json。
+    // status: HTTP 状态码，默认 200。
+    // 多次调用同一 pattern 会叠加；用 unmockRoute 清除。
+    async mockRoute(args) {
+      await ensureConnected();
+      const pattern = String(args.url || "");
+      if (!pattern) throw new Error("mockRoute: 缺少 url（glob 模式，如 **/api/tasks）");
+      const status = Number(args.status ?? 200);
+      const body = JSON.stringify(args.body ?? {});
+      await page.route(pattern, (route) => {
+        route.fulfill({ status, contentType: "application/json", body });
+      });
+      return { mocked: pattern, status };
+    },
+    // unmockRoute —— 取消对 urlPattern 的拦截，恢复真实请求。
+    async unmockRoute(args) {
+      await ensureConnected();
+      const pattern = String(args.url || "");
+      if (!pattern) throw new Error("unmockRoute: 缺少 url");
+      await page.unroute(pattern);
+      return { unrouted: pattern };
+    },
     async close() {
       // connectOverCDP 的 close 只断开连接,不关被测客户端
       if (browser) { try { await browser.close(); } catch { /* 已断开 */ } }

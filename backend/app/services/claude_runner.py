@@ -264,11 +264,11 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    - 后端/接口行为若在界面上有可观察结果（如"创建后列表出现该项""删除后该项消失""出错时界面弹出某提示文案"），**优先设计成 gui/e2e**（在界面触发操作并断言界面结果），而不是判 api。
    - 只有确无界面入口可验证、且非主观感受时，才考虑 api/cli；连客观断言都给不出的，才判 manual。
 5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
-   - action 只能取：connect（第一步必须，连接客户端）、click、hover（鼠标悬停到元素，触发悬浮态）、fill、type（追加输入不清空）、press（发送按键如 End/Enter/Escape）、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - action 只能取：connect（第一步必须，连接客户端）、click、hover（鼠标悬停到元素，触发悬浮态）、fill、type（追加输入不清空）、press（发送按键如 End/Enter/Escape）、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route（拦截网络请求返回模拟数据）、unmock_route（取消拦截）
    - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
    - **hover 用于"悬停才显示"的元素**（如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip）：先 hover 到承载元素，再 wait_for 等浮层出现，然后 click/assert；hover 本身不做断言
    - **wait_for 是"等某个元素出现"，必须带 target（key 或 selector）**——它不是纯计时等待；只想等异步结果（发消息/提交后等生成）用 wait_response，不要写没有 target 的 wait_for
-   - args：assert_text 用 {{"expected":"...","contains":true}}；fill/type 用 {{"text":"..."}}；press 用 {{"key_name":"End"}}（Playwright 按键名，如 End/Home/Enter/Escape/Tab/Control+A）；wait_for 用 {{"timeout_ms":6000}}（超时上限，仍需配 target）
+   - args：assert_text 用 {{"expected":"...","contains":true}}；fill/type 用 {{"text":"..."}}；press 用 {{"key_name":"End"}}（Playwright 按键名，如 End/Home/Enter/Escape/Tab/Control+A）；wait_for 用 {{"timeout_ms":6000}}（超时上限，仍需配 target）；mock_route 用 {{"url":"**/api/tasks","status":200,"body":{{"code":0,"data":[]}}}}；unmock_route 用 {{"url":"**/api/tasks"}}
    - **否定断言（极重要，别写反）**：验证"某文案**不显示** / 菜单**已关闭** / 某项**不含** / Chip/Tag **已移除/已消失**"这类**否定**预期时，**严禁**写成 `assert_text` 去 equals/contains 那个"不该出现的文案"（元素消失后 textContent 为空，equals 恒不等 → 必然假失败）。正确写法二选一：
      · 目标元素**整体应消失/不存在** → 用 `assert_absent`（target 指向该元素；定位不到即通过）。如"移除后专家 Tag 消失""关闭后菜单消失"。
      · 目标元素**还在、只是其文本不应等于/不应包含某值** → 用 `assert_text` 且 `args.negate=true`（如 {{"expected":"纳米Work","negate":true}} 表示"该处文本不应是纳米Work"）。
@@ -346,11 +346,11 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 输出要求:
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
 2. 每步一个对象 {{action, target?, args?, desc}}:
-   - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route(拦截网络请求返回模拟数据)、unmock_route(取消拦截)
    - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
    - **hover 用于"悬停才显示"的元素**(列表项 hover 出的更多/菜单按钮、tooltip):先 hover 承载元素→wait_for 等浮层→再 click/assert;hover 本身不断言
    - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
-   - args:assert_text 用 {{"expected":"...","contains":true}};fill/type 用 {{"text":"..."}};press 用 {{"key_name":"End"}}(Playwright 按键名，如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {{"timeout_ms":6000}}(超时上限,仍需配 target)
+   - args:assert_text 用 {{"expected":"...","contains":true}};fill/type 用 {{"text":"..."}};press 用 {{"key_name":"End"}}(Playwright 按键名，如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {{"timeout_ms":6000}}(超时上限,仍需配 target);mock_route 用 {{"url":"**/api/tasks","status":200,"body":{{"code":0,"data":[]}}}};unmock_route 用 {{"url":"**/api/tasks"}}
    - **否定断言(别写反)**:验证"不显示/已关闭/不含/已移除/已消失"这类**否定**预期,严禁用 assert_text 去 equals/contains 那个不该出现的文案(元素消失后 textContent 为空,equals 恒假 → 假失败)。元素整体应消失 → 用 assert_absent(target 指向它,定位不到即通过);元素还在只是文本不应等于/含某值 → assert_text 加 args.negate=true。**expected 必须是真实可见文案,不得填类名(is-open)/key 名/占位符(/)**——判状态/存在性用 assert_visible/assert_absent
    - desc:该步人读说明
    - **至少含一个 assert_text / assert_visible / assert_absent**(否则无判定依据)

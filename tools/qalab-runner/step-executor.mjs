@@ -18,6 +18,7 @@ const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press",
   "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible", "assert_absent", "judge",
+  "mock_route", "unmock_route",
 ]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
@@ -76,6 +77,11 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         // press: 向目标元素（或全局页面）发送单个按键（如 End / Home / Enter / Escape / Tab）。
         // target 有值时先 click 聚焦再按键；用 args.key_name 指定按键名。
         case "press": { const r = await gui.pressKey({ ...target, key_name: args.key_name }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        // mock_route: 拦截匹配 args.url 的 fetch/XHR 请求，直接返回 args.status + args.body。
+        // 用于模拟后端返回数据，验证前端在各种响应下的行为。
+        // unmock_route: 取消拦截，恢复真实请求。
+        case "mock_route": { const r = await gui.mockRoute(args); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "unmock_route": { const r = await gui.unmockRoute(args); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_response": {
           const r = await gui.waitResponse({ timeout_ms: args.timeout_ms });
