@@ -65,6 +65,11 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
         return ok({"judged": 0, "results": []})
     results = []
     for r in rows:
+        st = getattr(r.status, "value", r.status)
+        if st in ("pending", "running"):
+            # 未执行完/未回填的不判(前端只传 done,这里防手工调用或状态漂移时误判),明确回执原因
+            results.append({"run_id": r.id, "skipped": True, "reason": f"状态 {st},尚未执行完成"})
+            continue
         try:
             res = eval_judge.judge_run(db, r, provider=body.provider)
             results.append({"run_id": r.id, **res})

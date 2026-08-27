@@ -60,6 +60,19 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
     trace = _load_trace(run)
 
     provider_id = generators.normalize_provider(provider)
+    # 未回填快速失败:执行机没回写任何东西(无轨迹、无回答、无思考)时没有可判定的素材——
+    # 直接标 error 不调引擎,免得空壳 run 白耗几十秒 LLM、拖垮批量判定(前端同步等待会超时)。
+    has_material = bool(
+        (run.answer or "").strip() or trace.get("ws_captured") or trace.get("tool_calls")
+        or str(trace.get("answer") or "").strip() or str(trace.get("thinking") or "").strip()
+    )
+    if not has_material:
+        run.verdict = EvalVerdict.error.value
+        run.verdict_reason = "会话未正常回填(无轨迹与回答),无可判定内容;请重跑该用例后再判定"
+        run.judged_by = provider_id
+        db.commit()
+        return {"verdict": "error", "reason": run.verdict_reason}
+
     engine = generators.get_provider(provider_id)
     if not engine.is_available():
         # 引擎不可用(平台 AI 禁用/claude 缺失):镜像判定失败分支标 verdict=error,

@@ -288,6 +288,12 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
             .order_by(EvalRun.id).all())
     if not runs:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="该批次没有执行记录")
+    # 未执行完/未回填的 run(pending/running)不进评价素材:执行机中断未回写时它们没有任何可评内容,
+    # 混入只会让报告把「没跑」当「跑差」。全被排除则明示,不给引擎喂空素材。
+    runs = [r for r in runs if getattr(r.status, "value", r.status) not in ("pending", "running")]
+    if not runs:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            detail="该批次的执行尚未回填(全部 pending/running),等执行完成或重跑后再生成")
 
     # 组装素材(在请求 db 存活期内取齐)
     qmap = {}
@@ -312,6 +318,9 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
         })
     prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
     task_pk = task.id
+    # ⚠️ 必须在 commit 前取成局部变量:commit 会 expire ORM 属性,而 sse 生成器在请求 db 关闭后才迭代,
+    # 届时再访问 task.name 会抛 DetachedInstanceError(fastapi≥0.106 yield 依赖在流开始前收尾)。
+    task_name = task.name
 
     # 标记生成中(前端轮询/重进页面可见)
     task.summary_status = "running"
@@ -323,7 +332,7 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
         t0 = time.monotonic()
         try:
             for evt in engine.stream_generate(
-                task.name,
+                task_name,
                 prompt_builder=lambda _p=prompt: _p,
                 system_prompt=claude_runner.EVAL_TASK_SUMMARY_SYSTEM_PROMPT,
             ):

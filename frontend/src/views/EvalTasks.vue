@@ -435,7 +435,11 @@ async function judgeAll() {
     const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id)
     if (!runIds.length) { ElMessage.warning('没有待判定的用例（done 状态）'); return }
     const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds })
-    ElMessage.success(`已判定 ${res.judged} 条`)
+    // 逐条结果里可能有 error(单条异常)/skipped(未执行完)/verdict=error(未回填、引擎不可用等):
+    // 区分提示,别把带失败的批次一律报成功
+    const bad = (res.results || []).filter((x) => x.error || x.skipped || x.verdict === 'error').length
+    if (bad) ElMessage.warning(`已处理 ${res.judged} 条，其中 ${bad} 条判定失败/跳过（未回填的会话请重跑后再判）`)
+    else ElMessage.success(`已判定 ${res.judged} 条`)
     await refreshDetail()
   } catch { /* 拦截器已提示 */ }
   finally { batchJudging.value = false }

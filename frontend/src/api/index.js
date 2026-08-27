@@ -192,8 +192,9 @@ export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, 
 
 export const judgeEvalRun = (runId, provider) => http.post(`/eval-judge/${runId}`, { provider }, { timeout: 90000 })
 // 批量判定；payload: { project_id, run_ids?（空则判该项目所有 done）, provider? } → { judged, results:[...] }
-// 批量逐条同步判定，可能判很多条，放宽到 5 分钟。
-export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payload, { timeout: 300000 })
+// 批量逐条同步判定，每条一次 LLM 调用（可达分钟级）、条数不可控，5 分钟上限仍会超时报错——
+// 改为不超时（timeout:0），等服务端跑完；页面有 loading 态兜住交互。
+export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payload, { timeout: 0 })
 // 异常会话（is_abnormal=判定 fail）列表，供复核/推送
 export const listAbnormalEvalRuns = (projectId) => http.get('/eval-judge/abnormal', { params: { project_id: projectId } })
 // eval 执行历史（子项2 端点 /eval-queue/history；此前未在 api 封装，新增）；返回 _to_out 列表（含 payload/status/verdict）
