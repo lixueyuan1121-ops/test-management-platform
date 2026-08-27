@@ -186,12 +186,22 @@ export function createGuiCore(opts = {}) {
     const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
     for (const s of scopesFor(entry.frame)) for (const cand of cands) plan.push({ s, cand });
     const end = Date.now() + timeout;
+    // 一个候选可能匹配多个元素(尤其 by:text 子串,如"首页"命中导航项+页面别处文案+隐藏面板)。
+    // 不锁死 .first():要求可见时在前若干个匹配里挑第一个"可见"的,避免 first 恰好是隐藏/错位元素时
+    // 明明有可见的目标却判"未命中"。单匹配 key 行为不变(scan=1,即原 first)。
+    const MAX_MATCH_SCAN = 5;
     for (;;) {
       for (const { s, cand } of plan) {
         try {
-          const loc = byToLocator(s.scope, cand).first();
-          if ((await loc.count()) > 0 && (!requireVisible || (await loc.isVisible().catch(() => false)))) {
-            return { loc, hit: { scope: s.name, by: cand.by, value: cand.value || cand.name } };
+          const base = byToLocator(s.scope, cand);
+          const total = await base.count();
+          if (total === 0) continue;
+          const hit = { scope: s.name, by: cand.by, value: cand.value || cand.name };
+          if (!requireVisible) return { loc: base.first(), hit };
+          const scan = Math.min(total, MAX_MATCH_SCAN);
+          for (let i = 0; i < scan; i++) {
+            const one = base.nth(i);
+            if (await one.isVisible().catch(() => false)) return { loc: one, hit };
           }
         } catch { /* 试下一个候选 */ }
       }
@@ -216,8 +226,13 @@ export function createGuiCore(opts = {}) {
     for (const s of scopesFor(entry.frame)) {
       for (const cand of cands) {
         try {
-          const loc = byToLocator(s.scope, cand).first();
-          if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) return true;
+          // 与 resolveKey 同口径:不锁死 .first(),扫前若干个匹配,任一可见即算命中
+          // (by:text 子串常多匹配,first 恰是隐藏元素时不应误判"不可见")。
+          const base = byToLocator(s.scope, cand);
+          const scan = Math.min(await base.count(), 5);
+          for (let i = 0; i < scan; i++) {
+            if (await base.nth(i).isVisible().catch(() => false)) return true;
+          }
         } catch { /* 试下一个 */ }
       }
     }

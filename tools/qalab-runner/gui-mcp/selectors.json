@@ -577,8 +577,16 @@
     },
     "navHome": {
       "frame": "vm",
-      "desc": "主导航『首页』",
+      "desc": "主导航『首页』。用侧栏导航类名精确命中导航项容器(复用 navItem 的 .sidebar-nav__item),避免裸 getByText(\"首页\") 子串命中页面别处含『首页』的文字/或 .first() 锁到隐藏元素导致点不上",
       "candidates": [
+        {
+          "by": "css",
+          "value": ".sidebar-nav__item:has-text(\"首页\")"
+        },
+        {
+          "by": "css",
+          "value": ".sidebar-nav__text:text-is(\"首页\")"
+        },
         {
           "by": "text",
           "value": "首页"
