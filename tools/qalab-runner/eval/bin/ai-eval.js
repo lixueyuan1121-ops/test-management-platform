@@ -759,8 +759,17 @@ program
       await pool.init();
       // Task7-Step1: 上报本机客户端设备(vm)列表,供平台前端下发时下拉选(失败不阻断执行)
       try {
-        const devices = await pool.listDevices();
+        let devices = await pool.listDevices();
+        // Mac 端 clawDeviceService 可能不存在或挂载时机不同,listDevices 返回空时用当前 url hostname 兜底构造一条记录,
+        // 确保平台能感知到这台执行机在线并可下发(不上报则平台设备列表为空,无法选择目标设备)。
+        if (!devices.length) {
+          const vmId = await pool.currentVmId();
+          if (vmId) {
+            devices = [{ vm_id: vmId, label: vmId, name: vmId, status: 'online', device_type: null }];
+          }
+        }
         if (devices.length) { await client.reportDevices(devices); logger.info(`已上报 ${devices.length} 个客户端设备`); }
+        else { logger.warn('上报设备列表:未获取到设备(clawDeviceService 不可用且 url 无法解析 vm_id),跳过上报'); }
       } catch (e) { logger.warn(`上报设备列表失败(不影响执行): ${e.message}`); }
       const wsTrace = pool.getWsTrace();
       // DesktopRunner 第3参 = work.n.cn 选择器段 config.platform（非 platformApi）。
