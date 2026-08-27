@@ -27,7 +27,7 @@ _RUNNER_DIR = os.path.join(_REPO_ROOT, "tools", "qalab-runner")
 
 # 排除规则：目录名（任意层级命中即剪枝）与文件名模式
 _EXCLUDE_DIRS = {"node_modules", "evidence", "eval", "cases", "platform", "__pycache__", ".git", ".remember"}
-_EXCLUDE_FILES = {".env", ".DS_Store", "selectors.json.bak"}
+_EXCLUDE_FILES = {".env", ".DS_Store", "selectors.json.bak", ".runner-version"}
 _EXCLUDE_SUFFIXES = (".test.mjs", ".zip", ".log")
 
 
