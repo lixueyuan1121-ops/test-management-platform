@@ -18,6 +18,7 @@ import { pollPerfOnce, uploadLocalSessions } from "./perf-collect.mjs";
 import { existsSync } from "node:fs";
 import { resetOrBlock } from "./reset-home.mjs";
 import { summarizeBatch } from "./runner-summary.mjs";
+import { selfUpdate } from "./self-update.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -548,9 +549,15 @@ async function main() {
 process.on("uncaughtException", (e) => log("未捕获异常(已忽略,继续轮询):", e.message));
 process.on("unhandledRejection", (e) => log("未处理拒绝(已忽略,继续轮询):", e?.message || e));
 
-// 入口:upload 子命令直传本地 session;否则常驻三队列轮询。
+// 入口:--update 自升级(run.sh/run.cmd 启动前调;updated → exit 75 通知外层重启);
+// upload 子命令直传本地 session;否则常驻三队列轮询。
 const _argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-if (_argv[0] === "upload") {
+if (process.argv.includes("--update")) {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  selfUpdate({ baseUrl: BASE_URL, token: RUNNER_TOKEN, dir, log })
+    .then((r) => process.exit(r === "updated" ? 75 : 0))
+    .catch((e) => { log("[update] 异常(跳过):", e.message); process.exit(0); });
+} else if (_argv[0] === "upload") {
   const ctx = { api, log, RUNNER_ID, PERFDOG_DIR, SESSIONS_DIR, REPORT_SET_ID };
   uploadLocalSessions(ctx, _argv[1]).then(() => process.exit(0)).catch((e) => { log("upload 失败:", e.message); process.exit(1); });
 } else {
