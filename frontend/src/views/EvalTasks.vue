@@ -271,14 +271,10 @@ const summarizing = ref(false)
 const summaryStream = ref('')
 
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
-const judgeableRuns = computed(() =>
-  (detail.value?.runs || []).filter((r) => r.status === 'done' || r.status === 'judged'))
+const judgeableRuns = computed(() => (detail.value?.runs || []).filter((r) => r.status === 'done'))
 const canSummarize = computed(() => {
   const t = detail.value?.task
-  if (!t || !t.last_batch_id || summarizing.value) return false
-  const runs = detail.value?.runs || []
-  // 至少有一条非 failed 的 run 才开放综合评价
-  return runs.some((r) => r.status !== 'failed' && r.status !== 'pending' && r.status !== 'running')
+  return t && t.last_batch_id && (detail.value?.runs || []).length > 0 && !summarizing.value
 })
 
 onMounted(async () => {
@@ -397,15 +393,10 @@ async function refreshDetail() {
 }
 
 async function judgeAll() {
-  const runs = judgeableRuns.value
-  if (!runs.length) return
+  if (!judgeableRuns.value.length) return
   batchJudging.value = true
   try {
-    // 只传 done 状态的 run_ids（judged 的也允许重判）；用任务的 project_id 而非全局 pid
-    const taskProjectId = detail.value?.task?.project_id || pid.value
-    const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id)
-    if (!runIds.length) { ElMessage.warning('没有待判定的用例（done 状态）'); return }
-    const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds })
+    const res = await judgeEvalBatch({ project_id: pid.value, run_ids: judgeableRuns.value.map((r) => r.run_id) })
     ElMessage.success(`已判定 ${res.judged} 条`)
     await refreshDetail()
   } catch { /* 拦截器已提示 */ }

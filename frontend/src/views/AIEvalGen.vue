@@ -35,10 +35,7 @@
         <el-select v-model="pid" placeholder="选择项目" style="width:200px" :disabled="running" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <!-- 关联测评任务（可选）：下拉列表是本项目的测评任务 -->
-        <el-select v-model="taskId" placeholder="关联测评任务（可选）" style="width:220px" clearable :disabled="running || !pid">
-          <el-option v-for="t in evalTasks" :key="t.id" :label="t.name" :value="t.id" />
-        </el-select>
+        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（可选）" />
       </div>
 
       <!-- 测评维度多选:至少选一个 -->
@@ -164,9 +161,10 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, ChatDotRound } from '@element-plus/icons-vue'
-import { aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries, listEvalDevices, listEvalDimensions, listEvalTasks } from '@/api'
+import { listTasks, aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries, listEvalDevices, listEvalDimensions } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import TaskPicker from '@/components/TaskPicker.vue'
 
 // 测评维度(从服务端动态拉取,前后端单一事实来源)。拉取前用内置兜底,拉取成功后替换。
 const DIMENSIONS_DEFAULT = [
@@ -211,7 +209,7 @@ const DEMO = `纳米 AI 搜索助手：
 const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
-const evalTasks = ref([])   // 本项目的测评任务列表（关联任务下拉）
+const tasks = ref([])
 const taskId = ref(null)
 const requirement = ref('')
 const dimensions = ref(['thinking'])   // 默认勾选「思考推理」,保证可直接提交
@@ -274,9 +272,9 @@ async function onProjectChange() {
   taskId.value = null
   queries.value = []
   meta.value = null
-  if (!pid.value) { evalTasks.value = []; return }
+  if (!pid.value) { tasks.value = []; return }
   setLastProjectId(pid.value)
-  try { evalTasks.value = await listEvalTasks(pid.value) || [] } catch { evalTasks.value = [] }
+  try { tasks.value = await listTasks({ project_id: pid.value }) } catch { tasks.value = [] }
 }
 
 function fillDemo() { requirement.value = DEMO }
