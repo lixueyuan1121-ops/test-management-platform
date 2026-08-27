@@ -24,8 +24,9 @@ from app.schemas.common import ok
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 # 设备在线判定阈值:last_seen_at(runner 最近拉取时间)距今在此秒数内即视为在线。
-# runner 轮询间隔通常几秒,60s 可容忍偶发抖动又能较快反映掉线。
-ONLINE_WINDOW_SEC = 60
+# runner 执行任务期间不轮询队列(不更新 last_seen),故窗口需容忍执行间隔;另叠加
+# 「running>0 强制在线」(正在执行必然活着),避免活跃设备被误判离线。
+ONLINE_WINDOW_SEC = 180
 # 看板 active_runs 每设备最多展示的执行中明细条数(防单设备堆积过多 running 撑爆响应)。
 ACTIVE_RUNS_LIMIT = 8
 
@@ -51,7 +52,7 @@ def _to_out(d: RunnerDevice, *, reveal_token: bool = False) -> dict:
         "name": d.name,
         "platform": d.platform,
         "token": d.token if reveal_token else _mask(d.token),  # 仅注册/重置时给明文
-        "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
+        "last_seen_at": (d.last_seen_at.isoformat() + "Z") if d.last_seen_at else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
@@ -121,14 +122,19 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
     # 在线判定必须用 UTC：last_seen_at 由 runner 拉取时以 datetime.utcnow() 写入
     # （见 exec_queue/perf/eval_queue/probe），判定端若用本地 now() 会凭空多算时区偏移
     # （CST 差 8h → 永远离线）。故此处与写入侧统一用 utcnow。
-    online = bool(d.last_seen_at and (utc_now - d.last_seen_at).total_seconds() <= ONLINE_WINDOW_SEC)
+    # 另：正在执行任务(running>0)的设备必然活着——执行期间不轮询队列 last_seen 会滞后，
+    # 故 running>0 直接视为在线，避免活跃设备被误判离线。
+    fresh = bool(d.last_seen_at and (utc_now - d.last_seen_at).total_seconds() <= ONLINE_WINDOW_SEC)
+    online = fresh or counts.get("running", 0) > 0
     return {
         "id": d.id,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
         "owner": {"id": d.owner_id, "name": owner_name},
-        "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
+        # 加 Z 标明 UTC：last_seen_at 是 naive UTC(utcnow 写入)，不带时区前端会当本地时间解析、
+        # 凭空差 8h(CST)→ 显示「刚掉线就 8 小时前」。补 Z 让前端 new Date 正确按 UTC 解析。
+        "last_seen_at": (d.last_seen_at.isoformat() + "Z") if d.last_seen_at else None,
         "online": online,
         # 各状态全量计数(缺省补 0),供卡片四格 + 汇总
         "run_counts": {s: counts.get(s, 0) for s in _COUNT_STATUSES},

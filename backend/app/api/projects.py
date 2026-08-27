@@ -67,9 +67,6 @@ def create_project(
     db.add(p)
     db.commit()
     db.refresh(p)
-    # 新项目立即 ensure 一个「线上回归」常驻任务（不必等重启）
-    from app.services.regression_task import ensure_regression_task
-    ensure_regression_task(db, p.id)
     return ok(ProjectOut.model_validate(p).model_dump())
 
 

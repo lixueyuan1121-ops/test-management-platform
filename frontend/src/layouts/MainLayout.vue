@@ -37,6 +37,7 @@
           <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
           <el-menu-item index="/adopted-cases"><el-icon><Select /></el-icon><span>已采纳用例</span></el-menu-item>
           <el-menu-item index="/regression-cases"><el-icon><RefreshRight /></el-icon><span>回归用例库</span></el-menu-item>
+          <el-menu-item index="/release-checklist"><el-icon><Checked /></el-icon><span>上线checklist</span></el-menu-item>
           <el-menu-item index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
           <el-menu-item index="/exec-results"><el-icon><Finished /></el-icon><span>执行结果</span></el-menu-item>
           <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
@@ -133,7 +134,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 

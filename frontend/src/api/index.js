@@ -86,6 +86,12 @@ export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
 // 批量标记/取消回归(只改本项目用例;跨项目 id 后端忽略)。
 export const bulkSetRegression = (project_id, ids, is_regression) =>
   http.patch('/ai/testcases/regression', { ids, is_regression }, { params: { project_id } })
+// ===== 上线 checklist（漏斗末端：回归用例库勾选加入 → 待上线验证）=====
+export const listReleaseChecklist = (project_id) => http.get('/release-checklist', { params: { project_id } })
+export const addReleaseChecklist = (project_id, test_case_ids) =>
+  http.post('/release-checklist/add', { test_case_ids }, { params: { project_id } })
+export const removeReleaseChecklist = (project_id, test_case_ids) =>
+  http.post('/release-checklist/remove', { test_case_ids }, { params: { project_id } })
 // 按用例当前 steps/expected 重新生成结构化 script(仅 gui/e2e)
 // 重生单条 script:同步调 AI 生成,较慢(常 30-60s),单独放宽超时到 60s(覆盖全局 15s 默认)。
 // 重生 script：单条同步调 AI，前端放宽超时到 60s。

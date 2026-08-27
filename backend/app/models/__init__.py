@@ -19,6 +19,7 @@ from app.models.ai_eval import EvalQuery, EvalRun, EvalClientDevice
 from app.models.feedback import (
     FeedbackImport, FeedbackCase, FeedbackRegressionSet, FeedbackSetCase, FeedbackRun,
 )
+from app.models.release_checklist import ReleaseChecklistItem
 
 __all__ = [
     "User",
@@ -53,4 +54,5 @@ __all__ = [
     "FeedbackRegressionSet",
     "FeedbackSetCase",
     "FeedbackRun",
+    "ReleaseChecklistItem",
 ]

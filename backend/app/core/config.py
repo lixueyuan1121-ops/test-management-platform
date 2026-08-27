@@ -78,8 +78,6 @@ class Settings(BaseSettings):
     # 反馈用例补 script / 下发执行时借用的「被测产品」选择器来源项目 code（反馈项目自己不建选择器）。
     # 空则回退用反馈项目自身（通常无选择器）。生产应指向纳米Work功能测试项目的 code。
     FEEDBACK_SELECTOR_PROJECT_CODE: str = ""
-    # 每个项目自动维护的「线上回归」常驻任务标题（status=testing，用例标记回归时自动挂到它下面）。
-    REGRESSION_TASK_TITLE: str = "线上回归"
 
     @property
     def cors_origins_list(self) -> list[str]:

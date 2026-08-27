@@ -34,9 +34,6 @@ class Task(Base):
     # 状态是否已被人工接管：人工（登录用户）改过 status 即置 True，
     # 此后派单同步（agent 的 PATCH）不再覆盖 status，只更新其它元信息。
     status_locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    # 是否是平台自动维护的「线上回归」常驻任务：每项目一个，status 恒为 testing，
-    # 用例标记回归时自动挂到它下面（checklist_item 关联）。防误删/误改状态用。
-    is_regression_task: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
     # 终态时间戳：每次状态「变为」online/closed 时刷新为最新时刻（非首次固定）。
     # 供任务详情显示上线时间，并作为「完成当天」列表带出的依据（见 tasks.list_tasks）。
     online_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

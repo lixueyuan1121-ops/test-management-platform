@@ -77,7 +77,6 @@ CREATE TABLE `task` (
   `assigned_date` DATE NOT NULL,
   `status` ENUM('pending','testing','blocked','online','closed') NOT NULL DEFAULT 'pending',
   `status_locked` TINYINT(1) NOT NULL DEFAULT 0,
-  `is_regression_task` TINYINT(1) NOT NULL DEFAULT 0,
   `online_at` DATETIME DEFAULT NULL,
   `closed_at` DATETIME DEFAULT NULL,
   `close_note` TEXT,
@@ -642,6 +641,22 @@ CREATE TABLE `feedback_run` (
   CONSTRAINT `fk_fbrun_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_fbrun_set` FOREIGN KEY (`set_id`) REFERENCES `feedback_regression_set`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_fbrun_user` FOREIGN KEY (`started_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 上线 checklist（漏斗末端：回归用例库勾选出的待上线验证用例，每项目一份） ----------
+CREATE TABLE `release_checklist_item` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `test_case_id` BIGINT NOT NULL,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_release_checklist_proj_case` (`project_id`,`test_case_id`),
+  KEY `idx_relck_project` (`project_id`),
+  KEY `idx_relck_case` (`test_case_id`),
+  CONSTRAINT `fk_relck_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_relck_case` FOREIGN KEY (`test_case_id`) REFERENCES `test_case`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_relck_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================

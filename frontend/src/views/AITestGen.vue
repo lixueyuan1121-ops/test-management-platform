@@ -35,7 +35,7 @@
         <el-select v-model="pid" placeholder="选择项目" style="width:200px" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（可选）" @change="onTaskChange" />
+        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（必填）" @change="onTaskChange" />
         <el-select
           v-model="targetPages" multiple filterable collapse-tags collapse-tags-tooltip
           placeholder="目标页面（可选，聚焦该页选择器）" style="width:260px" :disabled="running"
@@ -526,6 +526,7 @@ async function onFilePick(uploadFile) {
 
 function generate() {
   if (!pid.value || !requirement.value.trim()) return
+  if (!taskId.value) { ElMessage.warning('请先选择关联任务(必填)'); return }
   cases.value = []
   meta.value = null
   viewingId.value = null

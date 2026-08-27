@@ -155,6 +155,12 @@ def gen_testcases(
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    # 关联任务必填(前端已校验;后端兜底防绕过)：须是本项目的任务
+    if not body.task_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="请选择关联任务(必填)")
+    _t = db.get(Task, body.task_id)
+    if not _t or _t.project_id != body.project_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="关联任务不存在或不属于该项目")
     # 选择生成引擎(claude/deepseek/...);非法/空回落默认。可用性针对所选引擎判定。
     provider_id = generators.normalize_provider(body.provider)
     engine = generators.get_provider(provider_id)
@@ -430,9 +436,6 @@ def bulk_set_regression(
          .filter(TestCase.id.in_(ids), TestCase.project_id == project_id)
          .update({TestCase.is_regression: body.is_regression}, synchronize_session=False))
     db.commit()
-    # 同步「线上回归任务 ↔ 用例」关联（标记回归→挂上，取消→摘除）
-    from app.services.regression_task import sync_regression_link
-    sync_regression_link(db, ids, body.is_regression)
     return ok({"updated": n, "is_regression": body.is_regression})
 
 
@@ -574,10 +577,6 @@ def review_testcase(
 
     db.commit()
     db.refresh(tc)
-    # 若本次改了回归标记，同步「线上回归任务 ↔ 用例」关联
-    if body.is_regression is not None:
-        from app.services.regression_task import sync_regression_link
-        sync_regression_link(db, [tc.id], body.is_regression)
     return ok(_to_case_out(tc))
 
 

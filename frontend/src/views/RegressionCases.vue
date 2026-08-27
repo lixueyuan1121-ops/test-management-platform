@@ -46,6 +46,7 @@
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="success" size="small" :loading="dispatching" @click="runRegression">执行回归</el-button>
+        <el-button type="primary" size="small" :loading="addingChecklist" @click="addToChecklist">加入上线checklist</el-button>
         <el-button size="small" :loading="exporting" @click="exportSelected">导出选中脚本</el-button>
         <span class="sel-hint">随选随跑,仅跳过 manual(不可自动化)用例</span>
       </div>
@@ -108,7 +109,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listCases, listTasks, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, _blobErrorMsg } from '@/api'
+import { listCases, listTasks, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, addReleaseChecklist, _blobErrorMsg } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -142,6 +143,7 @@ const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
 const exporting = ref(false)
+const addingChecklist = ref(false)
 const tableRef = ref(null)
 
 // 分页(后端分页:total 为过滤后总数)
@@ -223,6 +225,17 @@ async function runRegression() {
     ElMessage.success(`已下发 ${n} 条回归到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''},执行机跑完自动回写结果`)
   } catch { /* http 拦截器已提示 */ }
   finally { dispatching.value = false }
+}
+
+// 把勾选的回归用例加入本项目「上线checklist」（漏斗末端；幂等，已在清单的跳过）。
+async function addToChecklist() {
+  if (!selected.value.length) return
+  addingChecklist.value = true
+  try {
+    const res = await addReleaseChecklist(pid.value, selected.value.map((r) => r.id))
+    ElMessage.success(`已加入上线checklist ${res.added} 条${res.added < selected.value.length ? '(其余已在清单)' : ''}`)
+  } catch { /* http 拦截器已提示 */ }
+  finally { addingChecklist.value = false }
 }
 
 // 能否导出 Playwright 脚本：仅 gui/e2e（后端仍会二次校验有无 script）。
