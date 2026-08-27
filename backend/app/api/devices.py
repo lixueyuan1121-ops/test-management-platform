@@ -220,14 +220,17 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         .order_by(ExecRun.created_at).all()
     )
     for r, proj_name, tc_title in running_rows:
-        elapsed = int((now - r.created_at).total_seconds() * 1000) if r.created_at else None
+        # 耗时/开始时间必须用 UTC 对齐:created_at 由数据库 func.now() 生成——SQLite 的
+        # CURRENT_TIMESTAMP 与 docker MySQL 默认时区都是 UTC;此前用本地 now 相减、且
+        # started_at 不带 Z 让前端按本地时区解析,CST 下执行时长凭空多 8 小时(同 last_seen_at 的坑)。
+        elapsed = int((utc_now - r.created_at).total_seconds() * 1000) if r.created_at else None
         all_active.append((r.runner, {
             "run_id": r.id,
             "kind": "func",
             "title": tc_title or "(无用例快照)",
             "project": r.project_id,          # 项目 id(测试契约)
             "project_name": proj_name,        # 项目名(前端展示用)
-            "started_at": r.created_at.isoformat() if r.created_at else None,
+            "started_at": (r.created_at.isoformat() + "Z") if r.created_at else None,
             "elapsed_ms": elapsed,
         }))
     eval_running_rows = (
@@ -241,14 +244,14 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
             payload = json.loads(r.payload) if r.payload else {}
         except (ValueError, TypeError):
             payload = {}
-        elapsed = int((now - r.created_at).total_seconds() * 1000) if r.created_at else None
+        elapsed = int((utc_now - r.created_at).total_seconds() * 1000) if r.created_at else None
         all_active.append((r.runner, {
             "run_id": r.id,
             "kind": "eval",
             "title": payload.get("title") or payload.get("prompt") or f"测评 run#{r.id}",
             "project": r.project_id,
             "project_name": proj_name,
-            "started_at": r.created_at.isoformat() if r.created_at else None,
+            "started_at": (r.created_at.isoformat() + "Z") if r.created_at else None,
             "elapsed_ms": elapsed,
         }))
     all_active.sort(key=lambda t: t[1]["started_at"] or "")

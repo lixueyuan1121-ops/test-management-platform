@@ -87,7 +87,8 @@
               <span class="run-pip" :class="{ 'pip-eval': r.kind === 'eval' }"></span>
               <span class="run-kind" :class="'k-' + (r.kind || 'func')">{{ KIND_SHORT[r.kind] || r.kind || '功能' }}</span>
               <span class="run-title" :title="r.title">{{ r.title }}</span>
-              <span class="run-time">{{ fmtElapsed(r.started_at) }}</span>
+              <span class="run-time" :class="{ stale: isStale(r) }"
+                :title="isStale(r) ? '已超 6 小时(单条执行上限 5h)，疑似执行中断未回填' : ''">{{ fmtElapsed(r) }}</span>
             </div>
             <div v-if="d.active_runs.length > 3" class="run-more">
               +{{ d.active_runs.length - 3 }} 项并发执行中
@@ -130,6 +131,7 @@ const todayDone = computed(() =>
 async function load() {
   try {
     ov.value = await getDeviceOverview()
+    fetchBase.value = Date.now()
     lastAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   } catch {
     // 轮询失败静默：保留上次数据，不打断看板（下次 tick 再试）
@@ -138,10 +140,23 @@ async function load() {
   }
 }
 
-// 已用时长：从 started_at 到当前 now，随每秒 tick 跳动
-function fmtElapsed(startedAt) {
-  if (!startedAt) return '—'
-  const ms = now.value - new Date(startedAt).getTime()
+// 执行耗时:优先用后端算好的 elapsed_ms(服务端 UTC 同源相减,不受前后端时钟/时区差影响)
+// 加上拉取后的本地流逝毫秒做秒级跳动;老响应无 elapsed_ms 时退回 started_at(带 Z,按 UTC 解析)。
+const fetchBase = ref(Date.now())
+function runElapsedMs(r) {
+  if (typeof r.elapsed_ms === 'number') return r.elapsed_ms + Math.max(0, now.value - fetchBase.value)
+  if (!r.started_at) return null
+  return now.value - new Date(r.started_at).getTime()
+}
+
+// 超过 6 小时仍 running:执行器单条上限 5 小时,必是执行中断未回填的僵尸条目,标红提示
+const STALE_MS = 6 * 3600 * 1000
+const isStale = (r) => (runElapsedMs(r) ?? 0) > STALE_MS
+
+// 已用时长：随每秒 tick 跳动
+function fmtElapsed(r) {
+  const ms = runElapsedMs(r)
+  if (ms == null) return '—'
   if (ms < 0) return '0s'
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
@@ -272,6 +287,7 @@ onUnmounted(() => {
 .run-pip { width: 6px; height: 6px; border-radius: 50%; background: #2f7dd1; flex: none; animation: breathe 1.2s ease-in-out infinite; }
 .run-title { color: #4a5568; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-time { margin-left: auto; font-family: 'JetBrains Mono', monospace; color: #2f7dd1; flex: none; font-variant-numeric: tabular-nums; }
+.run-time.stale { color: #e5565f; }
 .idle { margin-top: 12px; border-top: 1px dashed #e3e8ef; padding-top: 10px; font-size: 12px; color: #9aa5b1; font-family: 'JetBrains Mono', monospace; flex: 1; }
 
 .empty { text-align: center; color: #7d8a9b; padding: 80px 20px; font-size: 14px; line-height: 2; }
