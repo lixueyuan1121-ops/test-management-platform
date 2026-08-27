@@ -93,11 +93,10 @@ export const addReleaseChecklist = (project_id, test_case_ids) =>
 export const removeReleaseChecklist = (project_id, test_case_ids) =>
   http.post('/release-checklist/remove', { test_case_ids }, { params: { project_id } })
 // 按用例当前 steps/expected 重新生成结构化 script(仅 gui/e2e)
-// 重生单条 script:同步调 AI 生成,较慢(常 30-60s),单独放宽超时到 60s(覆盖全局 15s 默认)。
-// 重生 script：单条同步调 AI，前端放宽超时到 60s。
+// 重生单条 script:同步调 AI 生成,较慢(常 30-60s,复杂用例可达数分钟),单独放宽超时到 5 分钟(覆盖全局 15s 默认)。
 // opts.silent=true 时抑制 http 拦截器的错误 toast（批量重生逐条调用时用，改由汇总清单展示）。
 export const genTestcaseScript = (id, opts = {}) =>
-  http.post(`/ai/testcases/${id}/gen-script`, null, { timeout: 60000, silent: !!opts.silent })
+  http.post(`/ai/testcases/${id}/gen-script`, null, { timeout: 300000, silent: !!opts.silent })
 
 // ===== 验收清单（测试点回流任务）=====
 export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
