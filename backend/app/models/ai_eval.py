@@ -95,6 +95,10 @@ class EvalRun(Base):
     verdict_dims: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: 三维结论（见 spec §5.5）
     verdict_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 判定理由汇总
     judged_by: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 判定用的引擎
+    # 人工复核标注(失败收敛):confirmed 认可判定 / false_positive 误报(判fail实际通过) /
+    # false_negative 漏报(判pass实际有问题);NULL=未复核。note 记复核说明,沉淀 judge 盲区。
+    review_mark: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_abnormal: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
     pushed_multica: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     multica_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)  # multica 侧任务 id/链接

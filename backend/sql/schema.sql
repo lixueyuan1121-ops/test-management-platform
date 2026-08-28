@@ -355,6 +355,8 @@ CREATE TABLE `eval_run` (
   `verdict_dims` TEXT NULL,
   `verdict_reason` TEXT NULL,
   `judged_by` VARCHAR(16) NULL,
+  `review_mark` VARCHAR(16) NULL,
+  `review_note` TEXT NULL,
   `is_abnormal` TINYINT(1) NOT NULL DEFAULT 0,
   `pushed_multica` TINYINT(1) NOT NULL DEFAULT 0,
   `multica_ref` VARCHAR(512) NULL,

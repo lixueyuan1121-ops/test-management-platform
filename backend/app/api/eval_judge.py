@@ -36,6 +36,7 @@ def _run_out(r: EvalRun) -> dict:
         "score": r.score,
         "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
         "verdict_reason": r.verdict_reason, "judged_by": r.judged_by,
+        "review_mark": r.review_mark, "review_note": r.review_note,
         "is_abnormal": bool(r.is_abnormal), "share_link": r.share_link, "answer": r.answer,
     }
 
@@ -79,6 +80,37 @@ def judge_one(run_id: int, body: JudgeIn, db: Session = Depends(get_db), user: U
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
     eval_judge.judge_run(db, r, provider=body.provider)
     db.refresh(r)
+    return ok(_run_out(r))
+
+
+class ReviewMarkIn(BaseModel):
+    # confirmed=认可判定 / false_positive=误报(判fail实际OK) / false_negative=漏报(判pass实际有问题) / None=清除
+    mark: str | None = None
+    note: str | None = None
+
+
+@router.post("/{run_id}/review")
+def review_run(run_id: int, body: ReviewMarkIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """人工复核标注(失败收敛):对 AI 判定标 误报/漏报/认可,沉淀 judge 盲区、驱动题目期望迭代。
+
+    误报(false_positive)顺带摘掉 is_abnormal(不再推 multica/不计异常);
+    漏报(false_negative)反向置真。verdict 本身不改——保留 AI 原判供对照统计。
+    """
+    r = db.get(EvalRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    if not r.verdict:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="该执行项还没有 AI 判定,先判定再复核")
+    if body.mark is not None and body.mark not in ("confirmed", "false_positive", "false_negative"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="mark 须为 confirmed/false_positive/false_negative 或 null")
+    r.review_mark = body.mark
+    r.review_note = (body.note or "").strip() or None
+    if body.mark == "false_positive":
+        r.is_abnormal = False
+    elif body.mark == "false_negative":
+        r.is_abnormal = True
+    db.commit(); db.refresh(r)
     return ok(_run_out(r))
 
 

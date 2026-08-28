@@ -129,6 +129,8 @@ def _to_out(r: EvalRun) -> dict:
         "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
         "verdict_reason": r.verdict_reason,
         "judged_by": r.judged_by,
+        "review_mark": r.review_mark,
+        "review_note": r.review_note,
         "is_abnormal": bool(r.is_abnormal),
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,

@@ -249,6 +249,9 @@
             <template #default="{ row }">
               <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ VERDICT_LABEL[row.verdict] || row.verdict }}</el-tag>
               <span v-else class="muted">—</span>
+              <el-tooltip v-if="row.review_mark" :content="REVIEW_LABEL[row.review_mark] + (row.review_note ? '：' + row.review_note : '')" placement="top">
+                <span class="review-flag" :class="'rf-' + row.review_mark">{{ REVIEW_ICON[row.review_mark] }}</span>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="评分" width="64" align="center">
@@ -312,6 +315,9 @@ const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判
 const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judging: 'warning', judged: 'success', failed: 'danger' }
 const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '判定出错' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
+// 人工复核标记(只读展示;复核操作在「测评结果」页)
+const REVIEW_LABEL = { confirmed: '已认可判定', false_positive: '误报（实际通过）', false_negative: '漏报（实际有问题）' }
+const REVIEW_ICON = { confirmed: '✓', false_positive: '误', false_negative: '漏' }
 const DIM_TAG_TYPE = {
   thinking: 'primary', tool_use: 'success', artifact: 'warning', multi_turn: 'danger', instruction: 'info',
   workflow: 'warning', clarification: 'primary', context: 'success', safety: 'danger', refusal: 'info',
@@ -616,6 +622,11 @@ function genSummary() {
 .score-hi { color: #00b386; }
 .score-mid { color: #d98b00; }
 .score-lo { color: #e5565f; }
+/* 人工复核标记 */
+.review-flag { display: inline-block; margin-left: 4px; font-size: 11px; font-weight: 700; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; cursor: default; }
+.rf-confirmed { background: #e7f7f1; color: #00b386; }
+.rf-false_positive { background: #fdf3e3; color: #d98b00; }
+.rf-false_negative { background: #fdeaea; color: #e5565f; }
 /* 用例选择 */
 .qpick { width: 100%; }
 .qpick-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; color: #5a6b7b; }

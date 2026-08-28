@@ -434,6 +434,11 @@ def ensure_eval_task_tables() -> None:
     if rcols and "score" not in rcols:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN score INT NULL"))
+    # eval_run 补人工复核两列(失败收敛标注:误报/漏报/认可 + 说明)
+    if rcols and "review_mark" not in rcols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN review_mark VARCHAR(16) NULL"))
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN review_note TEXT NULL"))
 
 
 def ensure_platform_columns() -> None:

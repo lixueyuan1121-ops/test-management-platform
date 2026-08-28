@@ -107,6 +107,15 @@
                   <b>判定小结：</b>{{ row.verdict_dims.summary }}
                 </div>
               </template>
+              <!-- 人工复核(失败收敛):对 AI 判定标 认可/误报/漏报,误报自动摘异常、漏报置异常 -->
+              <div v-if="row.verdict && !row.isGroup" class="review-bar">
+                <span class="review-lbl">人工复核：</span>
+                <el-button size="small" :type="row.review_mark === 'confirmed' ? 'success' : ''" @click="doReview(row, 'confirmed')">认可判定</el-button>
+                <el-button size="small" :type="row.review_mark === 'false_positive' ? 'warning' : ''" @click="doReview(row, 'false_positive')">误报（实际通过）</el-button>
+                <el-button size="small" :type="row.review_mark === 'false_negative' ? 'danger' : ''" @click="doReview(row, 'false_negative')">漏报（实际有问题）</el-button>
+                <el-button v-if="row.review_mark" size="small" text @click="doReview(row, null)">清除</el-button>
+                <span v-if="row.review_note" class="review-note">备注：{{ row.review_note }}</span>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -141,6 +150,9 @@
           <template #default="{ row }">
             <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ VERDICT_LABEL[row.verdict] || row.verdict }}</el-tag>
             <span v-else class="dim-muted">—</span>
+            <el-tooltip v-if="row.review_mark" :content="REVIEW_LABEL[row.review_mark] + (row.review_note ? '：' + row.review_note : '')" placement="top">
+              <span class="review-flag" :class="'rf-' + row.review_mark">{{ REVIEW_ICON[row.review_mark] }}</span>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="评分" width="60" align="center">
@@ -197,9 +209,9 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -238,6 +250,9 @@ const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judg
 // 总判定（EvalVerdict 值 pass/fail/error）：pass 绿 / fail 红 / error 灰
 const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '判定出错' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
+// 人工复核标记(失败收敛)
+const REVIEW_LABEL = { confirmed: '已认可判定', false_positive: '误报（实际通过）', false_negative: '漏报（实际有问题）' }
+const REVIEW_ICON = { confirmed: '✓', false_positive: '误', false_negative: '漏' }
 
 const app = useAppStore()
 const projects = ref([])
@@ -387,6 +402,25 @@ async function doPushMultica() {
   finally { pushingMultica.value = false }
 }
 
+// 人工复核:点已选中的标记 = 无操作;新标记弹备注框(可空);mark=null 清除。就地更新该行。
+async function doReview(row, mark) {
+  if (mark && row.review_mark === mark) return
+  let note = ''
+  if (mark) {
+    try {
+      const r = await ElMessageBox.prompt('复核备注（可空，说明误判原因便于迭代题目期望/判定规则）', REVIEW_LABEL[mark], {
+        confirmButtonText: '保存', cancelButtonText: '取消', inputValue: row.review_note || '',
+      })
+      note = r.value || ''
+    } catch { return }  // 取消
+  }
+  try {
+    const res = await reviewEvalRun(row.run_id, mark, note)
+    Object.assign(row, { review_mark: res.review_mark, review_note: res.review_note, is_abnormal: !!res.is_abnormal })
+    ElMessage.success(mark ? `已标注：${REVIEW_LABEL[mark]}` : '已清除复核标注')
+  } catch { /* 拦截器已提示 */ }
+}
+
 // ==== 维度能力画像雷达 ====
 import * as echarts from 'echarts/core'
 import { RadarChart, LineChart } from 'echarts/charts'
@@ -528,6 +562,14 @@ onBeforeUnmount(() => {
 .score-hi { color: #00b386; }
 .score-mid { color: #d98b00; }
 .score-lo { color: #e5565f; }
+/* 人工复核 */
+.review-bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e4e7ed; flex-wrap: wrap; }
+.review-lbl { font-size: 12px; color: #8a94a6; font-weight: 600; }
+.review-note { font-size: 12px; color: #8a94a6; }
+.review-flag { display: inline-block; margin-left: 4px; font-size: 11px; font-weight: 700; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; cursor: default; }
+.rf-confirmed { background: #e7f7f1; color: #00b386; }
+.rf-false_positive { background: #fdf3e3; color: #d98b00; }
+.rf-false_negative { background: #fdeaea; color: #e5565f; }
 /* 三维展开 */
 .verdict-detail { padding: 8px 16px; background: #fafcfe; }
 .no-dims { padding: 8px 0; }
