@@ -264,6 +264,34 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
     return ok({"trace_url": f"/uploads/{rel}"})
 
 
+def reset_run_for_retry(r: EvalRun) -> None:
+    """failed run 原地复位回 pending(重跑公共逻辑,任务端点与通用端点共用):
+    清空全部回填与判定字段,payload 快照保留——仍按下发那一刻的配置重跑。调用方负责 commit。"""
+    r.status = EvalRunStatus.pending
+    r.reason = None
+    r.session_id = None; r.share_link = None; r.artifact_share_link = None
+    r.answer = None; r.trace = None
+    r.reported_duration = None; r.bean_cost = None; r.tokens = None; r.duration_ms = None
+    r.verdict = None; r.score = None; r.verdict_dims = None; r.verdict_reason = None
+    r.judged_by = None; r.is_abnormal = False
+    r.review_mark = None; r.review_note = None
+
+
+@router.post("/{run_id}/retry")
+def retry_run_any(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """通用单条重跑(用户鉴权,区别于同前缀下 runner 鉴权的 claim/trace):
+    普通题库下发的 failed run 此前无重跑入口(任务重跑端点要求 run 属于任务),补齐对称性。"""
+    r = db.get(EvalRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    if getattr(r.status, "value", r.status) != "failed":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
+    reset_run_for_retry(r)
+    db.commit(); db.refresh(r)
+    return ok(_to_out(r))
+
+
 @router.get("/trend")
 def batch_trend(project_id: int = Query(...), limit: int = Query(30, le=100),
                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):

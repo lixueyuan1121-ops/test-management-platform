@@ -146,6 +146,8 @@ export const setEvalTaskSchedule = (id, payload) => http.patch(`/eval-tasks/${id
 export const markEvalRunFailed = (taskId, runId) => http.post(`/eval-tasks/${taskId}/runs/${runId}/mark-failed`)
 // 单条重跑失败用例：failed run 原地复位回 pending，执行机重新拉走（免整任务重跑）
 export const retryEvalRun = (taskId, runId) => http.post(`/eval-tasks/${taskId}/runs/${runId}/retry`)
+// 通用单条重跑（不限任务，普通题库下发的 failed run 用这个）
+export const retryEvalRunAny = (runId) => http.post(`/eval-queue/${runId}/retry`)
 export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
 
 export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, onError, signal } = {}) {

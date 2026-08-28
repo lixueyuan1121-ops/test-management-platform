@@ -228,8 +228,12 @@
         </el-table-column>
         <el-table-column label="操作" width="96" align="center">
           <template #default="{ row }">
+            <el-popconfirm v-if="!row.isGroup && row.status === 'failed'"
+              title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryOne(row)">
+              <template #reference><el-button size="small" type="success" text>重跑</el-button></template>
+            </el-popconfirm>
             <el-button
-              v-if="!row.isGroup"
+              v-else-if="!row.isGroup"
               size="small" type="primary" text
               :loading="judgingIds.has(row.run_id)"
               :disabled="!canJudge(row)"
@@ -293,7 +297,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -540,6 +544,17 @@ function groupTurnSummary(row) {
   const failedExec = n((t) => t.status === 'failed'); if (failedExec) parts.push(`${failedExec} 执行失败`)
   const waiting = n((t) => !t.verdict && t.status !== 'failed'); if (waiting) parts.push(`${waiting} 待判定/待执行`)
   return parts.join(' / ') || '—'
+}
+
+// 单条重跑(failed → pending):就地更新该行状态,执行机下轮轮询拉走
+async function retryOne(row) {
+  try {
+    const res = await retryEvalRunAny(row.run_id)
+    Object.assign(row, { status: res.status, reason: res.reason, verdict: res.verdict, score: res.score,
+      verdict_dims: res.verdict_dims, verdict_reason: res.verdict_reason, is_abnormal: !!res.is_abnormal,
+      review_mark: res.review_mark, review_note: res.review_note })
+    ElMessage.success(`run ${row.run_id} 已复位待执行，执行机将重新拉走`)
+  } catch { /* 拦截器已提示 */ }
 }
 
 // 人工复核:点已选中的标记 = 无操作;新标记弹备注框(可空);mark=null 清除。就地更新该行。
