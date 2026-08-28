@@ -179,7 +179,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript } from '@/api'
@@ -188,6 +188,7 @@ import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
@@ -251,8 +252,12 @@ const batches = computed(() => {
 onMounted(async () => {
   projects.value = await app.fetchProjects()
   if (projects.value.length) {
-    pid.value = pickDefaultProjectId(projects.value)
+    // 深链支持:?project_id=&batch_id=(测试计划历史/飞书告警卡跳转);无 query 走默认项目
+    const qPid = Number(route.query.project_id)
+    pid.value = (qPid && projects.value.some((p) => p.id === qPid)) ? qPid : pickDefaultProjectId(projects.value)
     await onProjectChange()
+    const qBatch = route.query.batch_id
+    if (qBatch && batches.value.some((b) => b.id === qBatch)) activeBatches.value = [qBatch]
   }
 })
 

@@ -17,6 +17,7 @@ const routes = [
       { path: 'case-library', name: 'case-library', component: () => import('@/views/CaseLibrary.vue') },
       { path: 'adopted-cases', name: 'adopted-cases', component: () => import('@/views/AdoptedCases.vue') },
       { path: 'regression-cases', name: 'regression-cases', component: () => import('@/views/RegressionCases.vue'), meta: { title: '回归用例库' } },
+      { path: 'test-plans', name: 'test-plans', component: () => import('@/views/TestPlans.vue'), meta: { title: '测试计划' } },
       { path: 'release-checklist', name: 'release-checklist', component: () => import('@/views/ReleaseChecklist.vue'), meta: { title: '上线checklist' } },
       { path: 'projects', name: 'projects', component: () => import('@/views/Projects.vue'), meta: { platformAdmin: true } },
       { path: 'users', name: 'users', component: () => import('@/views/Users.vue'), meta: { platformAdmin: true } },

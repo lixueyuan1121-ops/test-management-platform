@@ -498,3 +498,17 @@ export const feedbackRuns = (set_id) => http.get('/feedback/runs', { params: { s
 export const feedbackRunDetail = (rid) => http.get(`/feedback/runs/${rid}`)
 // 回归防线日历(GitHub 贡献墙式:每天跑批状态 + 连续值守天数)
 export const defenseCalendar = (weeks = 12) => http.get('/feedback/defense-calendar', { params: { weeks } })
+
+// 测试计划
+export const testPlans = (project_id) => http.get('/test-plans', { params: { project_id } })
+export const createTestPlan = (data) => http.post('/test-plans', data)
+export const getTestPlan = (plan_id) => http.get(`/test-plans/${plan_id}`)
+export const updateTestPlan = (plan_id, data) => http.patch(`/test-plans/${plan_id}`, data)
+export const deleteTestPlan = (plan_id) => http.delete(`/test-plans/${plan_id}`)
+export const planCandidateCases = (plan_id, params) => http.get(`/test-plans/${plan_id}/candidate-cases`, { params })
+export const addPlanCases = (plan_id, case_ids) => http.post(`/test-plans/${plan_id}/cases`, { case_ids })
+export const removePlanCases = (plan_id, case_ids) => http.delete(`/test-plans/${plan_id}/cases`, { data: { case_ids } })
+export const runTestPlan = (plan_id, runner) => http.post(`/test-plans/${plan_id}/run`, { runner })
+export const setTestPlanSchedule = (plan_id, cron, enabled) => http.patch(`/test-plans/${plan_id}/schedule`, { cron, enabled })
+export const testPlanRuns = (params) => http.get('/test-plans/runs', { params })
+export const testPlanRunDetail = (run_id) => http.get(`/test-plans/runs/${run_id}`)
