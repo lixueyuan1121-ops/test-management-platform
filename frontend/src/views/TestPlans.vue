@@ -163,7 +163,7 @@
         </el-table-column>
         <el-table-column label="触发" width="70" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.trigger === 'auto' ? 'warning' : 'info'" size="small" effect="plain">{{ row.trigger === 'auto' ? '定时' : '手动' }}</el-tag>
+            <el-tag :type="TRIGGER_TYPE[row.trigger] || 'info'" size="small" effect="plain">{{ TRIGGER_LABEL[row.trigger] || row.trigger }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="结果" min-width="190">
@@ -208,6 +208,8 @@ const app = useAppStore()
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const KIND_TYPE = { gui: 'success', api: 'warning', cli: 'info', e2e: 'primary', manual: 'info' }
+const TRIGGER_TYPE = { auto: 'warning', ci: 'danger', manual: 'info' }
+const TRIGGER_LABEL = { auto: '定时', ci: 'CI', manual: '手动' }
 
 const projects = ref([])
 const projectId = ref(null)

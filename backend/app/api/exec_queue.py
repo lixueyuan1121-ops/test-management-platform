@@ -56,8 +56,8 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     fr = db.query(FeedbackRun).filter(FeedbackRun.batch_id == batch_id).first()
     pr = None if fr else db.query(TestPlanRun).filter(TestPlanRun.batch_id == batch_id).first()
     trigger = fr.trigger if fr else (pr.trigger if pr else None)
-    if trigger != "auto":
-        return  # manual 批次或无批次元数据 → 不发
+    if trigger not in ("auto", "ci"):
+        return  # manual 批次或无批次元数据 → 不发（auto=定时、ci=流水线触发，均无人盯页面）
     # 聚合结果
     runs = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
     if not runs:

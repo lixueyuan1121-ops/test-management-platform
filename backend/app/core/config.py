@@ -86,13 +86,17 @@ class Settings(BaseSettings):
 
     # ---- 反馈测试模块（机器人推 md/zip 对接）----
     # 机器人无人值守，用独立长期 token 鉴权（与用户 JWT 分离，仿 RUNNER_TOKEN）。空则拒绝一切 ingest。
-    FEEDBACK_BOT_TOKEN: str = ""
-    # 反馈用例归属的固定专用项目（startup 自动 ensure，机器人侧无需知道 project_id）。
+    FEEDBACK_BOT_TOKEN: str = ""    # 反馈用例归属的固定专用项目（startup 自动 ensure，机器人侧无需知道 project_id）。
     FEEDBACK_PROJECT_CODE: str = "__feedback__"
     FEEDBACK_PROJECT_NAME: str = "反馈测试"
     # 反馈用例补 script / 下发执行时借用的「被测产品」选择器来源项目 code（反馈项目自己不建选择器）。
     # 空则回退用反馈项目自身（通常无选择器）。生产应指向纳米Work功能测试项目的 code。
     FEEDBACK_SELECTOR_PROJECT_CODE: str = ""
+
+    # ---- CI/CD 集成钩子（流水线触发测试计划 + 质量门禁查询）----
+    # CI 无人值守，用独立长期 token 鉴权（仿 RUNNER_TOKEN/FEEDBACK_BOT_TOKEN 模式）。
+    # 空则拒绝一切 /api/hooks/* 请求（通道默认关闭）。
+    CI_HOOK_TOKEN: str = ""
 
     @property
     def cors_origins_list(self) -> list[str]:
