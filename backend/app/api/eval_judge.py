@@ -20,12 +20,14 @@ _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 class JudgeIn(BaseModel):
     provider: str | None = None
+    votes: int = 1   # 1=单票(默认);3/5=稳健多数决(N 倍引擎耗时)
 
 
 class JudgeBatchIn(BaseModel):
     project_id: int
     run_ids: list[int] | None = None   # 指定;为空则判该项目所有 done 的 run
     provider: str | None = None
+    votes: int = 1
 
 
 def _run_out(r: EvalRun) -> dict:
@@ -65,7 +67,7 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
             results.append({"run_id": r.id, "skipped": True, "reason": f"状态 {st},尚未执行完成"})
             continue
         try:
-            res = eval_judge.judge_run(db, r, provider=body.provider)
+            res = eval_judge.judge_run(db, r, provider=body.provider, votes=body.votes)
             results.append({"run_id": r.id, **res})
         except Exception as e:  # noqa: BLE001 单条失败不断批
             results.append({"run_id": r.id, "error": str(e)})
@@ -78,7 +80,7 @@ def judge_one(run_id: int, body: JudgeIn, db: Session = Depends(get_db), user: U
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
-    eval_judge.judge_run(db, r, provider=body.provider)
+    eval_judge.judge_run(db, r, provider=body.provider, votes=body.votes)
     db.refresh(r)
     return ok(_run_out(r))
 

@@ -57,6 +57,9 @@
               <el-option label="未判定" value="__none__" />
             </el-select>
             <el-button size="small" :icon="Refresh" @click="load">刷新</el-button>
+            <el-checkbox v-model="robustJudge" size="small" class="robust-ck">
+              <el-tooltip content="每条判 3 次取多数票（更稳，但 3 倍耗时）" placement="top"><span>稳健(3票)</span></el-tooltip>
+            </el-checkbox>
             <el-button
               size="small" type="primary" :icon="DataAnalysis" :loading="batchJudging"
               :disabled="!pid || !doneCount"
@@ -263,6 +266,7 @@ const verdictFilter = ref(null)
 const expanded = ref([])
 const judgingIds = ref(new Set())
 const batchJudging = ref(false)
+const robustJudge = ref(false)
 
 // 导出飞书 / 推送 multica
 const exportDialogVisible = ref(false)
@@ -371,7 +375,7 @@ async function batchJudge() {
   if (!pid.value || !doneCount.value) return
   batchJudging.value = true
   try {
-    const res = await judgeEvalBatch({ project_id: pid.value })
+    const res = await judgeEvalBatch({ project_id: pid.value, votes: robustJudge.value ? 3 : 1 })
     const errs = (res.results || []).filter((x) => x.error).length
     ElMessage.success(`已判定 ${res.judged} 条${errs ? `（${errs} 条失败）` : ''}`)
     await load()
@@ -570,6 +574,7 @@ onBeforeUnmount(() => {
 .rf-confirmed { background: #e7f7f1; color: #00b386; }
 .rf-false_positive { background: #fdf3e3; color: #d98b00; }
 .rf-false_negative { background: #fdeaea; color: #e5565f; }
+.robust-ck { margin-right: 0; }
 /* 三维展开 */
 .verdict-detail { padding: 8px 16px; background: #fafcfe; }
 .no-dims { padding: 8px 0; }

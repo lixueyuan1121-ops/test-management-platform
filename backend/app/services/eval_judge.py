@@ -48,8 +48,53 @@ def _load_trace(run: EvalRun) -> dict:
         return fallback
 
 
-def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
-    """判定一条 eval_run:读 trace+expected+主考维度 → 引擎 → 多维 → 落库。返回判定结果 dict。"""
+def _judge_once(engine, trace: dict, expected: str, dimension: str | None) -> tuple[dict, str | None]:
+    """单次判定:调引擎累积输出并解析。返回 (dims, err);err 非空或 dims 带 error 即本次失败。"""
+    raw = ""
+    err = None
+    try:
+        for evt in engine.stream_generate(
+            expected or "判定",
+            prompt_builder=lambda: claude_runner.build_eval_judge_prompt(trace, expected, dimension),
+            system_prompt=claude_runner.EVAL_JUDGE_SYSTEM_PROMPT,
+        ):
+            et = evt.get("type")
+            if et == "delta":
+                raw += evt["text"]
+            elif et == "result":
+                if evt.get("text"):
+                    raw = evt["text"]
+            elif et == "error":
+                err = evt.get("msg")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("判定引擎调用异常")
+        err = str(e)
+    dims = claude_runner.parse_eval_verdict(raw)
+    if not err and dims.get("error"):
+        err = "判定输出无法解析"
+    return dims, err
+
+
+def _verdict_of(dims: dict) -> str:
+    """由多维结论推导单次总判定(pass/fail/error),与原单票口径一致:
+    任一明确 false → fail;核心三维全 true(且主考维不为 false)→ pass;有 None 未判 → error。"""
+    passes = [dims[k]["pass"] for k in ("thinking_complete", "tools_ok", "artifact_expected")]
+    opt = dims.get("dimension_ok")
+    opt_pass = opt.get("pass") if isinstance(opt, dict) else None
+    if any(p is False for p in passes) or opt_pass is False:
+        return EvalVerdict.failed.value
+    if all(p is True for p in passes):
+        return EvalVerdict.passed.value
+    return EvalVerdict.error.value
+
+
+def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int = 1) -> dict:
+    """判定一条 eval_run:读 trace+expected+主考维度 → 引擎 → 多维 → 落库。返回判定结果 dict。
+
+    votes>1 = 稳健判定(主流 multi-judge 多数决):独立判 N 次,pass/fail 按多数票定结论
+    (平票/全 error → error 供复核,不猜);score 取有效均值。代价是 N 倍引擎调用时长,默认 1。
+    """
+    votes = max(1, min(5, int(votes or 1)))
     expected = ""
     dimension = None
     if run.eval_query_id:
@@ -86,59 +131,52 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
     run.status = EvalRunStatus.judging
     db.commit()
 
-    raw = ""
-    err = None
-    try:
-        for evt in engine.stream_generate(
-            expected or "判定",
-            prompt_builder=lambda: claude_runner.build_eval_judge_prompt(trace, expected, dimension),
-            system_prompt=claude_runner.EVAL_JUDGE_SYSTEM_PROMPT,
-        ):
-            et = evt.get("type")
-            if et == "delta":
-                raw += evt["text"]
-            elif et == "result":
-                if evt.get("text"):
-                    raw = evt["text"]
-            elif et == "error":
-                err = evt.get("msg")
-    except Exception as e:  # noqa: BLE001
-        logger.exception("判定引擎调用异常")
-        err = str(e)
+    # N 次独立判定收集票(单次失败计 error 票不断批)
+    ballots: list[tuple[str, dict]] = []   # (verdict, dims);判定失败的票 dims 为 None
+    fail_reasons: list[str] = []
+    for _ in range(votes):
+        dims_i, err_i = _judge_once(engine, trace, expected, dimension)
+        if err_i:
+            ballots.append((EvalVerdict.error.value, None))
+            fail_reasons.append(err_i)
+        else:
+            ballots.append((_verdict_of(dims_i), dims_i))
 
-    dims = claude_runner.parse_eval_verdict(raw)
-    parse_error = dims.get("error")
-
-    if err or parse_error:
-        # 判定失败:不进 judged(保持 done 可重判),记原因
+    valid = [(v, d) for v, d in ballots if d is not None]
+    if not valid:
+        # 全部失败:不进 judged(保持 done 可重判),记原因
         run.status = EvalRunStatus.done
         run.verdict = EvalVerdict.error.value
-        run.verdict_reason = (err or "判定输出无法解析")[:2000]
+        run.verdict_reason = (fail_reasons[0] if fail_reasons else "判定失败")[:2000]
         run.judged_by = provider_id
         db.commit()
         return {"verdict": "error", "reason": run.verdict_reason}
 
-    # 组合判定:核心三维 + 可选主考维(dimension_ok,判定 prompt 注入了主考维度时才有)。
-    # 任一明确 false → fail;核心三维全 true(且主考维不为 false)→ pass;
-    # 核心维有 None(未判)且无明确 false → error 供复核,不误判 pass。
-    passes = [dims[k]["pass"] for k in ("thinking_complete", "tools_ok", "artifact_expected")]
-    opt = dims.get("dimension_ok")
-    opt_pass = opt.get("pass") if isinstance(opt, dict) else None
-    if any(p is False for p in passes) or opt_pass is False:
-        verdict = EvalVerdict.failed.value  # "fail"
-    elif all(p is True for p in passes):
-        verdict = EvalVerdict.passed.value  # "pass"
+    n_pass = sum(1 for v, _ in valid if v == EvalVerdict.passed.value)
+    n_fail = sum(1 for v, _ in valid if v == EvalVerdict.failed.value)
+    if n_pass > n_fail:
+        verdict = EvalVerdict.passed.value
+    elif n_fail > n_pass:
+        verdict = EvalVerdict.failed.value
     else:
-        # 有 None(未给判定)但无明确 false:标 error 供复核,不误判 pass
+        # 平票(含全 error 票):标 error 供复核,不猜
         verdict = EvalVerdict.error.value
 
+    # dims 取与最终结论一致的最后一票(error 结论时取最后一张有效票);score 取有效均值
+    dims = next((d for v, d in reversed(valid) if v == verdict), valid[-1][1])
+    scores = [d.get("score") for _, d in valid if isinstance(d.get("score"), int)]
+    score = round(sum(scores) / len(scores)) if scores else dims.get("score")
+    reason = dims.get("summary") or ""
+    if votes > 1:
+        reason = f"[{len(valid)}票:{n_pass}过/{n_fail}不过] {reason}"
+
     run.verdict = verdict
-    run.score = dims.get("score")
+    run.score = score
     run.verdict_dims = json.dumps(dims, ensure_ascii=False)
-    run.verdict_reason = dims.get("summary") or ""
-    run.judged_by = provider_id
+    run.verdict_reason = reason
+    run.judged_by = provider_id if votes == 1 else f"{provider_id}x{votes}"
     run.is_abnormal = (verdict == EvalVerdict.failed.value)
     run.status = EvalRunStatus.judged
     db.commit()
     return {"verdict": verdict, "verdict_dims": dims, "score": run.score,
-            "is_abnormal": run.is_abnormal, "judged_by": provider_id}
+            "is_abnormal": run.is_abnormal, "judged_by": run.judged_by}

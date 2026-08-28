@@ -224,6 +224,9 @@
           <span class="muted">{{ detail.task.description || '' }}</span>
           <div class="d-actions">
             <el-button size="small" :icon="Refresh" @click="refreshDetail">刷新</el-button>
+            <el-checkbox v-model="robustJudge" size="small" class="robust-ck">
+              <el-tooltip content="每条判 3 次取多数票（更稳，但 3 倍耗时）" placement="top"><span>稳健(3票)</span></el-tooltip>
+            </el-checkbox>
             <el-button size="small" type="primary" :loading="batchJudging" :disabled="!judgeableRuns.length" @click="judgeAll">
               批量判定（{{ judgeableRuns.length }}）
             </el-button>
@@ -392,6 +395,7 @@ const running = ref(false)
 const detailVisible = ref(false)
 const detail = ref(null)
 const batchJudging = ref(false)
+const robustJudge = ref(false)
 const summarizing = ref(false)
 const summaryStream = ref('')
 
@@ -620,7 +624,7 @@ async function judgeAll() {  const runs = judgeableRuns.value
     // 双保险过滤非法 id：任何 null/undefined 混入都会触发后端 422「参数校验失败」
     const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id).filter((id) => Number.isInteger(id))
     if (!runIds.length) { ElMessage.warning('没有待判定的用例（done 状态）'); return }
-    const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds })
+    const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds, votes: robustJudge.value ? 3 : 1 })
     // 逐条结果里可能有 error(单条异常)/skipped(未执行完)/verdict=error(未回填、引擎不可用等):
     // 区分提示,别把带失败的批次一律报成功
     const bad = (res.results || []).filter((x) => x.error || x.skipped || x.verdict === 'error').length
@@ -697,7 +701,8 @@ function genSummary() {
 /* 详情 */
 .detail { display: flex; flex-direction: column; gap: 14px; padding: 0 4px; }
 .d-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.d-actions { margin-left: auto; display: flex; gap: 8px; }
+.d-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.robust-ck { margin-right: 0; }
 .summary-sec { border: 1px solid #e4e7ed; border-radius: 8px; padding: 14px 18px; background: #fbfdfe; }
 .summary-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .summary-title { font-weight: 700; color: #1f2d3d; }
