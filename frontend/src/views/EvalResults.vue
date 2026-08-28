@@ -137,11 +137,11 @@
                       <el-icon v-else class="unk"><QuestionFilled /></el-icon>
                       <span class="dim-label">{{ d.label }}</span>
                     </div>
-                    <div class="dim-note">{{ dimNote(row, d.k) || '—' }}</div>
+                    <div class="dim-note" v-html="renderMd(dimNote(row, d.k))"></div>
                   </div>
                 </div>
                 <div v-if="row.verdict_dims.summary" class="summary">
-                  <b>判定小结：</b>{{ row.verdict_dims.summary }}
+                  <b>判定小结：</b><span v-html="renderMd(row.verdict_dims.summary)"></span>
                 </div>
               </template>
               <!-- 人工复核(失败收敛):对 AI 判定标 认可/误报/漏报,误报自动摘异常、漏报置异常 -->
@@ -289,6 +289,13 @@ import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalM
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
+
+// 判定理由 markdown 渲染:AI 常输出代码块/列表/加粗,纯文本可读性差。
+// html:false 禁内联 HTML + DOMPurify 消毒,双保险防 XSS(判定理由经 LLM 生成,视作不可信输入)。
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+const renderMd = (text) => text ? DOMPurify.sanitize(md.render(String(text))) : '—'
 
 // 判定核心三维（键与后端 parse_eval_verdict 一致）；dimension_ok 第四维按行动态追加
 const DIMS = [
@@ -738,6 +745,12 @@ onBeforeUnmount(() => {
 .dim-head .ng { color: #f56c6c; }
 .dim-head .unk { color: #909399; }
 .dim-label { font-size: 13px; }
-.dim-note { font-size: 12px; color: #5a6b7b; white-space: pre-line; }
-.summary { margin-top: 10px; font-size: 13px; color: #5a6b7b; white-space: pre-line; }
+.dim-note { font-size: 12px; color: #5a6b7b; }
+.summary { margin-top: 10px; font-size: 13px; color: #5a6b7b; }
+/* markdown 渲染的判定理由:紧凑排版(嵌在表格展开区,间距要小) */
+.dim-note :deep(p), .summary :deep(p) { margin: 2px 0; }
+.dim-note :deep(ul), .dim-note :deep(ol), .summary :deep(ul), .summary :deep(ol) { padding-left: 18px; margin: 2px 0; }
+.dim-note :deep(code), .summary :deep(code) { background: #eef2f6; border-radius: 3px; padding: 0 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.dim-note :deep(pre), .summary :deep(pre) { background: #f6f8fa; border-radius: 5px; padding: 6px 10px; overflow: auto; margin: 4px 0; }
+.summary :deep(p:first-child) { display: inline; }
 </style>
