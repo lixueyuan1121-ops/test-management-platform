@@ -18,7 +18,7 @@ from app.core.enums import EvalDeviceKind, EvalRunStatus, ProjectRole
 from app.db.session import get_db
 from app.models import EvalQuery, EvalRun, User
 from app.schemas.common import ok
-from app.schemas.eval_queue import EvalEnqueueIn, EvalReportIn
+from app.schemas.eval_queue import EvalEnqueueIn, EvalReportIn, EvalRetryFailedIn
 
 router = APIRouter(prefix="/api/eval-queue", tags=["eval-queue"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
@@ -275,6 +275,23 @@ def reset_run_for_retry(r: EvalRun) -> None:
     r.verdict = None; r.score = None; r.verdict_dims = None; r.verdict_reason = None
     r.judged_by = None; r.is_abnormal = False
     r.review_mark = None; r.review_note = None
+
+
+@router.post("/retry-failed")
+def retry_failed_batch(body: EvalRetryFailedIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """批量重跑失败(promptfoo retry-all-failed 同款):范围内全部 failed run 原地复位回 pending。"""
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    q = db.query(EvalRun).filter(EvalRun.project_id == body.project_id,
+                                 EvalRun.status == EvalRunStatus.failed)
+    if body.run_ids:
+        q = q.filter(EvalRun.id.in_(body.run_ids))
+    elif body.batch_id:
+        q = q.filter(EvalRun.batch_id == body.batch_id)
+    rows = q.all()
+    for r in rows:
+        reset_run_for_retry(r)
+    db.commit()
+    return ok({"retried": len(rows), "run_ids": [r.id for r in rows]})
 
 
 @router.post("/{run_id}/retry")

@@ -230,6 +230,11 @@
             <el-button size="small" type="primary" :loading="batchJudging" :disabled="!judgeableRuns.length" @click="judgeAll">
               批量判定（{{ judgeableRuns.length }}）
             </el-button>
+            <el-popconfirm v-if="failedRunIds.length" :title="`重跑该批次全部 ${failedRunIds.length} 条失败？`" width="240" @confirm="retryAllFailed">
+              <template #reference>
+                <el-button size="small" type="success">重跑失败（{{ failedRunIds.length }}）</el-button>
+              </template>
+            </el-popconfirm>
             <el-button size="small" type="warning" :loading="summarizing" :disabled="!canSummarize" @click="genSummary">
               {{ detail.task.summary_status === 'done' ? '重新生成综合评价' : '生成综合评价' }}
             </el-button>
@@ -357,7 +362,7 @@ import { Tickets, Plus, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun,
+  listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -470,6 +475,8 @@ const compareInfo = computed(() => {
 })
 const judgeableRuns = computed(() =>
   (detail.value?.runs || []).filter((r) => r.status === 'done' || r.status === 'judged'))
+const failedRunIds = computed(() =>
+  (detail.value?.runs || []).filter((r) => r.status === 'failed').map((r) => r.run_id))
 const canSummarize = computed(() => {
   const t = detail.value?.task
   if (!t || !t.last_batch_id || summarizing.value) return false
@@ -674,6 +681,16 @@ async function retryRun(row) {
   try {
     await retryEvalRun(detail.value.task.id, row.run_id)
     ElMessage.success(`run ${row.run_id} 已复位待执行，执行机将重新拉走`)
+    await refreshDetail()
+  } catch { /* 拦截器已提示 */ }
+}
+
+// 批量重跑该批次全部 failed(传 run_ids 精确圈定当前详情里的失败行)
+async function retryAllFailed() {
+  try {
+    const taskProjectId = detail.value?.task?.project_id || pid.value
+    const res = await retryFailedEvalRuns({ project_id: taskProjectId, run_ids: failedRunIds.value })
+    ElMessage.success(`已复位 ${res.retried} 条待执行，执行机将重新拉走`)
     await refreshDetail()
   } catch { /* 拦截器已提示 */ }
 }

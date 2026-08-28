@@ -11,6 +11,13 @@ class EvalEnqueueIn(BaseModel):
     dialog_options: dict | None = None
 
 
+class EvalRetryFailedIn(BaseModel):
+    """批量重跑失败入参:run_ids 指定(任务详情用)优先;否则按 batch_id 限定;都空=项目全部 failed。"""
+    project_id: int
+    batch_id: str | None = None
+    run_ids: list[int] | None = None
+
+
 class EvalReportIn(BaseModel):
     status: str  # "done" | "failed"
     share_link: str | None = None

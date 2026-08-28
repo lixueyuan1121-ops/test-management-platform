@@ -99,6 +99,11 @@
               :disabled="!pid || !doneCount"
               @click="batchJudge"
             >批量判定 done（{{ doneCount }}）</el-button>
+            <el-popconfirm v-if="failedCount" :title="`重跑当前列表全部 ${failedCount} 条失败？`" width="240" @confirm="retryAllFailed">
+              <template #reference>
+                <el-button size="small" type="success">重跑失败（{{ failedCount }}）</el-button>
+              </template>
+            </el-popconfirm>
             <el-button
               size="small" :icon="Upload"
               :disabled="!pid"
@@ -297,7 +302,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -371,6 +376,7 @@ const multicaPending = ref(0)
 
 // done 状态（已执行完待判定）条数：批量判定针对这些
 const doneCount = computed(() => rows.value.filter((r) => r.status === 'done').length)
+const failedCount = computed(() => rows.value.filter((r) => r.status === 'failed').length)
 const judgedCount = computed(() => rows.value.filter((r) => r.verdict).length)
 const abnormalCount = computed(() => rows.value.filter((r) => r.is_abnormal).length)
 const matchFilter = (r) => {
@@ -544,6 +550,19 @@ function groupTurnSummary(row) {
   const failedExec = n((t) => t.status === 'failed'); if (failedExec) parts.push(`${failedExec} 执行失败`)
   const waiting = n((t) => !t.verdict && t.status !== 'failed'); if (waiting) parts.push(`${waiting} 待判定/待执行`)
   return parts.join(' / ') || '—'
+}
+
+// 批量重跑当前列表全部 failed(限定当前批次筛选;不传 run_ids 让后端按范围扫)
+async function retryAllFailed() {
+  try {
+    const res = await retryFailedEvalRuns({
+      project_id: pid.value,
+      batch_id: batchFilter.value || null,
+      run_ids: rows.value.filter((r) => r.status === 'failed').map((r) => r.run_id),
+    })
+    ElMessage.success(`已复位 ${res.retried} 条待执行，执行机将重新拉走`)
+    await load()
+  } catch { /* 拦截器已提示 */ }
 }
 
 // 单条重跑(failed → pending):就地更新该行状态,执行机下轮轮询拉走

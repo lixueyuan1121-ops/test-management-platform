@@ -148,6 +148,8 @@ export const markEvalRunFailed = (taskId, runId) => http.post(`/eval-tasks/${tas
 export const retryEvalRun = (taskId, runId) => http.post(`/eval-tasks/${taskId}/runs/${runId}/retry`)
 // 通用单条重跑（不限任务，普通题库下发的 failed run 用这个）
 export const retryEvalRunAny = (runId) => http.post(`/eval-queue/${runId}/retry`)
+// 批量重跑失败：{project_id, batch_id?, run_ids?} → {retried, run_ids}
+export const retryFailedEvalRuns = (payload) => http.post('/eval-queue/retry-failed', payload)
 export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
 
 export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, onError, signal } = {}) {
