@@ -52,9 +52,32 @@
         <el-table-column label="评审态" width="90" align="center">
           <template #default="{ row }"><el-tag size="small" :type="row.review_status==='adopted'?'success':(row.review_status==='rejected'?'danger':'info')" effect="plain">{{ RS_LABEL[row.review_status] || row.review_status || '待评审' }}</el-tag></template>
         </el-table-column>
+        <el-table-column label="操作" width="72" align="center">
+          <template #default="{ row }">
+            <el-tooltip :content="hasPlaceholder(row) ? '按 {{占位符}} 批量生成变体题' : '题目里写 {{变量}} 后可批量生成变体'" placement="left">
+              <el-button size="small" type="primary" text :disabled="!hasPlaceholder(row)" @click="openExpand(row)">变体</el-button>
+            </el-tooltip>
+          </template>
+        </el-table-column>
       </el-table>
       <el-empty v-if="!loading && !queries.length" description="该项目暂无生成的对话测评 query，去『对话测评生成』生成" />
     </el-card>
+
+    <!-- 占位符变体展开:{{变量}} × 取值列表笛卡尔积批量生成 -->
+    <el-dialog v-model="expandVisible" title="批量生成变体题" width="560px">
+      <div class="exp-base">模板：<b>{{ expandBase?.title }}</b></div>
+      <el-form label-position="top">
+        <el-form-item v-for="name in expandVars" :key="name" :label="`{{${name}}} 的取值（逗号或换行分隔）`">
+          <el-input v-model="expandValues[name]" type="textarea" :rows="2" :placeholder="`如：北京, 上海, 广州`" />
+        </el-form-item>
+      </el-form>
+      <el-alert :type="expandCount > 50 ? 'error' : 'info'" :closable="false" show-icon
+        :title="`将生成 ${expandCount} 道变体题（占位符取值的全组合，上限 50）`" />
+      <template #footer>
+        <el-button @click="expandVisible = false">取消</el-button>
+        <el-button type="primary" :loading="expanding" :disabled="!expandCount || expandCount > 50" @click="doExpand">生成 {{ expandCount }} 道</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -62,7 +85,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Collection } from '@element-plus/icons-vue'
-import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions } from '@/api'
+import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions } from '@/utils/dialogOptions'
@@ -144,6 +167,42 @@ async function dispatch() {
   } catch { /* 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
+
+// ── 占位符变体展开(与后端 _VAR_RE 同款正则:{{变量}},变量名支持中英文/数字/下划线) ──
+const VAR_RE = /\{\{\s*([A-Za-z0-9_一-鿿]+)\s*\}\}/g
+const detectVars = (row) => [...new Set(
+  `${row.title || ''}\n${row.prompt || ''}\n${row.expected || ''}`.match(VAR_RE)?.map((m) => m.replace(VAR_RE, '$1')) || []
+)]
+const hasPlaceholder = (row) => detectVars(row).length > 0
+
+const expandVisible = ref(false)
+const expandBase = ref(null)
+const expandVars = ref([])
+const expandValues = ref({})
+const expanding = ref(false)
+
+const parseVals = (s) => [...new Set(String(s || '').split(/[,，\n]/).map((v) => v.trim()).filter(Boolean))]
+const expandCount = computed(() =>
+  expandVars.value.reduce((n, name) => n * parseVals(expandValues.value[name]).length, expandVars.value.length ? 1 : 0))
+
+function openExpand(row) {
+  expandBase.value = row
+  expandVars.value = detectVars(row)
+  expandValues.value = Object.fromEntries(expandVars.value.map((n) => [n, '']))
+  expandVisible.value = true
+}
+
+async function doExpand() {
+  expanding.value = true
+  try {
+    const variables = Object.fromEntries(expandVars.value.map((n) => [n, parseVals(expandValues.value[n])]))
+    const res = await expandEvalQuery({ base_query_id: expandBase.value.id, variables })
+    ElMessage.success(`已生成 ${res.count} 道变体题`)
+    expandVisible.value = false
+    await onProjectChange()
+  } catch { /* 拦截器已提示 */ }
+  finally { expanding.value = false }
+}
 </script>
 
 <style scoped>
@@ -157,4 +216,5 @@ async function dispatch() {
 .sel-info { font-weight: 600; color: #00926e; font-size: 13px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #5a6b7b; }
+.exp-base { margin-bottom: 12px; color: #5a6b7b; font-size: 13px; }
 </style>

@@ -6,6 +6,7 @@
 """
 import json
 import logging
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -242,6 +243,65 @@ def create_eval_query_manual(body: EvalQueryManualIn, db: Session = Depends(get_
         q.conversation_group = f"m{q.id}"
         db.commit(); db.refresh(q)
     return ok(_to_query_out(q))
+
+
+class EvalQueryExpandIn(BaseModel):
+    """占位符模板展开(promptfoo 式参数化):base 题的 title/prompt/expected 里写 {{变量}},
+    variables 给每个变量的取值列表,笛卡尔积批量生成变体题——同一考点稳定产出 N 个变体。"""
+    base_query_id: int
+    variables: dict[str, list[str]]
+
+
+_VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_一-鿿]+)\s*\}\}")
+_EXPAND_MAX = 50  # 单次展开上限(笛卡尔积爆炸保护)
+
+
+@router.post("/eval-queries/expand")
+def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    base = db.get(EvalQuery, body.base_query_id)
+    if not base:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模板题不存在")
+    assert_project_role(db, user, base.project_id, _WRITE_ROLES)
+
+    texts = {"title": base.title or "", "prompt": base.prompt or "", "expected": base.expected or ""}
+    placeholders = sorted({m for t in texts.values() for m in _VAR_RE.findall(t)})
+    if not placeholders:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            detail="该题的标题/提问/期望里没有 {{占位符}},先编辑题目加入如 {{城市}} 再展开")
+    # 每个占位符必须给非空取值列表(清洗空串);多余的键忽略
+    values: list[tuple[str, list[str]]] = []
+    for name in placeholders:
+        vs = [str(v).strip() for v in (body.variables.get(name) or []) if str(v).strip()]
+        if not vs:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"占位符 {{{{{name}}}}} 未提供取值")
+        values.append((name, vs))
+    total = 1
+    for _, vs in values:
+        total *= len(vs)
+    if total > _EXPAND_MAX:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            detail=f"组合数 {total} 超上限 {_EXPAND_MAX},请减少取值")
+
+    import itertools
+    created = []
+    for combo in itertools.product(*(vs for _, vs in values)):
+        mapping = {name: combo[i] for i, (name, _) in enumerate(values)}
+        def subst(s: str) -> str:
+            return _VAR_RE.sub(lambda m: mapping.get(m.group(1), m.group(0)), s)
+        q = EvalQuery(
+            project_id=base.project_id,
+            title=subst(texts["title"])[:512],
+            prompt=subst(texts["prompt"]),
+            dimension=base.dimension,
+            expected=subst(texts["expected"]) or None,
+            turn_index=0,  # 变体各自单轮成组(多轮模板展开语义复杂,不支持;组名建完补)
+            provider="template",
+        )
+        db.add(q); db.flush()
+        q.conversation_group = f"t{q.id}"
+        created.append(q.id)
+    db.commit()
+    return ok({"created": created, "count": len(created)})
 
 
 @router.patch("/eval-queries/{query_id}")

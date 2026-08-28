@@ -129,6 +129,8 @@ export const listEvalDimensions = () => http.get('/ai/eval-dimensions')
 
 // 对话测评用例手工 CRUD
 export const createEvalQueryManual = (payload) => http.post('/ai/eval-queries/manual', payload)
+// 占位符模板展开:base 题 {{变量}} × 取值列表笛卡尔积,批量生成变体题
+export const expandEvalQuery = (payload) => http.post('/ai/eval-queries/expand', payload)
 export const updateEvalQuery = (id, payload) => http.patch(`/ai/eval-queries/${id}`, payload)
 export const deleteEvalQuery = (id) => http.delete(`/ai/eval-queries/${id}`)
 
