@@ -299,11 +299,26 @@ def release_quality(
             grade = "yellow"
         else:
             grade = "green"
+        # 需求覆盖腿(建议项⑥):挂到本版本的需求实体按覆盖四态统计;没挂需求的版本为 None
+        # (卡片不展示,req_count 手填数照旧)。
+        req_cov = None
+        from app.models import Requirement
+        req_rows = db.query(Requirement.id).filter(Requirement.release_id == rel.id).all()
+        if req_rows:
+            from app.api.requirement import _coverage_of
+            cov = _coverage_of(db, [x[0] for x in req_rows])
+            req_cov = {
+                "total": len(cov),
+                "covered": sum(1 for v in cov.values() if v["state"] != "uncovered"),
+                "passed": sum(1 for v in cov.values() if v["state"] == "passed"),
+                "failing": sum(1 for v in cov.values() if v["state"] == "failing"),
+            }
         items.append({
             "release_id": rel.id, "version": rel.version,
             "release_date": str(rel.release_date),
             "window_from": str(w_from), "window_to": str(w_to),
             "req_count": rel.req_count,
+            "req_coverage": req_cov,
             "exec_scope": exec_scope,   # linked=实体关联聚合 / window=时间窗近似(旧口径)
             "exec_total": done, "exec_passed": cnt.get("passed", 0),
             "pass_rate": pass_rate, "bugs_found": bugs,

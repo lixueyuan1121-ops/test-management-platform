@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.db.migrate import ensure_exec_run_kind, ensure_exec_run_report_columns, ensure_exec_run_release_column, ensure_exec_run_retry_columns, ensure_issue_columns, ensure_perf_indexes, ensure_perf_run_columns, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column, ensure_probe_result_longtext, ensure_api_env_table, ensure_eval_query_dimension, ensure_eval_run_target_engine, ensure_eval_run_payload, ensure_eval_run_target_device, ensure_eval_task_tables, ensure_platform_columns
+from app.db.migrate import ensure_exec_run_kind, ensure_exec_run_report_columns, ensure_exec_run_release_column, ensure_exec_run_retry_columns, ensure_testcase_requirement_column, ensure_issue_columns, ensure_perf_indexes, ensure_perf_run_columns, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column, ensure_probe_result_longtext, ensure_api_env_table, ensure_eval_query_dimension, ensure_eval_run_target_engine, ensure_eval_run_payload, ensure_eval_run_target_device, ensure_eval_task_tables, ensure_platform_columns
 from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
@@ -36,6 +36,7 @@ def init_db() -> None:
     ensure_exec_run_report_columns()
     ensure_exec_run_release_column()
     ensure_exec_run_retry_columns()
+    ensure_testcase_requirement_column()
     ensure_release_columns()
     ensure_project_columns()
     ensure_ai_provider_columns()

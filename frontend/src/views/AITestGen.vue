@@ -346,6 +346,7 @@ const inputType = ref('text')
 const urlInput = ref('')
 const extracting = ref(false)
 const sourceInfo = ref(null)   // { label, chars }
+const sourceUrl = ref('')      // 需求文档来源 url(extract-url 成功后记录,生成时随请求上报做需求追溯)
 
 // 项目 api 契约(接口清单,成员可读,不含凭据)。有契约时生成页展示"可选接口清单"辅助 QA 圈定 api 用例范围。
 const apiContract = ref({ has_contract: false, contract: '', base_url: '' })
@@ -480,7 +481,7 @@ async function onTaskChange(id) {
   doExtractUrl(url)
 }
 
-function fillDemo() { requirement.value = DEMO; sourceInfo.value = null; reqMode.value = 'preview' }
+function fillDemo() { requirement.value = DEMO; sourceInfo.value = null; sourceUrl.value = ''; reqMode.value = 'preview' }
 
 async function doExtractUrl(overrideUrl) {
   let url = (typeof overrideUrl === 'string' ? overrideUrl : urlInput.value).trim()
@@ -501,6 +502,7 @@ async function doExtractUrl(overrideUrl) {
     }
     requirement.value = r.text
     sourceInfo.value = { label: r.title || url, chars: r.chars }
+    sourceUrl.value = url   // 记录需求来源:生成时后端据此 upsert 需求实体并给用例挂 requirement_id
     reqMode.value = 'preview'   // 抓取后先看渲染效果
     ElMessage.success(`已提取 ${r.chars} 字`)
   } finally {
@@ -543,7 +545,8 @@ function generate() {
 
   ctrl = new AbortController()
   streamTestcases(
-    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined },
+    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined,
+      requirement_url: sourceUrl.value || undefined, requirement_title: sourceInfo.value?.label || undefined },
     {
       signal: ctrl.signal,
       onDelta: (t) => { rawStream.value += t },

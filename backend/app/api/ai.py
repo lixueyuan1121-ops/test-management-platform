@@ -182,6 +182,16 @@ def gen_testcases(
     db.commit()
     db.refresh(at)
 
+    # 需求追溯(建议项⑥):有需求文档 url 就幂等 upsert 需求实体,该批用例落库时挂 requirement_id。
+    # 失败不阻断生成(追溯是增强,不是链路依赖)。
+    requirement_id = None
+    try:
+        from app.api.requirement import upsert_requirement
+        requirement_id = upsert_requirement(
+            db, body.project_id, body.requirement_url, body.requirement_title, user.id)
+    except Exception:
+        logger.exception("需求实体 upsert 失败(不阻断生成)")
+
     ai_task_id = at.id
     project_id = body.project_id
     task_id = body.task_id
@@ -251,6 +261,7 @@ def gen_testcases(
                     provider=provider_id,
                     project_id=project_id,
                     task_id=task_id,
+                    requirement_id=requirement_id,   # 需求追溯:生成来源文档的需求实体(无 url 时 None)
                     category=c["category"] or None,
                     title=c["title"],
                     steps=c["steps"] or None,

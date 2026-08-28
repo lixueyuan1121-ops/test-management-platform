@@ -235,6 +235,7 @@ CREATE TABLE `test_case` (
   `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
   `project_id` BIGINT NOT NULL,
   `task_id` BIGINT DEFAULT NULL,
+  `requirement_id` BIGINT DEFAULT NULL,
   `category` VARCHAR(32) DEFAULT NULL,
   `title` VARCHAR(512) NOT NULL,
   `steps` TEXT,
@@ -259,6 +260,7 @@ CREATE TABLE `test_case` (
   KEY `idx_testcase_reviewed` (`reviewed_at`),
   KEY `idx_testcase_provider` (`provider`),
   KEY `idx_testcase_regression` (`project_id`,`is_regression`),
+  KEY `idx_testcase_requirement` (`requirement_id`),
   CONSTRAINT `fk_testcase_aitask` FOREIGN KEY (`ai_task_id`) REFERENCES `ai_task`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_testcase_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE SET NULL
@@ -778,3 +780,22 @@ CREATE TABLE `selector_learned` (
   KEY `idx_sellearn_scope` (`project_id`,`sub_product`),
   KEY `idx_sellearn_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 需求实体（需求↔用例↔发版追溯；AI 生成时按需求文档 url 自动 upsert 挂链） ----------
+CREATE TABLE `requirement` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `title` VARCHAR(512) NOT NULL,
+  `url` VARCHAR(512) DEFAULT NULL,
+  `release_id` BIGINT DEFAULT NULL,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_req_project` (`project_id`),
+  KEY `idx_req_release` (`release_id`),
+  CONSTRAINT `fk_req_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_req_release` FOREIGN KEY (`release_id`) REFERENCES `release_record`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_req_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- test_case.requirement_id 软链本表(建表顺序在前无法加 FK,索引已建)

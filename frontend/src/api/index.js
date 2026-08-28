@@ -517,3 +517,12 @@ export const testPlanRunDetail = (run_id) => http.get(`/test-plans/runs/${run_id
 export const listLearnedSelectors = (project_id, status = 'pending') =>
   http.get('/selectors/learned', { params: { project_id, status } })
 export const reviewLearnedSelector = (id, action) => http.patch(`/selectors/learned/${id}`, { action })
+
+// 需求覆盖(需求↔用例↔发版追溯)
+export const listRequirements = (params) => http.get('/requirements', { params })
+export const createRequirement = (data) => http.post('/requirements', data)
+export const updateRequirement = (rid, data) => http.patch(`/requirements/${rid}`, data)
+export const deleteRequirement = (rid) => http.delete(`/requirements/${rid}`)
+export const requirementCases = (rid) => http.get(`/requirements/${rid}/cases`)
+export const linkRequirementCases = (rid, case_ids) => http.post(`/requirements/${rid}/cases`, { case_ids })
+export const unlinkRequirementCases = (rid, case_ids) => http.delete(`/requirements/${rid}/cases`, { data: { case_ids } })

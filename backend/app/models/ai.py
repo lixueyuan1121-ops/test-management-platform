@@ -55,6 +55,11 @@ class TestCase(Base):
     task_id: Mapped[int | None] = mapped_column(
         ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 需求追溯(建议项⑥):生成该用例的需求实体。AI 生成时按需求文档 url 自动挂链,
+    # 也可在需求覆盖页手动挂/摘。SET NULL:需求删了用例不受影响。
+    requirement_id: Mapped[int | None] = mapped_column(
+        ForeignKey("requirement.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 功能/边界/异常/兼容/性能
     title: Mapped[str] = mapped_column(String(512))
     steps: Mapped[str | None] = mapped_column(Text, nullable=True)

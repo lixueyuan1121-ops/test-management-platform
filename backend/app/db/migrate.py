@@ -225,6 +225,20 @@ def ensure_exec_run_retry_columns() -> None:
     _ensure_index("exec_run", "idx_execrun_retryof", "retry_of")
 
 
+def ensure_testcase_requirement_column() -> None:
+    """test_case 补列 requirement_id(需求追溯软链;老行 NULL=未挂需求)。
+
+    两方言通用 ADD COLUMN;不在线加 FK(同 release_id 取舍)。幂等:ADD 前先探列。
+    """
+    cols = _columns("test_case")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "requirement_id" not in cols:
+            conn.execute(text("ALTER TABLE test_case ADD COLUMN requirement_id BIGINT NULL"))
+    _ensure_index("test_case", "idx_testcase_requirement", "requirement_id")
+
+
 def ensure_perf_run_columns() -> None:
     """perf_run 表补列 report_set_id / prompt / signal_seq（如缺失）。
 

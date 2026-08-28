@@ -43,6 +43,10 @@
               <br/><span class="rq-sub">{{ q.exec_passed }}/{{ q.exec_total }} · {{ q.req_count }} 需求</span>
               <span v-if="q.checklist_total" class="rq-sub rq-ck" :class="{ full: q.checklist_passed === q.checklist_total }">
                 · 清单 {{ q.checklist_passed }}/{{ q.checklist_total }}</span>
+              <span v-if="q.req_coverage" class="rq-sub rq-ck"
+                    :class="{ full: q.req_coverage.passed === q.req_coverage.total }"
+                    :title="`需求覆盖:全过 ${q.req_coverage.passed} / 有失败 ${q.req_coverage.failing} / 共 ${q.req_coverage.total}`">
+                · 需求 {{ q.req_coverage.passed }}/{{ q.req_coverage.total }}</span>
             </div>
           </div>
           <div class="rq-ft">
