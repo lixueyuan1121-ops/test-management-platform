@@ -370,7 +370,9 @@ const matchFilter = (r) => {
 // 多轮会话分组(公共逻辑见 utils/evalRunGroups):组行树形展开,单轮原样平铺
 const groupedRows = computed(() => groupEvalRuns(rows.value, matchFilter))
 
-const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query #${row.eval_query_id ?? '—'}`// 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
+// row 可空容错:A/B 弹窗 title 在 abPair 尚为 {a:null} 时就会求值,不容错整页渲染崩溃(数据区全空)
+const queryTitle = (row) => row?.payload?.title || row?.payload?.prompt || `query #${row?.eval_query_id ?? '—'}`
+// 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 // A/B 并排对比:同 eval_query_id + compare_mode 配对的 A/B 两条;弹窗左右分栏
 const abCompareVisible = ref(false)
