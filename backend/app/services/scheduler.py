@@ -92,6 +92,75 @@ def reap_stale_eval_runs() -> None:
         db.close()
 
 
+def run_eval_task_job(task_id: int) -> None:
+    """测评任务定时执行回调(模块级,供 job store 序列化):到点自动下发整任务(CI 回归守卫)。
+
+    沿用任务最近一次执行的对话选项(含 compareB 的 A/B 对比);上一批还有 pending/running
+    时跳过本次(执行机没跑完,堆新批只会排队挤压,下个周期再试)。
+    """
+    import json as _json
+
+    from app.core.enums import EvalRunStatus
+    from app.db.session import SessionLocal
+    from app.models import EvalRun
+    from app.models.ai_eval import EvalTask
+
+    db = SessionLocal()
+    try:
+        task = db.get(EvalTask, task_id)
+        if not task or not task.schedule_enabled or not task.schedule_runner:
+            return
+        pending_cnt = (db.query(EvalRun)
+                       .filter(EvalRun.eval_task_id == task_id,
+                               EvalRun.batch_id == task.last_batch_id,
+                               EvalRun.status.in_([EvalRunStatus.pending, EvalRunStatus.running]))
+                       .count()) if task.last_batch_id else 0
+        if pending_cnt:
+            logger.info("定时测评跳过:任务 %s 上一批还有 %d 条未执行完", task_id, pending_cnt)
+            return
+        try:
+            stored = _json.loads(task.dialog_options) if task.dialog_options else {}
+        except (ValueError, TypeError):
+            stored = {}
+        opts_b = stored.pop("compareB", None) if isinstance(stored, dict) else None
+        opts = stored if isinstance(stored, dict) else {}
+        from app.api.eval_task import dispatch_task_runs
+        try:
+            created, batch_id = dispatch_task_runs(
+                db, task, task.schedule_runner, "namiwork", None, opts, opts_b, None)
+        except ValueError as e:
+            logger.warning("定时测评跳过:任务 %s %s", task_id, e)
+            db.rollback()
+            return
+        task.last_auto_run_at = datetime.now()
+        db.commit()
+        logger.info("定时测评已下发 任务=%s 批次=%s(%d 条)", task_id, batch_id, len(created))
+    except Exception:
+        logger.exception("定时测评执行失败 任务=%s", task_id)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def sync_eval_task_job(task_id: int, cron: str | None, enabled: bool):
+    """按测评任务的 cron/开关 增删定时 job(replace_existing 幂等)。"""
+    if _scheduler is None:
+        return None
+    jid = f"evaltask-{task_id}"
+    if enabled and cron:
+        trigger = CronTrigger.from_crontab(cron, timezone="Asia/Shanghai")
+        job = _scheduler.add_job(
+            run_eval_task_job, trigger=trigger, id=jid,
+            args=[task_id], replace_existing=True, misfire_grace_time=300,
+        )
+        return job.next_run_time
+    try:
+        _scheduler.remove_job(jid)
+    except Exception:
+        pass  # 本就没有该 job
+    return None
+
+
 def start_scheduler() -> None:
     """启动调度器 + 从 DB 现有 enabled 集重建 job。startup 调用（幂等）。"""
     global _scheduler
@@ -124,6 +193,16 @@ def start_scheduler() -> None:
                 sync_set_job(s.id, s.schedule_cron, True)
             except Exception:
                 logger.exception("重建定时 job 失败 set=%s", s.id)
+        # 测评任务定时(CI 回归守卫)同款重建
+        from app.models.ai_eval import EvalTask
+        tasks = (db.query(EvalTask)
+                 .filter(EvalTask.schedule_enabled.is_(True), EvalTask.schedule_cron.isnot(None))
+                 .all())
+        for t in tasks:
+            try:
+                sync_eval_task_job(t.id, t.schedule_cron, True)
+            except Exception:
+                logger.exception("重建测评定时 job 失败 task=%s", t.id)
     finally:
         db.close()
 

@@ -23,7 +23,12 @@
       <el-table v-else :data="tasks" v-loading="loading" size="small" border stripe>
         <el-table-column prop="id" label="#" width="60" align="center" />
         <el-table-column label="任务名" min-width="160">
-          <template #default="{ row }"><b class="tname" @click="openDetail(row)">{{ row.name }}</b></template>
+          <template #default="{ row }">
+            <b class="tname" @click="openDetail(row)">{{ row.name }}</b>
+            <el-tooltip v-if="row.schedule_enabled" :content="`定时 ${row.schedule_cron} → ${row.schedule_runner}${row.last_auto_run_at ? '，上次自动执行 ' + row.last_auto_run_at.replace('T',' ').slice(0,16) : ''}`" placement="top">
+              <span class="sched-flag">⏰</span>
+            </el-tooltip>
+          </template>
         </el-table-column>
         <el-table-column label="描述" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.description || '—' }}</template>
@@ -56,10 +61,11 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" align="center">
+        <el-table-column label="操作" width="268" align="center">
           <template #default="{ row }">
             <el-button size="small" type="primary" text @click="openDetail(row)">详情/结果</el-button>
             <el-button size="small" type="success" text @click="openRun(row)">执行</el-button>
+            <el-button size="small" text :type="row.schedule_enabled ? 'warning' : ''" @click="openSchedule(row)">定时</el-button>
             <el-button size="small" text @click="openEdit(row)">编辑</el-button>
             <el-popconfirm title="删除该任务？(执行记录保留)" @confirm="removeTask(row)">
               <template #reference><el-button size="small" type="danger" text>删除</el-button></template>
@@ -178,6 +184,32 @@
       <template #footer>
         <el-button @click="runVisible = false">取消</el-button>
         <el-button type="success" :loading="running" :disabled="!runForm.runner" @click="doRun">下发执行</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 定时执行(CI 回归守卫) -->
+    <el-dialog v-model="schedVisible" title="定时执行（回归守卫）" width="460px">
+      <el-form label-width="90px">
+        <el-form-item label="启用">
+          <el-switch v-model="schedForm.enabled" />
+        </el-form-item>
+        <template v-if="schedForm.enabled">
+          <el-form-item label="cron" required>
+            <el-input v-model="schedForm.cron" placeholder="5 段表达式，如 0 9 * * * = 每天 9:00" />
+          </el-form-item>
+          <el-form-item label="执行机" required>
+            <el-select v-model="schedForm.runner" style="width:100%" :placeholder="devices.length ? '选择执行机' : '未登记设备,去「我的设备」注册'">
+              <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
+            </el-select>
+          </el-form-item>
+        </template>
+        <el-alert type="info" :closable="false" show-icon
+          title="到点自动下发整任务，沿用最近一次执行的对话选项（含 A/B 对比）；上一批还没跑完会自动跳过本次，防止堆积" />
+      </el-form>
+      <template #footer>
+        <el-button @click="schedVisible = false">取消</el-button>
+        <el-button type="primary" :loading="schedSaving"
+          :disabled="schedForm.enabled && (!schedForm.cron.trim() || !schedForm.runner)" @click="saveSchedule">保存</el-button>
       </template>
     </el-dialog>
 
@@ -302,7 +334,7 @@ import { Tickets, Plus, Refresh } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch, markEvalRunFailed,
+  listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -487,6 +519,37 @@ async function removeTask(row) {
   try { await deleteEvalTask(row.id); ElMessage.success('已删除'); await load() } catch { /* 拦截器已提示 */ }
 }
 
+// ── 定时执行(回归守卫) ──
+const schedVisible = ref(false)
+const schedTask = ref(null)
+const schedForm = ref({ enabled: false, cron: '', runner: '' })
+const schedSaving = ref(false)
+
+function openSchedule(row) {
+  schedTask.value = row
+  schedForm.value = {
+    enabled: !!row.schedule_enabled,
+    cron: row.schedule_cron || '0 9 * * *',
+    runner: row.schedule_runner || (devices.value[0]?.runner_id || ''),
+  }
+  schedVisible.value = true
+}
+
+async function saveSchedule() {
+  schedSaving.value = true
+  try {
+    await setEvalTaskSchedule(schedTask.value.id, {
+      enabled: schedForm.value.enabled,
+      cron: schedForm.value.cron.trim() || null,
+      runner: schedForm.value.runner || null,
+    })
+    ElMessage.success(schedForm.value.enabled ? '定时已开启' : '定时已关闭')
+    schedVisible.value = false
+    await load()
+  } catch { /* 拦截器已提示 */ }
+  finally { schedSaving.value = false }
+}
+
 // ── 执行 ──
 async function openRun(row) {
   if (!row.query_ids.length) { ElMessage.warning('任务内还没有用例，先编辑添加'); return }
@@ -604,6 +667,7 @@ function genSummary() {
 .muted { color: #c0c4cc; font-size: 12px; }
 .tname { color: #00926e; cursor: pointer; }
 .tname:hover { text-decoration: underline; }
+.sched-flag { margin-left: 6px; font-size: 13px; cursor: default; }
 .batch { line-height: 1.5; color: #5a6b7b; }
 .opts { color: #5a6b7b; font-size: 12px; }
 .turn-tag { margin-right: 6px; }

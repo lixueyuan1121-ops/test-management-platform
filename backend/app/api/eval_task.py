@@ -88,6 +88,10 @@ def _to_out(task: EvalTask, db: Session) -> dict:
         "summary_status": task.summary_status,
         "summary_provider": task.summary_provider,
         "summary_at": task.summary_at.isoformat() if task.summary_at else None,
+        "schedule_enabled": bool(task.schedule_enabled),
+        "schedule_cron": task.schedule_cron,
+        "schedule_runner": task.schedule_runner,
+        "last_auto_run_at": task.last_auto_run_at.isoformat() if task.last_auto_run_at else None,
         "run_count": run_count,
         "done_count": done_count,
         "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -180,33 +184,31 @@ class EvalTaskRunIn(BaseModel):
     dialog_options_b: dict | None = None
 
 
-@router.post("/{task_id}/run")
-def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """把任务内全部用例入 eval_run 队列(盖 eval_task_id + 新批次),复用 eval-queue 的下发口径。"""
-    from app.api.eval_queue import _clean_dialog_options, _new_batch_id, _payload_of
+def dispatch_task_runs(db: Session, task: EvalTask, runner: str, target_engine: str,
+                       target_device: str | None, opts: dict, opts_b: dict | None,
+                       user_id: int | None) -> tuple[list[int], str]:
+    """下发任务内全部用例(手动执行端点与定时 job 共用;opts_b is not None 即 A/B 对比)。
+
+    校验失败抛 ValueError(端点转 400,定时 job 记日志跳过);调用方负责 commit。
+    """
+    from app.api.eval_queue import _new_batch_id, _payload_of
     from app.core.enums import EvalDeviceKind
 
-    task = db.get(EvalTask, task_id)
-    if not task:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
-    assert_project_role(db, user, task.project_id, _WRITE_ROLES)
     qids = json.loads(task.query_ids) if task.query_ids else []
     if not qids:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="任务内还没有用例,先添加用例再执行")
+        raise ValueError("任务内还没有用例,先添加用例再执行")
     qs = db.query(EvalQuery).filter(EvalQuery.id.in_(qids)).all()
     found = {q.id: q for q in qs}
     missing = [qid for qid in qids if qid not in found]
     if missing:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {missing} 已不存在,请编辑任务移除")
+        raise ValueError(f"用例 {missing} 已不存在,请编辑任务移除")
 
     batch_id = _new_batch_id()
     created = []
-    opts = _clean_dialog_options(body.dialog_options)
-    opts_b = _clean_dialog_options(body.dialog_options_b)
-    # 对比模式(dialog_options_b 传了即启用,B 三项全空=B 用客户端默认也合法):每题下发 A/B 两条 run。
+    # 对比模式(opts_b 非 None 即启用,B 三项全空=B 用客户端默认也合法):每题下发 A/B 两条 run。
     # payload 标 compare_group;多轮 conversation_group 加 #A/#B 后缀——runner 按组名把多轮连发进
     # 同一对话,不区分则 A/B 两套会混进一个会话串上下文。
-    variants = [("A", opts), ("B", opts_b)] if body.dialog_options_b is not None else [(None, opts)]
+    variants = [("A", opts), ("B", opts_b)] if opts_b is not None else [(None, opts)]
     for qid in qids:
         q = found[qid]
         for tag, vopts in variants:
@@ -218,26 +220,81 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
             row = EvalRun(
                 eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
                 eval_task_id=task.id,
-                runner=body.runner, target_engine=body.target_engine,
-                target_device=body.target_device,
+                runner=runner, target_engine=target_engine,
+                target_device=target_device,
                 device_kind=EvalDeviceKind.desktop,
                 status=EvalRunStatus.pending,
                 payload=json.dumps(payload, ensure_ascii=False),
-                enqueued_by=user.id,
+                enqueued_by=user_id,
             )
             db.add(row); db.flush(); created.append(row.id)
     task.last_batch_id = batch_id
     task.status = EvalTaskStatus.running
+    # 换批执行后旧综合评价作废(针对旧批次)
+    task.summary_status = None
+    return created, batch_id
+
+
+@router.post("/{task_id}/run")
+def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """把任务内全部用例入 eval_run 队列(盖 eval_task_id + 新批次),复用 eval-queue 的下发口径。"""
+    from app.api.eval_queue import _clean_dialog_options
+
+    task = db.get(EvalTask, task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
+    assert_project_role(db, user, task.project_id, _WRITE_ROLES)
+    opts = _clean_dialog_options(body.dialog_options)
+    opts_b = _clean_dialog_options(body.dialog_options_b) if body.dialog_options_b is not None else None
+    try:
+        created, batch_id = dispatch_task_runs(
+            db, task, body.runner, body.target_engine, body.target_device, opts, opts_b, user.id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     # 记录本次执行的对话选项(列表展示+下次执行回填);对比模式把 B 组挂在 compareB 键下。
     # 没指定则清空=默认,始终反映最近一次执行
     stored = dict(opts)
     if body.dialog_options_b is not None:
         stored["compareB"] = opts_b
     task.dialog_options = json.dumps(stored, ensure_ascii=False) if stored else None
-    # 换批执行后旧综合评价作废(针对旧批次)
-    task.summary_status = None
     db.commit()
     return ok({"run_ids": created, "batch_id": batch_id})
+
+
+class EvalTaskScheduleIn(BaseModel):
+    """定时执行配置(CI 回归守卫):enabled 时 cron+runner 必填。"""
+    enabled: bool
+    cron: str | None = Field(None, max_length=64)
+    runner: str | None = Field(None, max_length=64)
+
+
+@router.patch("/{task_id}/schedule")
+def set_schedule(task_id: int, body: EvalTaskScheduleIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """设置任务定时执行:到点自动下发整任务(沿用最近一次执行的对话选项,含 A/B 对比)。"""
+    from app.services import scheduler as sched
+
+    task = db.get(EvalTask, task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
+    assert_project_role(db, user, task.project_id, _WRITE_ROLES)
+    if body.enabled:
+        if not (body.cron or "").strip() or not (body.runner or "").strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="开启定时需要同时填 cron 表达式与执行机")
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+            CronTrigger.from_crontab(body.cron.strip(), timezone="Asia/Shanghai")
+        except Exception:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                detail="cron 表达式无效(5 段,如「0 9 * * *」=每天 9 点)")
+    task.schedule_enabled = body.enabled
+    task.schedule_cron = (body.cron or "").strip() or None
+    task.schedule_runner = (body.runner or "").strip() or None
+    db.commit(); db.refresh(task)
+    try:
+        sched.sync_eval_task_job(task.id, task.schedule_cron, task.schedule_enabled)
+    except Exception:
+        logger.exception("同步测评任务定时 job 失败 task=%s", task.id)
+    return ok(_to_out(task, db))
 
 
 @router.post("/{task_id}/runs/{run_id}/mark-failed")

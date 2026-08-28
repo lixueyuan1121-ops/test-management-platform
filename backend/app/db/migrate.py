@@ -429,6 +429,13 @@ def ensure_eval_task_tables() -> None:
     if tcols and "dialog_options" not in tcols:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_task ADD COLUMN dialog_options TEXT NULL"))
+    # eval_task 补定时执行四列(CI 回归守卫)
+    if tcols and "schedule_cron" not in tcols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN schedule_cron VARCHAR(64) NULL"))
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN schedule_enabled TINYINT NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN schedule_runner VARCHAR(64) NULL"))
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN last_auto_run_at DATETIME NULL"))
     # eval_run 补 score 列(判定引擎 1-5 总体评分;NULL=未评/老数据)
     rcols = _columns("eval_run")
     if rcols and "score" not in rcols:

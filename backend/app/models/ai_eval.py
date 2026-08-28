@@ -140,6 +140,11 @@ class EvalTask(Base):
     summary_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # running/done/failed;NULL=未生成
     summary_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
     summary_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 定时执行(CI 回归守卫,学 FeedbackRegressionSet):到点自动下发整任务到 schedule_runner。
+    schedule_cron: Mapped[str | None] = mapped_column(String(64), nullable=True)   # 5 段 cron;空=未设
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    schedule_runner: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 定时下发的执行机
+    last_auto_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )
