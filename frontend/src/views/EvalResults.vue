@@ -123,7 +123,10 @@
           <template #default="{ row }">
             <div class="verdict-detail">
               <div v-if="row.isGroup" class="no-dims">
-                <el-text type="info">多轮会话（{{ row.children.length }} 轮，同一对话内连续发送）：点行首「▸」展开逐轮查看判定。</el-text>
+                <el-text type="info">
+                  这是一次 {{ row.children.length }} 轮的多轮会话（批次 {{ row.batch_id || '—' }}），各轮在同一对话内连续发送。
+                  各轮明细：{{ groupTurnSummary(row) }}。左侧另一个小箭头可展开逐轮行查看判定与评分。
+                </el-text>
               </div>
               <div v-else-if="!row.verdict_dims" class="no-dims">
                 <el-text type="info">尚未判定或无三维结果。点右侧「判定」触发。</el-text>
@@ -158,8 +161,10 @@
         </el-table-column>
         <el-table-column label="#" width="84" align="center">
           <template #default="{ row }">
-            <span v-if="row.isGroup" class="dim-muted">会话组</span>
-            <span v-else>{{ row.run_id }}</span>
+            <span v-if="row.isGroup" class="dim-muted">—</span>
+            <el-tooltip v-else content="执行记录编号(run id)" placement="top" :show-after="500">
+              <span>{{ row.run_id }}</span>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="query" min-width="200" show-overflow-tooltip>
@@ -516,6 +521,19 @@ async function doPushMultica() {
     await load()
   } catch { /* http 拦截器已提示 */ }
   finally { pushingMultica.value = false }
+}
+
+// 组行展开区的各轮状态汇总,如「3 通过 / 1 不通过 / 2 待判定」
+function groupTurnSummary(row) {
+  const turns = row.children || []
+  const n = (f) => turns.filter(f).length
+  const parts = []
+  const pass = n((t) => t.verdict === 'pass'); if (pass) parts.push(`${pass} 通过`)
+  const fail = n((t) => t.verdict === 'fail'); if (fail) parts.push(`${fail} 不通过`)
+  const err = n((t) => t.verdict === 'error'); if (err) parts.push(`${err} 判定出错`)
+  const failedExec = n((t) => t.status === 'failed'); if (failedExec) parts.push(`${failedExec} 执行失败`)
+  const waiting = n((t) => !t.verdict && t.status !== 'failed'); if (waiting) parts.push(`${waiting} 待判定/待执行`)
+  return parts.join(' / ') || '—'
 }
 
 // 人工复核:点已选中的标记 = 无操作;新标记弹备注框(可空);mark=null 清除。就地更新该行。

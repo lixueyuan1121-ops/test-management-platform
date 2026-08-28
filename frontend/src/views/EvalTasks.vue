@@ -252,7 +252,7 @@
           row-key="run_id" :tree-props="{ children: 'children' }">
           <el-table-column label="#" width="80" align="center">
             <template #default="{ row }">
-              <span v-if="row.isGroup" class="muted">会话组</span>
+              <span v-if="row.isGroup" class="muted">—</span>
               <span v-else>{{ row.run_id }}</span>
             </template>
           </el-table-column>
