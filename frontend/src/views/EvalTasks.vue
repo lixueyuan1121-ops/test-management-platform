@@ -309,7 +309,10 @@
             </template>
           </el-table-column>
           <el-table-column label="判定理由" min-width="220" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.verdict_reason || '—' }}</template>
+            <template #default="{ row }">
+              <span v-if="row.status === 'failed'" class="fail-reason">执行失败：{{ row.reason || '（未回写原因）' }}</span>
+              <template v-else>{{ row.verdict_reason || '—' }}</template>
+            </template>
           </el-table-column>
           <el-table-column label="会话" width="70" align="center">
             <template #default="{ row }">
@@ -707,6 +710,7 @@ function genSummary() {
 .tname { color: #00926e; cursor: pointer; }
 .tname:hover { text-decoration: underline; }
 .sched-flag { margin-left: 6px; font-size: 13px; cursor: default; }
+.fail-reason { color: #e5565f; font-size: 12px; }
 .batch { line-height: 1.5; color: #5a6b7b; }
 .opts { color: #5a6b7b; font-size: 12px; }
 .turn-tag { margin-right: 6px; }

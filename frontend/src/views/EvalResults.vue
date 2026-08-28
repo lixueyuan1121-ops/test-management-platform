@@ -128,6 +128,9 @@
                   各轮明细：{{ groupTurnSummary(row) }}。左侧另一个小箭头可展开逐轮行查看判定与评分。
                 </el-text>
               </div>
+              <div v-else-if="row.status === 'failed'" class="no-dims">
+                <el-text type="danger">执行失败：{{ row.reason || '（执行机未回写失败原因）' }}</el-text>
+              </div>
               <div v-else-if="!row.verdict_dims" class="no-dims">
                 <el-text type="info">尚未判定或无三维结果。点右侧「判定」触发。</el-text>
               </div>
