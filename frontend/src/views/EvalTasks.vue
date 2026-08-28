@@ -267,6 +267,19 @@
               <el-tag v-if="row.isGroup" size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>
               <el-tag v-else-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>
               {{ row.payload?.title || row.payload?.prompt || `query#${row.eval_query_id}` }}
+              <el-tooltip v-if="!row.isGroup && hasPayloadOpts(row)" effect="dark" placement="top" :show-after="300">
+                <template #content>
+                  <div class="payload-tip">
+                    <div><strong>下发配置快照</strong></div>
+                    <div v-if="row.payload.dialog_options?.model">模型: {{ row.payload.dialog_options.model }}</div>
+                    <div v-if="row.payload.dialog_options?.chatMode">模式: {{ row.payload.dialog_options.chatMode }}</div>
+                    <div v-if="row.payload.dialog_options?.thinkingDepth">深度: {{ row.payload.dialog_options.thinkingDepth }}</div>
+                    <div v-if="row.payload.dimension">维度: {{ dimLabel(row.payload.dimension) }}</div>
+                    <div v-if="row.payload.compare_group">A-B组: {{ row.payload.compare_group }}</div>
+                  </div>
+                </template>
+                <el-icon class="payload-ico"><InfoFilled /></el-icon>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="维度" width="104" align="center">
@@ -337,7 +350,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Tickets, Plus, Refresh } from '@element-plus/icons-vue'
+import { Tickets, Plus, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
@@ -413,6 +426,13 @@ const rowScore = (row) => {
   return ss.length ? +(ss.reduce((a, b) => a + b, 0) / ss.length).toFixed(1) : null
 }
 const scoreClass = (s) => (s >= 4 ? 'score-hi' : s >= 3 ? 'score-mid' : 'score-lo')
+// 该 run 是否有可展示的下发配置(对话选项任一项/维度/A-B 组);全空不显示 ⓘ 图标免噪音
+const hasPayloadOpts = (row) => {
+  const p = row.payload
+  if (!p) return false
+  const d = p.dialog_options || {}
+  return !!(d.model || d.chatMode || d.thinkingDepth || p.dimension || p.compare_group)
+}
 // 批次平均分(已评分 run 的均值;A/B 对比时分组各算)
 const avgScore = computed(() => {
   const ss = (detail.value?.runs || []).map((r) => r.score).filter((s) => s != null)
@@ -672,6 +692,9 @@ function genSummary() {
 </script>
 
 <style scoped>
+.payload-tip { font-size: 12px; line-height: 1.6; }
+.payload-tip > div { margin: 2px 0; }
+.payload-ico { margin-left: 4px; font-size: 13px; color: #909399; cursor: help; vertical-align: -1px; }
 .eval-tasks { display: flex; flex-direction: column; gap: 16px; }
 .head { display: flex; align-items: center; justify-content: space-between; }
 .head-right { display: flex; gap: 10px; align-items: center; }
