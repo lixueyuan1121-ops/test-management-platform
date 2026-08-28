@@ -18,6 +18,7 @@ from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import AiTaskStatus, ProjectRole
 from app.db.session import SessionLocal, get_db
 from app.models import AiTask, EvalQuery, Project, User
+from app.models.ai_eval import EvalTask
 from app.schemas.ai import EvalQueryGenIn
 from app.schemas.common import ok
 from app.services import claude_runner, generators
@@ -57,10 +58,15 @@ def gen_eval_queries(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """流式生成对话测评 query 并落库。SSE 事件:delta / error / done(含 queries)。"""
+    """流式生成对话测评 query 并落库。SSE 事件:delta / error / done(含 queries)。
+    传 eval_task_id 时生成结果自动追加进该测评任务用例集(挂任务到点即享)。"""
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    if body.eval_task_id is not None:
+        et = db.get(EvalTask, body.eval_task_id)
+        if not et or et.project_id != body.project_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在或不属于该项目")
     provider_id = generators.normalize_provider(body.provider)
     engine = generators.get_provider(provider_id)
     if not engine.is_available():
@@ -84,6 +90,7 @@ def gen_eval_queries(
     ai_task_id = at.id
     project_id = body.project_id
     task_id = body.task_id
+    eval_task_id = body.eval_task_id
     requirement = body.requirement
     dimensions = body.dimensions
 
@@ -166,10 +173,27 @@ def gen_eval_queries(
             s.commit()
             for q in objs:
                 s.refresh(q)
+            # 关联了测评任务 → 把本批 query 追加进任务用例集(有序去重,与 eval_task.py 同口径)。
+            # 挂载失败不能连累已生成的用例:单独 try,仅在 done 帧标记 attached。
+            attached = 0
+            if eval_task_id is not None:
+                try:
+                    et2 = s.get(EvalTask, eval_task_id)
+                    if et2 is not None:
+                        qids = json.loads(et2.query_ids) if et2.query_ids else []
+                        merged = list(dict.fromkeys(qids + [q.id for q in objs]))
+                        et2.query_ids = json.dumps(merged, ensure_ascii=False)
+                        s.commit()
+                        attached = len(merged) - len(qids)
+                except Exception:
+                    logger.exception("挂载测评任务失败 eval_task_id=%s", eval_task_id)
+                    s.rollback()
             yield _sse({
                 "type": "done",
                 "ai_task_id": ai_task_id,
                 "status": "done",
+                "eval_task_id": eval_task_id,
+                "attached": attached,
                 "queries": [_to_query_out(q) for q in objs],
                 "meta": {
                     "case_count": at2.case_count,

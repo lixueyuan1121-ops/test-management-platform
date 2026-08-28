@@ -21,7 +21,8 @@ class TestCaseGenIn(BaseModel):
 
 class EvalQueryGenIn(BaseModel):
     project_id: int
-    task_id: int | None = None
+    task_id: int | None = None  # 关联需求任务(task.id,可选)
+    eval_task_id: int | None = None  # 关联测评任务(EvalTask.id,可选):生成后自动挂进任务用例集
     input_type: AiInputType = AiInputType.text
     provider: str | None = None  # claude/deepseek;空/非法后端 normalize 回落
     requirement: str = Field(min_length=1, max_length=REQUIREMENT_MAX_LEN)  # 需求正文(url/file 由前端取文后填)

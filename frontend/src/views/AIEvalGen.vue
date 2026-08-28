@@ -298,7 +298,7 @@ function generate() {
 
   ctrl = new AbortController()
   streamEvalQueries(
-    { project_id: pid.value, task_id: taskId.value, input_type: 'text', provider: engine.value, requirement: requirement.value, dimensions: dimensions.value },
+    { project_id: pid.value, eval_task_id: taskId.value, input_type: 'text', provider: engine.value, requirement: requirement.value, dimensions: dimensions.value },
     {
       signal: ctrl.signal,
       onDelta: (t) => { rawStream.value += t },
@@ -306,6 +306,8 @@ function generate() {
         queries.value = evt.queries || []
         meta.value = evt.meta || null
         if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效 query')
+        // 关联了测评任务:后端已把本批挂进任务用例集,attached 为实际新增条数(去重后)
+        else if (evt.attached) ElMessage.success(`已生成 ${queries.value.length} 条测评 query，并挂到测评任务（新增 ${evt.attached} 条）`)
         else ElMessage.success(`已生成 ${queries.value.length} 条测评 query`)
         stop()
       },
