@@ -310,6 +310,10 @@
                 title="标记为执行失败？(会话未回填/执行中断时用于收口)" width="240" @confirm="markFailed(row)">
                 <template #reference><el-button size="small" type="danger" text>标记失败</el-button></template>
               </el-popconfirm>
+              <el-popconfirm v-else-if="!row.isGroup && row.status === 'failed'"
+                title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryRun(row)">
+                <template #reference><el-button size="small" type="success" text>重跑</el-button></template>
+              </el-popconfirm>
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
@@ -337,7 +341,7 @@ import { Tickets, Plus, Refresh } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule,
+  listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -639,6 +643,14 @@ async function markFailed(row) {
   try {
     await markEvalRunFailed(detail.value.task.id, row.run_id)
     ElMessage.success(`run ${row.run_id} 已标记失败`)
+    await refreshDetail()
+  } catch { /* 拦截器已提示 */ }
+}
+
+async function retryRun(row) {
+  try {
+    await retryEvalRun(detail.value.task.id, row.run_id)
+    ElMessage.success(`run ${row.run_id} 已复位待执行，执行机将重新拉走`)
     await refreshDetail()
   } catch { /* 拦截器已提示 */ }
 }
