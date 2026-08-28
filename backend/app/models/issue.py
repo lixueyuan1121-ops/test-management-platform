@@ -22,6 +22,10 @@ class RemainingIssue(Base):
     checklist_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("checklist_item.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 来源执行(自动建缺陷草稿的追溯落点):auto/ci 批次 business 失败自动生成时回指该 run。
+    exec_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("exec_run.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

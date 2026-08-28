@@ -42,6 +42,7 @@ def _to_out(db: Session, it: RemainingIssue, names: dict | None = None, titles: 
     return {
         "id": it.id, "report_id": it.report_id, "project_id": it.project_id,
         "task_id": it.task_id, "checklist_item_id": it.checklist_item_id,
+        "exec_run_id": it.exec_run_id,
         "title": it.title, "description": it.description,
         "severity": it.severity.value, "status": it.status.value,
         "owner": it.owner, "owner_name": owner_name,

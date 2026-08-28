@@ -144,11 +144,13 @@ def send_card(title: str, lines: list[str], color: str = COLOR_BLUE,
 # ---------------- 场景一：自动回归批次失败告警 ----------------
 def notify_batch_result(batch_id: str, project_name: str, total: int, passed: int,
                         failed: int, blocked: int, trigger: str,
-                        failed_titles: list[str] | None = None) -> None:
+                        failed_titles: list[str] | None = None,
+                        auto_issues: int = 0) -> None:
     """一个执行批次跑完后的结果卡（只在有失败/阻塞时发）。
 
     trigger=auto 是定时无人值守回归——这类批次没人盯着，最需要推送；manual 批次
     用户就在页面上看着，不必打扰（由调用方决定是否调本函数）。
+    auto_issues>0 时附一行「已自动生成 N 条缺陷草稿」引导去遗留问题页复核。
     """
     if not settings.NOTIFY_EXEC_FAIL or not is_enabled():
         return
@@ -166,6 +168,8 @@ def notify_batch_result(batch_id: str, project_name: str, total: int, passed: in
         lines.append(f"• {_esc(t)}")
     if failed_titles and len(failed_titles) > 5:
         lines.append(f"• …另有 {len(failed_titles) - 5} 条")
+    if auto_issues > 0:
+        lines.append(f"**已自动生成 {auto_issues} 条缺陷草稿**（遗留问题页复核，误报请纠偏后关闭）")
     send_card(
         title=f"回归失败告警（批次 {_esc(batch_id)[:12]}）",
         lines=lines, color=color,

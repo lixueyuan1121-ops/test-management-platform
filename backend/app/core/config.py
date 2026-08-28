@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     NOTIFY_EXEC_FAIL: bool = True       # 自动回归批次出现失败
     NOTIFY_TASK_ASSIGN: bool = True     # 任务指派到人
     NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
+    # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。
+    AUTO_ISSUE_ON_FAIL: bool = True
     # 日报缺交提醒的每日触发时刻（24 小时制 HH:MM，Asia/Shanghai）。留空则不建该定时 job。
     REPORT_REMIND_AT: str = ""
 

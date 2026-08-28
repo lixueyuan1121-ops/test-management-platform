@@ -30,17 +30,17 @@ _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 
 def notify_batch_if_done(db: Session, batch_id: str) -> None:
-    """批次完成检测 + 飞书告警钩子（reaper / runner 回写均可调）。
+    """批次完成钩子（reaper / runner 回写均可调,名称沿用）:完成检测通过后做两件事——
 
-    只对 auto 触发的批次生效（feedback 定时集 / test_plan 定时计划——无人值守回归需有人知道失败）；
-    manual 批次用户在页面上看着不必打扰。
-    - 批次状态："所有 run 都已终态"才算完成（pending/running 仍在→不发）。
-    - 失败才告警：全 passed 不发；有 failed/blocked 才推卡片。
-    - 幂等：允许重复调用（reaper 收口多条、runner 同批最后几条并发回写），飞书已去重靠通道总开关控制频率。
+    (a) **失败自动建缺陷草稿**:business 失败逐条生成 RemainingIssue(带 [自动] 前缀、
+        原因/证据/批次上下文、按用例优先级映射严重度),每用例同时只留一条 open 草稿
+        (经 exec_run_id 回查 test_case 去重),AUTO_ISSUE_ON_FAIL=false 可关。
+    (b) **飞书批次告警**:有失败/阻塞才推卡(通道未配置静默跳过)。
+
+    只对 auto/ci 触发的批次生效(定时/流水线无人盯页面;manual 批次用户在页面上,
+    改判/转缺陷走既有手动入口不打扰)。幂等:允许重复调用,建草稿有去重、发卡靠幂等窗口。
     """
-    from app.services import notify
-
-    if not notify.is_enabled() or not batch_id:
+    if not batch_id:
         return
     # 先判完成：该批有 pending/running → 批次未完，直接返回
     pending_or_running = (
@@ -58,9 +58,18 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     trigger = fr.trigger if fr else (pr.trigger if pr else None)
     if trigger not in ("auto", "ci"):
         return  # manual 批次或无批次元数据 → 不发（auto=定时、ci=流水线触发，均无人盯页面）
-    # 聚合结果
     runs = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
     if not runs:
+        return
+    # (a) 失败自动建缺陷草稿(与飞书通道独立,未配 webhook 也生效)
+    auto_issues = 0
+    try:
+        auto_issues = _auto_issue_for_failures(db, runs, batch_id, trigger)
+    except Exception:
+        pass  # 草稿失败不影响告警与主流程
+    # (b) 飞书告警
+    from app.services import notify
+    if not notify.is_enabled():
         return
     total = len(runs)
     passed = sum(1 for r in runs if r.status == ExecStatus.passed)
@@ -83,8 +92,67 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
         batch_id=batch_id,
         project_name=proj.name if proj else f"项目#{runs[0].project_id}",
         total=total, passed=passed, failed=failed, blocked=blocked,
-        trigger="auto", failed_titles=failed_titles,
+        trigger="auto", failed_titles=failed_titles, auto_issues=auto_issues,
     )
+
+
+# business 失败自动建草稿的严重度映射:P0 用例挂了=阻断级,P1=major,其余 minor。
+_PRIORITY_SEVERITY = {"P0": "blocker", "P1": "major"}
+
+
+def _auto_issue_for_failures(db: Session, runs: list, batch_id: str, trigger: str) -> int:
+    """auto/ci 批次的 business 失败逐条生成 RemainingIssue 草稿。返回新建条数。
+
+    去重:同一 test_case 已有 open 的自动草稿(exec_run_id 回查同 case)则跳过——
+    夜夜失败的同一条用例不重复开单,解决/关闭后再失败才重新生成。
+    """
+    from app.core.config import settings
+    if not settings.AUTO_ISSUE_ON_FAIL:
+        return 0
+    from app.core.enums import IssueSeverity, IssueStatus
+    from app.models import RemainingIssue
+
+    created = 0
+    for r in runs:
+        if r.status != ExecStatus.failed or r.fail_kind != "business":
+            continue  # selector 阻塞是环境问题,不开功能缺陷
+        if r.test_case_id:
+            dup = (db.query(RemainingIssue.id)
+                   .join(ExecRun, ExecRun.id == RemainingIssue.exec_run_id)
+                   .filter(RemainingIssue.status == IssueStatus.open,
+                           ExecRun.test_case_id == r.test_case_id)
+                   .first())
+            if dup:
+                continue
+        try:
+            payload = json.loads(r.payload or "{}")
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        title = payload.get("title") or f"run#{r.id}"
+        pri = (payload.get("priority") or "").upper()
+        sev = _PRIORITY_SEVERITY.get(pri, "minor")
+        desc_lines = [
+            f"自动回归失败草稿（{'定时回归' if trigger == 'auto' else 'CI 触发'}，批次 {batch_id}，执行机 {r.runner}）",
+            f"失败原因：{(r.reason or '无')[:500]}",
+        ]
+        if r.evidence_url:
+            desc_lines.append(f"证据：{r.evidence_url}")
+        desc_lines.append("请复核：确认为真 bug 则补负责人/外部单号；误报请在执行结果页人工纠偏后关闭本条。")
+        db.add(RemainingIssue(
+            report_id=None,
+            task_id=r.task_id,
+            checklist_item_id=r.checklist_item_id,
+            exec_run_id=r.id,
+            project_id=r.project_id,
+            title=f"[自动] 回归失败：{title}"[:255],
+            description="\n".join(desc_lines),
+            severity=IssueSeverity(sev),
+            status=IssueStatus.open,
+        ))
+        created += 1
+    if created:
+        db.commit()
+    return created
 
 
 def _new_batch_id() -> str:

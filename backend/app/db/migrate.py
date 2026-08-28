@@ -237,6 +237,9 @@ def ensure_issue_columns() -> None:
             conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN task_id BIGINT NULL"))
         if "checklist_item_id" not in cols:
             conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN checklist_item_id BIGINT NULL"))
+        if "exec_run_id" not in cols:
+            # 自动建缺陷草稿的来源执行追溯列(不在线加 FK,同 release_id 的取舍)
+            conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN exec_run_id BIGINT NULL"))
         if dialect == "mysql":
             # report_id 放宽为可空。MySQL 不允许直接 MODIFY 被 FK 引用的列（errno 1832
             # "Cannot change column ... used in a foreign key constraint"），需先 drop 该 FK
