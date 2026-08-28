@@ -201,6 +201,8 @@ export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payloa
 export const listAbnormalEvalRuns = (projectId) => http.get('/eval-judge/abnormal', { params: { project_id: projectId } })
 // eval 执行历史（子项2 端点 /eval-queue/history；此前未在 api 封装，新增）；返回 _to_out 列表（含 payload/status/verdict）
 export const listEvalRuns = (projectId) => http.get('/eval-queue/history', { params: { project_id: projectId } })
+// 批次趋势(每批次一个点:通过率/均分),测评结果页趋势曲线用
+export const evalBatchTrend = (projectId) => http.get('/eval-queue/trend', { params: { project_id: projectId } })
 
 // ===== 对话测评导出/推送 =====
 // 导出到飞书表；payload: { project_id, sheet_url, abnormal_only?, batch_id?, start_row? } → { exported, sheet_url }

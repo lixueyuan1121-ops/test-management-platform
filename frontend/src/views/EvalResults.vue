@@ -31,6 +31,17 @@
         </div>
       </div>
     </div>
+    <!-- 批次趋势:每批次一个点(通过率+均分),回答「比上次强吗」;≥2 批才有趋势可看 -->
+    <div v-if="trend.length >= 2" class="tr-panel">
+      <div class="tr-head">
+        <div class="dr-eyebrow">// BATCH TREND · 批次趋势（近 {{ trend.length }} 批）</div>
+        <div class="tr-legend">
+          <span class="tr-lg"><i class="tr-dot tr-dot-rate"></i>通过率%</span>
+          <span class="tr-lg"><i class="tr-dot tr-dot-score"></i>均分(1-5)</span>
+        </div>
+      </div>
+      <div ref="trendEl" class="tr-chart"></div>
+    </div>
     <el-card>
       <template #header>
         <div class="header">
@@ -188,7 +199,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -294,6 +305,7 @@ async function onProjectChange() {
   setLastProjectId(pid.value)
   await load()
   loadDimStats()   // 维度雷达:独立加载不阻塞列表
+  loadTrend()      // 批次趋势:同上
 }
 
 async function load() {
@@ -377,10 +389,10 @@ async function doPushMultica() {
 
 // ==== 维度能力画像雷达 ====
 import * as echarts from 'echarts/core'
-import { RadarChart } from 'echarts/charts'
-import { TooltipComponent, LegendComponent } from 'echarts/components'
+import { RadarChart, LineChart } from 'echarts/charts'
+import { TooltipComponent, LegendComponent, GridComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-echarts.use([RadarChart, TooltipComponent, LegendComponent, CanvasRenderer])
+echarts.use([RadarChart, LineChart, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer])
 
 const dimStats = ref({ dims: [], judged_total: 0, overall_rate: 0 })
 const radarEl = ref(null)
@@ -421,10 +433,68 @@ async function loadDimStats() {
   drawRadar()
 }
 
-onBeforeUnmount(() => { if (radarChart) { radarChart.dispose(); radarChart = null } })
+// ==== 批次趋势(通过率+均分双轴折线) ====
+const trend = ref([])
+const trendEl = ref(null)
+let trendChart = null
+
+function drawTrend() {
+  if (!trendEl.value || trend.value.length < 2) return
+  if (!trendChart) trendChart = echarts.init(trendEl.value)
+  const bs = trend.value
+  const x = bs.map((b) => (b.date || '').slice(5, 16).replace('T', ' '))
+  trendChart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      formatter: (ps) => {
+        const b = bs[ps[0]?.dataIndex]
+        if (!b) return ''
+        return `<b>${b.task_name || '题库下发'}</b> · ${b.batch_id}<br/>`
+          + `${(b.date || '').replace('T', ' ').slice(0, 19)}<br/>`
+          + `判定 ${b.judged}/${b.total} · 通过率 ${b.pass_rate ?? '—'}%<br/>`
+          + `均分 ${b.avg_score ?? '—'}/5`
+      },
+    },
+    grid: { left: 44, right: 44, top: 16, bottom: 28 },
+    xAxis: { type: 'category', data: x, axisLabel: { color: '#7d8a9b', fontSize: 10 }, axisLine: { lineStyle: { color: 'rgba(255,255,255,.15)' } } },
+    yAxis: [
+      { type: 'value', min: 0, max: 100, axisLabel: { color: '#7d8a9b', formatter: '{value}%' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,.06)' } } },
+      { type: 'value', min: 0, max: 5, axisLabel: { color: '#d98b00' }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: '通过率', type: 'line', data: bs.map((b) => b.pass_rate), smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#00e5a0', width: 2 }, itemStyle: { color: '#00e5a0' },
+        areaStyle: { color: 'rgba(0,229,160,.12)' } },
+      { name: '均分', type: 'line', yAxisIndex: 1, data: bs.map((b) => b.avg_score), smooth: true, connectNulls: true,
+        symbol: 'circle', symbolSize: 5, lineStyle: { color: '#d98b00', width: 2, type: 'dashed' }, itemStyle: { color: '#d98b00' } },
+    ],
+  })
+}
+
+async function loadTrend() {
+  if (!pid.value) { trend.value = []; return }
+  try { trend.value = (await evalBatchTrend(pid.value))?.batches || [] } catch { trend.value = [] }
+  await nextTick()
+  drawTrend()
+}
+
+onBeforeUnmount(() => {
+  if (radarChart) { radarChart.dispose(); radarChart = null }
+  if (trendChart) { trendChart.dispose(); trendChart = null }
+})
 </script>
 
 <style scoped>
+/* 批次趋势 */
+.tr-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px; padding: 18px 24px 10px; margin-bottom: 16px; }
+.tr-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.tr-legend { display: flex; gap: 14px; }
+.tr-lg { font-size: 12px; color: #a7b4c4; display: inline-flex; align-items: center; gap: 5px; }
+.tr-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.tr-dot-rate { background: #00e5a0; }
+.tr-dot-score { background: #d98b00; }
+.tr-chart { width: 100%; height: 200px; }
 /* 维度能力画像雷达 */
 .dr-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px; padding: 20px 24px; margin-bottom: 16px; color: #e6edf3; }
 .dr-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }

@@ -262,6 +262,55 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
     return ok({"trace_url": f"/uploads/{rel}"})
 
 
+@router.get("/trend")
+def batch_trend(project_id: int = Query(...), limit: int = Query(30, le=100),
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """按批次聚合的测评趋势:每批次一个点(通过率/均分/判定数),时序回答「模型比上次强吗」。
+
+    对齐主流评测平台的历史曲线(OpenCompass 榜单趋势/W&B Weave eval 历史)。
+    现算聚合不建统计表(与 /stats 口径一致);取最近 limit 批,返回按时间升序。
+    """
+    from sqlalchemy import case, func
+
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    rows = (db.query(
+        EvalRun.batch_id,
+        func.min(EvalRun.created_at).label("t0"),
+        func.max(EvalRun.eval_task_id).label("task_id"),
+        func.count(EvalRun.id).label("total"),
+        func.sum(case((EvalRun.verdict == "pass", 1), else_=0)).label("passed"),
+        func.sum(case((EvalRun.verdict == "fail", 1), else_=0)).label("failed"),
+        func.avg(EvalRun.score).label("avg_score"),
+    ).filter(EvalRun.project_id == project_id, EvalRun.batch_id.isnot(None))
+     .group_by(EvalRun.batch_id)
+     .order_by(func.min(EvalRun.created_at).desc())
+     .limit(limit).all())
+
+    # 任务名批量取(一批次至多一个任务;普通题库下发无任务名)
+    task_ids = {r.task_id for r in rows if r.task_id}
+    name_map = {}
+    if task_ids:
+        from app.models.ai_eval import EvalTask
+        for tid, name in db.query(EvalTask.id, EvalTask.name).filter(EvalTask.id.in_(task_ids)).all():
+            name_map[tid] = name
+
+    out = []
+    for r in reversed(rows):  # 倒序取最近 N 批 → 回正序(时间升序)供画曲线
+        judged = int(r.passed or 0) + int(r.failed or 0)
+        out.append({
+            "batch_id": r.batch_id,
+            "date": r.t0.isoformat() if r.t0 else None,
+            "task_name": name_map.get(r.task_id),
+            "total": int(r.total or 0),
+            "judged": judged,
+            "passed": int(r.passed or 0),
+            "failed": int(r.failed or 0),
+            "pass_rate": round(int(r.passed or 0) / judged * 100, 1) if judged else None,
+            "avg_score": round(float(r.avg_score), 2) if r.avg_score is not None else None,
+        })
+    return ok({"batches": out})
+
+
 @router.get("/history")
 def list_history(project_id: int = Query(...), limit: int = Query(100, le=500),
                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
