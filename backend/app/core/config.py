@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
     # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。
     AUTO_ISSUE_ON_FAIL: bool = True
+    # auto/ci 批次失败自动重试次数上限（0=关闭；1=失败补发一次，重试通过标 flaky）。
+    EXEC_AUTO_RETRY: int = 1
     # 日报缺交提醒的每日触发时刻（24 小时制 HH:MM，Asia/Shanghai）。留空则不建该定时 job。
     REPORT_REMIND_AT: str = ""
 

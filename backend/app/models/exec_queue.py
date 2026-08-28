@@ -14,7 +14,7 @@
 """
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import ExecKind, ExecStatus
@@ -54,6 +54,13 @@ class ExecRun(Base):
     payload: Mapped[str] = mapped_column(Text)  # 用例快照 JSON 字符串（steps/expected/params）
     # 批次号：一次 enqueue 生成一个，该批所有 run 共享（供执行结果页按批次汇总）。老库补列后为 NULL=未分批。
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # ---- 失败自动重试链(L2.5):auto/ci 批次失败自动补发一次,重试通过=flaky ----
+    # retry_of:本行是哪条 run 的重试(纯 int 软指,不建自引用 FK——MySQL5.6 自 FK 加列麻烦且无级联需求)。
+    # attempt:第几次尝试(原始=1,重试=2);flaky:重试通过时置真(fail→pass 抖动,Azure DevOps 同语义)。
+    # 统计口径:被重试覆盖的原始行(id 出现在他行 retry_of)不计入批次/门禁/质量卡,以链上最终结果为准。
+    retry_of: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    flaky: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)  # runner 回写原值 pass/fail/blocked
     # 失败性质(L2):selector=选择器/环境阻塞(定位失败/复位失败/掉登录,不计功能失败率);
     # business=断言不通过(真功能 bug)。pass 或旧 runner 回写时为 NULL。老库由 migrate 补列。

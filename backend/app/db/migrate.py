@@ -204,6 +204,27 @@ def ensure_exec_run_release_column() -> None:
     _ensure_index("exec_run", "idx_execrun_release", "release_id")
 
 
+def ensure_exec_run_retry_columns() -> None:
+    """exec_run 补列 retry_of / attempt / flaky(失败自动重试链 + flaky 标记)。
+
+    retry_of 纯 int 软指(不建自引用 FK);attempt 缺省 1(存量行都是首试);
+    flaky 缺省 0。两方言通用 ADD COLUMN,幂等:ADD 前先探列。
+    """
+    cols = _columns("exec_run")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "retry_of" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN retry_of BIGINT NULL"))
+        if "attempt" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN attempt INT NOT NULL DEFAULT 1"))
+        if "flaky" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN flaky TINYINT(1) NOT NULL DEFAULT 0"
+                              if engine.dialect.name == "mysql" else
+                              "ALTER TABLE exec_run ADD COLUMN flaky BOOLEAN NOT NULL DEFAULT 0"))
+    _ensure_index("exec_run", "idx_execrun_retryof", "retry_of")
+
+
 def ensure_perf_run_columns() -> None:
     """perf_run 表补列 report_set_id / prompt / signal_seq（如缺失）。
 

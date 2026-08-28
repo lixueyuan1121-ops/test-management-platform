@@ -36,6 +36,7 @@
               <span class="batch-stat">
                 共 {{ b.total }} · <b class="ok">{{ b.passed }} 过</b> · <b class="ng">{{ b.failed }} 失</b>
                 <template v-if="b.blocked"> · <b class="blk">{{ b.blocked }} 阻塞</b></template>
+                <template v-if="b.flaky"> · <b class="flk" title="重试后通过(不稳定)">{{ b.flaky }} 抖动</b></template>
                 · 功能通过率 {{ b.rate }}%
               </span>
               <span class="batch-meta">{{ b.runner }} · {{ b.durationText }} · {{ fmtTime(b.time) }}</span>
@@ -43,11 +44,17 @@
           </template>
 
           <el-table :data="b.rows" size="small" border stripe empty-text="无记录">
-            <el-table-column label="结果" width="96" align="center">
+            <el-table-column label="结果" width="130" align="center">
               <template #default="{ row }">
                 <el-tag :type="resultType(row)" size="small">
                   {{ resultLabel(row) }}
                 </el-tag>
+                <el-tag v-if="row.flaky" type="warning" size="small" effect="plain" class="chain-tag"
+                        title="首试失败,自动重试后通过——结果不稳定(flaky),建议排查环境/时序">抖动</el-tag>
+                <el-tag v-else-if="row.retry_of" type="info" size="small" effect="plain" class="chain-tag"
+                        :title="`第 ${row.attempt} 次尝试(自动重试)`">重试</el-tag>
+                <el-tag v-else-if="row._superseded" type="info" size="small" effect="plain" class="chain-tag"
+                        title="该次失败已自动重试,以重试结果为准(不计入批次统计)">已重试</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="类型" width="66" align="center">
@@ -215,19 +222,25 @@ const hasReport = (row) => Array.isArray(row.report) && row.report.length > 0
 
 // 按 batch_id 分组;无 batch_id 的老记录归到 "(未分批)"。组内保持后端的时间倒序。
 // 组间按该组最新一条执行时间倒序。汇总数(总/过/失/通过率/耗时和/设备/时间)现算。
+// 重试链聚合:被自动重试覆盖的原始行(id 出现在他行 retry_of)标 _superseded,
+// 展示保留(留痕)但**不计入**批次汇总——与后端批次/门禁/质量卡同口径。
 const batches = computed(() => {
   const map = new Map()
+  const supersededIds = new Set(rows.value.map((r) => r.retry_of).filter(Boolean))
   for (const r of rows.value) {
+    r._superseded = supersededIds.has(r.id)
     const key = r.batch_id || '__none__'
     if (!map.has(key)) map.set(key, [])
     map.get(key).push(r)
   }
   const out = []
   for (const [key, list] of map) {
-    const passed = list.filter((r) => r.verdict === 'pass').length
-    const failed = list.filter((r) => r.verdict === 'fail').length
-    const blocked = list.filter((r) => r.verdict === 'blocked' || r.status === 'blocked').length
-    const total = list.length
+    const eff = list.filter((r) => !r._superseded)
+    const passed = eff.filter((r) => r.verdict === 'pass').length
+    const failed = eff.filter((r) => r.verdict === 'fail').length
+    const blocked = eff.filter((r) => r.verdict === 'blocked' || r.status === 'blocked').length
+    const flaky = eff.filter((r) => r.flaky).length
+    const total = eff.length
     const durSum = list.reduce((n, r) => n + (r.duration_ms || 0), 0)
     const time = list.reduce((t, r) => {
       const s = r.updated_at || r.created_at || ''
@@ -238,7 +251,7 @@ const batches = computed(() => {
       id: key,
       label: key === '__none__' ? '(未分批 · 历史记录)' : `批次 ${key}`,
       rows: list,
-      total, passed, failed, blocked,
+      total, passed, failed, blocked, flaky,
       rate: fnDenom ? Math.round((passed / fnDenom) * 100) : 0,
       runner: [...new Set(list.map((r) => r.runner).filter(Boolean))].join(', ') || '—',
       durationText: durSum ? (durSum / 1000).toFixed(1) + 's' : '—',
@@ -379,6 +392,8 @@ async function saveCorrect() {
 .batch-stat .ok { color: #00926e; }
 .batch-stat .ng { color: #c45656; }
 .batch-stat .blk { color: #e6a23c; }
+.batch-stat .flk { color: #b88230; }
+.chain-tag { margin-left: 4px; }
 .fix-link { margin-left: 10px; font-size: 12px; }
 .correct-case { margin: 0 0 6px; }
 .correct-cur { margin: 0 0 12px; color: #5a6b7b; font-size: 13px; }

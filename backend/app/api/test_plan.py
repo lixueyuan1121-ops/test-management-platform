@@ -51,13 +51,19 @@ def _plan_out(db: Session, p: TestPlan) -> dict:
 
 
 def _aggregate_batch(db: Session, project_id: int, batch_id: str) -> dict:
-    """按 batch_id 聚合 exec_run 现算（与 feedback._aggregate_batch 同口径）。"""
-    rows = (db.query(ExecRun.status, func.count(ExecRun.id))
-            .filter(ExecRun.project_id == project_id, ExecRun.batch_id == batch_id)
-            .group_by(ExecRun.status).all())
-    counts = {}
-    for st, n in rows:
-        counts[st.value if hasattr(st, "value") else st] = n
+    """按 batch_id 聚合 exec_run 现算（与 feedback._aggregate_batch 同口径,含重试链聚合）。"""
+    from app.api.exec_queue import effective_runs
+    rows = effective_runs(
+        db.query(ExecRun)
+        .filter(ExecRun.project_id == project_id, ExecRun.batch_id == batch_id).all()
+    )
+    counts: dict = {}
+    flaky = 0
+    for r in rows:
+        key = r.status.value if hasattr(r.status, "value") else r.status
+        counts[key] = counts.get(key, 0) + 1
+        if getattr(r, "flaky", False):
+            flaky += 1
     total = sum(counts.values())
     done = total - counts.get("pending", 0) - counts.get("running", 0)
     return {
@@ -67,6 +73,7 @@ def _aggregate_batch(db: Session, project_id: int, batch_id: str) -> dict:
         "blocked": counts.get("blocked", 0),
         "pending": counts.get("pending", 0),
         "running": counts.get("running", 0),
+        "flaky": flaky,
         "finished": total > 0 and done == total,
     }
 

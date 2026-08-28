@@ -177,6 +177,7 @@ def reap_stale_exec_runs(session_factory=None) -> int:
                 .all())
         for r in rows:
             r.status = ExecStatus.failed
+            r.fail_kind = "timeout"   # L2 细化:收口归因=执行超时(非 selector/business,不入真bug统计)
             r.reason = "自动收口:执行超 2 小时未回填(执行机中断),标记失败"
             reaped += 1
         if rows:

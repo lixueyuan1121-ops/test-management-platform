@@ -29,6 +29,65 @@ router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 
+def _batch_trigger(db: Session, batch_id: str | None) -> str | None:
+    """批次触发源:feedback 集或 test_plan 计划的元数据里取 trigger(manual/auto/ci);无元数据 → None。"""
+    if not batch_id:
+        return None
+    from app.models import FeedbackRun, TestPlanRun
+    fr = db.query(FeedbackRun).filter(FeedbackRun.batch_id == batch_id).first()
+    if fr:
+        return fr.trigger
+    pr = db.query(TestPlanRun).filter(TestPlanRun.batch_id == batch_id).first()
+    return pr.trigger if pr else None
+
+
+def effective_runs(runs: list) -> list:
+    """重试链聚合:剔除「已被重试覆盖」的原始行(id 出现在他行 retry_of),留链上最终结果。
+
+    统计口径单点:批次汇总/门禁/自动建缺陷都以有效行计——失败但重试通过的用例算 passed(flaky),
+    不算 failed;重试仍失败只计一次失败(重试行),不双算。
+    """
+    superseded = {r.retry_of for r in runs if r.retry_of}
+    return [r for r in runs if r.id not in superseded]
+
+
+def _maybe_auto_retry(db: Session, r: ExecRun) -> bool:
+    """失败自动重试(L2.5):auto/ci 批次的失败/阻塞 run,按原快照同批补发一次。
+
+    - 只重试无人值守批次(manual 批次用户在页面上迭代调试,自动补发反而添乱);
+    - attempt 达上限(EXEC_AUTO_RETRY,默认 1 次重试)不再补发;
+    - 同 batch_id:批次完成检测会等重试跑完才收口(告警/建缺陷都看链上最终结果);
+    - 复制原 run 快照(payload/清单/任务/发版指向),runner 下轮轮询自然拉走。
+    返回是否补发了重试。
+    """
+    from app.core.config import settings
+    max_retry = int(settings.EXEC_AUTO_RETRY or 0)
+    if max_retry <= 0 or r.status not in (ExecStatus.failed, ExecStatus.blocked):
+        return False
+    if (r.attempt or 1) > max_retry:
+        return False   # 原始=1 → 允许补发 attempt=2;重试行 attempt=2>1 → 不再补
+    if _batch_trigger(db, r.batch_id) not in ("auto", "ci"):
+        return False
+    clone = ExecRun(
+        checklist_item_id=r.checklist_item_id,
+        test_case_id=r.test_case_id,
+        task_id=r.task_id,
+        release_id=r.release_id,
+        project_id=r.project_id,
+        batch_id=r.batch_id,
+        runner=r.runner,
+        kind=r.kind,
+        status=ExecStatus.pending,
+        payload=r.payload,
+        enqueued_by=None,
+        retry_of=r.id,
+        attempt=(r.attempt or 1) + 1,
+    )
+    db.add(clone)
+    db.commit()
+    return True
+
+
 def notify_batch_if_done(db: Session, batch_id: str) -> None:
     """批次完成钩子（reaper / runner 回写均可调,名称沿用）:完成检测通过后做两件事——
 
@@ -52,15 +111,14 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     if pending_or_running:
         return
     # 凑齐终态了，查批次元数据确认 trigger（feedback 集或 test_plan 计划，两个来源）
-    from app.models import FeedbackRun, Project, TestPlanRun
-    fr = db.query(FeedbackRun).filter(FeedbackRun.batch_id == batch_id).first()
-    pr = None if fr else db.query(TestPlanRun).filter(TestPlanRun.batch_id == batch_id).first()
-    trigger = fr.trigger if fr else (pr.trigger if pr else None)
+    from app.models import Project
+    trigger = _batch_trigger(db, batch_id)
     if trigger not in ("auto", "ci"):
         return  # manual 批次或无批次元数据 → 不发（auto=定时、ci=流水线触发，均无人盯页面）
-    runs = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
-    if not runs:
+    all_rows = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
+    if not all_rows:
         return
+    runs = effective_runs(all_rows)   # 重试链聚合:以链上最终结果计
     # (a) 失败自动建缺陷草稿(与飞书通道独立,未配 webhook 也生效)
     auto_issues = 0
     try:
@@ -75,8 +133,9 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     passed = sum(1 for r in runs if r.status == ExecStatus.passed)
     failed = sum(1 for r in runs if r.status == ExecStatus.failed)
     blocked = sum(1 for r in runs if r.status == ExecStatus.blocked)
+    flaky = sum(1 for r in runs if r.flaky)
     if failed <= 0 and blocked <= 0:
-        return  # 全 passed 不发
+        return  # 全 passed 不发(含 flaky 通过——抖动在结果页可见,不打扰)
     proj = db.get(Project, runs[0].project_id)
     # 提取失败用例标题（payload 快照里的 title）
     failed_titles = []
@@ -93,6 +152,7 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
         project_name=proj.name if proj else f"项目#{runs[0].project_id}",
         total=total, passed=passed, failed=failed, blocked=blocked,
         trigger="auto", failed_titles=failed_titles, auto_issues=auto_issues,
+        flaky=flaky,
     )
 
 
@@ -265,6 +325,9 @@ def _to_out(r: ExecRun) -> dict:
         "payload": json.loads(r.payload or "{}"),
         "verdict": r.verdict,
         "fail_kind": r.fail_kind,
+        "retry_of": r.retry_of,
+        "attempt": r.attempt,
+        "flaky": bool(r.flaky),
         "reason": r.reason,
         "evidence_url": r.evidence_url,
         "report": _load_report(r.report),
@@ -523,6 +586,9 @@ def report(
     r.duration_ms = body.duration_ms
     if body.report is not None:
         r.report = json.dumps(body.report, ensure_ascii=False)   # 逐步执行报告(含截图 URL)
+    # flaky 判定(Azure DevOps 同语义):重试行通过 = 首试失败重跑即过 → 抖动,非稳定通过。
+    if is_pass and r.retry_of:
+        r.flaky = True
 
     # 闭环落点:把结果同步回验收清单项(pass 通过 / selector 阻塞记 blocked / 其余 fail 记 failed)。
     # 复用现有清单展示、checklist-summary 统计、失败转遗留问题等下游能力。
@@ -536,8 +602,15 @@ def report(
             item.executed_at = datetime.utcnow()
     db.commit()
     db.refresh(r)
+    # 失败自动重试(auto/ci 批次):补发的重试 run 让批次保持未完成,告警/建缺陷等链上最终结果
+    retried = False
+    if r.status in (ExecStatus.failed, ExecStatus.blocked):
+        try:
+            retried = _maybe_auto_retry(db, r)
+        except Exception:
+            retried = False  # 重试补发失败不影响回写
     # 批次完成检测钩子：reaper 和 runner 回写都调，幂等，只对 auto 触发的 feedback 批次生效
-    if r.batch_id:
+    if r.batch_id and not retried:
         try:
             notify_batch_if_done(db, r.batch_id)
         except Exception:

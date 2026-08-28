@@ -208,6 +208,11 @@ def release_quality(
         .limit(limit + 1).all()   # 多取 1 个,给最老一版当窗起点
     )
     items = []
+    # 重试链聚合:被自动重试覆盖的原始行(id 出现在他行 retry_of)不计入质量统计,
+    # 以链上最终结果为准(与批次汇总/门禁同口径)。
+    from sqlalchemy.orm import aliased
+    _RetryER = aliased(ExecRun)
+    _not_superseded = ~db.query(_RetryER.id).filter(_RetryER.retry_of == ExecRun.id).exists()
     for i, rel in enumerate(rows[:limit]):
         prev = rows[i + 1] if i + 1 < len(rows) else None
         w_to = rel.release_date
@@ -219,12 +224,13 @@ def release_quality(
             exec_scope = "linked"
             st_rows = (
                 db.query(ExecRun.status, func.count(ExecRun.id))
-                .filter(ExecRun.release_id == rel.id)
+                .filter(ExecRun.release_id == rel.id, _not_superseded)
                 .group_by(ExecRun.status).all()
             )
             bugs = (
                 db.query(func.count(ExecRun.id))
-                .filter(ExecRun.release_id == rel.id, ExecRun.fail_kind == "business")
+                .filter(ExecRun.release_id == rel.id, ExecRun.fail_kind == "business",
+                        _not_superseded)
                 .scalar() or 0
             )
         else:
@@ -235,6 +241,7 @@ def release_quality(
                 db.query(ExecRun.status, func.count(ExecRun.id))
                 .filter(ExecRun.project_id == project_id,
                         ExecRun.release_id.is_(None),
+                        _not_superseded,
                         func.date(ExecRun.created_at) > w_from,
                         func.date(ExecRun.created_at) <= w_to)
                 .group_by(ExecRun.status).all()
@@ -243,6 +250,7 @@ def release_quality(
                 db.query(func.count(ExecRun.id))
                 .filter(ExecRun.project_id == project_id, ExecRun.fail_kind == "business",
                         ExecRun.release_id.is_(None),
+                        _not_superseded,
                         func.date(ExecRun.created_at) > w_from,
                         func.date(ExecRun.created_at) <= w_to)
                 .scalar() or 0

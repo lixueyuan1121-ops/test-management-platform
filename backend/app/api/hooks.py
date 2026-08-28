@@ -93,11 +93,17 @@ def hook_gate(
     rows = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
     if not rows:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="批次不存在或无执行记录")
+    # 重试链聚合:被重试覆盖的原始行不计,以链上最终结果为准(失败重试后通过=flaky 通过,门禁放行)
+    from app.api.exec_queue import effective_runs
+    rows = effective_runs(rows)
     total = len(rows)
     stat = {"passed": 0, "failed": 0, "blocked": 0, "pending": 0, "running": 0}
+    flaky = 0
     for r in rows:
         key = r.status.value if hasattr(r.status, "value") else str(r.status)
         stat[key] = stat.get(key, 0) + 1
+        if r.flaky:
+            flaky += 1
     finished = stat["pending"] == 0 and stat["running"] == 0
     failed_eff = stat["failed"] + (stat["blocked"] if strict else 0)
     denom = stat["passed"] + failed_eff
@@ -127,6 +133,7 @@ def hook_gate(
         "finished": finished,
         "total": total,
         **stat,
+        "flaky": flaky,
         "pass_rate": pass_rate,
         "min_pass_rate": min_pass_rate,
         "strict": strict,

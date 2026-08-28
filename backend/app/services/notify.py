@@ -145,12 +145,12 @@ def send_card(title: str, lines: list[str], color: str = COLOR_BLUE,
 def notify_batch_result(batch_id: str, project_name: str, total: int, passed: int,
                         failed: int, blocked: int, trigger: str,
                         failed_titles: list[str] | None = None,
-                        auto_issues: int = 0) -> None:
+                        auto_issues: int = 0, flaky: int = 0) -> None:
     """一个执行批次跑完后的结果卡（只在有失败/阻塞时发）。
 
     trigger=auto 是定时无人值守回归——这类批次没人盯着，最需要推送；manual 批次
     用户就在页面上看着，不必打扰（由调用方决定是否调本函数）。
-    auto_issues>0 时附一行「已自动生成 N 条缺陷草稿」引导去遗留问题页复核。
+    auto_issues>0 时附「已自动生成 N 条缺陷草稿」；flaky>0 时附抖动条数(重试后通过)。
     """
     if not settings.NOTIFY_EXEC_FAIL or not is_enabled():
         return
@@ -161,7 +161,8 @@ def notify_batch_result(batch_id: str, project_name: str, total: int, passed: in
     lines = [
         f"**项目**：{_esc(project_name)}",
         f"**触发方式**：{'定时自动回归' if trigger == 'auto' else '手动执行'}",
-        f"**结果**：共 {total} 条，通过 {passed}，失败 {failed}，阻塞 {blocked}",
+        f"**结果**：共 {total} 条，通过 {passed}，失败 {failed}，阻塞 {blocked}"
+        + (f"，抖动 {flaky}（重试后通过）" if flaky else ""),
         f"**性质**：{kind}",
     ]
     for t in (failed_titles or [])[:5]:
