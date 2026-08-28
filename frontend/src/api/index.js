@@ -526,3 +526,7 @@ export const deleteRequirement = (rid) => http.delete(`/requirements/${rid}`)
 export const requirementCases = (rid) => http.get(`/requirements/${rid}/cases`)
 export const linkRequirementCases = (rid, case_ids) => http.post(`/requirements/${rid}/cases`, { case_ids })
 export const unlinkRequirementCases = (rid, case_ids) => http.delete(`/requirements/${rid}/cases`, { data: { case_ids } })
+
+// AI 失败归因(同步调引擎,秒级~分钟级,放长超时)
+export const triageExecRun = (run_id, provider) =>
+  http.post(`/exec-queue/${run_id}/triage`, null, { params: provider ? { provider } : {}, timeout: 300000 })

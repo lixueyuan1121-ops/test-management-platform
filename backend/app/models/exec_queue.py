@@ -61,6 +61,10 @@ class ExecRun(Base):
     retry_of: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     flaky: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # AI 失败归因(建议项⑨,人工触发):kind 供筛选(selector/environment/assertion/bug),
+    # triage 存完整 JSON {kind,confidence,reason,suggestion,provider,at}。归因是参考非裁决。
+    triage_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    triage: Mapped[str | None] = mapped_column(Text, nullable=True)
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)  # runner 回写原值 pass/fail/blocked
     # 失败性质(L2):selector=选择器/环境阻塞(定位失败/复位失败/掉登录,不计功能失败率);
     # business=断言不通过(真功能 bug)。pass 或旧 runner 回写时为 NULL。老库由 migrate 补列。

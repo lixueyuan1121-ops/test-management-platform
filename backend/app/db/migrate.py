@@ -222,6 +222,10 @@ def ensure_exec_run_retry_columns() -> None:
             conn.execute(text("ALTER TABLE exec_run ADD COLUMN flaky TINYINT(1) NOT NULL DEFAULT 0"
                               if engine.dialect.name == "mysql" else
                               "ALTER TABLE exec_run ADD COLUMN flaky BOOLEAN NOT NULL DEFAULT 0"))
+        if "triage_kind" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN triage_kind VARCHAR(16) NULL"))
+        if "triage" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN triage TEXT NULL"))
     _ensure_index("exec_run", "idx_execrun_retryof", "retry_of")
 
 

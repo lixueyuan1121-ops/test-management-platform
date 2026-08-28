@@ -328,6 +328,8 @@ def _to_out(r: ExecRun) -> dict:
         "retry_of": r.retry_of,
         "attempt": r.attempt,
         "flaky": bool(r.flaky),
+        "triage_kind": r.triage_kind,
+        "triage": _load_report(r.triage),   # 复用宽容 JSON 解析(坏数据回 None)
         "reason": r.reason,
         "evidence_url": r.evidence_url,
         "report": _load_report(r.report),
@@ -622,6 +624,32 @@ def report(
 # 机器判定可能误判（如误报 blocked、把真 bug 判过），人工复核后可修正结果。三态 pass/fail/blocked，
 # reason 打「[人工纠偏]」前缀留痕，并同步 checklist_item.exec_status（与 runner 回写同一套映射）。
 _CORRECT_MARK = "[人工纠偏]"
+
+
+# ---- ⑦ AI 失败归因(用户 JWT,人工触发)----
+@router.post("/{run_id}/triage")
+def triage(
+    run_id: int,
+    provider: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """对一条失败/阻塞的执行做 AI 根因归因(selector/environment/assertion/bug)。
+
+    同步调用生成引擎(秒级~分钟级),前端需放长超时。结果落 exec_run.triage_kind/triage;
+    失败不覆盖已有归因,可重试。归因是参考不是裁决——改判仍走人工纠偏。
+    """
+    r = db.get(ExecRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    if r.status not in (ExecStatus.failed, ExecStatus.blocked):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="只能归因失败/阻塞的执行")
+    from app.services.exec_triage import triage_run
+    res = triage_run(db, r, provider)
+    if res.get("error"):
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"归因失败:{res['error']}")
+    return ok({"run_id": r.id, **res})
 
 
 @router.patch("/{run_id}/verdict")

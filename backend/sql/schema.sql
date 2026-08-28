@@ -285,6 +285,8 @@ CREATE TABLE `exec_run` (
   `retry_of` BIGINT DEFAULT NULL,
   `attempt` INT NOT NULL DEFAULT 1,
   `flaky` TINYINT(1) NOT NULL DEFAULT 0,
+  `triage_kind` VARCHAR(16) DEFAULT NULL,
+  `triage` TEXT,
   `verdict` VARCHAR(16) DEFAULT NULL,
   `fail_kind` VARCHAR(16) DEFAULT NULL,
   `reason` TEXT,

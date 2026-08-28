@@ -65,6 +65,11 @@
             </el-table-column>
             <el-table-column label="原因/结论" min-width="240">
               <template #default="{ row }">
+                <el-tooltip v-if="row.triage_kind" placement="top" :content="triageTip(row)">
+                  <el-tag :type="TRIAGE_TYPE[row.triage_kind] || 'info'" size="small" effect="dark" class="triage-tag">
+                    归因:{{ TRIAGE_LABEL[row.triage_kind] || row.triage_kind }}
+                  </el-tag>
+                </el-tooltip>
                 <span class="reason">{{ row.reason || '—' }}</span>
                 <el-link v-if="isBlocked(row)" type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
               </template>
@@ -82,9 +87,13 @@
             <el-table-column label="执行时间" width="150">
               <template #default="{ row }">{{ fmtTime(row.updated_at || row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="纠偏" width="70" align="center" fixed="right">
+            <el-table-column label="操作" width="120" align="center" fixed="right">
               <template #default="{ row }">
                 <el-link type="primary" @click="openCorrect(row)">纠偏</el-link>
+                <el-link v-if="canTriage(row)" type="warning" class="triage-btn"
+                         :class="{ busy: row._triaging }" @click="doTriage(row)">
+                  {{ row._triaging ? '归因中…' : 'AI归因' }}
+                </el-link>
               </template>
             </el-table-column>
           </el-table>
@@ -189,7 +198,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
-import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript } from '@/api'
+import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, triageExecRun } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -200,6 +209,9 @@ const route = useRoute()
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }
 const STATUS_LABEL = { pending: '待执行', running: '执行中', passed: '通过', failed: '失败', blocked: '选择器阻塞' }
+// AI 失败归因四类(对标 ReportPortal 分类,映射本仓库口径)
+const TRIAGE_LABEL = { selector: '选择器', environment: '环境', assertion: '用例过时', bug: '疑似缺陷' }
+const TRIAGE_TYPE = { selector: 'warning', environment: 'info', assertion: 'primary', bug: 'danger' }
 
 const projects = ref([])
 const pid = ref(null)
@@ -305,6 +317,26 @@ function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—
 // 三态结果:pass 通过 / fail 功能失败(真 bug) / blocked 选择器阻塞(不计功能失败率)。
 // 后端把 selector 阻塞的 verdict 直接写成 blocked;老数据可能仅 status=blocked,一并识别。
 function isBlocked(row) { return row.verdict === 'blocked' || row.status === 'blocked' }
+
+// ---- AI 失败归因:失败/阻塞可归因;结果落行上(徽标+悬浮详情),失败可重试 ----
+function canTriage(row) { return row.status === 'failed' || isBlocked(row) }
+function triageTip(row) {
+  const t = row.triage || {}
+  const conf = t.confidence != null ? ` 置信 ${Math.round(t.confidence * 100)}%` : ''
+  return `${t.reason || ''}${conf}${t.suggestion ? `\n建议:${t.suggestion}` : ''}` || '无详情'
+}
+async function doTriage(row) {
+  if (row._triaging) return
+  row._triaging = true
+  try {
+    const res = await triageExecRun(row.run_id)
+    row.triage_kind = res.kind
+    row.triage = res
+    ElMessage.success(`归因完成:${TRIAGE_LABEL[res.kind] || res.kind}(置信 ${Math.round((res.confidence || 0) * 100)}%)`)
+  } catch { /* 拦截器已提示 */ } finally {
+    row._triaging = false
+  }
+}
 function resultType(row) {
   if (row.verdict === 'pass') return 'success'
   if (isBlocked(row)) return 'warning'
@@ -395,6 +427,9 @@ async function saveCorrect() {
 .batch-stat .flk { color: #b88230; }
 .chain-tag { margin-left: 4px; }
 .fix-link { margin-left: 10px; font-size: 12px; }
+.triage-tag { margin-right: 6px; }
+.triage-btn { margin-left: 8px; font-size: 12px; }
+.triage-btn.busy { pointer-events: none; opacity: .6; }
 .correct-case { margin: 0 0 6px; }
 .correct-cur { margin: 0 0 12px; color: #5a6b7b; font-size: 13px; }
 .correct-hint { color: #90a4ae; font-size: 12px; }
