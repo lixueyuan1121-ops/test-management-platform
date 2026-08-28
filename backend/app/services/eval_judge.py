@@ -133,11 +133,12 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None) -> dict:
         verdict = EvalVerdict.error.value
 
     run.verdict = verdict
+    run.score = dims.get("score")
     run.verdict_dims = json.dumps(dims, ensure_ascii=False)
     run.verdict_reason = dims.get("summary") or ""
     run.judged_by = provider_id
     run.is_abnormal = (verdict == EvalVerdict.failed.value)
     run.status = EvalRunStatus.judged
     db.commit()
-    return {"verdict": verdict, "verdict_dims": dims,
+    return {"verdict": verdict, "verdict_dims": dims, "score": run.score,
             "is_abnormal": run.is_abnormal, "judged_by": provider_id}

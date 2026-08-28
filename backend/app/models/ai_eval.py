@@ -90,6 +90,8 @@ class EvalRun(Base):
     tokens: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 本次 tokens（仅记录）
     # —— 大模型判定 ——
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)  # EvalVerdict 值；NULL=未判定
+    # 总体评分 1-5(判定引擎给,独立于 pass/fail;NULL=未评/老数据)。均分用于 A/B 对比与趋势。
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     verdict_dims: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: 三维结论（见 spec §5.5）
     verdict_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 判定理由汇总
     judged_by: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 判定用的引擎

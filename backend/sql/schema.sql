@@ -351,6 +351,7 @@ CREATE TABLE `eval_run` (
   `bean_cost` VARCHAR(32) NULL,
   `tokens` VARCHAR(32) NULL,
   `verdict` VARCHAR(16) NULL,
+  `score` INT NULL,
   `verdict_dims` TEXT NULL,
   `verdict_reason` TEXT NULL,
   `judged_by` VARCHAR(16) NULL,

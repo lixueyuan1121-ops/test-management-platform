@@ -187,6 +187,7 @@
         <div class="d-meta">
           <el-tag :type="TS_TYPE[detail.task.status] || 'info'" effect="plain">{{ TS_LABEL[detail.task.status] || detail.task.status }}</el-tag>
           <span v-if="detail.task.last_batch_id" class="mono">批次 {{ detail.task.last_batch_id }}</span>
+          <span v-if="avgScore" class="avg-score">均分 {{ avgScore }}/5</span>
           <span v-if="fmtDialogOptions(detail.task.dialog_options)" class="opts">{{ fmtDialogOptions(detail.task.dialog_options) }}</span>
           <span class="muted">{{ detail.task.description || '' }}</span>
           <div class="d-actions">
@@ -206,6 +207,9 @@
           <span class="cmp-seg cmp-bw">B 胜 {{ compareInfo.bWin }}</span>
           <span class="cmp-seg">平 {{ compareInfo.tie }}</span>
           <span class="cmp-seg cmp-und">未决 {{ compareInfo.undecided }}</span>
+          <span v-if="compareInfo.aAvg || compareInfo.bAvg" class="cmp-seg">
+            均分 <span class="cmp-a">A {{ compareInfo.aAvg ?? '—' }}</span> / <span class="cmp-bw">B {{ compareInfo.bAvg ?? '—' }}</span>
+          </span>
           <span class="cmp-total">共 {{ compareInfo.total }} 对（判定后自动更新）</span>
         </div>
 
@@ -244,6 +248,12 @@
           <el-table-column label="判定" width="88" align="center">
             <template #default="{ row }">
               <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ VERDICT_LABEL[row.verdict] || row.verdict }}</el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="评分" width="64" align="center">
+            <template #default="{ row }">
+              <span v-if="rowScore(row) != null" class="score" :class="scoreClass(rowScore(row))">{{ rowScore(row) }}</span>
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
@@ -350,18 +360,33 @@ const summaryStream = ref('')
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 // 详情表:多轮会话聚合成组行树形展开(公共逻辑见 utils/evalRunGroups),单轮原样
 const groupedDetailRuns = computed(() => groupEvalRuns(detail.value?.runs || []))
+// 评分(1-5,判定引擎给):组行取各轮均分(1 位小数),真实行取 score;无评分 null
+const rowScore = (row) => {
+  if (!row.isGroup) return row.score ?? null
+  const ss = (row.children || []).map((t) => t.score).filter((s) => s != null)
+  return ss.length ? +(ss.reduce((a, b) => a + b, 0) / ss.length).toFixed(1) : null
+}
+const scoreClass = (s) => (s >= 4 ? 'score-hi' : s >= 3 ? 'score-mid' : 'score-lo')
+// 批次平均分(已评分 run 的均值;A/B 对比时分组各算)
+const avgScore = computed(() => {
+  const ss = (detail.value?.runs || []).map((r) => r.score).filter((s) => s != null)
+  return ss.length ? (ss.reduce((a, b) => a + b, 0) / ss.length).toFixed(1) : null
+})
 // A/B 对比批次统计:按 eval_query_id 配对(多轮逐轮配对),pass/fail 定胜负——
-// A pass B fail 记 A 胜,反之 B 胜,同 pass/同 fail 记平,任一侧无判定或 error 记未决
+// A pass B fail 记 A 胜,反之 B 胜,同 pass/同 fail 记平,任一侧无判定或 error 记未决;
+// 另算 A/B 各自均分(评分比 pass/fail 更细腻,平局多时靠它分高下)
 const compareInfo = computed(() => {
   const runs = detail.value?.runs || []
   if (!runs.some((r) => r.payload?.compare_group)) return null
   const byQuery = new Map()
+  const scores = { A: [], B: [] }
   for (const r of runs) {
     const g = r.payload?.compare_group
     if (!g) continue
     const k = r.eval_query_id ?? r.payload?.eval_query_id ?? r.run_id
     if (!byQuery.has(k)) byQuery.set(k, {})
     byQuery.get(k)[g] = r
+    if (r.score != null && scores[g]) scores[g].push(r.score)
   }
   let aWin = 0, bWin = 0, tie = 0, undecided = 0
   for (const pair of byQuery.values()) {
@@ -371,7 +396,8 @@ const compareInfo = computed(() => {
     else if ((va === 'pass' || va === 'fail') && va === vb) tie++
     else undecided++
   }
-  return { aWin, bWin, tie, undecided, total: byQuery.size }
+  const avg = (arr) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null
+  return { aWin, bWin, tie, undecided, total: byQuery.size, aAvg: avg(scores.A), bAvg: avg(scores.B) }
 })
 const judgeableRuns = computed(() =>
   (detail.value?.runs || []).filter((r) => r.status === 'done' || r.status === 'judged'))
@@ -584,6 +610,12 @@ function genSummary() {
 .cmp-bw { color: #d98b00; }
 .cmp-und { color: #a0a8b3; }
 .cmp-total { margin-left: auto; font-size: 12px; color: #8a94a6; }
+/* 评分(1-5) */
+.avg-score { font-weight: 700; font-size: 13px; color: #d98b00; }
+.score { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 14px; }
+.score-hi { color: #00b386; }
+.score-mid { color: #d98b00; }
+.score-lo { color: #e5565f; }
 /* 用例选择 */
 .qpick { width: 100%; }
 .qpick-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; color: #5a6b7b; }

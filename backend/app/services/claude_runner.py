@@ -982,11 +982,15 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
     )
     dim_json_line = '\n  "dimension_ok": {"pass": true/false, "note": "主考维度达标情况"},' if dim_key else ""
 
-    return f"""判定下面这次 AI 对话的质量。按维度各给 pass(true/false)与 note(简短理由)。
+    return f"""判定下面这次 AI 对话的质量。按维度各给 pass(true/false)与 note(简短理由),并给总体评分 score。
 
 维度:
 {dim_lines}
 {focus_block}
+评分标准(score,1-5 整数,衡量整体完成质量,与各维 pass/fail 独立打分):
+5=完美达成期望,无可挑剔;4=达成期望,有小瑕疵;3=基本达成,有明显不足;
+2=大部分未达成,仅局部可用;1=完全失败/答非所问/未产出。
+
 判定规则(重要,避免误判):
 1. 文本里出现「【评测系统截断:…】」或「…(已截断)」字样,是评测系统为控制篇幅做的展示截断,**不是**被测模型输出中断;不得据此判"回答不完整/被截断/论证链缺失"。
 2. 【思考过程】为空 ≠ 没有思考:轨迹经旁路抓取,思考流可能没抓到(ws_captured=false 时尤甚)。思考为空时:若最终答案结构清晰、结论合理、体现了推理,thinking_complete 判 true 并在 note 注明"思考未捕获,按答案质量判定";仅当题目明确要求展示推理过程、且答案本身也无推理痕迹或存在结论跳跃错误时才判 false。
@@ -1015,6 +1019,7 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
   "thinking_complete": {{"pass": true/false, "note": "..."}},
   "tools_ok": {{"pass": true/false, "note": "..."}},
   "artifact_expected": {{"pass": true/false, "note": "..."}},{dim_json_line}
+  "score": 1-5 的整数,
   "summary": "总体判定理由(简短)"
 }}"""
 
@@ -1050,6 +1055,12 @@ def parse_eval_verdict(raw: str) -> dict:
         v = obj.get(k)
         if isinstance(v, dict) and "pass" in v:
             out[k] = _norm_dim(v)
+    # 总体评分(1-5 整数;缺失/非法 → None,老引擎输出兼容)。字符串数字也容忍("4"→4)。
+    try:
+        sc = int(obj.get("score"))
+        out["score"] = sc if 1 <= sc <= 5 else None
+    except (TypeError, ValueError):
+        out["score"] = None
     out["summary"] = str(obj.get("summary") or "").strip()
     return out
 
@@ -1073,9 +1084,11 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
     for i, it in enumerate(items, 1):
         dim = it.get("dimension") or "未标注"
         verdict = it.get("verdict") or "未判定"
+        sc = it.get("score")
         lines.append(
             f"### 用例{i}:{it.get('title') or ''}\n"
-            f"- 维度:{dim} | 执行:{it.get('status') or ''} | 判定:{verdict}\n"
+            f"- 维度:{dim} | 执行:{it.get('status') or ''} | 判定:{verdict}"
+            + (f" | 评分:{sc}/5" if sc else "") + "\n"
             f"- 提问:{_clip_keep_ends(sanitize_dialog_text(it.get('prompt')), 600)}\n"
             f"- 期望:{_clip_keep_ends(sanitize_dialog_text(it.get('expected')), 400) or '(未填)'}\n"
             f"- 判定理由:{_clip_keep_ends(sanitize_dialog_text(it.get('verdict_reason')), 500) or '(无)'}\n"

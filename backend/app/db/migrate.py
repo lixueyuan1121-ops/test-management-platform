@@ -429,6 +429,11 @@ def ensure_eval_task_tables() -> None:
     if tcols and "dialog_options" not in tcols:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_task ADD COLUMN dialog_options TEXT NULL"))
+    # eval_run 补 score 列(判定引擎 1-5 总体评分;NULL=未评/老数据)
+    rcols = _columns("eval_run")
+    if rcols and "score" not in rcols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN score INT NULL"))
 
 
 def ensure_platform_columns() -> None:

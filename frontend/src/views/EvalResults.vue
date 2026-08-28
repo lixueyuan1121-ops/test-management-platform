@@ -132,6 +132,12 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="评分" width="60" align="center">
+          <template #default="{ row }">
+            <span v-if="rowScore(row) != null" class="score" :class="scoreClass(rowScore(row))">{{ rowScore(row) }}</span>
+            <span v-else class="dim-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="异常" width="70" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.is_abnormal" type="danger" size="small" effect="dark">异常</el-tag>
@@ -258,6 +264,13 @@ const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query 
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 const dimPass = (row, k) => row.verdict_dims?.[k]?.pass
 const dimNote = (row, k) => row.verdict_dims?.[k]?.note
+// 评分(1-5,判定引擎给):组行取各轮均分(1 位小数),真实行取 score
+const rowScore = (row) => {
+  if (!row.isGroup) return row.score ?? null
+  const ss = (row.children || []).map((t) => t.score).filter((s) => s != null)
+  return ss.length ? +(ss.reduce((a, b) => a + b, 0) / ss.length).toFixed(1) : null
+}
+const scoreClass = (s) => (s >= 4 ? 'score-hi' : s >= 3 ? 'score-mid' : 'score-lo')
 // 执行完成（done）或已判过（judged/有 verdict）才可判/重判；未跑完（pending/running/failed）不可判
 const canJudge = (row) => row.status === 'done' || row.status === 'judged' || !!row.verdict
 
@@ -441,6 +454,10 @@ onBeforeUnmount(() => { if (radarChart) { radarChart.dispose(); radarChart = nul
 .foot-hint { margin-top: 8px; color: #90a4ae; font-size: 12px; }
 .dim-muted { color: #c0c4cc; }
 .turn-tag { margin-right: 6px; }
+.score { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 14px; }
+.score-hi { color: #00b386; }
+.score-mid { color: #d98b00; }
+.score-lo { color: #e5565f; }
 /* 三维展开 */
 .verdict-detail { padding: 8px 16px; background: #fafcfe; }
 .no-dims { padding: 8px 0; }

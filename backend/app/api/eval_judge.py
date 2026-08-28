@@ -33,6 +33,7 @@ def _run_out(r: EvalRun) -> dict:
     return {
         "run_id": r.id, "eval_query_id": r.eval_query_id, "project_id": r.project_id,
         "status": getattr(r.status, "value", r.status), "verdict": r.verdict,
+        "score": r.score,
         "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
         "verdict_reason": r.verdict_reason, "judged_by": r.judged_by,
         "is_abnormal": bool(r.is_abnormal), "share_link": r.share_link, "answer": r.answer,

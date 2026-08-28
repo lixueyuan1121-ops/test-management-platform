@@ -125,6 +125,7 @@ def _to_out(r: EvalRun) -> dict:
         "duration_ms": r.duration_ms,
         # 判定三维/总判定（历史页需在加载时即展示已判过的结果，故一并序列化；判定由 eval_judge 落库）
         "verdict": r.verdict,
+        "score": r.score,
         "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
         "verdict_reason": r.verdict_reason,
         "judged_by": r.judged_by,
