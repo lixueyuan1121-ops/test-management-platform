@@ -80,6 +80,10 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+            <el-select v-model="batchFilter" placeholder="全部批次" size="small" clearable filterable style="width:210px" @change="load">
+              <el-option v-for="b in batchOptions" :key="b.batch_id"
+                :label="`${b.batch_id}${b.task_name ? ' · ' + b.task_name : ''}`" :value="b.batch_id" />
+            </el-select>
             <el-select v-model="verdictFilter" placeholder="判定" size="small" clearable style="width:110px">
               <el-option label="通过" value="pass" />
               <el-option label="不通过" value="fail" />
@@ -330,6 +334,9 @@ const pid = ref(null)
 const rows = ref([])
 const loading = ref(false)
 const verdictFilter = ref(null)
+// 批次筛选(选项复用 trend 批次列表,最新在前);清空=全部批次
+const batchFilter = ref(null)
+const batchOptions = computed(() => [...trend.value].reverse())
 const expanded = ref([])
 const judgingIds = ref(new Set())
 const batchJudging = ref(false)
@@ -413,6 +420,7 @@ onMounted(async () => {
 
 async function onProjectChange() {
   verdictFilter.value = null
+  batchFilter.value = null
   expanded.value = []
   if (!pid.value) { rows.value = []; multicaPending.value = 0; return }
   setLastProjectId(pid.value)
@@ -426,7 +434,7 @@ async function load() {
   if (!pid.value) return
   loading.value = true
   try {
-    rows.value = await listEvalRuns(pid.value)
+    rows.value = await listEvalRuns(pid.value, batchFilter.value || undefined)
     refreshMulticaPending()
   } finally { loading.value = false }
 }

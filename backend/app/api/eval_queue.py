@@ -315,10 +315,13 @@ def batch_trend(project_id: int = Query(...), limit: int = Query(30, le=100),
 
 @router.get("/history")
 def list_history(project_id: int = Query(...), limit: int = Query(100, le=500),
+                 batch_id: str | None = Query(None),
                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
-    rows = (db.query(EvalRun).filter(EvalRun.project_id == project_id)
-            .order_by(EvalRun.id.desc()).limit(limit).all())
+    q = db.query(EvalRun).filter(EvalRun.project_id == project_id)
+    if batch_id:
+        q = q.filter(EvalRun.batch_id == batch_id)
+    rows = q.order_by(EvalRun.id.desc()).limit(limit).all()
     # 维度:优先 payload 快照(下发那一刻);老 run 的快照没有 dimension → 批量回查 eval_query 补上
     out = [_to_out(r) for r in rows]
     need = [(i, rows[i].eval_query_id) for i, d in enumerate(out)
