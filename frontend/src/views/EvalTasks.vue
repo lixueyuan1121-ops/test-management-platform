@@ -152,8 +152,28 @@
             <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
           </el-select>
         </el-form-item>
+        <el-form-item label="A/B 对比">
+          <el-switch v-model="runForm.compare" />
+          <span class="cmp-hint">开启后每道题按 A/B 两套选项各跑一次，结果页出胜率</span>
+        </el-form-item>
+        <template v-if="runForm.compare">
+          <el-divider content-position="left"><span class="cmp-b-title">B 组选项（上方为 A 组）</span></el-divider>
+          <el-form-item label="对话模式">
+            <el-select v-model="runForm.b_chat_mode" clearable style="width:100%" placeholder="留空=客户端默认">
+              <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="模型">
+            <el-input v-model="runForm.b_model" clearable :placeholder="MODEL_PLACEHOLDER" />
+          </el-form-item>
+          <el-form-item label="思考深度">
+            <el-select v-model="runForm.b_thinking_depth" clearable style="width:100%" placeholder="留空=客户端默认">
+              <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
+            </el-select>
+          </el-form-item>
+        </template>
         <el-alert type="info" :closable="false" show-icon
-          :title="`将下发 ${runTask?.query_ids?.length || 0} 条用例到执行机;重复执行会生成新批次,综合评价需重新生成`" />
+          :title="`将下发 ${(runTask?.query_ids?.length || 0) * (runForm.compare ? 2 : 1)} 条用例到执行机${runForm.compare ? '(A/B 各一遍)' : ''};重复执行会生成新批次,综合评价需重新生成`" />
       </el-form>
       <template #footer>
         <el-button @click="runVisible = false">取消</el-button>
@@ -180,12 +200,27 @@
           </div>
         </div>
 
+        <!-- A/B 对比批次:按题配对的胜率统计(pass/fail 对比;任一侧未判定/error 计未决) -->
+        <div v-if="compareInfo" class="cmp-bar">
+          <span class="cmp-seg cmp-a">A 胜 {{ compareInfo.aWin }}</span>
+          <span class="cmp-seg cmp-bw">B 胜 {{ compareInfo.bWin }}</span>
+          <span class="cmp-seg">平 {{ compareInfo.tie }}</span>
+          <span class="cmp-seg cmp-und">未决 {{ compareInfo.undecided }}</span>
+          <span class="cmp-total">共 {{ compareInfo.total }} 对（判定后自动更新）</span>
+        </div>
+
         <el-table :data="groupedDetailRuns" size="small" border stripe class="d-table"
           row-key="run_id" :tree-props="{ children: 'children' }">
           <el-table-column label="#" width="80" align="center">
             <template #default="{ row }">
               <span v-if="row.isGroup" class="muted">会话组</span>
               <span v-else>{{ row.run_id }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="compareInfo" label="组" width="52" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.payload?.compare_group" size="small" effect="dark"
+                :type="row.payload.compare_group === 'A' ? 'primary' : 'warning'">{{ row.payload.compare_group }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="用例" min-width="180" show-overflow-tooltip>
@@ -299,7 +334,8 @@ const customSaving = ref(false)
 // 执行
 const runVisible = ref(false)
 const runTask = ref(null)
-const runForm = ref({ runner: '', target_device: '', chat_mode: '', model: '', thinking_depth: '' })
+const runForm = ref({ runner: '', target_device: '', chat_mode: '', model: '', thinking_depth: '',
+  compare: false, b_chat_mode: '', b_model: '', b_thinking_depth: '' })
 const devices = ref([])
 const clientDevices = ref([])
 const running = ref(false)
@@ -314,6 +350,29 @@ const summaryStream = ref('')
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 // 详情表:多轮会话聚合成组行树形展开(公共逻辑见 utils/evalRunGroups),单轮原样
 const groupedDetailRuns = computed(() => groupEvalRuns(detail.value?.runs || []))
+// A/B 对比批次统计:按 eval_query_id 配对(多轮逐轮配对),pass/fail 定胜负——
+// A pass B fail 记 A 胜,反之 B 胜,同 pass/同 fail 记平,任一侧无判定或 error 记未决
+const compareInfo = computed(() => {
+  const runs = detail.value?.runs || []
+  if (!runs.some((r) => r.payload?.compare_group)) return null
+  const byQuery = new Map()
+  for (const r of runs) {
+    const g = r.payload?.compare_group
+    if (!g) continue
+    const k = r.eval_query_id ?? r.payload?.eval_query_id ?? r.run_id
+    if (!byQuery.has(k)) byQuery.set(k, {})
+    byQuery.get(k)[g] = r
+  }
+  let aWin = 0, bWin = 0, tie = 0, undecided = 0
+  for (const pair of byQuery.values()) {
+    const va = pair.A?.verdict, vb = pair.B?.verdict
+    if (va === 'pass' && vb === 'fail') aWin++
+    else if (va === 'fail' && vb === 'pass') bWin++
+    else if ((va === 'pass' || va === 'fail') && va === vb) tie++
+    else undecided++
+  }
+  return { aWin, bWin, tie, undecided, total: byQuery.size }
+})
 const judgeableRuns = computed(() =>
   (detail.value?.runs || []).filter((r) => r.status === 'done' || r.status === 'judged'))
 const canSummarize = computed(() => {
@@ -400,11 +459,16 @@ async function removeTask(row) {
 async function openRun(row) {
   if (!row.query_ids.length) { ElMessage.warning('任务内还没有用例，先编辑添加'); return }
   runTask.value = row
-  // 回填该任务最近一次执行的对话选项(没有则清空=默认)
+  // 回填该任务最近一次执行的对话选项(没有则清空=默认);compareB 键=上次是 A/B 对比执行
   const d = row.dialog_options || {}
   runForm.value.chat_mode = d.chatMode || ''
   runForm.value.model = d.model || ''
   runForm.value.thinking_depth = d.thinkingDepth || ''
+  const b = d.compareB
+  runForm.value.compare = b !== undefined
+  runForm.value.b_chat_mode = b?.chatMode || ''
+  runForm.value.b_model = b?.model || ''
+  runForm.value.b_thinking_depth = b?.thinkingDepth || ''
   runVisible.value = true
   if (runForm.value.runner) await loadClientDevices()
 }
@@ -426,6 +490,10 @@ async function doRun() {
       dialog_options: buildDialogOptions({
         chatMode: runForm.value.chat_mode, model: runForm.value.model, thinkingDepth: runForm.value.thinking_depth,
       }),
+      // 对比开关开启才传 B 组(传了即启用对比,B 三项全空 = B 用客户端默认);关闭传 null=单套执行
+      dialog_options_b: runForm.value.compare ? (buildDialogOptions({
+        chatMode: runForm.value.b_chat_mode, model: runForm.value.b_model, thinkingDepth: runForm.value.b_thinking_depth,
+      }) || {}) : null,
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条（批次 ${res.batch_id}）`)
     runVisible.value = false
@@ -507,6 +575,15 @@ function genSummary() {
 .batch { line-height: 1.5; color: #5a6b7b; }
 .opts { color: #5a6b7b; font-size: 12px; }
 .turn-tag { margin-right: 6px; }
+/* A/B 对比 */
+.cmp-hint { margin-left: 10px; font-size: 12px; color: #8a94a6; }
+.cmp-b-title { font-size: 12px; color: #8a94a6; }
+.cmp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #f6f9fc; border: 1px solid #e4ecf4; border-radius: 8px; }
+.cmp-seg { font-weight: 700; font-size: 13px; color: #5a6b7b; }
+.cmp-a { color: #2f7dd1; }
+.cmp-bw { color: #d98b00; }
+.cmp-und { color: #a0a8b3; }
+.cmp-total { margin-left: auto; font-size: 12px; color: #8a94a6; }
 /* 用例选择 */
 .qpick { width: 100%; }
 .qpick-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; color: #5a6b7b; }

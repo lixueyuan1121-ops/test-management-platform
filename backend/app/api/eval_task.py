@@ -175,6 +175,9 @@ class EvalTaskRunIn(BaseModel):
     target_device: str | None = Field(None, max_length=64)
     # 本次执行统一指定的对话选项 {model?,chatMode?,thinkingDepth?}；None/空=客户端默认
     dialog_options: dict | None = None
+    # A/B 对比执行:非空时每道题下发两条 run(A=dialog_options,B=本组),结果页配对出胜率。
+    # 对齐主流测评平台的双配置对战(如 LMArena 双模型盲比),用于回答「哪套配置/模型更强」。
+    dialog_options_b: dict | None = None
 
 
 @router.post("/{task_id}/run")
@@ -199,23 +202,38 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     batch_id = _new_batch_id()
     created = []
     opts = _clean_dialog_options(body.dialog_options)
+    opts_b = _clean_dialog_options(body.dialog_options_b)
+    # 对比模式(dialog_options_b 传了即启用,B 三项全空=B 用客户端默认也合法):每题下发 A/B 两条 run。
+    # payload 标 compare_group;多轮 conversation_group 加 #A/#B 后缀——runner 按组名把多轮连发进
+    # 同一对话,不区分则 A/B 两套会混进一个会话串上下文。
+    variants = [("A", opts), ("B", opts_b)] if body.dialog_options_b is not None else [(None, opts)]
     for qid in qids:
         q = found[qid]
-        row = EvalRun(
-            eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
-            eval_task_id=task.id,
-            runner=body.runner, target_engine=body.target_engine,
-            target_device=body.target_device,
-            device_kind=EvalDeviceKind.desktop,
-            status=EvalRunStatus.pending,
-            payload=json.dumps(_payload_of(q, opts), ensure_ascii=False),
-            enqueued_by=user.id,
-        )
-        db.add(row); db.flush(); created.append(row.id)
+        for tag, vopts in variants:
+            payload = _payload_of(q, vopts)
+            if tag:
+                payload["compare_group"] = tag
+                if payload.get("conversation_group"):
+                    payload["conversation_group"] = f"{payload['conversation_group']}#{tag}"
+            row = EvalRun(
+                eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
+                eval_task_id=task.id,
+                runner=body.runner, target_engine=body.target_engine,
+                target_device=body.target_device,
+                device_kind=EvalDeviceKind.desktop,
+                status=EvalRunStatus.pending,
+                payload=json.dumps(payload, ensure_ascii=False),
+                enqueued_by=user.id,
+            )
+            db.add(row); db.flush(); created.append(row.id)
     task.last_batch_id = batch_id
     task.status = EvalTaskStatus.running
-    # 记录本次执行的对话选项(列表展示+下次执行回填);没指定则清空=默认,始终反映最近一次执行
-    task.dialog_options = json.dumps(opts, ensure_ascii=False) if opts else None
+    # 记录本次执行的对话选项(列表展示+下次执行回填);对比模式把 B 组挂在 compareB 键下。
+    # 没指定则清空=默认,始终反映最近一次执行
+    stored = dict(opts)
+    if body.dialog_options_b is not None:
+        stored["compareB"] = opts_b
+    task.dialog_options = json.dumps(stored, ensure_ascii=False) if stored else None
     # 换批执行后旧综合评价作废(针对旧批次)
     task.summary_status = None
     db.commit()
@@ -331,8 +349,9 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
     for r in runs:
         payload = json.loads(r.payload) if r.payload else {}
         q = qmap.get(r.eval_query_id)
+        cg = payload.get("compare_group")  # A/B 对比批次:标题拼组名,综合评价可按组对比总结
         items.append({
-            "title": payload.get("title") or (q.title if q else f"run#{r.id}"),
+            "title": (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
             "dimension": payload.get("dimension") or (q.dimension if q else None),
             "prompt": payload.get("prompt") or (q.prompt if q else ""),
             "expected": (q.expected if q else "") or "",

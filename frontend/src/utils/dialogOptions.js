@@ -26,11 +26,16 @@ export function buildDialogOptions({ chatMode, model, thinkingDepth }) {
 }
 
 // 紧凑展示:「计划模式 · GLM-5.2 · 深思:高」;空/未指定返回 ''(由调用方显示"默认")
+// A/B 对比执行(带 compareB 键)显示「A组 vs B组」,任一组全默认显示"默认"
 export function fmtDialogOptions(opts) {
   if (!opts || typeof opts !== 'object') return ''
-  const parts = []
-  if (opts.chatMode) parts.push(opts.chatMode)
-  if (opts.model) parts.push(opts.model)
-  if (opts.thinkingDepth) parts.push(`深思:${opts.thinkingDepth}`)
-  return parts.join(' · ')
+  const one = (o) => {
+    const parts = []
+    if (o?.chatMode) parts.push(o.chatMode)
+    if (o?.model) parts.push(o.model)
+    if (o?.thinkingDepth) parts.push(`深思:${o.thinkingDepth}`)
+    return parts.join(' · ')
+  }
+  if ('compareB' in opts) return `${one(opts) || '默认'} vs ${one(opts.compareB) || '默认'}`
+  return one(opts)
 }
