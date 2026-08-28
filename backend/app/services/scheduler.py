@@ -269,6 +269,23 @@ def sync_eval_task_job(task_id: int, cron: str | None, enabled: bool):
     return None
 
 
+def reassign_stranded_pending() -> None:
+    """周期改派:派给离线设备的 pending 改派到同平台在线且负载最小的设备(建议项⑩)。"""
+    from app.db.session import SessionLocal
+    from app.services.dispatcher import reassign_stranded_runs
+
+    db = SessionLocal()
+    try:
+        moved = reassign_stranded_runs(db)
+        if moved:
+            logger.info("设备池自动改派 %d 条 pending", moved)
+    except Exception:
+        logger.exception("设备池自动改派失败")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def check_devices_offline() -> None:
     """执行机离线巡检:有 pending 排队但设备超时未心跳 → 飞书告警。
 
@@ -373,6 +390,11 @@ def start_scheduler() -> None:
     # 固定周期 job:设备离线巡检(每 5 分钟;pending 堆积但设备掉线才发告警)
     _scheduler.add_job(
         check_devices_offline, trigger=IntervalTrigger(minutes=5), id="device-offline-check",
+        replace_existing=True, misfire_grace_time=180,
+    )
+    # 固定周期 job:离线设备 pending 自动改派(每 5 分钟,与离线巡检同频;先改派后告警减少误报)
+    _scheduler.add_job(
+        reassign_stranded_pending, trigger=IntervalTrigger(minutes=5), id="pending-reassign",
         replace_existing=True, misfire_grace_time=180,
     )
     # 配置了提醒时刻才建日报缺交提醒 job(每日固定时刻,如 20:00)

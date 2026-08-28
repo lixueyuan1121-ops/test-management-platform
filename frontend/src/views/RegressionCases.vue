@@ -43,6 +43,7 @@
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <el-select v-model="runner" size="small" style="width:180px"
                    :placeholder="myDevices.length ? '选择我的设备' : '未登记设备'" no-data-text="去『我的设备』注册">
+          <el-option label="⚡ 自动调度(按平台挑在线空闲设备)" value="auto" />
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="success" size="small" :loading="dispatching" @click="runRegression">执行回归</el-button>

@@ -1,0 +1,98 @@
+"""设备池自动调度(建议项⑩):按平台挑在线空闲设备 + 离线设备 pending 改派。
+
+对标 TestRail/LambdaTest 的 agent pool 与 Selenium Grid 的按能力匹配,收敛到
+本仓库的轻形态:runner="auto" 时платform匹配 + 在线优先 + 负载最小;
+调度器周期把「派给离线设备的 pending」改派到同平台在线设备(无可用则原地等待)。
+
+在线判定与设备看板同口径(ONLINE_WINDOW_SEC 内有心跳,或有 running 在跑)。
+"""
+import logging
+from datetime import datetime, timedelta
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.models import ExecRun, RunnerDevice
+
+logger = logging.getLogger("test_platform")
+
+AUTO_RUNNER = "auto"   # enqueue 传这个值即触发自动挑设备
+
+
+def _online_devices(db: Session, platform: str | None = None) -> list[RunnerDevice]:
+    """在线设备列表(与看板同口径:窗口内有心跳,或有 running)。platform 传入时精确匹配。"""
+    from app.api.devices import ONLINE_WINDOW_SEC
+
+    q = db.query(RunnerDevice)
+    if platform:
+        q = q.filter(RunnerDevice.platform == platform)
+    devices = q.all()
+    if not devices:
+        return []
+    cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
+    busy_runners = {r for (r,) in db.query(ExecRun.runner)
+                    .filter(ExecRun.status == "running").distinct().all()}
+    return [d for d in devices
+            if (d.last_seen_at and d.last_seen_at >= cutoff) or d.runner_id in busy_runners]
+
+
+def _load_of(db: Session, runner_ids: list[str]) -> dict[str, int]:
+    """各 runner 的当前负载(pending+running 条数)。"""
+    if not runner_ids:
+        return {}
+    rows = (db.query(ExecRun.runner, func.count(ExecRun.id))
+            .filter(ExecRun.runner.in_(runner_ids),
+                    ExecRun.status.in_(["pending", "running"]))
+            .group_by(ExecRun.runner).all())
+    return {r: n for r, n in rows}
+
+
+def pick_runner(db: Session, platform: str = "web") -> str | None:
+    """自动挑设备:同平台在线设备里选负载(pending+running)最小的;并列取 id 小的(稳定)。
+
+    无在线同平台设备 → None(调用方决定报错还是回落)。
+    """
+    candidates = _online_devices(db, platform or "web")
+    if not candidates:
+        return None
+    load = _load_of(db, [d.runner_id for d in candidates])
+    best = min(candidates, key=lambda d: (load.get(d.runner_id, 0), d.id))
+    return best.runner_id
+
+
+def reassign_stranded_runs(db: Session) -> int:
+    """把「派给离线设备的 pending」改派到同平台在线且负载最小的设备。返回改派条数。
+
+    - 只动 pending(running 表示设备曾活着认领过,可能还会回写,不抢);
+    - 目标设备离线才改派(在线设备的 pending 它自己会拉,不折腾);
+    - 无同平台在线设备 → 原地等待(设备上线自然消化,不盲目改派);
+    - 改派 reason 打标留痕(不覆盖既有 reason——pending 本无 reason)。
+    """
+    pending_runners = [r for (r,) in db.query(ExecRun.runner)
+                       .filter(ExecRun.status == "pending").distinct().all()]
+    if not pending_runners:
+        return 0
+    # 每台待判定 runner:查设备与在线态
+    devices = {d.runner_id: d for d in db.query(RunnerDevice)
+               .filter(RunnerDevice.runner_id.in_(pending_runners)).all()}
+    online_ids = {d.runner_id for d in _online_devices(db)}
+    moved = 0
+    for rid in pending_runners:
+        dev = devices.get(rid)
+        if dev is None:
+            continue   # 未登记设备(共享 token 旧 runner):无平台信息,不动
+        if rid in online_ids:
+            continue   # 目标设备在线:自己会消化
+        target = pick_runner(db, dev.platform)
+        if not target or target == rid:
+            continue   # 无可改派目标:原地等
+        n = (db.query(ExecRun)
+             .filter(ExecRun.runner == rid, ExecRun.status == "pending")
+             .update({"runner": target,
+                      "reason": f"[自动改派] 原设备 {rid} 离线,改派到 {target}"},
+                     synchronize_session=False))
+        moved += n
+        logger.info("自动改派 %d 条 pending: %s → %s(原设备离线)", n, rid, target)
+    if moved:
+        db.commit()
+    return moved

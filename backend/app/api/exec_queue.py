@@ -361,6 +361,25 @@ def _valid_release_id(db: Session, project_id: int, release_id: int | None) -> i
     return release_id
 
 
+def _resolve_runner(db: Session, runner: str, tc_platform: str, cache: dict) -> str:
+    """runner=auto 时按用例平台自动挑在线空闲设备(同平台负载最小);否则原样返回。
+
+    cache 按平台缓存本次 enqueue 的选择(同批同平台落同一设备,避免一批撒到多台);
+    无在线同平台设备 → 400(与其静默积压,不如让用户看到"没有可用设备")。
+    """
+    from app.services.dispatcher import AUTO_RUNNER, pick_runner
+    if runner != AUTO_RUNNER:
+        return runner
+    plat = tc_platform or "web"
+    if plat not in cache:
+        picked = pick_runner(db, plat)
+        if not picked:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                detail=f"自动调度失败:当前无在线的 {plat} 平台执行机")
+        cache[plat] = picked
+    return cache[plat]
+
+
 @router.post("/enqueue")
 def enqueue(
     body: EnqueueExecIn,
@@ -386,6 +405,7 @@ def enqueue(
 
     created = []
     batch_id = _new_batch_id()   # 本次下发一个批次号,该批所有 run 共享(结果页按批汇总)
+    auto_cache: dict = {}        # runner=auto 时按平台缓存所选设备(同批同平台落同一台)
     for cid in ids:
         it = found[cid]
         tc = db.get(TestCase, it.test_case_id)
@@ -395,7 +415,8 @@ def enqueue(
                 detail=f"清单项 {cid} 对应用例为『人工/不可自动化(manual)』,不能下发到执行机",
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
-        _check_platform(body.runner, tc_platform, db, owner_id=user.id)
+        runner = _resolve_runner(db, body.runner, tc_platform, auto_cache)
+        _check_platform(runner, tc_platform, db, owner_id=user.id)
         row = ExecRun(
             checklist_item_id=it.id,
             test_case_id=it.test_case_id,
@@ -403,7 +424,7 @@ def enqueue(
             release_id=release_id,
             project_id=it.project_id,
             batch_id=batch_id,
-            runner=body.runner,
+            runner=runner,
             kind=_kind_of(tc),
             status=ExecStatus.pending,
             payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
@@ -413,7 +434,8 @@ def enqueue(
         db.flush()
         created.append(row.id)
     db.commit()
-    return ok({"run_ids": created, "batch_id": batch_id})
+    return ok({"run_ids": created, "batch_id": batch_id,
+               "runner": auto_cache or body.runner})
 
 
 @router.post("/enqueue-cases")
@@ -433,6 +455,8 @@ def enqueue_cases(
     ids = list(dict.fromkeys(body.test_case_ids))  # 去重保序
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
     found = {c.id: c for c in cases}
+    auto_cache: dict = {}        # runner=auto 时按平台缓存所选设备(同批同平台落同一台)
+    resolved: dict[int, str] = {}   # cid → 实际 runner(auto 解析后)
     for cid in ids:
         tc = found.get(cid)
         if tc is None:
@@ -445,7 +469,9 @@ def enqueue_cases(
                 detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
-        _check_platform(body.runner, tc_platform, db, owner_id=user.id)
+        runner = _resolve_runner(db, body.runner, tc_platform, auto_cache)
+        _check_platform(runner, tc_platform, db, owner_id=user.id)
+        resolved[cid] = runner
 
     created = []
     batch_id = _new_batch_id()   # 回归批次号,该批所有 run 共享(结果页按批汇总)
@@ -458,7 +484,7 @@ def enqueue_cases(
             release_id=release_id,
             project_id=tc.project_id,
             batch_id=batch_id,
-            runner=body.runner,
+            runner=resolved[cid],
             kind=_kind_of(tc),
             status=ExecStatus.pending,
             payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
@@ -468,7 +494,8 @@ def enqueue_cases(
         db.flush()
         created.append(row.id)
     db.commit()
-    return ok({"run_ids": created, "batch_id": batch_id})
+    return ok({"run_ids": created, "batch_id": batch_id,
+               "runner": auto_cache or body.runner})
 
 
 # ---- 执行历史查询(用户侧,独立"执行结果"页用)----
