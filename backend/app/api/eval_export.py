@@ -3,6 +3,8 @@
 飞书:导出到用户指定表(eval 平台生成、无飞书来源锚点,故导出非回填原表)。
 multica:推 is_abnormal 且未 pushed 的 run,回写 pushed_multica/multica_ref 防重推。
 """
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -18,10 +20,14 @@ router = APIRouter(prefix="/api/eval-export", tags=["eval-export"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 # 导出飞书的默认列映射(字段→列)。沿用 CLI 五列 + 平台判定列。
+# 2026-08 补列:score 评分 / review 复核标注 / group A-B 组 / dimension 维度(后两列取自 payload 快照)。
 _FEISHU_COL_MAP = {
     "share_link": "C", "artifact_share_link": "D", "reported_duration": "E",
     "bean_cost": "F", "answer": "H", "verdict": "J", "verdict_reason": "K", "is_abnormal": "L",
+    "score": "M", "review": "N", "group": "O", "dimension": "P",
 }
+_REVIEW_LABEL = {"confirmed": "认可判定", "false_positive": "误报(实际通过)",
+                 "false_negative": "漏报(实际有问题)"}
 
 
 def _query_runs(db, project_id, batch_id=None, abnormal_only=False):
@@ -41,11 +47,19 @@ def export_feishu(body: EvalExportFeishuIn, db: Session = Depends(get_db), user:
     runs = _query_runs(db, body.project_id, body.batch_id, body.abnormal_only)
     rows = []
     for r in runs:
+        try:
+            payload = json.loads(r.payload) if r.payload else {}
+        except (ValueError, TypeError):
+            payload = {}
         rows.append({
             "share_link": r.share_link or "", "artifact_share_link": r.artifact_share_link or "",
             "reported_duration": r.reported_duration or "", "bean_cost": r.bean_cost or "",
             "answer": r.answer or "", "verdict": r.verdict or "",
             "verdict_reason": r.verdict_reason or "", "is_abnormal": "是" if r.is_abnormal else "否",
+            "score": str(r.score) if r.score is not None else "",
+            "review": _REVIEW_LABEL.get(r.review_mark) or "",
+            "group": (payload.get("compare_group") or "") if payload else "",
+            "dimension": (payload.get("dimension") or "") if payload else "",
         })
     try:
         n = feishu.write_sheet_rows(body.sheet_url, rows, _FEISHU_COL_MAP, body.start_row)
