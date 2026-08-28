@@ -189,6 +189,21 @@ def ensure_exec_run_report_columns() -> None:
     _ensure_index("exec_run", "idx_execrun_batch", "batch_id")
 
 
+def ensure_exec_run_release_column() -> None:
+    """exec_run 补列 release_id(发版实体关联,老行 NULL=未关联走时间窗口径)。
+
+    两方言通用 ADD COLUMN;不补 FK(MySQL 老库在线加 FK 有锁表风险,应用层已校验存在性,
+    新库由 create_all/schema.sql 建全约束)。幂等:ADD 前先探列。
+    """
+    cols = _columns("exec_run")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "release_id" not in cols:
+            conn.execute(text("ALTER TABLE exec_run ADD COLUMN release_id BIGINT NULL"))
+    _ensure_index("exec_run", "idx_execrun_release", "release_id")
+
+
 def ensure_perf_run_columns() -> None:
     """perf_run 表补列 report_set_id / prompt / signal_seq（如缺失）。
 

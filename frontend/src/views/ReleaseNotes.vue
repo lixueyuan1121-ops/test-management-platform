@@ -36,7 +36,14 @@
               <text x="22" y="26" text-anchor="middle" fill="#fff" font-size="12"
                     font-family="'JetBrains Mono',monospace" font-weight="700">{{ q.pass_rate != null ? Math.round(q.pass_rate) : '--' }}</text>
             </svg>
-            <div class="rq-rl">执行通过率<br/><span class="rq-sub">{{ q.exec_passed }}/{{ q.exec_total }} · {{ q.req_count }} 需求</span></div>
+            <div class="rq-rl">执行通过率
+              <span class="rq-scope" :class="q.exec_scope"
+                    :title="q.exec_scope === 'linked' ? '实体关联:只统计显式挂到本版本的执行(上线checklist下发时选版本)' : '时间窗近似:上版发布日到本版发布日间的未挂接执行'">
+                {{ q.exec_scope === 'linked' ? '实体' : '窗口' }}</span>
+              <br/><span class="rq-sub">{{ q.exec_passed }}/{{ q.exec_total }} · {{ q.req_count }} 需求</span>
+              <span v-if="q.checklist_total" class="rq-sub rq-ck" :class="{ full: q.checklist_passed === q.checklist_total }">
+                · 清单 {{ q.checklist_passed }}/{{ q.checklist_total }}</span>
+            </div>
           </div>
           <div class="rq-ft">
             <span class="rq-bug" :class="{ zero: !q.bugs_found }">{{ q.bugs_found }} bug</span>
@@ -363,6 +370,11 @@ async function onDel(row) {
 .rq-ring { width: 46px; height: 46px; flex: none; }
 .rq-rl { font-size: 11px; color: rgba(255,255,255,.65); line-height: 1.6; }
 .rq-sub { font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,.45); }
+.rq-scope { font-size: 10px; padding: 0 5px; border-radius: 3px; margin-left: 5px; vertical-align: 1px;
+  border: 1px solid rgba(255,255,255,.25); color: rgba(255,255,255,.55); }
+.rq-scope.linked { border-color: rgba(0,229,160,.5); color: #00e5a0; }
+.rq-ck { color: rgba(255,255,255,.6); }
+.rq-ck.full { color: #00e5a0; }
 .rq-ft { display: flex; gap: 10px; margin-top: 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .rq-bug { color: #ff5c6c; }
 .rq-iss { color: #e8a23d; }

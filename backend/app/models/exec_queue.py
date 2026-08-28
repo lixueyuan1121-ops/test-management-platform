@@ -36,6 +36,11 @@ class ExecRun(Base):
     task_id: Mapped[int | None] = mapped_column(
         ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 发版实体关联(可选):下发时显式挂到某次发版 → /releases/quality 优先按实体聚合
+    # (无关联版本回落时间窗近似)。对标 TestRail milestone↔run / Xray execution↔fix version。
+    release_id: Mapped[int | None] = mapped_column(
+        ForeignKey("release_record.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     project_id: Mapped[int] = mapped_column(
         ForeignKey("project.id", ondelete="CASCADE"), index=True
     )

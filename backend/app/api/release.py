@@ -189,10 +189,15 @@ def release_quality(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """版本质量档案:每个版本一张记分卡(窗口=上版发布日到本版发布日]。
+    """版本质量档案:每个版本一张记分卡(实体关联优先,时间窗回落)。
 
-    执行通过率 + 真bug数 + 窗口内仍 open 的遗留问题按严重度 + 红黄绿定级。现算不建表。
-    注意:本静态路由必须注册在 GET /{rid} 之前,否则 "quality" 会被当 rid 解析成 422。
+    执行统计口径分两档:
+    - 该版本有显式关联的 exec_run(release_id 挂接,来自上线 checklist 回归/清单下发时选版本)
+      → **实体级聚合**(exec_scope=linked):只算挂在该版本上的执行,窗口边界错配问题消失。
+    - 无任何关联 run 的老版本/未挂接场景 → 回落**时间窗近似**(exec_scope=window,
+      窗口=上版发布日到本版发布日],与旧口径一致,存量数据不受影响)。
+    真bug数与执行口径同源;遗留问题仍按时间窗(issue 无 release 外键,后续再演进)。
+    现算不建表。注意:本静态路由必须注册在 GET /{rid} 之前,否则 "quality" 被当 rid 解析成 422。
     """
     assert_project_role(db, user, project_id, _ALL_ROLES)
     limit = min(max(limit, 1), 20)
@@ -207,24 +212,67 @@ def release_quality(
         prev = rows[i + 1] if i + 1 < len(rows) else None
         w_to = rel.release_date
         w_from = prev.release_date if prev else (w_to - timedelta(days=14))
-        # 执行统计:窗口 (w_from, w_to]
-        st_rows = (
-            db.query(ExecRun.status, func.count(ExecRun.id))
-            .filter(ExecRun.project_id == project_id,
-                    func.date(ExecRun.created_at) > w_from,
-                    func.date(ExecRun.created_at) <= w_to)
-            .group_by(ExecRun.status).all()
-        )
+        # 实体优先:有挂接 run 就按 release_id 聚合;否则回落时间窗
+        linked_exists = (db.query(ExecRun.id)
+                         .filter(ExecRun.release_id == rel.id).first() is not None)
+        if linked_exists:
+            exec_scope = "linked"
+            st_rows = (
+                db.query(ExecRun.status, func.count(ExecRun.id))
+                .filter(ExecRun.release_id == rel.id)
+                .group_by(ExecRun.status).all()
+            )
+            bugs = (
+                db.query(func.count(ExecRun.id))
+                .filter(ExecRun.release_id == rel.id, ExecRun.fail_kind == "business")
+                .scalar() or 0
+            )
+        else:
+            exec_scope = "window"
+            # 窗口口径只算**未挂接**的 run:显式挂到其它版本的执行不应再被本版窗口重复计入
+            # (存量数据 release_id 全 NULL,行为与旧口径一致)。
+            st_rows = (
+                db.query(ExecRun.status, func.count(ExecRun.id))
+                .filter(ExecRun.project_id == project_id,
+                        ExecRun.release_id.is_(None),
+                        func.date(ExecRun.created_at) > w_from,
+                        func.date(ExecRun.created_at) <= w_to)
+                .group_by(ExecRun.status).all()
+            )
+            bugs = (
+                db.query(func.count(ExecRun.id))
+                .filter(ExecRun.project_id == project_id, ExecRun.fail_kind == "business",
+                        ExecRun.release_id.is_(None),
+                        func.date(ExecRun.created_at) > w_from,
+                        func.date(ExecRun.created_at) <= w_to)
+                .scalar() or 0
+            )
         cnt = {getattr(s, "value", s): n for s, n in st_rows}
         done = cnt.get("passed", 0) + cnt.get("failed", 0) + cnt.get("blocked", 0)
         pass_rate = round(cnt.get("passed", 0) / done * 100, 1) if done else None
-        bugs = (
-            db.query(func.count(ExecRun.id))
-            .filter(ExecRun.project_id == project_id, ExecRun.fail_kind == "business",
-                    func.date(ExecRun.created_at) > w_from,
-                    func.date(ExecRun.created_at) <= w_to)
-            .scalar() or 0
-        )
+        # 上线清单通过率:项目上线 checklist 的每个用例,取该版本口径内(实体挂接或时间窗)
+        # 最近一次执行的结论,passed 数/清单总数。清单为空 → None(卡片不展示该行)。
+        from app.models import ReleaseChecklistItem
+        ck_case_ids = [cid for (cid,) in db.query(ReleaseChecklistItem.test_case_id)
+                       .filter(ReleaseChecklistItem.project_id == project_id).all()]
+        checklist_total = len(ck_case_ids)
+        checklist_passed = None
+        if checklist_total:
+            q = db.query(ExecRun).filter(ExecRun.test_case_id.in_(ck_case_ids))
+            if linked_exists:
+                q = q.filter(ExecRun.release_id == rel.id)
+            else:
+                q = q.filter(ExecRun.project_id == project_id,
+                             ExecRun.release_id.is_(None),
+                             func.date(ExecRun.created_at) > w_from,
+                             func.date(ExecRun.created_at) <= w_to)
+            latest: dict[int, ExecRun] = {}
+            for r in q.order_by(ExecRun.id).all():   # 按 id 升序,后写覆盖 → 留每用例最新一条
+                latest[r.test_case_id] = r
+            checklist_passed = sum(
+                1 for r in latest.values()
+                if (getattr(r.status, "value", r.status)) == "passed"
+            )
         sev_rows = (
             db.query(RemainingIssue.severity, func.count(RemainingIssue.id))
             .filter(RemainingIssue.project_id == project_id,
@@ -248,8 +296,10 @@ def release_quality(
             "release_date": str(rel.release_date),
             "window_from": str(w_from), "window_to": str(w_to),
             "req_count": rel.req_count,
+            "exec_scope": exec_scope,   # linked=实体关联聚合 / window=时间窗近似(旧口径)
             "exec_total": done, "exec_passed": cnt.get("passed", 0),
             "pass_rate": pass_rate, "bugs_found": bugs,
+            "checklist_total": checklist_total, "checklist_passed": checklist_passed,
             "issues_open": issues_open, "grade": grade,
         })
     return ok({"items": items})

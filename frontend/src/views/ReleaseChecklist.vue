@@ -25,9 +25,13 @@
                    :placeholder="myDevices.length ? '选择我的设备' : '未登记设备'" no-data-text="去『我的设备』注册">
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
+        <el-select v-model="releaseId" size="small" style="width:200px" clearable
+                   placeholder="关联发版(可选)" no-data-text="本项目暂无发版记录">
+          <el-option v-for="r in releases" :key="r.id" :label="`${r.version}（${r.release_date}）`" :value="r.id" />
+        </el-select>
         <el-button type="success" size="small" :loading="dispatching" @click="runSelected">执行</el-button>
         <el-button type="danger" size="small" :loading="removing" @click="removeSelected">移出清单</el-button>
-        <span class="sel-hint">执行仅跳过 manual;移出不影响回归用例</span>
+        <span class="sel-hint">执行仅跳过 manual;选了发版则结果计入该版本质量卡(实体级)</span>
       </div>
 
       <el-table :data="rows" v-loading="loading" size="small" border stripe
@@ -66,7 +70,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listReleaseChecklist, removeReleaseChecklist, enqueueCases, listMyDevices } from '@/api'
+import { listReleaseChecklist, removeReleaseChecklist, enqueueCases, listMyDevices, listReleases } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const KIND_TYPE = { gui: 'success', api: 'warning', cli: 'info', e2e: 'primary', manual: 'info' }
@@ -79,6 +83,8 @@ const rows = ref([])
 const selected = ref([])
 const myDevices = ref([])
 const runner = ref(null)
+const releases = ref([])
+const releaseId = ref(null)   // 关联发版(可选):选中则本批执行计入该版本质量卡
 const loading = ref(false)
 const dispatching = ref(false)
 const removing = ref(false)
@@ -86,6 +92,8 @@ const removing = ref(false)
 async function onProjectChange() {
   if (!pid.value) { rows.value = []; return }
   setLastProjectId(pid.value)
+  releaseId.value = null
+  try { releases.value = await listReleases({ project_id: pid.value }) } catch { releases.value = [] }
   await reload()
 }
 
@@ -104,9 +112,10 @@ async function runSelected() {
   const skipped = selected.value.length - items.length
   dispatching.value = true
   try {
-    const res = await enqueueCases(pid.value, runner.value, items.map((r) => r.test_case_id))
+    const res = await enqueueCases(pid.value, runner.value, items.map((r) => r.test_case_id), releaseId.value)
     const n = res?.run_ids?.length || items.length
-    ElMessage.success(`已下发 ${n} 条到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''},执行机跑完自动回写结果`)
+    const relTip = releaseId.value ? '，结果计入所选版本质量卡' : ''
+    ElMessage.success(`已下发 ${n} 条到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''}${relTip}，执行机跑完自动回写结果`)
   } catch { /* 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
@@ -133,7 +142,7 @@ async function removeOne(row) {
 onMounted(async () => {
   try {
     projects.value = await app.fetchProjects()
-    if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await reload() }
+    if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await onProjectChange() }
   } catch { /* ignore */ }
   try { myDevices.value = await listMyDevices() } catch { /* ignore */ }
 })

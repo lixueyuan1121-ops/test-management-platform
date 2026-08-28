@@ -6,10 +6,12 @@ class EnqueueExecIn(BaseModel):
 
     project_id 走体外鉴权（assert_project_role）；checklist_item_ids 里每项都会校验
     存在、属于该项目，然后据其关联 test_case 组装 payload 快照并入队。
+    release_id 可选:显式挂到某次发版记录 → /releases/quality 按实体聚合该批结果。
     """
     project_id: int
     runner: str = Field("mac-01", max_length=64)
     checklist_item_ids: list[int] = Field(..., min_length=1)
+    release_id: int | None = None
 
 
 class EnqueueCasesIn(BaseModel):
@@ -17,10 +19,12 @@ class EnqueueCasesIn(BaseModel):
 
     project_id 走体外鉴权;test_case_ids 每项校验存在、属于该项目、非 manual,
     然后据用例组装 payload 快照入队(ExecRun.checklist_item_id=None,回写不回流清单)。
+    release_id 可选:上线 checklist 回归时挂到目标发版 → 质量卡实体级统计。
     """
     project_id: int
     runner: str = Field("mac-01", max_length=64)
     test_case_ids: list[int] = Field(..., min_length=1)
+    release_id: int | None = None
 
 
 class ExecReportIn(BaseModel):

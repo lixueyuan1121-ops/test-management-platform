@@ -110,9 +110,9 @@ export const listAdoptableCases = (tid) => http.get(`/tasks/${tid}/adoptable-cas
 // 前端只调 enqueue；拉取/认领/回写由 runner 用独立 token 完成。回写后 checklist_item.exec_status 自动更新。
 export const enqueueExec = (project_id, runner, checklistItemIds) =>
   http.post('/exec-queue/enqueue', { project_id, runner, checklist_item_ids: checklistItemIds })
-// 回归执行:直接按用例 id 下发(不依赖任务/采纳,不挂清单项)。
-export const enqueueCases = (project_id, runner, testCaseIds) =>
-  http.post('/exec-queue/enqueue-cases', { project_id, runner, test_case_ids: testCaseIds })
+// 回归执行:直接按用例 id 下发(不依赖任务/采纳,不挂清单项)。release_id 可选:挂到目标发版做实体级质量统计。
+export const enqueueCases = (project_id, runner, testCaseIds, release_id = null) =>
+  http.post('/exec-queue/enqueue-cases', { project_id, runner, test_case_ids: testCaseIds, release_id })
 // 对话测评:下发勾选的 query 到执行机(eval-queue,独立于 exec-queue 功能测试点执行)。
 // payload: { project_id, runner, target_engine:'namiwork', eval_query_ids:[...] } → { run_ids, batch_id }
 export const enqueueEvalQueries = (payload) => http.post('/eval-queue/enqueue', payload)

@@ -186,6 +186,7 @@ def _to_out(r: ExecRun) -> dict:
         "case_id": r.test_case_id,     # 对齐 runner 端字段名 case_id
         "test_case_id": r.test_case_id,
         "task_id": r.task_id,
+        "release_id": r.release_id,
         "project_id": r.project_id,
         "batch_id": r.batch_id,
         "runner": r.runner,
@@ -216,6 +217,17 @@ def _load_report(raw):
 
 
 # ---- ① 前端「发送到本地执行」：把勾选的清单项入队 ----
+def _valid_release_id(db: Session, project_id: int, release_id: int | None) -> int | None:
+    """校验 release_id 归属本项目;不存在/跨项目 → 400(显式挂错版本比静默丢弃更该暴露)。"""
+    if release_id is None:
+        return None
+    from app.models import ReleaseRecord
+    rel = db.get(ReleaseRecord, release_id)
+    if not rel or rel.project_id != project_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="发版记录不存在或不属于该项目")
+    return release_id
+
+
 @router.post("/enqueue")
 def enqueue(
     body: EnqueueExecIn,
@@ -227,6 +239,7 @@ def enqueue(
     整体校验：任一清单项不存在或跨项目 → 400，整批拒绝。
     """
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    release_id = _valid_release_id(db, body.project_id, body.release_id)
 
     ids = list(dict.fromkeys(body.checklist_item_ids))  # 去重保序
     items = db.query(ChecklistItem).filter(ChecklistItem.id.in_(ids)).all()
@@ -254,6 +267,7 @@ def enqueue(
             checklist_item_id=it.id,
             test_case_id=it.test_case_id,
             task_id=it.task_id,
+            release_id=release_id,
             project_id=it.project_id,
             batch_id=batch_id,
             runner=body.runner,
@@ -281,6 +295,7 @@ def enqueue_cases(
     task_id 取用例自带的(可为 None)。整体校验:任一用例不存在/跨项目/为 manual → 400 整批拒绝。
     """
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    release_id = _valid_release_id(db, body.project_id, body.release_id)
 
     ids = list(dict.fromkeys(body.test_case_ids))  # 去重保序
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
@@ -307,6 +322,7 @@ def enqueue_cases(
             checklist_item_id=None,          # 回归执行不挂清单项 → 回写不回流清单
             test_case_id=tc.id,
             task_id=getattr(tc, "task_id", None),
+            release_id=release_id,
             project_id=tc.project_id,
             batch_id=batch_id,
             runner=body.runner,
