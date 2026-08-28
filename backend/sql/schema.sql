@@ -696,3 +696,53 @@ CREATE TABLE `release_checklist_item` (
 -- bcrypt 哈希需由后端生成；这里建议首次启动后端自动种入，而非手写哈希。
 -- 若需手动种入，可执行后端：python -c "from app.core.security import hash_password; print(hash_password('admin123'))"
 -- ============================================================
+
+-- ---------- 测试计划（主用例库可保存集合 + 定时回归，对位 feedback_regression_set 泛化） ----------
+CREATE TABLE `test_plan` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `name` VARCHAR(255) NOT NULL,
+  `description` TEXT,
+  `schedule_cron` VARCHAR(64) DEFAULT NULL,
+  `schedule_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
+  `last_run_at` DATETIME DEFAULT NULL,
+  `next_run_at` DATETIME DEFAULT NULL,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_tplan_project` (`project_id`),
+  CONSTRAINT `fk_tplan_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_tplan_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `test_plan_case` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `plan_id` BIGINT NOT NULL,
+  `case_id` BIGINT NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_test_plan_case` (`plan_id`,`case_id`),
+  KEY `idx_tplancase_plan` (`plan_id`),
+  KEY `idx_tplancase_case` (`case_id`),
+  CONSTRAINT `fk_tplancase_plan` FOREIGN KEY (`plan_id`) REFERENCES `test_plan`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_tplancase_case` FOREIGN KEY (`case_id`) REFERENCES `test_case`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `test_plan_run` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `plan_id` BIGINT DEFAULT NULL,
+  `batch_id` VARCHAR(32) NOT NULL,
+  `trigger` VARCHAR(8) NOT NULL DEFAULT 'manual',
+  `case_count` INT NOT NULL DEFAULT 0,
+  `started_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_tprun_project` (`project_id`),
+  KEY `idx_tprun_plan` (`plan_id`),
+  KEY `idx_tprun_batch` (`batch_id`),
+  CONSTRAINT `fk_tprun_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_tprun_plan` FOREIGN KEY (`plan_id`) REFERENCES `test_plan`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_tprun_user` FOREIGN KEY (`started_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

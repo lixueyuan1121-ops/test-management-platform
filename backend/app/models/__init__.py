@@ -20,6 +20,7 @@ from app.models.feedback import (
     FeedbackImport, FeedbackCase, FeedbackRegressionSet, FeedbackSetCase, FeedbackRun,
 )
 from app.models.release_checklist import ReleaseChecklistItem
+from app.models.test_plan import TestPlan, TestPlanCase, TestPlanRun
 
 __all__ = [
     "User",
@@ -56,4 +57,7 @@ __all__ = [
     "FeedbackSetCase",
     "FeedbackRun",
     "ReleaseChecklistItem",
+    "TestPlan",
+    "TestPlanCase",
+    "TestPlanRun",
 ]

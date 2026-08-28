@@ -1,10 +1,11 @@
-"""反馈测试定时回归调度器（APScheduler 内置）+ exec/eval 超龄收口 + 飞书通知定时 job。
+"""定时回归调度器（APScheduler 内置）+ exec/eval 超龄收口 + 飞书通知定时 job。
 
 BackgroundScheduler + SQLAlchemyJobStore（复用同一 DB，重启不丢 job）。
-每个启用定时的回归集对应一个 job（id=fbset-<set_id>），到点调 _dispatch_cases(trigger=auto)。
+每个启用定时的回归集 / 测试计划对应一个 job（id=fbset-<set_id> / plan-<plan_id>），
+到点调各自的下发函数（feedback 走 _dispatch_cases，plan 走 _dispatch_plan）。
 
 进程模型：平台生产/开发均单进程 uvicorn（start-all.bat 不带 --reload），故调度器只有一个实例，
-不会重复触发。job 用 replace_existing=True 幂等，重启时从 DB 现有 enabled 集重建。
+不会重复触发。job 用 replace_existing=True 幂等，重启时从 DB 现有 enabled 集/计划重建。
 """
 import logging
 from datetime import datetime, timedelta
@@ -27,6 +28,10 @@ _scheduler: BackgroundScheduler | None = None
 
 def _job_id(set_id: int) -> str:
     return f"fbset-{set_id}"
+
+
+def _plan_job_id(plan_id: int) -> str:
+    return f"plan-{plan_id}"
 
 
 def run_regression_job(set_id: int) -> None:
@@ -314,8 +319,36 @@ def check_devices_offline() -> None:
 _OFFLINE_NOTIFIED: set[str] = set()
 
 
+def run_plan_job(plan_id: int) -> None:
+    """到点回调（模块级，供 SQLAlchemyJobStore 序列化）。
+
+    下发计划内**可自动化**用例（跳过 manual） + 更新 last_run_at。
+    """
+    from app.api.test_plan import _auto_case_ids_of_plan, _dispatch_plan
+    from app.db.session import SessionLocal
+    from app.models import TestPlan
+
+    db = SessionLocal()
+    try:
+        p = db.get(TestPlan, plan_id)
+        if not p or not p.schedule_enabled:
+            return
+        case_ids = _auto_case_ids_of_plan(db, plan_id)
+        if not case_ids:
+            logger.warning("定时计划跳过：计划 %s 无可自动化用例", plan_id)
+            return
+        try:
+            _dispatch_plan(db, p, case_ids, p.runner, trigger="auto", started_by=None)
+        except Exception:
+            logger.exception("定时计划下发失败 plan=%s", plan_id)
+            return
+        logger.info("定时计划已触发 plan=%s（%d 用例）", plan_id, len(case_ids))
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
-    """启动调度器 + 从 DB 现有 enabled 集重建 job。startup 调用（幂等）。"""
+    """启动调度器 + 从 DB 现有 enabled 集/计划重建 job。startup 调用（幂等）。"""
     global _scheduler
     if _scheduler is not None:
         return
@@ -324,7 +357,7 @@ def start_scheduler() -> None:
         timezone="Asia/Shanghai",
     )
     _scheduler.start()
-    logger.info("反馈定时调度器已启动")
+    logger.info("定时回归调度器已启动")
 
     # 固定周期 job:自动收口超龄 running 的测评 run(每 30 分钟;replace_existing 幂等,重启不重复)
     _scheduler.add_job(
@@ -354,11 +387,12 @@ def start_scheduler() -> None:
         except (ValueError, IndexError):
             logger.warning("日报提醒时刻格式错误(需 HH:MM): %s", hhmm)
 
-    # 从 DB 重建 job（job store 里可能已有持久化 job；这里以 DB 集状态为准覆盖，避免漂移）
+    # 从 DB 重建 job（job store 里可能已有持久化 job；这里以 DB 集/计划状态为准覆盖，避免漂移）
     from app.db.session import SessionLocal
-    from app.models import FeedbackRegressionSet
+    from app.models import FeedbackRegressionSet, TestPlan
     db = SessionLocal()
     try:
+        # 重建 feedback 定时集
         sets = (db.query(FeedbackRegressionSet)
                 .filter(FeedbackRegressionSet.schedule_enabled.is_(True),
                         FeedbackRegressionSet.schedule_cron.isnot(None))
@@ -378,6 +412,17 @@ def start_scheduler() -> None:
                 sync_eval_task_job(t.id, t.schedule_cron, True)
             except Exception:
                 logger.exception("重建测评定时 job 失败 task=%s", t.id)
+        # 重建 test_plan 定时计划
+        from app.models import TestPlan
+        plans = (db.query(TestPlan)
+                 .filter(TestPlan.schedule_enabled.is_(True),
+                         TestPlan.schedule_cron.isnot(None))
+                 .all())
+        for p in plans:
+            try:
+                sync_plan_job(p.id, p.schedule_cron, True)
+            except Exception:
+                logger.exception("重建定时 job 失败 plan=%s", p.id)
     finally:
         db.close()
 
@@ -411,4 +456,27 @@ def sync_set_job(set_id: int, cron: str | None, enabled: bool) -> datetime | Non
             _scheduler.remove_job(jid)
         except Exception:
             pass  # 本就没有该 job
+        return None
+
+
+def sync_plan_job(plan_id: int, cron: str | None, enabled: bool) -> datetime | None:
+    """按测试计划的 cron/开关 增删 job，返回下次触发时间（供回填 next_run_at）。
+
+    enabled 且 cron 合法 → add_job（replace_existing 幂等）；否则 remove_job。
+    """
+    if _scheduler is None:
+        return None
+    jid = _plan_job_id(plan_id)
+    if enabled and cron:
+        trigger = CronTrigger.from_crontab(cron, timezone="Asia/Shanghai")
+        job = _scheduler.add_job(
+            run_plan_job, trigger=trigger, id=jid,
+            args=[plan_id], replace_existing=True, misfire_grace_time=300,
+        )
+        return job.next_run_time
+    else:
+        try:
+            _scheduler.remove_job(jid)
+        except Exception:
+            pass
         return None

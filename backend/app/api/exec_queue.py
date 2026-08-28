@@ -32,7 +32,8 @@ _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 def notify_batch_if_done(db: Session, batch_id: str) -> None:
     """批次完成检测 + 飞书告警钩子（reaper / runner 回写均可调）。
 
-    只对 auto 触发的 feedback 批次生效（定时回归需有人知道失败）；manual 批次用户在页面上看着不必打扰。
+    只对 auto 触发的批次生效（feedback 定时集 / test_plan 定时计划——无人值守回归需有人知道失败）；
+    manual 批次用户在页面上看着不必打扰。
     - 批次状态："所有 run 都已终态"才算完成（pending/running 仍在→不发）。
     - 失败才告警：全 passed 不发；有 failed/blocked 才推卡片。
     - 幂等：允许重复调用（reaper 收口多条、runner 同批最后几条并发回写），飞书已去重靠通道总开关控制频率。
@@ -50,11 +51,13 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     )
     if pending_or_running:
         return
-    # 凑齐终态了，查 feedback_run 确认 trigger
-    from app.models import FeedbackRun, Project
+    # 凑齐终态了，查批次元数据确认 trigger（feedback 集或 test_plan 计划，两个来源）
+    from app.models import FeedbackRun, Project, TestPlanRun
     fr = db.query(FeedbackRun).filter(FeedbackRun.batch_id == batch_id).first()
-    if not fr or fr.trigger != "auto":
-        return  # manual 批次或无 feedback_run 元数据 → 不发
+    pr = None if fr else db.query(TestPlanRun).filter(TestPlanRun.batch_id == batch_id).first()
+    trigger = fr.trigger if fr else (pr.trigger if pr else None)
+    if trigger != "auto":
+        return  # manual 批次或无批次元数据 → 不发
     # 聚合结果
     runs = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
     if not runs:
