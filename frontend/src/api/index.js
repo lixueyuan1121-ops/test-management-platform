@@ -199,6 +199,8 @@ export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, 
 export const judgeEvalRun = (runId, provider) => http.post(`/eval-judge/${runId}`, { provider }, { timeout: 90000 })
 // 人工复核标注(失败收敛):mark = confirmed/false_positive/false_negative/null(清除),note 可空
 export const reviewEvalRun = (runId, mark, note) => http.post(`/eval-judge/${runId}/review`, { mark, note })
+// 判定质量统计(evaluator alignment):用复核标注反推 AI 判定准确率/误报率/漏报率,按引擎横评
+export const evalJudgeQuality = (projectId) => http.get('/eval-judge/judge-quality', { params: { project_id: projectId } })
 // 批量判定；payload: { project_id, run_ids?（空则判该项目所有 done）, provider? } → { judged, results:[...] }
 // 批量逐条同步判定，每条一次 LLM 调用（可达分钟级）、条数不可控，5 分钟上限仍会超时报错——
 // 改为不超时（timeout:0），等服务端跑完；页面有 loading 态兜住交互。

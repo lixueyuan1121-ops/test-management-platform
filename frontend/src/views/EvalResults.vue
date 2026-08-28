@@ -42,6 +42,36 @@
       </div>
       <div ref="trendEl" class="tr-chart"></div>
     </div>
+    <!-- 判定质量:人工复核反推 AI 判定准不准(样本少的引擎不列,明细标注在展开区) -->
+    <div v-if="quality.overall?.reviewed > 0" class="jq-panel">
+      <div class="jq-head">
+        <div class="dr-eyebrow">// JUDGE QUALITY · 判定质量（人工复核反推）</div>
+        <div class="jq-hint">明细可在任一会话展开区标注误报/漏报</div>
+      </div>
+      <div class="jq-cards">
+        <div class="jq-card">
+          <div class="jq-n" :class="qAccClass(quality.overall.accuracy)">{{ quality.overall.accuracy ?? '—' }}<span class="jq-u">%</span></div>
+          <div class="jq-l">判定准确率（{{ quality.overall.confirmed }}/{{ quality.overall.reviewed }} 复核）</div>
+        </div>
+        <div class="jq-card"><div class="jq-n warn">{{ quality.overall.fp_rate ?? '—' }}%</div><div class="jq-l">误报率</div></div>
+        <div class="jq-card"><div class="jq-n danger">{{ quality.overall.fn_rate ?? '—' }}%</div><div class="jq-l">漏报率</div></div>
+        <div class="jq-card">
+          <div class="jq-n">{{ quality.overall.review_rate ?? '—' }}%</div>
+          <div class="jq-l">复核覆盖率（{{ quality.overall.reviewed }}/{{ quality.overall.judged }} 已判定）</div>
+        </div>
+      </div>
+      <div v-if="quality.by_engine?.length" class="jq-rows">
+        <div v-for="e in quality.by_engine" :key="e.engine" class="jq-row">
+          <span class="jq-eng">{{ e.engine }}</span>
+          <span class="jq-bar"><i :style="{ width: (e.accuracy ?? 0) + '%' }" :class="qAccClass(e.accuracy)"></i></span>
+          <span class="jq-val" :class="qAccClass(e.accuracy)">{{ e.accuracy ?? '—' }}%</span>
+          <span class="jq-sub">{{ e.confirmed }}✓ / {{ e.false_positive }}误 / {{ e.false_negative }}漏（{{ e.reviewed }} 条复核）</span>
+        </div>
+      </div>
+      <div v-else-if="!quality.by_engine?.length" class="jq-note">
+        尚无引擎维度的复核样本。多判几条、多标几条误报/漏报后这里会显示各引擎的准确率横评——也正好验证稳健 3 票是否更准。
+      </div>
+    </div>
     <el-card>
       <template #header>
         <div class="header">
@@ -214,7 +244,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -325,6 +355,7 @@ async function onProjectChange() {
   await load()
   loadDimStats()   // 维度雷达:独立加载不阻塞列表
   loadTrend()      // 批次趋势:同上
+  loadQuality()    // 判定质量:同上
 }
 
 async function load() {
@@ -476,6 +507,18 @@ const trend = ref([])
 const trendEl = ref(null)
 let trendChart = null
 
+// ==== 判定质量(复核反推) ====
+const quality = ref({ overall: null, by_engine: [] })
+const qAccClass = (v) => (v == null ? 'q-mid' : v >= 90 ? 'q-hi' : v >= 75 ? 'q-mid' : 'q-lo')
+
+async function loadQuality() {
+  if (!pid.value) { quality.value = { overall: null, by_engine: [] }; return }
+  try {
+    const res = await evalJudgeQuality(pid.value)
+    quality.value = { overall: res.overall?.reviewed > 0 ? res.overall : null, by_engine: res.by_engine || [] }
+  } catch { /* 静默 */ }
+}
+
 function drawTrend() {
   if (!trendEl.value || trend.value.length < 2) return
   if (!trendChart) trendChart = echarts.init(trendEl.value)
@@ -524,6 +567,29 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 判定质量面板 */
+.jq-panel { background: #fff; border: 1px solid #e4e7ed; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+.jq-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.jq-head .dr-eyebrow { color: #7a4fd0; }
+.jq-hint { font-size: 12px; color: #8a94a6; }
+.jq-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+.jq-card { background: #f8fafc; border: 1px solid #eef1f5; border-radius: 8px; padding: 10px 14px; text-align: center; }
+.jq-n { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 800; color: #1f2d3d; }
+.jq-n .jq-u { font-size: 12px; color: #8a94a6; }
+.jq-n.warn { color: #d98b00; }
+.jq-n.danger { color: #e5565f; }
+.jq-l { font-size: 11px; color: #8a94a6; margin-top: 3px; }
+.jq-rows { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed #e4e7ed; padding-top: 10px; }
+.jq-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.jq-eng { width: 110px; font-family: 'JetBrains Mono', monospace; color: #4a5568; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jq-bar { flex: 1; height: 10px; background: #eef1f5; border-radius: 5px; overflow: hidden; }
+.jq-bar i { display: block; height: 100%; border-radius: 5px; }
+.q-hi { color: #00b386; background-color: #00b386; }
+.q-mid { color: #d98b00; background-color: #d98b00; }
+.q-lo { color: #e5565f; background-color: #e5565f; }
+.jq-val { width: 48px; text-align: right; font-family: 'JetBrains Mono', monospace; font-weight: 700; flex: none; }
+.jq-sub { font-size: 11px; color: #9aa5b1; flex: none; }
+.jq-note { font-size: 12px; color: #8a94a6; border-top: 1px dashed #e4e7ed; padding-top: 10px; }
 /* 批次趋势 */
 .tr-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px; padding: 18px 24px 10px; margin-bottom: 16px; }
 .tr-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }

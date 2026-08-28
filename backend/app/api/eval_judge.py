@@ -125,6 +125,60 @@ def list_abnormal(project_id: int = Query(...), db: Session = Depends(get_db), u
     return ok([_run_out(r) for r in rows])
 
 
+@router.get("/judge-quality")
+def judge_quality(project_id: int = Query(...), db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """判定质量统计(evaluator alignment):用人工复核标注反推 AI 判定准不准、哪个引擎更靠谱。
+
+    对齐 LangSmith 的 evaluator alignment——judge 本身也需要被评测。口径:
+    - 复核覆盖率 = 已复核 / 已判定(样本太少时准确率不可信,前端据此提示)
+    - 判定准确率 = confirmed / 已复核(误报+漏报都算判错)
+    - 误报率/漏报率 = false_positive|false_negative / 已复核
+    按 judged_by 分组做引擎横评(稳健多票的 providerxN 单独成组,正好看多票是否更准)。
+    """
+    from sqlalchemy import case, func
+
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+
+    def _agg(*extra_filters):
+        q = db.query(
+            func.count(EvalRun.id).label("judged"),
+            func.sum(case((EvalRun.review_mark.isnot(None), 1), else_=0)).label("reviewed"),
+            func.sum(case((EvalRun.review_mark == "confirmed", 1), else_=0)).label("confirmed"),
+            func.sum(case((EvalRun.review_mark == "false_positive", 1), else_=0)).label("fp"),
+            func.sum(case((EvalRun.review_mark == "false_negative", 1), else_=0)).label("fn"),
+        ).filter(EvalRun.project_id == project_id, EvalRun.verdict.isnot(None))
+        for f in extra_filters:
+            q = q.filter(f)
+        return q.one()
+
+    def _shape(row, name=None):
+        judged, reviewed = int(row.judged or 0), int(row.reviewed or 0)
+        confirmed, fp, fn = int(row.confirmed or 0), int(row.fp or 0), int(row.fn or 0)
+        pct = lambda n: round(n / reviewed * 100, 1) if reviewed else None  # noqa: E731
+        out = {
+            "judged": judged, "reviewed": reviewed,
+            "review_rate": round(reviewed / judged * 100, 1) if judged else None,
+            "confirmed": confirmed, "false_positive": fp, "false_negative": fn,
+            "accuracy": pct(confirmed), "fp_rate": pct(fp), "fn_rate": pct(fn),
+        }
+        if name is not None:
+            out["engine"] = name
+        return out
+
+    overall = _shape(_agg())
+    # 引擎横评:只列有复核样本的引擎(没样本算不出准确率,列出来是噪音)
+    engines = [n for (n,) in db.query(EvalRun.judged_by)
+               .filter(EvalRun.project_id == project_id, EvalRun.verdict.isnot(None),
+                       EvalRun.judged_by.isnot(None), EvalRun.review_mark.isnot(None))
+               .distinct().all()]
+    by_engine = sorted(
+        (_shape(_agg(EvalRun.judged_by == n), n) for n in engines),
+        key=lambda e: (-(e["reviewed"] or 0), e["engine"] or ""),
+    )
+    return ok({"overall": overall, "by_engine": by_engine})
+
+
 @router.get("/dimension-stats")
 def eval_dimension_stats(
     project_id: int = Query(...),
