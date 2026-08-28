@@ -1,4 +1,4 @@
-"""反馈测试定时回归调度器（APScheduler 内置）。
+"""反馈测试定时回归调度器（APScheduler 内置）+ exec/eval 超龄收口 + 飞书通知定时 job。
 
 BackgroundScheduler + SQLAlchemyJobStore（复用同一 DB，重启不丢 job）。
 每个启用定时的回归集对应一个 job（id=fbset-<set_id>），到点调 _dispatch_cases(trigger=auto)。
@@ -7,7 +7,7 @@ BackgroundScheduler + SQLAlchemyJobStore（复用同一 DB，重启不丢 job）
 不会重复触发。job 用 replace_existing=True 幂等，重启时从 DB 现有 enabled 集重建。
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -15,8 +15,12 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
+from app.models import ExecRun, Project  # noqa: F401
 
 logger = logging.getLogger("test_platform")
+
+# 超龄收口阈值（小时）：exec_run 超此时长仍 running 即收口为 failed
+EXEC_STALE_HOURS = 2
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -142,6 +146,104 @@ def run_eval_task_job(task_id: int) -> None:
         db.close()
 
 
+def reap_stale_exec_runs(session_factory=None) -> int:
+    """周期收口:running 超 2 小时的 exec_run 自动标记 failed(执行机中断兜底)。
+
+    与 reap_stale_eval_runs 同款收口——exec_run 是"执行机崩溃即永久 running"的重灾地:
+    runner 中途死掉/网络断连不会回写,run 永远卡 running,既占设备看板"执行中"、又让
+    /release/quality 等统计把没跑完的算进全部执行里。
+    - 不设 fail_kind(收口归因=执行机中断,不是选择器/断言);reason 打「自动收口」前缀留痕。
+    - 只收 running 不收 pending:pending 是排队,执行机恢复会继续拉走。
+    - 收口后该批若因此凑齐终态,则复用 exec-queue 的批次完成钩子发飞书告警(定时批次)。
+    - session_factory 参数供自测注入内存库;缺省用项目 SessionLocal。
+    """
+    from datetime import timedelta
+
+    from app.core.enums import ExecStatus
+    from app.db.session import SessionLocal
+
+    sf = session_factory or SessionLocal
+    cutoff = datetime.utcnow() - timedelta(hours=EXEC_STALE_HOURS)
+    db = sf()
+    reaped = 0
+    try:
+        rows = (db.query(ExecRun)
+                .filter(ExecRun.status == ExecStatus.running, ExecRun.updated_at < cutoff)
+                .all())
+        for r in rows:
+            r.status = ExecStatus.failed
+            r.reason = "自动收口:执行超 2 小时未回填(执行机中断),标记失败"
+            reaped += 1
+        if rows:
+            db.commit()
+            logger.info("自动收口 %d 条超龄 running exec_run", reaped)
+            # 收口后的批次若凑齐终态 → 复用批次完成钩子告警(真正的定时回归需有人知道挂了)
+            for _b in {r.batch_id for r in rows}:
+                if _b:
+                    try:
+                        from app.api.exec_queue import notify_batch_if_done
+                        notify_batch_if_done(db, _b)
+                    except Exception:
+                        logger.exception("收口后批次告警失败 batch=%s", _b)
+    except Exception:
+        logger.exception("自动收口超龄 exec_run 失败")
+        db.rollback()
+    finally:
+        db.close()
+    return reaped
+
+
+def _now_sh() -> datetime:
+    """当前 Asia/Shanghai 时间(调度器时区),供"今天"判定。"""
+    from datetime import timezone
+    return datetime.now(timezone.utc).astimezone().replace(tzinfo=None)
+
+
+def remind_missing_reports() -> None:
+    """日报缺交提醒:遍历有当日任务的项目,谁该交没交 → 每项目一张飞书卡。
+
+    统计口径与 /stats/daily 完全一致(应交=当日任务 assigned_to 去重,已交=当日有日报的 user),
+    重复实现一次而非调 API——定时 job 无用户上下文,且调外部接口绕一层反而脆。
+    未配置 FEISHU_WEBHOOK_URL 或没到配置时刻时无副作用(到点才由 cron 调)。
+    """
+    if not settings.NOTIFY_REPORT_MISSING:
+        return
+    from app.models import DailyReport, Task, User  # noqa: F401
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        today = _now_sh().date()
+        # 只扫"今天有任务"的项目(项目数少,直接查;不扫全部项目避免空卡片)
+        proj_ids = [pid for (pid,) in db.query(Task.project_id)
+                    .filter(Task.assigned_date == today).distinct().all()]
+        for pid in proj_ids:
+            tasks = db.query(Task).filter(
+                Task.project_id == pid, Task.assigned_date == today).all()
+            if not tasks:
+                continue
+            should = sorted({t.assigned_to for t in tasks if t.assigned_to})
+            task_ids = [t.id for t in tasks]
+            submitted = {r.user_id for r in db.query(DailyReport)
+                         .filter(DailyReport.task_id.in_(task_ids),
+                                 DailyReport.report_date == today).all() if r.user_id}
+            missing = [u for u in should if u not in submitted]
+            if not missing:
+                continue
+            names = dict(db.query(User.id, User.name).filter(User.id.in_(missing)).all())
+            proj = db.get(Project, pid)
+            from app.services.notify import notify_reports_missing
+            notify_reports_missing(
+                project_name=proj.name if proj else f"项目#{pid}",
+                report_date=str(today),
+                missing_names=[names.get(uid, str(uid)) for uid in missing],
+                submitted=len(submitted), expected=len(should),
+            )
+    except Exception:
+        logger.exception("日报缺交提醒失败")
+    finally:
+        db.close()
+
+
 def sync_eval_task_job(task_id: int, cron: str | None, enabled: bool):
     """按测评任务的 cron/开关 增删定时 job(replace_existing 幂等)。"""
     if _scheduler is None:
@@ -161,6 +263,57 @@ def sync_eval_task_job(task_id: int, cron: str | None, enabled: bool):
     return None
 
 
+def check_devices_offline() -> None:
+    """执行机离线巡检:有 pending 排队但设备超时未心跳 → 飞书告警。
+
+    判定口径与设备看板一致(ONLINE_WINDOW_SEC 秒内无 last_seen 即离线;有 running 看作在线)。
+    同一台设备在"告警一次且仍未恢复"期间不再重复发(模块级已警集合,恢复后清除)。
+    """
+    from app.api.devices import ONLINE_WINDOW_SEC, ACTIVE_RUNS_LIMIT  # noqa: F401
+    from app.core.enums import ExecStatus
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
+        # 只查"尚有 pending 未认领"的 runner —— 离线但没积压任务的不打扰
+        pending_runners = [r for (r,) in db.query(ExecRun.runner)
+                           .filter(ExecRun.status == ExecStatus.pending).distinct().all()]
+        if not pending_runners:
+            return
+        from app.models import RunnerDevice
+        agg = {}
+        for rd in db.query(RunnerDevice).filter(RunnerDevice.runner_id.in_(pending_runners)).all():
+            agg.setdefault(rd.runner_id, {"name": rd.name, "last": rd.last_seen_at})
+        busy = {r for (r,) in db.query(ExecRun.runner)
+                .filter(ExecRun.status == ExecStatus.running).distinct().all()}
+        offline = []
+        for rid, info in agg.items():
+            if rid in busy:
+                continue  # 正执行中必是活的
+            last = info["last"]
+            if last is None or last < cutoff:
+                offline.append((rid, info["name"]))
+        for rid, name in offline:
+            if rid in _OFFLINE_NOTIFIED:
+                continue
+            pend_cnt = db.query(ExecRun).filter(
+                ExecRun.runner == rid, ExecRun.status == ExecStatus.pending).count()
+            from app.services.notify import notify_devices_offline
+            notify_devices_offline([name], pend_cnt)
+            _OFFLINE_NOTIFIED.add(rid)
+        gone = set(agg.keys()) - {rid for rid, _ in offline}
+        _OFFLINE_NOTIFIED -= gone  # 恢复上线的设备清告警集合,下次再断可再警
+    except Exception:
+        logger.exception("设备离线巡检失败")
+    finally:
+        db.close()
+
+
+# 已告警的离线 runner 集合(会话级;上线后清除,允许再次告警)
+_OFFLINE_NOTIFIED: set[str] = set()
+
+
 def start_scheduler() -> None:
     """启动调度器 + 从 DB 现有 enabled 集重建 job。startup 调用（幂等）。"""
     global _scheduler
@@ -178,6 +331,28 @@ def start_scheduler() -> None:
         reap_stale_eval_runs, trigger=IntervalTrigger(minutes=30), id="evalrun-reaper",
         replace_existing=True, misfire_grace_time=600,
     )
+    # 固定周期 job:自动收口超龄 running 的 exec_run(每 30 分钟,与 eval 同频)
+    _scheduler.add_job(
+        reap_stale_exec_runs, trigger=IntervalTrigger(minutes=30), id="execrun-reaper",
+        replace_existing=True, misfire_grace_time=600,
+    )
+    # 固定周期 job:设备离线巡检(每 5 分钟;pending 堆积但设备掉线才发告警)
+    _scheduler.add_job(
+        check_devices_offline, trigger=IntervalTrigger(minutes=5), id="device-offline-check",
+        replace_existing=True, misfire_grace_time=180,
+    )
+    # 配置了提醒时刻才建日报缺交提醒 job(每日固定时刻,如 20:00)
+    hhmm = (settings.REPORT_REMIND_AT or "").strip()
+    if hhmm and ":" in hhmm:
+        try:
+            h, m = hhmm.split(":")
+            _scheduler.add_job(
+                remind_missing_reports, trigger=CronTrigger(hour=int(h), minute=int(m)),
+                id="report-missing-remind", replace_existing=True, misfire_grace_time=900,
+            )
+            logger.info("日报缺交提醒已启用: 每日 %s", hhmm)
+        except (ValueError, IndexError):
+            logger.warning("日报提醒时刻格式错误(需 HH:MM): %s", hhmm)
 
     # 从 DB 重建 job（job store 里可能已有持久化 job；这里以 DB 集状态为准覆盖，避免漂移）
     from app.db.session import SessionLocal

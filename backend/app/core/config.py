@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     FEISHU_APP_SECRET: str = ""
     FEISHU_BASE: str = "https://open.feishu.cn"  # 私有化/国际站可改
 
+    # ---- 飞书通知（群自定义机器人 webhook 推卡片）----
+    # 与上面的 OpenAPI 取文完全独立：取文是「读文档」（需 app 凭据），本通道是「发消息」
+    # （只需群机器人 webhook URL）。未配 URL 即整条通道静默关闭，不影响任何业务流程。
+    FEISHU_WEBHOOK_URL: str = ""
+    # 群机器人若开了「签名校验」，把密钥填这里（留空表示机器人未开签名）。
+    FEISHU_WEBHOOK_SECRET: str = ""
+    # 卡片按钮回跳平台的基址（如 http://10.0.0.5:4173）。留空则卡片不带跳转按钮。
+    PLATFORM_BASE_URL: str = ""
+    # 各告警场景开关（通道总开关是 FEISHU_WEBHOOK_URL，这里做细粒度静音）。
+    NOTIFY_EXEC_FAIL: bool = True       # 自动回归批次出现失败
+    NOTIFY_TASK_ASSIGN: bool = True     # 任务指派到人
+    NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
+    # 日报缺交提醒的每日触发时刻（24 小时制 HH:MM，Asia/Shanghai）。留空则不建该定时 job。
+    REPORT_REMIND_AT: str = ""
+
     # multica(异常会话详细分析平台)对接。契约待细化,默认 off 不推。
     MULTICA_MODE: str = "off"          # off / http / cli
     MULTICA_URL: str = ""              # http 模式:创建分析任务的 endpoint

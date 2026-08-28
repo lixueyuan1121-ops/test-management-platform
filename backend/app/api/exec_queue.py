@@ -29,6 +29,61 @@ router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 
 
+def notify_batch_if_done(db: Session, batch_id: str) -> None:
+    """批次完成检测 + 飞书告警钩子（reaper / runner 回写均可调）。
+
+    只对 auto 触发的 feedback 批次生效（定时回归需有人知道失败）；manual 批次用户在页面上看着不必打扰。
+    - 批次状态："所有 run 都已终态"才算完成（pending/running 仍在→不发）。
+    - 失败才告警：全 passed 不发；有 failed/blocked 才推卡片。
+    - 幂等：允许重复调用（reaper 收口多条、runner 同批最后几条并发回写），飞书已去重靠通道总开关控制频率。
+    """
+    from app.services import notify
+
+    if not notify.is_enabled() or not batch_id:
+        return
+    # 先判完成：该批有 pending/running → 批次未完，直接返回
+    pending_or_running = (
+        db.query(ExecRun)
+        .filter(ExecRun.batch_id == batch_id,
+                ExecRun.status.in_([ExecStatus.pending, ExecStatus.running]))
+        .first()
+    )
+    if pending_or_running:
+        return
+    # 凑齐终态了，查 feedback_run 确认 trigger
+    from app.models import FeedbackRun, Project
+    fr = db.query(FeedbackRun).filter(FeedbackRun.batch_id == batch_id).first()
+    if not fr or fr.trigger != "auto":
+        return  # manual 批次或无 feedback_run 元数据 → 不发
+    # 聚合结果
+    runs = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
+    if not runs:
+        return
+    total = len(runs)
+    passed = sum(1 for r in runs if r.status == ExecStatus.passed)
+    failed = sum(1 for r in runs if r.status == ExecStatus.failed)
+    blocked = sum(1 for r in runs if r.status == ExecStatus.blocked)
+    if failed <= 0 and blocked <= 0:
+        return  # 全 passed 不发
+    proj = db.get(Project, runs[0].project_id)
+    # 提取失败用例标题（payload 快照里的 title）
+    failed_titles = []
+    for r in runs:
+        if r.status in (ExecStatus.failed, ExecStatus.blocked):
+            try:
+                p = json.loads(r.payload or "{}")
+                t = p.get("title") or f"用例#{r.test_case_id or '?'}"
+                failed_titles.append(t)
+            except (json.JSONDecodeError, ValueError):
+                failed_titles.append(f"run#{r.id}")
+    notify.notify_batch_result(
+        batch_id=batch_id,
+        project_name=proj.name if proj else f"项目#{runs[0].project_id}",
+        total=total, passed=passed, failed=failed, blocked=blocked,
+        trigger="auto", failed_titles=failed_titles,
+    )
+
+
 def _new_batch_id() -> str:
     """一次 enqueue 的批次号:YYYYmmdd-HHMMSS-<4hex>,人读友好 + 同批唯一。"""
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
@@ -394,6 +449,12 @@ def report(
             item.executed_at = datetime.utcnow()
     db.commit()
     db.refresh(r)
+    # 批次完成检测钩子：reaper 和 runner 回写都调，幂等，只对 auto 触发的 feedback 批次生效
+    if r.batch_id:
+        try:
+            notify_batch_if_done(db, r.batch_id)
+        except Exception:
+            pass  # 通知失败不影响回写主流程
     return ok(_to_out(r))
 
 

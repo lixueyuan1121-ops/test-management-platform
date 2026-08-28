@@ -134,6 +134,24 @@ def create_task(
     db.add(t)
     db.commit()
     db.refresh(t)
+    # 任务指派通知：自己派给自己不发（常见自助加任务场景）
+    if t.assigned_to != t.assigned_by:
+        try:
+            from app.services.notify import notify_task_assigned
+            from app.models import User
+            proj = db.get(Project, t.project_id)
+            assignee = db.get(User, t.assigned_to)
+            assigner = db.get(User, t.assigned_by)
+            notify_task_assigned(
+                task_title=t.title,
+                project_name=proj.name if proj else f"项目#{t.project_id}",
+                assignee_name=assignee.name if assignee else f"用户#{t.assigned_to}",
+                assigner_name=assigner.name if assigner else f"用户#{t.assigned_by}",
+                assigned_date=str(t.assigned_date),
+                priority=t.priority,
+            )
+        except Exception:
+            pass  # 通知失败不影响任务创建
     return ok(_to_out(db, t))
 
 
