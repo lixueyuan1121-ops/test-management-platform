@@ -12,6 +12,20 @@ app.use(createPinia())
 app.use(router)
 // 注:不再 app.use(ElementPlus) 全量注册;组件/指令由 unplugin-vue-components 按需自动导入。
 // locale(中文)通过 App.vue 根部的 <el-config-provider :locale="zhCn"> 提供。
+
+// 全局渲染错误兜底(对齐 React ErrorBoundary 实践):单个模板表达式抛错会让整个组件树
+// 渲染失败——表现为"整页空白无声失败"(2026-08 测评结果页白屏事故根因)。兜底后错误
+// 弹提示 + 控制台留完整堆栈,用户能报出具体错误而不是只说"页面空了"。10s 节流防刷屏。
+let _lastErrToast = 0
+app.config.errorHandler = (err, _instance, info) => {
+  console.error('[全局错误]', info, err)
+  const now = Date.now()
+  if (now - _lastErrToast > 10000) {
+    _lastErrToast = now
+    import('element-plus').then(({ ElMessage }) =>
+      ElMessage.error(`页面异常(${info}): ${err?.message || err}`.slice(0, 120)))
+  }
+}
 app.mount('#app')
 
 // 动态注入输入框背景修复——必须在 Element Plus 组件样式之后
