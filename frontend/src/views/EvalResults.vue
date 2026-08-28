@@ -206,6 +206,14 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="对比" width="66" align="center">
+          <template #default="{ row }">
+            <!-- A/B 对比配对行:点开左右分栏并排看答辩+判定 -->
+            <el-button v-if="!row.isGroup && row.payload?.compare_group" size="small" type="warning" text
+              @click="openAbCompare(row)">对比</el-button>
+            <span v-else class="dim-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="96" align="center">
           <template #default="{ row }">
             <el-button
@@ -236,6 +244,35 @@
         <el-button @click="exportDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="exporting" @click="doExportFeishu">导出</el-button>
       </template>
+    </el-dialog>
+
+    <!-- A/B 并排对比(LMArena 式):同一题两套配置的答辩+判定并列,胜因一目了然 -->
+    <el-dialog v-model="abCompareVisible" :title="`A/B 对比 · ${queryTitle(abPair.a)}`" width="920px" top="6vh">
+      <div v-if="abPair.a || abPair.b" class="ab-wrap">
+        <template v-for="side in ['a', 'b']" :key="side">
+          <div class="ab-col" :class="abWin(side) ? 'ab-win' : ''">
+            <div class="ab-hd">
+              <span class="ab-tag" :class="side === 'a' ? 'ab-tag-a' : 'ab-tag-b'">{{ side === 'a' ? 'A' : 'B' }}</span>
+              <span class="ab-opts">{{ abOpts(abPair[side]) }}</span>
+              <span class="ab-verdict">{{ abPair[side]?.verdict ? VERDICT_LABEL[abPair[side].verdict] : '未判定' }}</span>
+            </div>
+            <div class="ab-body">
+              <div class="ab-sec">回答</div>
+              <div class="ab-text">{{ abPair[side]?.answer || '—' }}</div>
+              <div class="ab-sec">判定理由</div>
+              <div class="ab-text">{{ abPair[side]?.verdict_reason || '—' }}</div>
+              <div v-if="abPair[side]?.score != null" class="ab-score">评分 {{ abPair[side].score }}/5</div>
+              <el-link v-if="safeUrl(abPair[side]?.share_link)" type="primary" :href="safeUrl(abPair[side].share_link)" target="_blank" rel="noopener noreferrer">打开会话</el-link>
+            </div>
+          </div>
+        </template>
+        <div class="ab-prompt">
+          <div class="ab-sec">题干 prompt</div>
+          <div class="ab-text">{{ abPair.a?.payload?.prompt || abPair.b?.payload?.prompt || '—' }}</div>
+          <div class="ab-sec">期望 expected</div>
+          <div class="ab-text">{{ abPair.a?.payload?.expected || abPair.b?.payload?.expected || '—' }}</div>
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -319,9 +356,36 @@ const matchFilter = (r) => {
 // 多轮会话分组(公共逻辑见 utils/evalRunGroups):组行树形展开,单轮原样平铺
 const groupedRows = computed(() => groupEvalRuns(rows.value, matchFilter))
 
-const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query #${row.eval_query_id ?? '—'}`
-// 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
+const queryTitle = (row) => row.payload?.title || row.payload?.prompt || `query #${row.eval_query_id ?? '—'}`// 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
+// A/B 并排对比:同 eval_query_id + compare_mode 配对的 A/B 两条;弹窗左右分栏
+const abCompareVisible = ref(false)
+const abPair = ref({ a: null, b: null })
+
+function openAbCompare(row) {
+  const g = row.payload?.compare_group
+  if (!g) return
+  const pair = { a: null, b: null }
+  for (const r of rows.value) {
+    if (r.payload?.compare_group === 'A' && r.eval_query_id === row.eval_query_id) pair.a = r
+    if (r.payload?.compare_group === 'B' && r.eval_query_id === row.eval_query_id) pair.b = r
+  }
+  abPair.value = pair
+  abCompareVisible.value = true
+}
+
+function abOpts(r) {
+  if (!r) return ''
+  const d = r.payload?.dialog_options || {}
+  const parts = [d.model, d.chatMode, d.thinkingDepth && `深:${d.thinkingDepth}`].filter(Boolean)
+  return parts.join(' · ') || '客户端默认'
+}
+
+function abWin(side) {
+  const a = abPair.value.a?.verdict, b = abPair.value.b?.verdict
+  if (side === 'a') return a === 'pass' && b === 'fail'
+  return b === 'pass' && a === 'fail'
+}
 const dimPass = (row, k) => row.verdict_dims?.[k]?.pass
 const dimNote = (row, k) => row.verdict_dims?.[k]?.note
 // 评分(1-5,判定引擎给):组行取各轮均分(1 位小数),真实行取 score
@@ -567,6 +631,21 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* A/B 并排对比 */
+.ab-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.ab-col { border: 1px solid #e4e7ed; border-radius: 10px; padding: 12px 14px; background: #fbfdfe; }
+.ab-col.ab-win { border-color: #00b386; background: #f5fcf9; box-shadow: 0 0 0 1px #00b38633; }
+.ab-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ab-tag { width: 20px; height: 20px; border-radius: 5px; text-align: center; line-height: 20px; font-weight: 800; font-size: 12px; color: #fff; flex: none; }
+.ab-tag-a { background: #2f7dd1; }
+.ab-tag-b { background: #d98b00; }
+.ab-opts { font-size: 11px; color: #8099aa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ab-verdict { font-size: 13px; font-weight: 700; flex: none; }
+.ab-body { display: flex; flex-direction: column; gap: 6px; }
+.ab-sec { font-size: 11px; color: #8a94a6; font-weight: 600; margin-top: 6px; }
+.ab-text { font-size: 12px; color: #34495e; line-height: 1.65; max-height: 180px; overflow: auto; word-break: break-word; }
+.ab-score { font-size: 12px; color: #d98b00; font-weight: 700; }
+.ab-prompt { grid-column: 1 / -1; border: 1px dashed #e4e7ed; border-radius: 10px; padding: 12px 14px; }
 /* 判定质量面板 */
 .jq-panel { background: #fff; border: 1px solid #e4e7ed; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
 .jq-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
