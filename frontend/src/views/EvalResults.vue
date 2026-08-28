@@ -387,9 +387,12 @@ function openAbCompare(row) {
   const g = row.payload?.compare_group
   if (!g) return
   const pair = { a: null, b: null }
+  // 配对必须限定同批次(与多轮分组同一教训):同题多批执行时各批都有 A/B,
+  // 不限批次会拿到别批的对家——张冠李戴地对比两次不同执行
   for (const r of rows.value) {
-    if (r.payload?.compare_group === 'A' && r.eval_query_id === row.eval_query_id) pair.a = r
-    if (r.payload?.compare_group === 'B' && r.eval_query_id === row.eval_query_id) pair.b = r
+    if (r.batch_id !== row.batch_id || r.eval_query_id !== row.eval_query_id) continue
+    if (r.payload?.compare_group === 'A') pair.a = r
+    if (r.payload?.compare_group === 'B') pair.b = r
   }
   abPair.value = pair
   abCompareVisible.value = true
