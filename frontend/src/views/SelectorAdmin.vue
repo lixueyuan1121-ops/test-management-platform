@@ -335,6 +335,64 @@
         <el-button type="primary" :loading="add.saving" @click="submitAddAsKey">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 运行时自学习候选评审:runner 全候选失败→按语义自愈成功后上报;转正=去试用标,拒绝=移出注册表 -->
+    <el-card class="learned-card">
+      <template #header>
+        <div class="header">
+          <span>自学习候选评审
+            <el-tag v-if="learned.rows.length" type="warning" size="small" effect="dark" class="learned-badge">{{ learned.rows.length }}</el-tag>
+          </span>
+          <div class="filters">
+            <el-select v-model="learned.status" size="small" style="width:130px" @change="reloadLearned">
+              <el-option label="待评审" value="pending" />
+              <el-option label="已转正" value="approved" />
+              <el-option label="已拒绝" value="rejected" />
+            </el-select>
+            <el-button size="small" :loading="learned.loading" @click="reloadLearned">刷新</el-button>
+          </div>
+        </div>
+      </template>
+      <el-alert type="info" :closable="false" class="learned-intro" show-icon>
+        执行机在<b>所有已注册候选都定位失败</b>时,按 key 语义在页面上找回元素并铸造新候选（已临时挂在该 key 候选链<b>尾部试用</b>）。
+        <b>转正</b>=去掉试用标永久保留；<b>拒绝</b>=从注册表移除且不再自动挂回。
+      </el-alert>
+      <el-table :data="learned.rows" v-loading="learned.loading" size="small" border stripe
+                :empty-text="learned.status === 'pending' ? '暂无待评审的自学习候选' : '无记录'">
+        <el-table-column prop="key" label="key" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <code>{{ row.key }}</code>
+            <div v-if="row.desc" class="form-hint">{{ row.desc }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="自学习候选" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <code>{{ row.candidate.by }} = {{ row.candidate.value }}</code>
+            <span v-if="row.candidate.name" class="form-hint">（name: {{ row.candidate.name }}）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="证据" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.evidence.text">文本「{{ row.evidence.text }}」</span>
+            <span v-if="row.evidence.matched" class="form-hint"> · 匹配 {{ row.evidence.matched }}</span>
+            <span v-if="row.evidence.score" class="form-hint"> · 分 {{ row.evidence.score }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="命中" width="60" align="center">
+          <template #default="{ row }">{{ row.hit_count }}</template>
+        </el-table-column>
+        <el-table-column prop="runner" label="来源设备" width="110" show-overflow-tooltip />
+        <el-table-column label="时间" width="140">
+          <template #default="{ row }">{{ (row.created_at || '').replace('T', ' ').slice(0, 16) }}</template>
+        </el-table-column>
+        <el-table-column v-if="learned.status === 'pending'" label="操作" width="140" align="center">
+          <template #default="{ row }">
+            <el-button link type="success" size="small" @click="reviewLearnedRow(row, 'approve')">转正</el-button>
+            <el-button link type="danger" size="small" @click="reviewLearnedRow(row, 'reject')">拒绝</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
   </div>
 </template>
 
@@ -347,6 +405,7 @@ import {
   listSelectors, createSelector, patchSelector, deleteSelector, importLegacySelectors,
   selectorUsage, backfillTestcases,
   listMyDevices, startProbe, getProbe,
+  listLearnedSelectors, reviewLearnedSelector,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { isFragile, orderCandidates } from '@/utils/selector-ranking'
@@ -439,6 +498,35 @@ async function reload() {
     rows.value = subProduct.value ? (data.by_sub?.[subProduct.value] || []) : (data.shared || [])
     activePages.value = groupedRows.value.map((g) => g.name)   // 默认全部展开
   } finally { loading.value = false }
+  reloadLearned()   // 同步刷新自学习评审队列(独立 loading,失败不影响主列表)
+}
+
+// ---- 运行时自学习候选评审 ----
+const learned = reactive({ rows: [], status: 'pending', loading: false })
+
+async function reloadLearned() {
+  if (!pid.value) { learned.rows = []; return }
+  learned.loading = true
+  try { learned.rows = await listLearnedSelectors(pid.value, learned.status) }
+  catch { /* 拦截器已提示 */ } finally { learned.loading = false }
+}
+
+async function reviewLearnedRow(row, action) {
+  const label = action === 'approve' ? '转正' : '拒绝'
+  try {
+    await ElMessageBox.confirm(
+      action === 'approve'
+        ? `转正候选 ${row.candidate.by}=${row.candidate.value}？将去掉试用标、永久保留在「${row.key}」候选链中。`
+        : `拒绝候选 ${row.candidate.by}=${row.candidate.value}？将从「${row.key}」注册表移除，且不再自动挂回。`,
+      `${label}确认`, { type: action === 'approve' ? 'success' : 'warning' },
+    )
+  } catch { return }
+  try {
+    await reviewLearnedSelector(row.id, action)
+    ElMessage.success(`已${label}`)
+    reloadLearned()
+    reload()
+  } catch { /* 拦截器已提示 */ }
 }
 
 function fmtTime(s) {
@@ -952,4 +1040,7 @@ async function submitAddAsKey() {
 .hint-warn { color: #e6a23c; }
 .add-compare { margin-top: 10px; border-top: 1px dashed #dcdfe6; padding-top: 8px; }
 code { background: #f0f2f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.learned-card { margin-top: 16px; }
+.learned-badge { margin-left: 6px; }
+.learned-intro { margin-bottom: 12px; }
 </style>

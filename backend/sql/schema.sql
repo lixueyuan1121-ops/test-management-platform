@@ -746,3 +746,27 @@ CREATE TABLE `test_plan_run` (
   CONSTRAINT `fk_tprun_plan` FOREIGN KEY (`plan_id`) REFERENCES `test_plan`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_tprun_user` FOREIGN KEY (`started_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 运行时自学习候选评审队列（self-healing 上报落点） ----------
+CREATE TABLE `selector_learned` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `key` VARCHAR(64) NOT NULL,
+  `cand_by` VARCHAR(16) NOT NULL,
+  `cand_value` VARCHAR(255) NOT NULL,
+  `candidate` TEXT,
+  `all_candidates` TEXT,
+  `evidence` TEXT,
+  `runner` VARCHAR(64) NOT NULL DEFAULT '',
+  `run_id` INT DEFAULT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `hit_count` INT NOT NULL DEFAULT 1,
+  `reviewed_by` INT DEFAULT NULL,
+  `reviewed_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_sellearn_scope` (`project_id`,`sub_product`),
+  KEY `idx_sellearn_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

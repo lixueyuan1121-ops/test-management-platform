@@ -525,6 +525,18 @@ async function tick() {
         duration_ms: result.duration_ms ?? null,
         report: reportJson,
       });
+      // 运行时自学习上报:本条用例执行中若发生选择器自愈(全候选失败→按语义找回元素),
+      // 把铸造的候选连同证据推给平台进「自学习待确认」评审队列。失败不影响回写主流程。
+      try {
+        const heals = guiCore.drainHeals?.() || [];
+        if (heals.length) {
+          await api("POST", "/api/selectors/learned", {
+            project_id: item.payload?.project_id, sub_product: "",
+            runner: RUNNER_ID, run_id: item.run_id, items: heals,
+          });
+          log(`  自学习上报 ${heals.length} 个 key: ${heals.map((h) => h.key).join(",")}`);
+        }
+      } catch (e) { log(`  自学习上报失败(不影响回写): ${e.message}`); }
       // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
       const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";
       log(`回写 run_id=${item.run_id} -> ${result.verdict} (${result.duration_ms ?? "?"}ms)${reasonTail}`);

@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
+import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { rectInsideRatio } from "./probe-collect.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
@@ -127,6 +128,11 @@ export function createGuiCore(opts = {}) {
 
   let browser = null;
   let page = null;
+
+  // 运行时自学习(self-healing):本实例累计的自愈记录,runner 每条用例执行完 drainHeals() 上报平台。
+  // GUI_HEAL=0 可整体关闭(回到纯候选回落行为)。
+  const HEALS = [];
+  const HEAL_ENABLED = String(process.env.GUI_HEAL ?? "1") !== "0";
   let ctx = null;   // BrowserContext — 与 browser/page 同生命周期; mockRoute/unmockRoute 需要 context 级拦截
 
   async function ensureConnected() {
@@ -226,8 +232,56 @@ export function createGuiCore(opts = {}) {
       if (Date.now() >= end) break;
       await new Promise((r) => setTimeout(r, 200));
     }
+    // 全候选失败 → 运行时自学习兜底(保守:高置信唯一匹配才自愈,否则维持原 fail)。
+    const healed = HEAL_ENABLED ? await healKey(key, entry).catch(() => null) : null;
+    if (healed) return healed;
     const tried = plan.map(({ s, cand }) => `${s.name}:${cand.by}=${cand.value || cand.name}`).join(" | ");
     throw new Error(`未命中 key "${key}"(${entry.desc || ""});已试(含 iframe): ${tried} → 更新 selectors.json 的 "${key}".candidates`);
+  }
+
+  // 运行时自学习:按 key 语义(key 名拆词 + desc 引号文案 + 旧候选文案)在各 frame 内发现候选元素,
+  // 高置信唯一匹配 → 铸造新候选定位执行,并记入 HEALS(runner 每条用例执行完 drainHeals 上报平台评审)。
+  // 失败/不置信一律返回 null(调用方维持原「未命中」错误,不冒险自愈错元素)。
+  async function healKey(key, entry) {
+    const args = tokensForKey(key, {
+      ...entry,
+      candidates: pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates),
+    });
+    if (!args.idTokens.length && !args.textTokens.length) return null;
+    // 逐 frame 发现(page.frames() 扁平含任意深度;FrameLocator 不能 evaluate,故用 Frame 对象)
+    let best = null;
+    let bestFrame = null;
+    for (const f of page.frames()) {
+      let matches = [];
+      try { matches = await f.evaluate(discoverInPage, args); } catch { continue; }
+      const top = pickConfident(matches);
+      if (top && (!best || top.score > best.score)) { best = top; bestFrame = f; }
+    }
+    if (!best || !bestFrame) return null;
+    const learned = mintedToCandidates(best.minted);
+    if (!learned.length) return null;
+    // 用铸造的最优候选在该 frame 内真实定位一次(要求可见),定位不上就放弃自愈。
+    for (const cand of learned) {
+      try {
+        const base = byToLocator(bestFrame, cand);
+        const scan = Math.min(await base.count(), 5);
+        for (let i = 0; i < scan; i++) {
+          const one = base.nth(i);
+          if (await one.isVisible().catch(() => false)) {
+            HEALS.push({
+              key,
+              candidates: learned,
+              evidence: {
+                matched: best.why, text: best.text, tag: best.tag, score: best.score,
+                frame_url: (bestFrame.url() || "").slice(0, 200),
+              },
+            });
+            return { loc: one, hit: { scope: "healed", by: cand.by, value: cand.value || cand.name, healed: true } };
+          }
+        }
+      } catch { /* 试下一个铸造候选 */ }
+    }
+    return null;
   }
 
   async function resolveTarget(args, { requireVisible = true } = {}) {
@@ -292,6 +346,8 @@ export function createGuiCore(opts = {}) {
     setRegistry(registry, vmIframe) { REGISTRY = registry || {}; VM_IFRAME = vmIframe || VM_IFRAME; },
     ensureConnected,
     contentFrame,
+    // 取走并清空本轮自愈记录(runner 每条用例执行完调用,POST /api/selectors/learned 上报评审)。
+    drainHeals() { return HEALS.splice(0, HEALS.length); },
 
     async connect() {
       await ensureConnected();

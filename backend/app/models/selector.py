@@ -48,6 +48,40 @@ class SelectorScope(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class SelectorLearned(Base):
+    """运行时自学习候选评审队列(self-healing 上报落点)。
+
+    runner 全候选失败→按 key 语义找回元素→铸造候选执行成功后上报到此。上报即
+    把最优候选(带 src:"learned" 标)追加到 selector_key.candidates 尾部试用——
+    下次同 key 失败可直接命中;人工「转正」去掉试用标、「拒绝」从注册表移除且
+    同候选再上报不再入表(status=rejected 挡重复)。candidate/evidence 存 JSON
+    字符串(兼容 MySQL 5.6)。同 (scope,key,by,value) 去重,重复上报只 hit_count+1。
+    """
+
+    __tablename__ = "selector_learned"
+    __table_args__ = (
+        Index("idx_sellearn_scope", "project_id", "sub_product"),
+        Index("idx_sellearn_status", "status"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    key: Mapped[str] = mapped_column(String(64))
+    cand_by: Mapped[str] = mapped_column(String(16))
+    cand_value: Mapped[str] = mapped_column(String(255))
+    candidate: Mapped[str] = mapped_column(Text, default="{}")   # 完整候选 JSON(含 name/src)
+    all_candidates: Mapped[str] = mapped_column(Text, default="[]")  # 本次铸造的全部候选(评审参考)
+    evidence: Mapped[str] = mapped_column(Text, default="{}")    # {matched,text,tag,score,frame_url}
+    runner: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)   # 来源 exec_run(软关联)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")  # pending/approved/rejected
+    hit_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ProbeRequest(Base):
     """设备探测请求：平台侧下发一次探测，runner 拉取执行并回写 result/error。
 

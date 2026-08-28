@@ -74,6 +74,187 @@ def create_key(body: SelectorKeyIn, db: Session = Depends(get_db),
     return ok(_key_out(r))
 
 
+# ---- 运行时自学习候选(self-healing 上报 + 评审;注册在 /{kid} 动态路由之前避免吞路径)----
+
+# 每个 key 同时在注册表里挂的「试用中(src=learned 未转正)」候选上限——防持续误愈把候选链撑爆。
+_MAX_LEARNED_PER_KEY = 2
+
+
+def _learned_out(r) -> dict:
+    from app.models import SelectorLearned  # noqa: F401 (类型提示用)
+    try:
+        cand = json.loads(r.candidate or "{}")
+    except (json.JSONDecodeError, ValueError):
+        cand = {}
+    try:
+        ev = json.loads(r.evidence or "{}")
+    except (json.JSONDecodeError, ValueError):
+        ev = {}
+    return {"id": r.id, "project_id": r.project_id, "sub_product": r.sub_product,
+            "key": r.key, "candidate": cand, "evidence": ev,
+            "runner": r.runner, "run_id": r.run_id, "status": r.status,
+            "hit_count": r.hit_count,
+            "created_at": r.created_at.isoformat() if r.created_at else None}
+
+
+@router.post("/learned")
+def report_learned(body: dict, db: Session = Depends(get_db),
+                   ctx: RunnerCtx = Depends(require_runner_ctx)):
+    """runner 上报自愈记录(runner token 鉴权)。
+
+    body: {project_id, sub_product, runner, run_id, items:[{key, candidates:[...], evidence:{}}]}
+    行为:同 (scope,key,by,value) 幂等去重(重复上报 hit_count+1);新候选若 key 在注册表且
+    试用位未满 → 追加到候选链尾部(src:"learned" 试用标);rejected 过的同候选不再入注册表。
+    """
+    from app.models import SelectorLearned
+    from app.services.selector_ranking import is_valid_candidate
+
+    project_id = body.get("project_id")
+    if not isinstance(project_id, int):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺 project_id")
+    sub = _valid_sub(str(body.get("sub_product") or ""))
+    runner = str(body.get("runner") or "")[:64]
+    run_id = body.get("run_id") if isinstance(body.get("run_id"), int) else None
+    items = body.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="items 为空")
+
+    accepted = appended = bumped = 0
+    for it in items[:20]:   # 单次上限,防异常 runner 灌爆
+        if not isinstance(it, dict):
+            continue
+        key = str(it.get("key") or "").strip()
+        cands = [c for c in (it.get("candidates") or []) if is_valid_candidate(c)]
+        if not key or not cands:
+            continue
+        best = cands[0]
+        row = (db.query(SelectorLearned)
+               .filter(SelectorLearned.project_id == project_id,
+                       SelectorLearned.sub_product == sub,
+                       SelectorLearned.key == key,
+                       SelectorLearned.cand_by == best.get("by"),
+                       SelectorLearned.cand_value == str(best.get("value"))[:255])
+               .first())
+        if row:
+            row.hit_count += 1
+            row.runner = runner or row.runner
+            row.run_id = run_id or row.run_id
+            row.updated_at = datetime.utcnow()
+            bumped += 1
+            db.commit()
+            continue   # rejected/approved/pending 均不重复追加注册表
+        row = SelectorLearned(
+            project_id=project_id, sub_product=sub, key=key,
+            cand_by=best.get("by"), cand_value=str(best.get("value"))[:255],
+            candidate=json.dumps(best, ensure_ascii=False),
+            all_candidates=json.dumps(cands, ensure_ascii=False),
+            evidence=json.dumps(it.get("evidence") or {}, ensure_ascii=False),
+            runner=runner, run_id=run_id, status="pending",
+        )
+        db.add(row)
+        accepted += 1
+        # 追加到注册表候选链尾部(试用位):key 必须已注册,且试用中候选未超上限、无同 by+value
+        sk = (db.query(SelectorKey)
+              .filter(SelectorKey.project_id == project_id,
+                      SelectorKey.sub_product == sub, SelectorKey.key == key).first())
+        if sk:
+            try:
+                existing = json.loads(sk.candidates or "[]")
+            except (json.JSONDecodeError, ValueError):
+                existing = []
+            if not isinstance(existing, list):
+                existing = []
+            dup = any(isinstance(c, dict) and c.get("by") == best.get("by")
+                      and c.get("value") == best.get("value") for c in existing)
+            probation = sum(1 for c in existing
+                            if isinstance(c, dict) and c.get("src") == "learned")
+            if not dup and probation < _MAX_LEARNED_PER_KEY:
+                existing.append(best)   # best 已带 src:"learned"(runner 铸造时打标)
+                sk.candidates = json.dumps(existing, ensure_ascii=False)
+                sk.updated_at = datetime.utcnow()
+                appended += 1
+        db.commit()
+    return ok({"accepted": accepted, "appended": appended, "deduped": bumped})
+
+
+@router.get("/learned")
+def list_learned(project_id: int = Query(...), status_f: str = Query("pending", alias="status"),
+                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """自学习候选评审列表(默认 pending)。"""
+    from app.models import SelectorLearned
+    assert_project_role(db, user, project_id, _RW)
+    q = db.query(SelectorLearned).filter(SelectorLearned.project_id == project_id)
+    if status_f:
+        q = q.filter(SelectorLearned.status == status_f)
+    rows = q.order_by(SelectorLearned.id.desc()).limit(200).all()
+    # 带上 key 的 desc/page 便于评审时理解语义
+    keys = {r.key for r in rows}
+    meta = {}
+    if keys:
+        for sk in db.query(SelectorKey).filter(SelectorKey.project_id == project_id,
+                                               SelectorKey.key.in_(keys)).all():
+            meta.setdefault(sk.key, {"desc": sk.desc, "page": sk.page})
+    out = []
+    for r in rows:
+        d = _learned_out(r)
+        d.update(meta.get(r.key, {}))
+        out.append(d)
+    return ok(out)
+
+
+@router.patch("/learned/{lid}")
+def review_learned(lid: int, body: dict, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """评审自学习候选:action=approve 转正(去掉试用标,永久保留)/ reject 拒绝(从注册表移除)。"""
+    from app.models import SelectorLearned
+    row = db.get(SelectorLearned, lid)
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
+    assert_project_role(db, user, row.project_id, _RW)
+    action = (body or {}).get("action")
+    if action not in ("approve", "reject"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="action 须为 approve/reject")
+    sk = (db.query(SelectorKey)
+          .filter(SelectorKey.project_id == row.project_id,
+                  SelectorKey.sub_product == row.sub_product,
+                  SelectorKey.key == row.key).first())
+    cands = []
+    if sk:
+        try:
+            cands = json.loads(sk.candidates or "[]")
+        except (json.JSONDecodeError, ValueError):
+            cands = []
+        if not isinstance(cands, list):
+            cands = []
+    if action == "approve":
+        row.status = "approved"
+        # 去掉试用标 → 变成正式候选(位置保持在链尾:它是"其它候选都挂了才有的"最后防线,不抢排序)
+        if sk:
+            changed = False
+            for c in cands:
+                if isinstance(c, dict) and c.get("by") == row.cand_by \
+                        and c.get("value") == row.cand_value and c.get("src") == "learned":
+                    c.pop("src", None)
+                    changed = True
+            if changed:
+                sk.candidates = json.dumps(cands, ensure_ascii=False)
+                sk.updated_at = datetime.utcnow()
+    else:
+        row.status = "rejected"
+        # 从注册表移除该候选(同 by+value 且带 learned 标的;已转正的不误删)
+        if sk:
+            kept = [c for c in cands
+                    if not (isinstance(c, dict) and c.get("by") == row.cand_by
+                            and c.get("value") == row.cand_value and c.get("src") == "learned")]
+            if len(kept) != len(cands):
+                sk.candidates = json.dumps(kept, ensure_ascii=False)
+                sk.updated_at = datetime.utcnow()
+    row.reviewed_by = user.id
+    row.reviewed_at = datetime.utcnow()
+    db.commit()
+    return ok(_learned_out(row))
+
+
 @router.patch("/{kid}")
 def patch_key(kid: int, body: SelectorKeyPatch, db: Session = Depends(get_db),
               user: User = Depends(get_current_user)):

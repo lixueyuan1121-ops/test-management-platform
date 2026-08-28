@@ -512,3 +512,8 @@ export const runTestPlan = (plan_id, runner) => http.post(`/test-plans/${plan_id
 export const setTestPlanSchedule = (plan_id, cron, enabled) => http.patch(`/test-plans/${plan_id}/schedule`, { cron, enabled })
 export const testPlanRuns = (params) => http.get('/test-plans/runs', { params })
 export const testPlanRunDetail = (run_id) => http.get(`/test-plans/runs/${run_id}`)
+
+// 运行时自学习选择器(self-healing 评审)
+export const listLearnedSelectors = (project_id, status = 'pending') =>
+  http.get('/selectors/learned', { params: { project_id, status } })
+export const reviewLearnedSelector = (id, action) => http.patch(`/selectors/learned/${id}`, { action })

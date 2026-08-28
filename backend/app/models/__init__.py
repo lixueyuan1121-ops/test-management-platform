@@ -11,7 +11,7 @@ from app.models.checklist import ChecklistItem
 from app.models.exec_queue import ExecRun
 from app.models.runner_device import RunnerDevice
 from app.models.release import ReleaseRecord
-from app.models.selector import SelectorKey, SelectorScope, ProbeRequest
+from app.models.selector import SelectorKey, SelectorScope, ProbeRequest, SelectorLearned
 from app.models.api_env import ApiEnv
 from app.models.perf import PerfRun
 from app.models.perf_report_set import PerfReportSet
@@ -44,6 +44,7 @@ __all__ = [
     "SelectorKey",
     "SelectorScope",
     "ProbeRequest",
+    "SelectorLearned",
     "ApiEnv",
     "PerfRun",
     "PerfReportSet",
