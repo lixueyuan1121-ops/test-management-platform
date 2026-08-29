@@ -229,16 +229,48 @@ def notify_devices_offline(offline: list[str], pending_count: int) -> None:
     )
 
 
-# ---------------- 场景五：测评任务一条龙分步通知 ----------------
+# ---------------- 场景五：测评任务一条龙分步通知（走推推机器人）----------------
+def _tuitui_send(content: str, group: str | None = None) -> None:
+    """推推(TuiTui)机器人发群消息：POST /message/custom/send，appid+secret URL 鉴权。
+
+    无人值守纯 HTTP（不依赖 tuitui-cli/SSO 登录态）；异步发送不阻塞主流程；
+    未配 appid/secret/group 时静默跳过。secret 在 URL 上，故日志绝不打印 url。
+    """
+    appid = (settings.TUITUI_BOT_APPID or "").strip()
+    secret = (settings.TUITUI_BOT_SECRET or "").strip()
+    grp = (group or settings.TUITUI_BOT_GROUP or "").strip()
+    if not (appid and secret and grp):
+        return
+    base = (settings.TUITUI_BASE_URL or "https://alarm.im.qihoo.net").rstrip("/")
+    url = f"{base}/message/custom/send?appid={appid}&secret={secret}"
+    body = {"togroups": [grp], "msgtype": "text", "text": {"content": content[:50000]}}
+
+    def _do():
+        try:
+            resp = requests.post(url, json=body, timeout=_TIMEOUT)
+            if resp.status_code != 200:
+                logger.warning("推推通知发送失败：HTTP %s", resp.status_code)
+                return
+            data = resp.json() if resp.content else {}
+            if str(data.get("errcode", "0")) != "0":
+                logger.warning("推推通知被拒绝：errcode=%s errmsg=%s",
+                               data.get("errcode"), data.get("errmsg"))
+        except requests.RequestException as e:
+            logger.warning("推推通知网络异常：%s", e)
+        except ValueError:
+            logger.warning("推推通知返回非 JSON")
+
+    threading.Thread(target=_do, daemon=True).start()
+
+
 def notify_eval_pipeline(task_name: str, project_id: int, title: str,
                          lines: list[str], color: str = COLOR_BLUE) -> None:
-    """测评任务一条龙(auto pipeline)分步通知:每完成一步发一张卡(共 4 步)。
+    """测评任务一条龙(auto pipeline)分步通知：每完成一步发一条推推群消息（共 4 步）。
 
-    受 NOTIFY_EVAL_PIPELINE 开关 + 通道总开关(FEISHU_WEBHOOK_URL)约束,未配置静默跳过。
-    lines 由编排器组装(可含 lark_md 加粗);project_id 预留(暂用统一列表页跳转)。
+    受 NOTIFY_EVAL_PIPELINE 开关约束；推推未配（appid/secret/group 缺任一）时静默跳过。
+    推推 text 不渲染 markdown，故 _esc 顺带清掉 * _ 等符号，避免通知里出现裸星号。
     """
-    if not settings.NOTIFY_EVAL_PIPELINE or not is_enabled():
+    if not settings.NOTIFY_EVAL_PIPELINE:
         return
-    body = [f"**任务**:{_esc(task_name)}"] + [_esc(l) for l in lines]
-    send_card(title=title, lines=body, color=color,
-              link_path="/eval-tasks", link_text="查看测评任务")
+    parts = [_esc(title), f"任务：{_esc(task_name)}"] + [_esc(l) for l in lines]
+    _tuitui_send("\n".join(parts))

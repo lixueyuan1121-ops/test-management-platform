@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     NOTIFY_EVAL_PIPELINE: bool = True    # 测评任务一条龙(执行完自动判定+评价)分步通知
     # 一条龙判定/综合评价用的引擎(claude/deepseek);留空=各自默认 provider。
     EVAL_PIPELINE_PROVIDER: str = ""
+    # 推推(TuiTui)机器人通知：一条龙分步通知走这里。appid+secret URL 鉴权，发到 togroups。
+    TUITUI_BOT_APPID: str = ""
+    TUITUI_BOT_SECRET: str = ""   # 敏感：只填进 .env
+    TUITUI_BOT_GROUP: str = ""    # 目标群 id
+    TUITUI_BASE_URL: str = "https://alarm.im.qihoo.net"  # 外网发送改 https://im.live.360.cn:8282/robot
     # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。
     AUTO_ISSUE_ON_FAIL: bool = True
     # auto/ci 批次失败自动重试次数上限（0=关闭；1=失败补发一次，重试通过标 flaky）。
