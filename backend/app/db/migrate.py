@@ -316,13 +316,19 @@ def ensure_issue_columns() -> None:
 
 
 def ensure_project_columns() -> None:
-    """project 表补列 platform_type（如缺失）。pc/app，控制发版页子产品枚举与渠道列；NULL=未分类。"""
+    """project 表补列 platform_type / geelib_sub_id（如缺失）。
+
+    platform_type：pc/app，控制发版页子产品枚举与渠道列；NULL=未分类。
+    geelib_sub_id：极库云项目 ID，缺陷上报映射用；NULL=未映射(回退 GEELIB_SUB_MAP)。
+    """
     cols = _columns("project")
     if not cols:
         return  # 表尚未建，交给 create_all
     with engine.begin() as conn:
         if "platform_type" not in cols:
             conn.execute(text("ALTER TABLE project ADD COLUMN platform_type VARCHAR(16) NULL"))
+        if "geelib_sub_id" not in cols:
+            conn.execute(text("ALTER TABLE project ADD COLUMN geelib_sub_id BIGINT NULL"))
 
 
 def ensure_release_columns() -> None:

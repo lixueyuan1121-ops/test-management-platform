@@ -30,6 +30,7 @@ CREATE TABLE `project` (
   `code` VARCHAR(64) NOT NULL,
   `description` VARCHAR(512) DEFAULT NULL,
   `platform_type` VARCHAR(16) DEFAULT NULL,
+  `geelib_sub_id` BIGINT DEFAULT NULL,
   `status` ENUM('active','archived') NOT NULL DEFAULT 'active',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -25,9 +25,10 @@
           </template>
         </el-table-column>
         <el-table-column prop="owner_name" label="负责人" width="100" />
-        <el-table-column label="外部缺陷" width="120">
+        <el-table-column label="外部缺陷" width="130">
           <template #default="{ row }">
-            <el-link v-if="row.external_ref" :href="row.external_ref" target="_blank" type="primary" :underline="false">{{ row.external_ref }}</el-link>
+            <el-tag v-if="row.external_ref && row.external_ref.startsWith('geelib#')" type="success" size="small">{{ row.external_ref }}</el-tag>
+            <el-link v-else-if="row.external_ref" :href="row.external_ref" target="_blank" type="primary" :underline="false">{{ row.external_ref }}</el-link>
             <span v-else>-</span>
           </template>
         </el-table-column>
@@ -39,11 +40,12 @@
         <el-table-column prop="created_at" label="创建时间" width="160">
           <template #default="{ row }">{{ row.created_at?.slice(0,16).replace('T',' ') }}</template>
         </el-table-column>
-        <el-table-column v-if="canManage" label="操作" width="160">
+        <el-table-column v-if="canManage" label="操作" width="230">
           <template #default="{ row }">
             <el-button v-if="row.status==='open'" link type="success" @click="resolve(row)">标记解决</el-button>
             <el-button v-else link type="warning" @click="reopen(row)">重开</el-button>
             <el-button link type="primary" @click="openEdit(row)">关联缺陷</el-button>
+            <el-button v-if="!row.external_ref" link type="danger" :loading="reporting===row.id" @click="reportGeelib(row)">上报极库云</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -64,10 +66,10 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
-import { listIssues, updateIssue } from '@/api'
+import { listIssues, updateIssue, reportIssueToGeelib } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
 const auth = useAuthStore()
@@ -77,6 +79,7 @@ const pid = ref(null)
 const statusFilter = ref('open')
 const issues = ref([])
 const loading = ref(false)
+const reporting = ref(null)
 const canManage = computed(() => auth.roleIn(pid.value) === 'admin')
 const dialog = reactive({ visible: false, id: null, title: '', external_ref: '', saving: false })
 
@@ -97,6 +100,18 @@ function sevType(s) { return { blocker: 'danger', major: 'warning', minor: 'info
 
 async function resolve(row) { await updateIssue(row.id, { status: 'resolved' }); ElMessage.success('已标记解决'); await load() }
 async function reopen(row) { await updateIssue(row.id, { status: 'open' }); ElMessage.success('已重开'); await load() }
+
+async function reportGeelib(row) {
+  try {
+    await ElMessageBox.confirm(`确认把「${row.title}」作为缺陷上报到极库云？上报后会回填工作项编号。`, '上报极库云', { type: 'warning' })
+  } catch { return }
+  reporting.value = row.id
+  try {
+    const res = await reportIssueToGeelib(row.id)
+    ElMessage.success(res?.already_reported ? '该问题已上报过' : `已上报极库云：${res?.external_ref || '成功'}`)
+    await load()
+  } finally { reporting.value = null }
+}
 
 function openEdit(row) {
   dialog.id = row.id; dialog.title = row.title; dialog.external_ref = row.external_ref || ''
