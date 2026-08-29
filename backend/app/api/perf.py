@@ -26,7 +26,7 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import PerfRun, PerfReportSet, User
 from app.schemas.common import ok
-from app.schemas.perf import PerfDispatchIn, PerfReportIn, PerfUploadIn, PerfReportSetIn, PerfPromptIn
+from app.schemas.perf import PerfDispatchIn, PerfReportIn, PerfUploadIn, PerfReportSetIn, PerfThresholdsIn, PerfPromptIn
 
 router = APIRouter(prefix="/api/perf", tags=["perf"])
 
@@ -345,6 +345,12 @@ def queue_report(
     _apply_result(r, outcome=body.outcome, meta=body.meta, samples=body.samples, events=body.events, error=body.error)
     db.commit()
     db.refresh(r)
+    # 性能红线检查(旁路):completed 且报告集设了阈值 → 超线推飞书;失败静默
+    try:
+        from app.services.perf_guard import guard_perf_run
+        guard_perf_run(db, r)
+    except Exception:
+        pass
     return ok(_to_out(r))
 
 
@@ -377,6 +383,12 @@ def queue_upload(
     db.add(r)
     db.commit()
     db.refresh(r)
+    # 性能红线检查(旁路,与 queue_report 同款)
+    try:
+        from app.services.perf_guard import guard_perf_run
+        guard_perf_run(db, r)
+    except Exception:
+        pass
     return ok(_to_out(r))
 
 
@@ -407,12 +419,14 @@ def report_prompt(
 def _set_out(db: Session, s: PerfReportSet) -> dict:
     cnt = db.query(PerfRun).filter(PerfRun.report_set_id == s.id).count()
     done = db.query(PerfRun).filter(PerfRun.report_set_id == s.id, PerfRun.status == "completed").count()
+    from app.services.perf_guard import parse_thresholds
     return {
         "id": s.id,
         "name": s.name,
         "created_by": s.created_by,
         "run_count": cnt,
         "completed_count": done,
+        "thresholds": parse_thresholds(s.thresholds_json),
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
     }
@@ -441,6 +455,39 @@ def rename_report_set(set_id: int, body: PerfReportSetIn, db: Session = Depends(
     if not user.is_platform_admin and s.created_by != user.id:
         raise HTTPException(403, "只能修改自己创建的报告集")
     s.name = body.name.strip()
+    db.commit()
+    db.refresh(s)
+    return ok(_set_out(db, s))
+
+
+@router.patch("/report-sets/{set_id}/thresholds")
+def set_thresholds(set_id: int, body: PerfThresholdsIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """设置报告集性能红线。{metricKey: {max?: n, min?: n}};传 {} 清空(关闭告警)。
+
+    metricKey 须在 METRIC_DEFS 白名单内;数值须为数字。超线时采集完成即推飞书告警。
+    """
+    from app.services.perf_guard import METRIC_DEFS
+
+    s = db.get(PerfReportSet, set_id)
+    if not s:
+        raise HTTPException(404, "报告集不存在")
+    if not user.is_platform_admin and s.created_by != user.id:
+        raise HTTPException(403, "只能修改自己创建的报告集")
+    cleaned = {}
+    for k, v in (body.thresholds or {}).items():
+        if k not in METRIC_DEFS:
+            raise HTTPException(400, f"未知指标 {k}(可用:{','.join(METRIC_DEFS)})")
+        if not isinstance(v, dict):
+            raise HTTPException(400, f"指标 {k} 的阈值须为对象 {{max?/min?}}")
+        rule = {}
+        for bound in ("max", "min"):
+            if v.get(bound) is not None:
+                if not isinstance(v[bound], (int, float)):
+                    raise HTTPException(400, f"指标 {k} 的 {bound} 须为数字")
+                rule[bound] = v[bound]
+        if rule:
+            cleaned[k] = rule
+    s.thresholds_json = json.dumps(cleaned, ensure_ascii=False) if cleaned else None
     db.commit()
     db.refresh(s)
     return ok(_set_out(db, s))

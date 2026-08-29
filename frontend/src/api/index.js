@@ -353,6 +353,8 @@ export const listPerfSets = () => http.get('/perf/report-sets')
 export const createPerfSet = (name) => http.post('/perf/report-sets', { name })
 export const renamePerfSet = (id, name) => http.patch(`/perf/report-sets/${id}`, { name })
 export const deletePerfSet = (id) => http.delete(`/perf/report-sets/${id}`)
+// 性能红线(阈值告警):{metricKey:{max?,min?}};传 {} 清空
+export const setPerfThresholds = (id, thresholds) => http.patch(`/perf/report-sets/${id}/thresholds`, { thresholds })
 // 交互采集控制：轮询提示/状态、点继续推进、取消采集
 export const getPerfPrompt = (id) => http.get(`/perf/runs/${id}/prompt`)
 export const signalPerfRun = (id) => http.post(`/perf/runs/${id}/signal`)

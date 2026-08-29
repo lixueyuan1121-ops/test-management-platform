@@ -243,6 +243,17 @@ def ensure_testcase_requirement_column() -> None:
     _ensure_index("test_case", "idx_testcase_requirement", "requirement_id")
 
 
+def ensure_perf_set_thresholds_column() -> None:
+    """perf_report_set 补列 thresholds_json(性能红线;老行 NULL=未设不告警)。幂等。"""
+    cols = _columns("perf_report_set")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    with engine.begin() as conn:
+        if "thresholds_json" not in cols:
+            conn.execute(text("ALTER TABLE perf_report_set ADD COLUMN thresholds_json TEXT NULL"))
+
+
+
 def ensure_perf_run_columns() -> None:
     """perf_run 表补列 report_set_id / prompt / signal_seq（如缺失）。
 

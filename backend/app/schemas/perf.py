@@ -52,6 +52,14 @@ class PerfReportSetIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
 
 
+class PerfThresholdsIn(BaseModel):
+    """设置报告集性能红线:{metricKey: {max?: n, min?: n}};传 {} 清空(关闭告警)。
+
+    metricKey 白名单与结构校验在端点内做(依赖 perf_guard.METRIC_DEFS,schema 保持薄)。
+    """
+    thresholds: dict = Field(default_factory=dict)
+
+
 class PerfPromptIn(BaseModel):
     """agent 上报 perfdog 当前提示行（交互采集控制用）。prompt 为 null 表示清除待办。"""
     prompt: str | None = None

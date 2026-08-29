@@ -8,6 +8,7 @@
           <el-option v-for="s in sets" :key="s.id" :label="`${s.name}（${s.completed_count}）`" :value="s.id" />
         </el-select>
         <el-button size="small" :disabled="!currentSet" @click="onRename">重命名</el-button>
+        <el-button size="small" :disabled="!currentSet" @click="openThresholds">性能红线</el-button>
         <el-select v-model="scenarioFilter" placeholder="全部场景" clearable size="small" style="width:130px" @change="load">
           <el-option v-for="s in scenarioOptions" :key="s" :label="s" :value="s" />
         </el-select>
@@ -49,6 +50,29 @@
         <div :ref="(el) => setChartRef(g.scenario, el)" class="chart"></div>
       </el-card>
     </template>
+
+    <!-- 性能红线:超线的采集完成即推飞书告警 -->
+    <el-dialog v-model="thVisible" title="性能红线（阈值告警）" width="560px">
+      <el-alert type="info" :closable="false" show-icon class="th-tip"
+        title="给本报告集设红线：采集完成时逐指标比对，超线自动推飞书告警（需配置通知通道）。留空=不检查该指标。" />
+      <el-table :data="thRows" size="small" border>
+        <el-table-column prop="label" label="指标" width="110" />
+        <el-table-column label="单位" width="60" align="center">
+          <template #default="{ row }">{{ row.unit || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="红线" min-width="220">
+          <template #default="{ row }">
+            <span class="th-op">{{ row.lowGood ? '不得超过' : '不得低于' }}</span>
+            <el-input-number v-model="row.limit" :min="0" :controls="false" size="small"
+                             style="width:120px" placeholder="留空不检查" />
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="thVisible = false">取消</el-button>
+        <el-button type="primary" :loading="thSaving" @click="saveThresholds">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -56,7 +80,7 @@
 import { ref, reactive, computed, onMounted, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import { perfReport, listPerfSets, renamePerfSet } from '@/api'
+import { perfReport, listPerfSets, renamePerfSet, setPerfThresholds } from '@/api'
 import { groupByScenario, buildVerdict, pickKpis, DIMENSIONS, fmtVal } from '@/utils/perf-report-logic'
 
 const loading = ref(false)
@@ -129,6 +153,40 @@ function dimRows(g) {
   })
 }
 
+// ---- 性能红线(阈值告警):后端 perf_guard.METRIC_DEFS 的可配指标子集 ----
+const TH_KEYS = ['ttftMs', 'cpuPeak', 'cpuAvg', 'memDelta', 'memPeak', 'memTrendMB', 'gpuPeak', 'fpsAvg', 'wsRtt', 'ping']
+const thVisible = ref(false)
+const thRows = ref([])
+const thSaving = ref(false)
+
+function openThresholds() {
+  const cur = sets.value.find((s) => s.id === currentSet.value)
+  const saved = cur?.thresholds || {}
+  thRows.value = DIMENSIONS.filter((d) => TH_KEYS.includes(d.key)).map((d) => {
+    const rule = saved[d.key] || {}
+    return {
+      key: d.key, label: d.label, unit: d.unit, lowGood: d.lowGood !== false,
+      limit: d.lowGood !== false ? (rule.max ?? undefined) : (rule.min ?? undefined),
+    }
+  })
+  thVisible.value = true
+}
+
+async function saveThresholds() {
+  const payload = {}
+  for (const r of thRows.value) {
+    if (r.limit === undefined || r.limit === null || r.limit === '') continue
+    payload[r.key] = r.lowGood ? { max: Number(r.limit) } : { min: Number(r.limit) }
+  }
+  thSaving.value = true
+  try {
+    await setPerfThresholds(currentSet.value, payload)
+    ElMessage.success(Object.keys(payload).length ? '红线已保存' : '红线已清空')
+    thVisible.value = false
+    await loadSets()
+  } catch { /* 拦截器已提示 */ } finally { thSaving.value = false }
+}
+
 function renderCharts() {
   groups.value.forEach((g) => {
     const el = chartRefs[g.scenario]
@@ -165,6 +223,8 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.th-tip { margin-bottom: 10px; }
+.th-op { font-size: 12px; color: #909399; margin-right: 8px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .title { font-size: 18px; font-weight: 600; }
 .title .sub { font-size: 12px; color: #909399; font-weight: 400; margin-left: 8px; }
