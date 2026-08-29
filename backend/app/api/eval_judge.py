@@ -66,6 +66,10 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
             # 未执行完/未回填的不判(前端只传 done,这里防手工调用或状态漂移时误判),明确回执原因
             results.append({"run_id": r.id, "skipped": True, "reason": f"状态 {st},尚未执行完成"})
             continue
+        if st == "cancelled":
+            # 已取消(测评任务被停止):结果作废,不进判定(否则空壳 trace 会被判成 fail/error 污染战绩)
+            results.append({"run_id": r.id, "skipped": True, "reason": "状态 cancelled,已取消不判定"})
+            continue
         try:
             res = eval_judge.judge_run(db, r, provider=body.provider, votes=body.votes)
             results.append({"run_id": r.id, **res})

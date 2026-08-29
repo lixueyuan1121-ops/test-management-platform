@@ -205,6 +205,10 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     if r.runner != runner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+    # 终态保护:任务被停止时该 run 已置 cancelled(终态)。执行机若把「停止前已在跑的那条」跑完再回写,
+    # 必须拒绝,否则会把 cancelled 冲回 done/failed,让作废的结果混入判定/综合评价。
+    if getattr(r.status, "value", r.status) == EvalRunStatus.cancelled.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项已被停止(测评任务已停止),回写作废")
     r.status = EvalRunStatus.done if body.status == "done" else EvalRunStatus.failed
     r.share_link = body.share_link
     r.artifact_share_link = body.artifact_share_link

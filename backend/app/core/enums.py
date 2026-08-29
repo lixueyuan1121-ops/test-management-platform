@@ -118,6 +118,7 @@ class EvalRunStatus(str, enum.Enum):
     judging = "judging"    # 轨迹已回传，大模型判定中
     judged = "judged"      # 判定完成（终态）
     failed = "failed"      # 执行失败（对话没跑起来/抓取失败；区别于“判定不通过”）
+    cancelled = "cancelled"  # 已取消（用户停止测评任务：未执行的不再下发、执行中的结果作废；终态，不计失败）
 
 
 class EvalDeviceKind(str, enum.Enum):
@@ -139,6 +140,7 @@ class EvalTaskStatus(str, enum.Enum):
     draft = "draft"        # 草稿（定义中，未执行）
     running = "running"    # 执行中
     done = "done"          # 执行完毕（各用例已执行，可看汇总评价）
+    stopped = "stopped"    # 已停止（用户手动停止：当前批次未完成的已收口为 cancelled，区别于正常跑完的 done）
     archived = "archived"  # 已归档
 
 

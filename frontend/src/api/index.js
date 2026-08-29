@@ -142,6 +142,8 @@ export const deleteEvalTask = (id) => http.delete(`/eval-tasks/${id}`)
 export const runEvalTask = (id, payload) => http.post(`/eval-tasks/${id}/run`, payload)
 // 定时执行配置(CI 回归守卫):{enabled, cron, runner};开启需 cron+runner
 export const setEvalTaskSchedule = (id, payload) => http.patch(`/eval-tasks/${id}/schedule`, payload)
+// 一键停止测评任务:当前批次未完成 run 收口 cancelled + 关定时
+export const stopEvalTask = (id) => http.post(`/eval-tasks/${id}/stop`)
 // 手动把卡在 pending/running 的未回填 run 标记为失败（收口用；已回填的后端会拒绝）
 export const markEvalRunFailed = (taskId, runId) => http.post(`/eval-tasks/${taskId}/runs/${runId}/mark-failed`)
 // 单条重跑失败用例：failed run 原地复位回 pending，执行机重新拉走（免整任务重跑）

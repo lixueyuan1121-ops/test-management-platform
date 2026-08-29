@@ -65,6 +65,10 @@
           <template #default="{ row }">
             <el-button size="small" type="primary" text @click="openDetail(row)">详情/结果</el-button>
             <el-button size="small" type="success" text @click="openRun(row)">执行</el-button>
+            <el-popconfirm v-if="row.status === 'running'"
+              title="停止该测评任务？未执行的不再下发、执行中的结果作废，并关闭定时" width="280" @confirm="stopTask(row)">
+              <template #reference><el-button size="small" type="danger" text>停止</el-button></template>
+            </el-popconfirm>
             <el-button size="small" text :type="row.schedule_enabled ? 'warning' : ''" @click="openSchedule(row)">定时</el-button>
             <el-button size="small" text @click="openEdit(row)">编辑</el-button>
             <el-popconfirm title="删除该任务？(执行记录保留)" @confirm="removeTask(row)">
@@ -361,7 +365,7 @@ import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Tickets, Plus, Refresh, InfoFilled, Download } from '@element-plus/icons-vue'
 import {
-  listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
+  listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
   listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
 } from '@/api'
@@ -371,10 +375,10 @@ import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmt
 import { groupEvalRuns } from '@/utils/evalRunGroups'
 import { buildEvalReportHtml } from '@/utils/evalReportHtml'
 
-const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', archived: '已归档' }
-const TS_TYPE = { draft: 'info', running: 'warning', done: 'success', archived: 'info' }
-const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败' }
-const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judging: 'warning', judged: 'success', failed: 'danger' }
+const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', stopped: '已停止', archived: '已归档' }
+const TS_TYPE = { draft: 'info', running: 'warning', done: 'success', stopped: 'info', archived: 'info' }
+const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败', cancelled: '已取消' }
+const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judging: 'warning', judged: 'success', failed: 'danger', cancelled: 'info' }
 const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '判定出错' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
 // 人工复核标记(只读展示;复核操作在「测评结果」页)
@@ -590,6 +594,14 @@ async function saveSchedule() {
     await load()
   } catch { /* 拦截器已提示 */ }
   finally { schedSaving.value = false }
+}
+
+async function stopTask(row) {
+  try {
+    const d = await stopEvalTask(row.id)
+    ElMessage.success(`已停止，收口 ${d.cancelled_count} 条未完成用例`)
+    await load()
+  } catch { /* 拦截器已提示 */ }
 }
 
 // ── 执行 ──

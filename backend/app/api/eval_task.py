@@ -350,6 +350,41 @@ def retry_run(task_id: int, run_id: int, db: Session = Depends(get_db), user: Us
     return ok(_run_out(r))
 
 
+@router.post("/{task_id}/stop")
+def stop_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """停止测评任务:当前批次(last_batch_id)所有未完成(pending/running)的 run 收口为 cancelled,
+    任务置 stopped;若开了定时执行则一并关闭(移除调度 job,保留 cron 便于以后重开)。
+
+    - pending 改后执行机 list_pending 不再拉取 → 「未执行的不再继续」天然成立。
+    - running 平台无法远程终止那次对话,标记后其回写会被 eval_queue.report 以 409 拒绝(结果作废、
+      不进判定/综合评价)。已终态(done/judging/judged/failed)的 run 不动,保留既有结果。
+    """
+    from app.services.scheduler import sync_eval_task_job
+
+    task = db.get(EvalTask, task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
+    assert_project_role(db, user, task.project_id, _WRITE_ROLES)
+    cancelled = 0
+    if task.last_batch_id:
+        rows = (db.query(EvalRun)
+                .filter(EvalRun.eval_task_id == task.id,
+                        EvalRun.batch_id == task.last_batch_id,
+                        EvalRun.status.in_([EvalRunStatus.pending.value, EvalRunStatus.running.value]))
+                .all())
+        for r in rows:
+            r.status = EvalRunStatus.cancelled
+            r.reason = "用户停止测评任务"
+        cancelled = len(rows)
+    task.status = EvalTaskStatus.stopped
+    # 一并关定时:否则到点又自动下发新批次,与「不再继续」矛盾(保留 cron,仅关开关+移除 job)
+    if task.schedule_enabled:
+        task.schedule_enabled = False
+        sync_eval_task_job(task.id, task.schedule_cron, False)
+    db.commit(); db.refresh(task)
+    return ok({"cancelled_count": cancelled, "task": _to_out(task, db)})
+
+
 @router.get("/{task_id}/runs")
 def task_runs(task_id: int, batch_id: str | None = Query(None),
               db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -416,12 +451,12 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
             .order_by(EvalRun.id).all())
     if not runs:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="该批次没有执行记录")
-    # 未执行完/未回填的 run(pending/running)不进评价素材:执行机中断未回写时它们没有任何可评内容,
-    # 混入只会让报告把「没跑」当「跑差」。全被排除则明示,不给引擎喂空素材。
-    runs = [r for r in runs if getattr(r.status, "value", r.status) not in ("pending", "running")]
+    # 未执行完/未回填的 run(pending/running)、已取消的(cancelled)都不进评价素材:前者没有可评内容,
+    # 后者是用户主动停止的、结果作废。混入只会让报告把「没跑/已取消」当「跑差」。全被排除则明示。
+    runs = [r for r in runs if getattr(r.status, "value", r.status) not in ("pending", "running", "cancelled")]
     if not runs:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            detail="该批次的执行尚未回填(全部 pending/running),等执行完成或重跑后再生成")
+                            detail="该批次没有可评的执行记录(全部未回填或已取消),等执行完成或重跑后再生成")
 
     # 组装素材(在请求 db 存活期内取齐)
     qmap = {}
