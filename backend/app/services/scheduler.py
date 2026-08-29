@@ -94,6 +94,14 @@ def reap_stale_eval_runs() -> None:
         if rows:
             db.commit()
             logger.info("自动收口 %d 条超龄 running eval_run: %s", len(rows), [r.id for r in rows])
+            # 收口后这些批次可能达终态 → 触发测评一条龙(幂等;仅对开了 auto_pipeline 的任务生效)
+            for _b in {r.batch_id for r in rows}:
+                if _b:
+                    try:
+                        from app.services.eval_pipeline import on_batch_maybe_done
+                        on_batch_maybe_done(db, _b)
+                    except Exception:
+                        logger.exception("收口后一条龙触发失败 batch=%s", _b)
     except Exception:
         logger.exception("自动收口超龄 eval_run 失败")
         db.rollback()

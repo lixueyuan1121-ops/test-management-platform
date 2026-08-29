@@ -145,6 +145,12 @@ class EvalTask(Base):
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     schedule_runner: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 定时下发的执行机
     last_auto_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 一条龙(auto pipeline):批次全部执行完自动「批量判定 → 综合评价 → 分步飞书通知」。
+    auto_pipeline: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")  # 任务级开关
+    # 一条龙门闩:NULL/idle=可抢占、running=进行中、done=完成、failed=出错;每换批(dispatch)重置为
+    # NULL,保证一批只跑一次编排(并发回写/reaper 重复触发被条件 UPDATE 挡下)。
+    pipeline_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    pipeline_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 最近一次一条龙完成时刻
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )

@@ -514,6 +514,12 @@ def ensure_eval_task_tables() -> None:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN review_mark VARCHAR(16) NULL"))
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN review_note TEXT NULL"))
+    # eval_task 补一条龙三列(auto_pipeline 开关 + pipeline_status 门闩 + pipeline_at)
+    if tcols and "auto_pipeline" not in tcols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN auto_pipeline TINYINT NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN pipeline_status VARCHAR(16) NULL"))
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN pipeline_at DATETIME NULL"))
 
 
 def ensure_platform_columns() -> None:

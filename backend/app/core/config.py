@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     NOTIFY_EXEC_FAIL: bool = True       # 自动回归批次出现失败
     NOTIFY_TASK_ASSIGN: bool = True     # 任务指派到人
     NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
+    NOTIFY_EVAL_PIPELINE: bool = True    # 测评任务一条龙(执行完自动判定+评价)分步通知
+    # 一条龙判定/综合评价用的引擎(claude/deepseek);留空=各自默认 provider。
+    EVAL_PIPELINE_PROVIDER: str = ""
     # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。
     AUTO_ISSUE_ON_FAIL: bool = True
     # auto/ci 批次失败自动重试次数上限（0=关闭；1=失败补发一次，重试通过标 flaky）。

@@ -51,6 +51,18 @@
           <template #default="{ row }">
             <span v-if="row.last_batch_id" class="mono batch">{{ row.last_batch_id }}<br/>{{ row.done_count }}/{{ row.run_count }} 完成</span>
             <span v-else class="muted">未执行</span>
+            <div v-if="row.pipeline_status==='running'" class="pipe-tip">🔄 一条龙执行中</div>
+            <div v-else-if="row.pipeline_status==='done'" class="pipe-tip done">✅ 一条龙完成</div>
+            <div v-else-if="row.auto_pipeline" class="pipe-tip muted">⚡ 已开一条龙</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时/算力豆" width="110" align="center">
+          <template #default="{ row }">
+            <span v-if="row.last_batch_id" class="mono">
+              ⏱ {{ fmtDur(row.total_duration_ms) }}<br/>
+              <span :class="{ neg: row.total_bean_cost < 0 }">🫘 {{ row.total_bean_cost }}</span>
+            </span>
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
         <el-table-column label="综合评价" width="100" align="center">
@@ -189,6 +201,10 @@
             </el-select>
           </el-form-item>
         </template>
+        <el-form-item label="一条龙">
+          <el-switch v-model="runForm.auto_pipeline" />
+          <span class="cmp-hint">⚡ 全部执行完自动「批量判定 → 综合评价」，并飞书分步通知</span>
+        </el-form-item>
         <el-alert type="info" :closable="false" show-icon
           :title="`将下发 ${(runTask?.query_ids?.length || 0) * (runForm.compare ? 2 : 1)} 条用例${runForm.auto ? '(自动铺到在线执行机并行)' : (runForm.runners.length > 1 ? `(分片到 ${runForm.runners.length} 台并行)` : '')}${runForm.compare ? '(A/B 各一遍)' : ''};重复执行会生成新批次,综合评价需重新生成`" />
       </el-form>
@@ -325,6 +341,15 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
+          <el-table-column label="耗时/豆" width="92" align="center">
+            <template #default="{ row }">
+              <span v-if="!row.isGroup" class="mono">
+                ⏱ {{ fmtDur(row.duration_ms) }}<br/>
+                <span :class="{ neg: String(row.bean_cost || '').trim().startsWith('-') }">🫘 {{ row.bean_cost || '—' }}</span>
+              </span>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="判定理由" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row.status === 'failed'" class="fail-reason">执行失败：{{ row.reason || '（未回写原因）' }}</span>
@@ -423,7 +448,7 @@ const customSaving = ref(false)
 // 执行
 const runVisible = ref(false)
 const runTask = ref(null)
-const runForm = ref({ runners: [], auto: false, target_device: '', chat_mode: '', model: '', thinking_depth: '',
+const runForm = ref({ runners: [], auto: false, auto_pipeline: false, target_device: '', chat_mode: '', model: '', thinking_depth: '',
   compare: false, b_chat_mode: '', b_model: '', b_thinking_depth: '' })
 const devices = ref([])
 const clientDevices = ref([])
@@ -625,6 +650,7 @@ async function openRun(row) {
   runForm.value.b_chat_mode = b?.chatMode || ''
   runForm.value.b_model = b?.model || ''
   runForm.value.b_thinking_depth = b?.thinkingDepth || ''
+  runForm.value.auto_pipeline = !!row.auto_pipeline
   runVisible.value = true
   if (runForm.value.runners.length === 1) await loadClientDevices()
 }
@@ -636,6 +662,14 @@ async function loadClientDevices() {
   const only = runForm.value.runners.length === 1 ? runForm.value.runners[0] : ''
   if (!only) return
   try { clientDevices.value = await listEvalDevices(only) || [] } catch { clientDevices.value = [] }
+}
+
+function fmtDur(ms) {
+  if (!ms) return '—'
+  const s = Math.round(ms / 1000)
+  if (s < 60) return s + 's'
+  const m = Math.floor(s / 60), r = s % 60
+  return m + 'm' + (r ? r + 's' : '')
 }
 
 async function doRun() {
@@ -657,6 +691,7 @@ async function doRun() {
     }
     if (runForm.value.auto) payload.runner = 'auto'
     else payload.runners = runForm.value.runners
+    payload.auto_pipeline = runForm.value.auto_pipeline
     const res = await runEvalTask(runTask.value.id, payload)
     const n = res.runners?.length || 1
     ElMessage.success(`已下发 ${res.run_ids.length} 条${n > 1 ? `，分发到 ${n} 台并行` : ''}（批次 ${res.batch_id}）`)
@@ -803,6 +838,10 @@ function exportReport() {
 .turn-tag { margin-right: 6px; }
 /* A/B 对比 */
 .cmp-hint { margin-left: 10px; font-size: 12px; color: #8a94a6; }
+.pipe-tip { margin-top: 3px; font-size: 11px; color: #e6a23c; }
+.pipe-tip.done { color: #67c23a; }
+.pipe-tip.muted { color: #a8abb2; }
+.neg { color: #f56c6c; }
 .cmp-b-title { font-size: 12px; color: #8a94a6; }
 .cmp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #f6f9fc; border: 1px solid #e4ecf4; border-radius: 8px; }
 .cmp-seg { font-weight: 700; font-size: 13px; color: #5a6b7b; }

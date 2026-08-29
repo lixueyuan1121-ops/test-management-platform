@@ -64,6 +64,26 @@ def _sse(obj: dict) -> str:
 
 # ─── 序列化 ────────────────────────────────────────────────────────────────────
 
+def _parse_bean(raw) -> int:
+    """算力豆变动字符串 → 整数(容错)。形如 "-12"/"+5"/"12"/None/""/"—" → -12/5/12/0/0/0。"""
+    if not raw:
+        return 0
+    m = re.search(r"-?\d+", str(raw).replace("+", ""))
+    return int(m.group()) if m else 0
+
+
+def _batch_totals(db: Session, task: EvalTask) -> dict:
+    """任务最近批次的耗时/算力豆聚合(列表页展示)。bean_cost 是字符串,Python 侧容错累加。"""
+    if not task.last_batch_id:
+        return {"total_duration_ms": 0, "total_bean_cost": 0}
+    rows = (db.query(EvalRun.duration_ms, EvalRun.bean_cost)
+            .filter(EvalRun.eval_task_id == task.id,
+                    EvalRun.batch_id == task.last_batch_id).all())
+    total_ms = sum((d or 0) for d, _ in rows)
+    total_bean = sum(_parse_bean(b) for _, b in rows)
+    return {"total_duration_ms": total_ms, "total_bean_cost": total_bean}
+
+
 def _to_out(task: EvalTask, db: Session) -> dict:
     qids = json.loads(task.query_ids) if task.query_ids else []
     run_count = db.query(EvalRun).filter(
@@ -94,6 +114,10 @@ def _to_out(task: EvalTask, db: Session) -> dict:
         "last_auto_run_at": task.last_auto_run_at.isoformat() if task.last_auto_run_at else None,
         "run_count": run_count,
         "done_count": done_count,
+        **_batch_totals(db, task),
+        "auto_pipeline": bool(task.auto_pipeline),
+        "pipeline_status": task.pipeline_status,
+        "pipeline_at": task.pipeline_at.isoformat() if task.pipeline_at else None,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
@@ -184,6 +208,8 @@ class EvalTaskRunIn(BaseModel):
     # A/B 对比执行:非空时每道题下发两条 run(A=dialog_options,B=本组),结果页配对出胜率。
     # 对齐主流测评平台的双配置对战(如 LMArena 双模型盲比),用于回答「哪套配置/模型更强」。
     dialog_options_b: dict | None = None
+    # 一条龙开关:传入即写回任务级 auto_pipeline(执行对话框勾选,下次默认沿用);None=不改动。
+    auto_pipeline: bool | None = None
 
 
 AUTO_RUNNER = "auto"
@@ -290,6 +316,8 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
     task.status = EvalTaskStatus.running
     # 换批执行后旧综合评价作废(针对旧批次)
     task.summary_status = None
+    # 换批重置一条龙门闩(NULL=可抢占):保证新批次能触发一次编排,旧批次的编排状态不残留。
+    task.pipeline_status = None
     return created, batch_id
 
 
@@ -320,6 +348,9 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     if body.dialog_options_b is not None:
         stored["compareB"] = opts_b
     task.dialog_options = json.dumps(stored, ensure_ascii=False) if stored else None
+    # 执行对话框勾选的一条龙开关写回任务级(下次默认沿用);None=不改动既有设置。
+    if body.auto_pipeline is not None:
+        task.auto_pipeline = body.auto_pipeline
     db.commit()
     # 返回实际分片用到的执行机(前端可提示"已分发到 N 台")
     return ok({"run_ids": created, "batch_id": batch_id, "runners": runner_list})
@@ -384,6 +415,13 @@ def mark_run_failed(task_id: int, run_id: int, db: Session = Depends(get_db), us
     r.status = EvalRunStatus.failed
     r.reason = "手动标记失败(会话未回填/执行中断)"
     db.commit(); db.refresh(r)
+    # 手动收口最后一条 pending/running 后,本批可能达终态 → 触发一条龙(幂等门闩)
+    if r.eval_task_id and r.batch_id:
+        try:
+            from app.services.eval_pipeline import on_batch_maybe_done
+            on_batch_maybe_done(db, r.batch_id)
+        except Exception:
+            pass
     return ok(_run_out(r))
 
 
@@ -490,6 +528,91 @@ class EvalTaskSummarizeIn(BaseModel):
     batch_id: str | None = None  # 缺省用 last_batch_id
 
 
+def _summary_items(db: Session, runs: list) -> list[dict]:
+    """把一批 run 组装成综合评价素材(SSE 端点与无头一条龙共用,单一实现避免漂移)。
+
+    A/B 对比批次标题拼 [X组];维度/提问/期望优先取 payload 快照,回落 eval_query。
+    调用方负责先滤掉 pending/running/cancelled(无可评内容/已作废)。
+    """
+    qmap = {}
+    qids = [r.eval_query_id for r in runs if r.eval_query_id]
+    if qids:
+        for q in db.query(EvalQuery).filter(EvalQuery.id.in_(qids)).all():
+            qmap[q.id] = q
+    items = []
+    for r in runs:
+        payload = json.loads(r.payload) if r.payload else {}
+        q = qmap.get(r.eval_query_id)
+        cg = payload.get("compare_group")
+        items.append({
+            "title": (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
+            "dimension": payload.get("dimension") or (q.dimension if q else None),
+            "prompt": payload.get("prompt") or (q.prompt if q else ""),
+            "expected": (q.expected if q else "") or "",
+            "status": getattr(r.status, "value", r.status),
+            "verdict": r.verdict,
+            "score": r.score,
+            "verdict_reason": r.verdict_reason or "",
+            "answer": r.answer or "",
+            "reason": r.reason or "",
+        })
+    return items
+
+
+def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
+                                   provider: str | None = None) -> dict:
+    """无头生成综合评价(供一条龙后台编排调用,无 SSE、无前端连接)。
+
+    与 summarize_task 端点同一套素材/prompt/消毒/落库逻辑,只是不流式:累积全文后落
+    task.summary_html。返回 {ok} / {skipped, reason}(引擎不可用或无可评记录) / {error}。
+    调用方(编排器)负责 commit 前后的会话管理;本函数内部 commit 落库。
+    """
+    from datetime import datetime
+
+    provider_id = generators.normalize_provider(provider)
+    engine = generators.get_provider(provider_id)
+    if not engine.is_available():
+        return {"skipped": True, "reason": f"评价引擎「{provider_id}」不可用"}
+    runs = (db.query(EvalRun)
+            .filter(EvalRun.eval_task_id == task.id, EvalRun.batch_id == batch_id)
+            .order_by(EvalRun.id).all())
+    runs = [r for r in runs if getattr(r.status, "value", r.status) not in ("pending", "running", "cancelled")]
+    if not runs:
+        return {"skipped": True, "reason": "该批次无可评的执行记录"}
+    items = _summary_items(db, runs)
+    prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
+    task.summary_status = "running"
+    db.commit()
+    raw = ""
+    try:
+        for evt in engine.stream_generate(
+            task.name,
+            prompt_builder=lambda _p=prompt: _p,
+            system_prompt=claude_runner.EVAL_TASK_SUMMARY_SYSTEM_PROMPT,
+        ):
+            etype = evt.get("type")
+            if etype == "delta":
+                raw += evt["text"]
+            elif etype == "result" and evt.get("text"):
+                raw = evt["text"]
+            elif etype == "error":
+                task.summary_status = "failed"; db.commit()
+                return {"error": evt.get("msg") or "引擎报错"}
+    except Exception as e:  # noqa: BLE001
+        task.summary_status = "failed"; db.commit()
+        return {"error": f"生成中断:{e}"}
+    html = claude_runner.extract_html_fragment(raw)
+    if not html:
+        task.summary_status = "failed"; db.commit()
+        return {"error": "引擎没有产出有效 HTML 评价"}
+    task.summary_html = _sanitize_html(html)
+    task.summary_status = "done"
+    task.summary_provider = provider_id
+    task.summary_at = datetime.now()
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/{task_id}/summarize")
 def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
                    db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -523,28 +646,7 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
                             detail="该批次没有可评的执行记录(全部未回填或已取消),等执行完成或重跑后再生成")
 
     # 组装素材(在请求 db 存活期内取齐)
-    qmap = {}
-    qids = [r.eval_query_id for r in runs if r.eval_query_id]
-    if qids:
-        for q in db.query(EvalQuery).filter(EvalQuery.id.in_(qids)).all():
-            qmap[q.id] = q
-    items = []
-    for r in runs:
-        payload = json.loads(r.payload) if r.payload else {}
-        q = qmap.get(r.eval_query_id)
-        cg = payload.get("compare_group")  # A/B 对比批次:标题拼组名,综合评价可按组对比总结
-        items.append({
-            "title": (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
-            "dimension": payload.get("dimension") or (q.dimension if q else None),
-            "prompt": payload.get("prompt") or (q.prompt if q else ""),
-            "expected": (q.expected if q else "") or "",
-            "status": getattr(r.status, "value", r.status),
-            "verdict": r.verdict,
-            "score": r.score,
-            "verdict_reason": r.verdict_reason or "",
-            "answer": r.answer or "",
-            "reason": r.reason or "",
-        })
+    items = _summary_items(db, runs)
     prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
     task_pk = task.id
     # ⚠️ 必须在 commit 前取成局部变量:commit 会 expire ORM 属性,而 sse 生成器在请求 db 关闭后才迭代,

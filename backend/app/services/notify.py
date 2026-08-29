@@ -227,3 +227,18 @@ def notify_devices_offline(offline: list[str], pending_count: int) -> None:
         ],
         color=COLOR_ORANGE, link_path="/device-board", link_text="查看设备看板",
     )
+
+
+# ---------------- 场景五：测评任务一条龙分步通知 ----------------
+def notify_eval_pipeline(task_name: str, project_id: int, title: str,
+                         lines: list[str], color: str = COLOR_BLUE) -> None:
+    """测评任务一条龙(auto pipeline)分步通知:每完成一步发一张卡(共 4 步)。
+
+    受 NOTIFY_EVAL_PIPELINE 开关 + 通道总开关(FEISHU_WEBHOOK_URL)约束,未配置静默跳过。
+    lines 由编排器组装(可含 lark_md 加粗);project_id 预留(暂用统一列表页跳转)。
+    """
+    if not settings.NOTIFY_EVAL_PIPELINE or not is_enabled():
+        return
+    body = [f"**任务**:{_esc(task_name)}"] + [_esc(l) for l in lines]
+    send_card(title=title, lines=body, color=color,
+              link_path="/eval-tasks", link_text="查看测评任务")

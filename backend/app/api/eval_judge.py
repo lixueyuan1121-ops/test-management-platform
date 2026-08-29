@@ -49,33 +49,52 @@ def _run_out(r: EvalRun) -> dict:
 @router.post("/batch")
 def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
-    q = db.query(EvalRun).filter(EvalRun.project_id == body.project_id)
-    if body.run_ids:
-        # 空列表等同于未指定，避免 in_([]) 在部分数据库下报错
-        q = q.filter(EvalRun.id.in_(body.run_ids))
+    results = _batch_judge_results(db, body.project_id, run_ids=body.run_ids,
+                                   provider=body.provider, votes=body.votes)
+    return ok({"judged": len(results), "results": results})
+
+
+def _batch_judge_results(db: Session, project_id: int, run_ids: list[int] | None = None,
+                         batch_id: str | None = None, provider: str | None = None,
+                         votes: int = 1) -> list[dict]:
+    """批量判定核心(端点与一条龙编排共用):判定范围内每条 done/judged 的 run,单条失败不断批。
+
+    范围:run_ids 指定 → 这些;否则 batch_id 指定 → 该批;都无 → 该项目所有 done。
+    返回逐条结果列表(含 skipped/error 回执)。调用方负责鉴权与 commit(judge_run 内部落库)。
+    """
+    from app.core.enums import EvalRunStatus
+
+    q = db.query(EvalRun).filter(EvalRun.project_id == project_id)
+    if run_ids:
+        q = q.filter(EvalRun.id.in_(run_ids))
+    elif batch_id:
+        q = q.filter(EvalRun.batch_id == batch_id)
     else:
-        from app.core.enums import EvalRunStatus
         q = q.filter(EvalRun.status == EvalRunStatus.done)
     rows = q.all()
     if not rows:
-        return ok({"judged": 0, "results": []})
+        return []
     results = []
     for r in rows:
         st = getattr(r.status, "value", r.status)
         if st in ("pending", "running"):
-            # 未执行完/未回填的不判(前端只传 done,这里防手工调用或状态漂移时误判),明确回执原因
             results.append({"run_id": r.id, "skipped": True, "reason": f"状态 {st},尚未执行完成"})
             continue
         if st == "cancelled":
-            # 已取消(测评任务被停止):结果作废,不进判定(否则空壳 trace 会被判成 fail/error 污染战绩)
             results.append({"run_id": r.id, "skipped": True, "reason": "状态 cancelled,已取消不判定"})
             continue
         try:
-            res = eval_judge.judge_run(db, r, provider=body.provider, votes=body.votes)
+            res = eval_judge.judge_run(db, r, provider=provider, votes=votes)
             results.append({"run_id": r.id, **res})
         except Exception as e:  # noqa: BLE001 单条失败不断批
             results.append({"run_id": r.id, "error": str(e)})
-    return ok({"judged": len(results), "results": results})
+    return results
+
+
+def _run_batch_judge(db: Session, project_id: int, batch_id: str, provider: str | None = None) -> int:
+    """一条龙用:判定某批次全部可判 run,返回实际判定(非 skipped/error)条数。"""
+    results = _batch_judge_results(db, project_id, batch_id=batch_id, provider=provider)
+    return sum(1 for r in results if not r.get("skipped") and not r.get("error"))
 
 
 @router.post("/{run_id}")

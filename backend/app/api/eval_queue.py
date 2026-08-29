@@ -222,6 +222,14 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
     r.reason = body.reason
     r.duration_ms = body.duration_ms
     db.commit(); db.refresh(r)
+    # 一条龙钩子:该 run 达终态后,若所属测评任务开了 auto_pipeline 且本批全部执行完 → 后台自动
+    # 判定+评价+通知(幂等门闩,非任务批次/未开开关/未跑完都直接返回,不影响回写主流程)。
+    if r.eval_task_id and r.batch_id:
+        try:
+            from app.services.eval_pipeline import on_batch_maybe_done
+            on_batch_maybe_done(db, r.batch_id)
+        except Exception:
+            pass  # 一条龙触发失败绝不影响 runner 回写
     return ok(_to_out(r))
 
 
