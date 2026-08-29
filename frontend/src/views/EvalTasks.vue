@@ -238,6 +238,7 @@
             <el-button size="small" type="warning" :loading="summarizing" :disabled="!canSummarize" @click="genSummary">
               {{ detail.task.summary_status === 'done' ? '重新生成综合评价' : '生成综合评价' }}
             </el-button>
+            <el-button size="small" :icon="Download" :disabled="!canExport" @click="exportReport">导出 HTML</el-button>
           </div>
         </div>
 
@@ -358,7 +359,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Tickets, Plus, Refresh, InfoFilled } from '@element-plus/icons-vue'
+import { Tickets, Plus, Refresh, InfoFilled, Download } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
@@ -368,6 +369,7 @@ import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions } from '@/utils/dialogOptions'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
+import { buildEvalReportHtml } from '@/utils/evalReportHtml'
 
 const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', archived: '已归档' }
 const TS_TYPE = { draft: 'info', running: 'warning', done: 'success', archived: 'info' }
@@ -484,6 +486,8 @@ const canSummarize = computed(() => {
   // 至少有一条非 failed 的 run 才开放综合评价
   return runs.some((r) => r.status !== 'failed' && r.status !== 'pending' && r.status !== 'running')
 })
+// 有任何执行记录即可导出(综合评价没生成也能导——胜率/评分/明细本身有分享价值)
+const canExport = computed(() => !!(detail.value?.runs?.length))
 
 onMounted(async () => {
   const [projRes, devRes, dimRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices(), listEvalDimensions()])
@@ -708,6 +712,45 @@ function genSummary() {
     },
     onError: (msg) => { summarizing.value = false; ElMessage.error(msg || '生成失败') },
   })
+}
+
+// ── 导出 HTML 报告（综合评价 + A/B 胜率/均分 + 逐条明细，自包含单文件，离线可分享）──
+const pad2 = (n) => String(n).padStart(2, '0')
+function nowStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+function downloadHtml(filename, html) {
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+function exportReport() {
+  const d = detail.value
+  if (!d?.task) return
+  const html = buildEvalReportHtml({
+    task: d.task,
+    groupedRuns: groupedDetailRuns.value,
+    compareInfo: compareInfo.value,
+    dimLabel,
+    statusLabel: STATUS_LABEL,
+    verdictLabel: VERDICT_LABEL,
+    taskStatusLabel: TS_LABEL,
+    reviewLabel: REVIEW_LABEL,
+    dialogOptionsText: fmtDialogOptions(d.task.dialog_options) || '',
+    avgScore: avgScore.value || '',
+    exportedAt: nowStr(),
+  })
+  const safeName = (d.task.name || '测评报告').replace(/[\\/:*?"<>|]/g, '_')
+  const filename = `测评报告-${safeName}${d.task.last_batch_id ? '-' + d.task.last_batch_id : ''}.html`
+  downloadHtml(filename, html)
+  ElMessage.success('已导出 HTML 报告')
 }
 </script>
 
