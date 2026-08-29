@@ -39,7 +39,7 @@
         </el-table-column>
         <el-table-column prop="title" label="需求" min-width="240" show-overflow-tooltip>
           <template #default="{ row }">
-            <a v-if="row.url" :href="row.url" target="_blank" rel="noopener" class="req-link">{{ row.title }}</a>
+            <a v-if="safeUrl(row.url)" :href="safeUrl(row.url)" target="_blank" rel="noopener" class="req-link">{{ row.title }}</a>
             <span v-else>{{ row.title }}</span>
           </template>
         </el-table-column>
@@ -154,6 +154,8 @@ const EXEC_TYPE = { passed: 'success', failed: 'danger', blocked: 'warning', pen
 const app = useAppStore()
 const projects = ref([])
 const projectId = ref(null)
+// 文档链接只放行 http(s):挡 javascript:/data: 等可执行 scheme(存储型 XSS);同 EvalTasks.vue 口径
+const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 const releases = ref([])
 const filterRelease = ref(null)
 const rows = ref([])

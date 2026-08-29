@@ -10,7 +10,7 @@
 用例挂链走 test_case.requirement_id 软链(AI 生成时自动 upsert+挂,亦可手动挂/摘)。
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -25,17 +25,38 @@ _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
 _READ_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 
 
+def _clean_http_url(v: str | None) -> str | None:
+    """文档链接只放行 http(s):挡 javascript:/data: 等可执行 scheme(存储型 XSS)。
+
+    空/纯空白 → None(url 可选);非法 scheme → 抛错交由信封转 422。
+    与前端 Requirements.vue::safeUrl、utils/evalReportHtml 的 http(s) 白名单同口径。
+    """
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    import re
+    if not re.match(r"^https?://", v, re.I):
+        raise ValueError("文档链接必须以 http:// 或 https:// 开头")
+    return v
+
+
 class RequirementIn(BaseModel):
     project_id: int
     title: str = Field(..., max_length=512)
     url: str | None = Field(None, max_length=512)
     release_id: int | None = None
 
+    _v_url = field_validator("url")(_clean_http_url)
+
 
 class RequirementPatch(BaseModel):
     title: str | None = Field(None, max_length=512)
     url: str | None = Field(None, max_length=512)
     release_id: int | None = None       # 传 0 表示摘除版本关联(pydantic 无法区分 None/缺省)
+
+    _v_url = field_validator("url")(_clean_http_url)
 
 
 class ReqCasesIn(BaseModel):
@@ -50,6 +71,9 @@ def upsert_requirement(db: Session, project_id: int, url: str | None,
     需求没法去重,宁缺勿滥。已存在则回填更有意义的 title(此前是裸 url 时)。
     """
     url = (url or "").strip()
+    import re
+    if url and not re.match(r"^https?://", url, re.I):
+        url = ""   # 非 http(s)(如 javascript:)视为无效链接,不建实体(前端亦不会渲染)
     if not url:
         return None
     row = (db.query(Requirement)
