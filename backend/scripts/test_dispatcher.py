@@ -152,11 +152,55 @@ def test_reassign():
     print("OK reassign stranded")
 
 
+def test_shared_token_heartbeat():
+    """共享 token 拉取应刷新对应登记设备的心跳,使其被调度正确视为在线。
+
+    根因回归:此前心跳仅在设备 token 分支更新,共享 token 正常工作的设备在
+    pick_runner/reassign/看板眼里「永远离线」——auto 不选它、reassign 误抢它的 pending。
+    """
+    from app.core.config import settings
+    from app.services.dispatcher import touch_runner_heartbeat
+
+    settings.RUNNER_TOKEN = "shared-tok"   # 启用共享 token 兜底
+    _s.query(ExecRun).delete()
+    _s.query(RunnerDevice).delete()        # 清前序用例残留设备,隔离本用例
+    _s.commit()
+
+    # 一台登记设备,从未用设备 token 上报过(last_seen_at=None)→ 修复前恒离线
+    _dev("share-01", "web", seen_ago_sec=None)
+    assert pick_runner(_s, "web") is None, "无心跳设备不应被选中(前置)"
+
+    # 共享 token GET 队列(runner=share-01)→ 反查登记设备刷心跳
+    r = client.get("/api/exec-queue", params={"runner": "share-01"},
+                   headers={"Authorization": "Bearer shared-tok"})
+    assert r.status_code == 200, r.text
+    _s.expire_all()
+    dev = _s.query(RunnerDevice).filter(RunnerDevice.runner_id == "share-01").first()
+    assert dev.last_seen_at is not None, "共享 token 拉取后心跳应被刷新"
+    assert pick_runner(_s, "web") == "share-01", "刷新心跳后 auto 应能选中它"
+
+    # 未登记 runner 的共享 token 拉取:反查为空,无副作用(纯老 runner 向后兼容)
+    before = _s.query(RunnerDevice).count()
+    touch_runner_heartbeat(_s, "nobody-registers-this")
+    assert _s.query(RunnerDevice).count() == before, "未登记 runner 不应新建设备"
+
+    # 共享 token 正常工作的设备(刚刷过心跳)其 pending 不应被 reassign 误抢
+    keep = _run("share-01", ExecStatus.pending)
+    assert reassign_stranded_runs(_s) == 0, "在线(刚心跳)设备的 pending 不应改派"
+    assert _s.get(ExecRun, keep.id).runner == "share-01"
+
+    _s.query(ExecRun).delete()
+    _s.query(RunnerDevice).filter(RunnerDevice.runner_id == "share-01").delete()
+    _s.commit()
+    print("OK shared-token heartbeat")
+
+
 def main():
     _seed()
     test_pick()
     test_enqueue_auto()
     test_reassign()
+    test_shared_token_heartbeat()
     print("OK test_dispatcher")
 
 

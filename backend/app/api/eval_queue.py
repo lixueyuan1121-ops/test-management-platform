@@ -173,7 +173,9 @@ def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
     if ctx.device is not None:
         runner = ctx.device.runner_id
         ctx.device.last_seen_at = datetime.utcnow(); db.commit()
-    # 取该 runner 全部 pending(按 id 升序),再在内存里「整组不拆」地取约 limit 条:
+    else:
+        from app.services.dispatcher import touch_runner_heartbeat
+        touch_runner_heartbeat(db, runner)   # 共享 token:按 runner_id 刷心跳(在线判定统一口径)
     # 多轮会话各轮必须同批下发(见 _take_whole_groups),故不能用 SQL .limit() 硬切(会拦腰截断某组)。
     rows = (db.query(EvalRun)
             .filter(EvalRun.status == EvalRunStatus.pending, EvalRun.runner == runner)

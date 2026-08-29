@@ -547,11 +547,14 @@ def list_pending(
     ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
     # 设备 token:runner 锁定为该设备的 runner_id(忽略 query,防拿他人 token 冒充别的设备);
-    # 共享 token(兜底):沿用 query 的 runner。
+    # 共享 token(兜底):沿用 query 的 runner,并按 runner_id 反查登记设备刷心跳(在线判定统一口径)。
     if ctx.device is not None:
         runner = ctx.device.runner_id
         ctx.device.last_seen_at = datetime.utcnow()   # 记录设备活跃
         db.commit()
+    else:
+        from app.services.dispatcher import touch_runner_heartbeat
+        touch_runner_heartbeat(db, runner)
     rows = (
         db.query(ExecRun)
         .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner)

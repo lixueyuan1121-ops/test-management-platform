@@ -19,6 +19,31 @@ logger = logging.getLogger("test_platform")
 AUTO_RUNNER = "auto"   # enqueue 传这个值即触发自动挑设备
 
 
+def touch_runner_heartbeat(db: Session, runner_id: str | None) -> int:
+    """共享 token 拉取时,按 runner_id 反查登记设备并刷新 last_seen_at。返回刷新条数。
+
+    根因修复:心跳原本只在设备 token 分支(ctx.device 直接刷)更新,共享 token 拉取
+    从不更新任何设备心跳。于是「用共享 token 正常工作的设备」在调度眼里永远离线——
+    pick_runner 不选它、reassign 误判它离线抢走 pending、离线巡检误报、看板误显示离线。
+    统一口径:任何 token 的拉取都代表「该 runner_id 的机器活着」,据字符串反查刷心跳。
+
+    - 未登记(纯老 runner,无 RunnerDevice 行)→ 反查为空、无副作用,行为完全不变;
+    - 同名 runner_id 跨 owner 多台 → 全部刷新(与看板/调度按 runner_id 聚合的既有口径一致,
+      本无法区分是哪台物理机在拉);
+    - 设备 token 分支不调本函数(它已有 ctx.device 精确刷,且不该被同名设备误连带)。
+    """
+    if not runner_id:
+        return 0
+    devices = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).all()
+    if not devices:
+        return 0
+    now = datetime.utcnow()
+    for d in devices:
+        d.last_seen_at = now
+    db.commit()
+    return len(devices)
+
+
 def _online_devices(db: Session, platform: str | None = None) -> list[RunnerDevice]:
     """在线设备列表(与看板同口径:窗口内有心跳,或有 running)。platform 传入时精确匹配。"""
     from app.api.devices import ONLINE_WINDOW_SEC

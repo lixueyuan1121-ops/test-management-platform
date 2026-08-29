@@ -297,6 +297,9 @@ def queue_pending(
         runner = ctx.device.runner_id
         ctx.device.last_seen_at = datetime.utcnow()
         db.commit()
+    else:
+        from app.services.dispatcher import touch_runner_heartbeat
+        touch_runner_heartbeat(db, runner)   # 共享 token:按 runner_id 刷心跳(在线判定统一口径)
     rows = (
         db.query(PerfRun)
         .filter(PerfRun.status == "pending", PerfRun.source == "dispatch", PerfRun.runner == runner)
