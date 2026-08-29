@@ -174,7 +174,9 @@ def delete_task(task_id: int, db: Session = Depends(get_db), user: User = Depend
 # ─── 执行(下发到执行机) ────────────────────────────────────────────────────────
 
 class EvalTaskRunIn(BaseModel):
-    runner: str = Field(..., max_length=64)
+    # runner 单台;或 runners 多台分片并行;或 "auto" 自动铺到所有在线执行机。三选一(见 _resolve_runners)。
+    runner: str | None = Field(None, max_length=64)
+    runners: list[str] | None = Field(None, max_length=32)
     target_engine: str = Field("namiwork", max_length=32)
     target_device: str | None = Field(None, max_length=64)
     # 本次执行统一指定的对话选项 {model?,chatMode?,thinkingDepth?}；None/空=客户端默认
@@ -184,15 +186,54 @@ class EvalTaskRunIn(BaseModel):
     dialog_options_b: dict | None = None
 
 
-def dispatch_task_runs(db: Session, task: EvalTask, runner: str, target_engine: str,
+AUTO_RUNNER = "auto"
+
+
+def _resolve_runners(db: Session, runner: str | None, runners: list[str] | None) -> list[str]:
+    """把下发请求的执行机意图归一成一个去重保序的 runner_id 列表。
+
+    三种入参形态(优先级 runners > runner):
+    - runners=[...]:显式多台分片并行(过滤空串、去重保序);
+    - runner="auto":自动取当前所有在线测评执行机铺开(无在线设备 → ValueError);
+    - runner="mac-01":单台(兼容旧客户端与定时 job)。
+    统一出口返回 list[str],下游按会话组轮转分片到这些设备。
+    """
+    if runners:
+        out = list(dict.fromkeys(r.strip() for r in runners if r and r.strip()))
+        if not out:
+            raise ValueError("未指定有效的执行机")
+        return out
+    r = (runner or "").strip()
+    if not r:
+        raise ValueError("未指定执行机")
+    if r == AUTO_RUNNER:
+        from app.services.dispatcher import online_eval_runners
+        picked = online_eval_runners(db)
+        if not picked:
+            raise ValueError("自动调度失败:当前没有在线的测评执行机")
+        return picked
+    return [r]
+
+
+def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
                        target_device: str | None, opts: dict, opts_b: dict | None,
                        user_id: int | None) -> tuple[list[int], str]:
     """下发任务内全部用例(手动执行端点与定时 job 共用;opts_b is not None 即 A/B 对比)。
+
+    runner 参数兼容三态:单个 runner_id 字符串(旧调用)、"auto"、或 runner_id 列表(多台分片)。
+    多台时按「会话组」轮转分片——单轮 query 自成一组、多轮同 conversation_group 整组、A/B 各 variant
+    独立成组(带 #A/#B 后缀),同组必落同一台设备(否则 runner 按组名连发的多轮上下文会断裂)。
+    分片只决定 run.runner 落哪台,批次(batch_id)仍是一个,结果页按批聚合口径不变。
 
     校验失败抛 ValueError(端点转 400,定时 job 记日志跳过);调用方负责 commit。
     """
     from app.api.eval_queue import _new_batch_id, _payload_of
     from app.core.enums import EvalDeviceKind
+
+    # 归一执行机列表:允许传入已解析好的 list,或单字符串/"auto"(转 _resolve_runners)。
+    runner_list = runner if isinstance(runner, list) else _resolve_runners(db, runner, None)
+    if not runner_list:
+        raise ValueError("未指定执行机")
 
     qids = json.loads(task.query_ids) if task.query_ids else []
     if not qids:
@@ -209,6 +250,19 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner: str, target_engine: 
     # payload 标 compare_group;多轮 conversation_group 加 #A/#B 后缀——runner 按组名把多轮连发进
     # 同一对话,不区分则 A/B 两套会混进一个会话串上下文。
     variants = [("A", opts), ("B", opts_b)] if opts_b is not None else [(None, opts)]
+
+    # 会话组 → 分配到的 runner。轮转分片:同一「最终会话组」的所有轮落同一台(多轮上下文不断);
+    # 组间按出现顺序轮流分到 runner_list,负载(会话组数)天然均衡且确定(可复现)。
+    group_runner: dict[str, str] = {}
+    next_idx = 0
+
+    def _assign(group_key: str) -> str:
+        nonlocal next_idx
+        if group_key not in group_runner:
+            group_runner[group_key] = runner_list[next_idx % len(runner_list)]
+            next_idx += 1
+        return group_runner[group_key]
+
     for qid in qids:
         q = found[qid]
         for tag, vopts in variants:
@@ -217,10 +271,14 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner: str, target_engine: 
                 payload["compare_group"] = tag
                 if payload.get("conversation_group"):
                     payload["conversation_group"] = f"{payload['conversation_group']}#{tag}"
+            # 分片键=最终会话组:多轮用(带 #A/#B 的)conversation_group 整组同机;
+            # 单轮无组则用 qid+tag 各自独立成组(可分散到不同设备)。
+            group_key = payload.get("conversation_group") or f"q{qid}#{tag or ''}"
+            assigned = _assign(group_key)
             row = EvalRun(
                 eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
                 eval_task_id=task.id,
-                runner=runner, target_engine=target_engine,
+                runner=assigned, target_engine=target_engine,
                 target_device=target_device,
                 device_kind=EvalDeviceKind.desktop,
                 status=EvalRunStatus.pending,
@@ -237,7 +295,11 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner: str, target_engine: 
 
 @router.post("/{task_id}/run")
 def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """把任务内全部用例入 eval_run 队列(盖 eval_task_id + 新批次),复用 eval-queue 的下发口径。"""
+    """把任务内全部用例入 eval_run 队列(盖 eval_task_id + 新批次),复用 eval-queue 的下发口径。
+
+    执行机可单台(runner)、多台分片并行(runners=[...])或自动铺开(runner="auto")——
+    多台时按会话组轮转分片(见 dispatch_task_runs),总执行量不变、多机并行加速。
+    """
     from app.api.eval_queue import _clean_dialog_options
 
     task = db.get(EvalTask, task_id)
@@ -247,8 +309,9 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     opts = _clean_dialog_options(body.dialog_options)
     opts_b = _clean_dialog_options(body.dialog_options_b) if body.dialog_options_b is not None else None
     try:
+        runner_list = _resolve_runners(db, body.runner, body.runners)
         created, batch_id = dispatch_task_runs(
-            db, task, body.runner, body.target_engine, body.target_device, opts, opts_b, user.id)
+            db, task, runner_list, body.target_engine, body.target_device, opts, opts_b, user.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     # 记录本次执行的对话选项(列表展示+下次执行回填);对比模式把 B 组挂在 compareB 键下。
@@ -258,7 +321,8 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
         stored["compareB"] = opts_b
     task.dialog_options = json.dumps(stored, ensure_ascii=False) if stored else None
     db.commit()
-    return ok({"run_ids": created, "batch_id": batch_id})
+    # 返回实际分片用到的执行机(前端可提示"已分发到 N 台")
+    return ok({"run_ids": created, "batch_id": batch_id, "runners": runner_list})
 
 
 class EvalTaskScheduleIn(BaseModel):

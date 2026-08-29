@@ -140,11 +140,18 @@
     <el-dialog v-model="runVisible" title="执行测评任务" width="480px">
       <el-form label-width="90px">
         <el-form-item label="执行机" required>
-          <el-select v-model="runForm.runner" style="width:100%" :placeholder="devices.length ? '选择执行机' : '未登记设备,去「我的设备」注册'" @change="loadClientDevices">
+          <el-select v-model="runForm.runners" multiple collapse-tags collapse-tags-tooltip
+            :disabled="runForm.auto" style="width:100%"
+            :placeholder="devices.length ? '选择执行机(可多选,多台并行分片)' : '未登记设备,去「我的设备」注册'"
+            @change="loadClientDevices">
             <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="目标设备">
+        <el-form-item label="自动调度">
+          <el-switch v-model="runForm.auto" />
+          <span class="cmp-hint">⚡ 开启后自动铺到当前所有在线执行机并行分片(忽略上方手选)</span>
+        </el-form-item>
+        <el-form-item v-if="!runForm.auto && runForm.runners.length === 1" label="目标设备">
           <el-select v-model="runForm.target_device" clearable style="width:100%" :placeholder="clientDevices.length ? '选目标设备(可空)' : '该执行机未上报设备'">
             <el-option v-for="dev in clientDevices" :key="dev.vm_id" :label="`${dev.name || dev.vm_id}${(dev.status==='online'||dev.status==='active')?' 🟢':' ⚪'}`" :value="dev.vm_id" />
           </el-select>
@@ -183,11 +190,11 @@
           </el-form-item>
         </template>
         <el-alert type="info" :closable="false" show-icon
-          :title="`将下发 ${(runTask?.query_ids?.length || 0) * (runForm.compare ? 2 : 1)} 条用例到执行机${runForm.compare ? '(A/B 各一遍)' : ''};重复执行会生成新批次,综合评价需重新生成`" />
+          :title="`将下发 ${(runTask?.query_ids?.length || 0) * (runForm.compare ? 2 : 1)} 条用例${runForm.auto ? '(自动铺到在线执行机并行)' : (runForm.runners.length > 1 ? `(分片到 ${runForm.runners.length} 台并行)` : '')}${runForm.compare ? '(A/B 各一遍)' : ''};重复执行会生成新批次,综合评价需重新生成`" />
       </el-form>
       <template #footer>
         <el-button @click="runVisible = false">取消</el-button>
-        <el-button type="success" :loading="running" :disabled="!runForm.runner" @click="doRun">下发执行</el-button>
+        <el-button type="success" :loading="running" :disabled="!runForm.auto && !runForm.runners.length" @click="doRun">下发执行</el-button>
       </template>
     </el-dialog>
 
@@ -416,7 +423,7 @@ const customSaving = ref(false)
 // 执行
 const runVisible = ref(false)
 const runTask = ref(null)
-const runForm = ref({ runner: '', target_device: '', chat_mode: '', model: '', thinking_depth: '',
+const runForm = ref({ runners: [], auto: false, target_device: '', chat_mode: '', model: '', thinking_depth: '',
   compare: false, b_chat_mode: '', b_model: '', b_thinking_depth: '' })
 const devices = ref([])
 const clientDevices = ref([])
@@ -500,7 +507,7 @@ onMounted(async () => {
   DIMENSIONS.value = dimRes.status === 'fulfilled' && dimRes.value?.dimensions?.length
     ? dimRes.value.dimensions.map((d) => ({ k: d.key, label: d.label }))
     : [{ k: 'thinking', label: '思考推理' }, { k: 'workflow', label: '工作流' }, { k: 'clarification', label: '反问澄清' }]
-  if (devices.value.length) runForm.value.runner = devices.value[0].runner_id
+  if (devices.value.length) runForm.value.runners = [devices.value[0].runner_id]
   if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await onProjectChange() }
 })
 
@@ -619,23 +626,27 @@ async function openRun(row) {
   runForm.value.b_model = b?.model || ''
   runForm.value.b_thinking_depth = b?.thinkingDepth || ''
   runVisible.value = true
-  if (runForm.value.runner) await loadClientDevices()
+  if (runForm.value.runners.length === 1) await loadClientDevices()
 }
 
 async function loadClientDevices() {
   runForm.value.target_device = ''
   clientDevices.value = []
-  if (!runForm.value.runner) return
-  try { clientDevices.value = await listEvalDevices(runForm.value.runner) || [] } catch { clientDevices.value = [] }
+  // 仅单台选中时才有意义选目标设备(多台/auto 各机用各自当前设备)
+  const only = runForm.value.runners.length === 1 ? runForm.value.runners[0] : ''
+  if (!only) return
+  try { clientDevices.value = await listEvalDevices(only) || [] } catch { clientDevices.value = [] }
 }
 
 async function doRun() {
   running.value = true
   try {
-    const res = await runEvalTask(runTask.value.id, {
-      runner: runForm.value.runner,
+    // auto=后端自动铺到在线执行机;否则传手选的多台(单台=数组含一项,后端一视同仁分片)
+    const payload = {
       target_engine: 'namiwork',
-      target_device: runForm.value.target_device || null,
+      // 仅单台时目标设备生效;多台/auto 每机用各自当前设备
+      target_device: (!runForm.value.auto && runForm.value.runners.length === 1)
+        ? (runForm.value.target_device || null) : null,
       dialog_options: buildDialogOptions({
         chatMode: runForm.value.chat_mode, model: runForm.value.model, thinkingDepth: runForm.value.thinking_depth,
       }),
@@ -643,8 +654,12 @@ async function doRun() {
       dialog_options_b: runForm.value.compare ? (buildDialogOptions({
         chatMode: runForm.value.b_chat_mode, model: runForm.value.b_model, thinkingDepth: runForm.value.b_thinking_depth,
       }) || {}) : null,
-    })
-    ElMessage.success(`已下发 ${res.run_ids.length} 条（批次 ${res.batch_id}）`)
+    }
+    if (runForm.value.auto) payload.runner = 'auto'
+    else payload.runners = runForm.value.runners
+    const res = await runEvalTask(runTask.value.id, payload)
+    const n = res.runners?.length || 1
+    ElMessage.success(`已下发 ${res.run_ids.length} 条${n > 1 ? `，分发到 ${n} 台并行` : ''}（批次 ${res.batch_id}）`)
     runVisible.value = false
     await load()
   } catch { /* 拦截器已提示 */ }

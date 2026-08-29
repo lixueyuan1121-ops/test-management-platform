@@ -44,6 +44,30 @@ def touch_runner_heartbeat(db: Session, runner_id: str | None) -> int:
     return len(devices)
 
 
+def online_eval_runners(db: Session) -> list[str]:
+    """在线的对话测评执行机 runner_id 列表(测评分片下发用)。
+
+    与 exec 侧 _online_devices 同「在线」口径(ONLINE_WINDOW_SEC 内有心跳),但:
+    - 不按 platform 过滤(对话测评是桌面客户端,无移动端平台之分);
+    - 「忙=在线」用 EvalRun 的 running(不是 ExecRun),因为测评执行期设备也不轮询队列、
+      心跳会滞后,正在跑测评的设备必然活着,与设备看板 eval 计数同源。
+    返回按 runner_id 升序(稳定),供轮转分片时确定性分配。
+    """
+    from app.api.devices import ONLINE_WINDOW_SEC
+    from app.core.enums import EvalRunStatus
+    from app.models import EvalRun
+
+    devices = db.query(RunnerDevice).all()
+    if not devices:
+        return []
+    cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
+    busy = {r for (r,) in db.query(EvalRun.runner)
+            .filter(EvalRun.status == EvalRunStatus.running).distinct().all()}
+    online = [d.runner_id for d in devices
+              if (d.last_seen_at and d.last_seen_at >= cutoff) or d.runner_id in busy]
+    return sorted(set(online))
+
+
 def _online_devices(db: Session, platform: str | None = None) -> list[RunnerDevice]:
     """在线设备列表(与看板同口径:窗口内有心跳,或有 running)。platform 传入时精确匹配。"""
     from app.api.devices import ONLINE_WINDOW_SEC
