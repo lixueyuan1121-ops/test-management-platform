@@ -382,6 +382,10 @@
           <div class="summary-head">
             <span class="summary-title">AI 综合评价</span>
             <span v-if="detail.task.summary_at" class="muted">{{ (detail.task.summary_at || '').replace('T',' ').slice(0,19) }} · {{ detail.task.summary_provider }}</span>
+            <template v-if="summaryShareUrl">
+              <el-button size="small" text type="primary" @click="openShareReport">打开在线报告</el-button>
+              <el-button size="small" text @click="copyShareLink">复制链接</el-button>
+            </template>
           </div>
           <pre v-if="summarizing && summaryStream" class="summary-stream">{{ summaryStream }}</pre>
           <div v-else-if="detail.task.summary_html" class="summary-html" v-html="detail.task.summary_html"></div>
@@ -774,6 +778,26 @@ function genSummary() {
     },
     onError: (msg) => { summarizing.value = false; ElMessage.error(msg || '生成失败') },
   })
+}
+
+// 综合评价在线短链:后端 /r/<code> 与本页同源(uvicorn 同源托管),故用当前 origin 拼。
+// 仅 summary_status=done 且有短链码时可用。推推通知里的链接走后端 PLATFORM_BASE_URL(可能是外网基址)。
+const summaryShareUrl = computed(() => {
+  const t = detail.value?.task
+  if (!t || t.summary_status !== 'done' || !t.summary_share_code) return null
+  return `${window.location.origin}/r/${t.summary_share_code}`
+})
+function openShareReport() {
+  if (summaryShareUrl.value) window.open(summaryShareUrl.value, '_blank', 'noopener')
+}
+async function copyShareLink() {
+  if (!summaryShareUrl.value) return
+  try {
+    await navigator.clipboard.writeText(summaryShareUrl.value)
+    ElMessage.success('在线报告链接已复制')
+  } catch {
+    ElMessage.warning(`复制失败，请手动复制：${summaryShareUrl.value}`)
+  }
 }
 
 // ── 导出 HTML 报告（综合评价 + A/B 胜率/均分 + 逐条明细，自包含单文件，离线可分享）──

@@ -108,6 +108,7 @@ def _to_out(task: EvalTask, db: Session) -> dict:
         "summary_status": task.summary_status,
         "summary_provider": task.summary_provider,
         "summary_at": task.summary_at.isoformat() if task.summary_at else None,
+        "summary_share_code": task.summary_share_code,
         "schedule_enabled": bool(task.schedule_enabled),
         "schedule_cron": task.schedule_cron,
         "schedule_runner": task.schedule_runner,
@@ -559,15 +560,53 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
     return items
 
 
+def _set_summary_status(session_factory, task_id: int, status: str) -> None:
+    """用【全新 session】把某任务的 summary_status 落终态(running/failed/done)。吞一切异常。
+
+    关键:无头综合评价要跑一次长达 AI_TIMEOUT_SECONDS(默认 15min)的 LLM 流,期间若一直
+    持有同一条 DB 连接,长跑结束时该连接可能已被 MySQL wait_timeout / 中间层空闲断掉——
+    此时在【同一条已死连接】上写终态会失败,summary_status 永久卡 running,前端"一直生成中"。
+    每次都开一条全新 session(pool_pre_ping 会在取连接时探活)来写终态,即根治此卡死。
+    与手动 SSE 端点在流结束后另开 SessionLocal 落库是同一套路。
+    """
+    from app.db.session import SessionLocal
+    sf = session_factory or SessionLocal
+    try:
+        s = sf()
+    except Exception:  # noqa: BLE001
+        logger.exception("综合评价状态落库开 session 失败 task=%s status=%s", task_id, status)
+        return
+    try:
+        t = s.get(EvalTask, task_id)
+        if t is not None:
+            t.summary_status = status
+            s.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("综合评价状态落库失败 task=%s status=%s", task_id, status)
+        try:
+            s.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        s.close()
+
+
 def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
-                                   provider: str | None = None) -> dict:
+                                   provider: str | None = None, session_factory=None) -> dict:
     """无头生成综合评价(供一条龙后台编排调用,无 SSE、无前端连接)。
 
     与 summarize_task 端点同一套素材/prompt/消毒/落库逻辑,只是不流式:累积全文后落
-    task.summary_html。返回 {ok} / {skipped, reason}(引擎不可用或无可评记录) / {error}。
-    调用方(编排器)负责 commit 前后的会话管理;本函数内部 commit 落库。
+    task.summary_html。返回 {ok, share_code?} / {skipped, reason} / {error}。
+
+    ⚠️ 卡死根治:running/failed/done 三个状态写库都走【全新 session】(_set_summary_status /
+    终态段另开 SessionLocal),不复用传入的 db——因为本函数会跑一次最长 15min 的 LLM 流,
+    传入的 db 连接极可能在长跑后失效,在它上面写终态会失败→永久卡 running。db 仅用于流开始前
+    (连接尚活)读取 runs/items。session_factory 供测试注入(缺省=真实 SessionLocal)。
     """
     from datetime import datetime
+    from app.db.session import SessionLocal
+    sf = session_factory or SessionLocal
+    task_id = task.id
 
     provider_id = generators.normalize_provider(provider)
     engine = generators.get_provider(provider_id)
@@ -580,20 +619,23 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
     if not runs:
         return {"skipped": True, "reason": "该批次无可评的执行记录"}
     items = _summary_items(db, runs)
-    prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
+    # 流开始前把要用到的字段取成局部量:后续不再碰传入的 db(其连接会跨 15min 长跑,不可靠),
+    # 且释放 db 的读事务——否则单连接(测试 StaticPool)下它与写终态的全新 session 会争同一连接。
+    task_name = task.name
+    task_desc = task.description or ""
+    prompt = claude_runner.build_eval_task_summary_prompt(task_name, task_desc, items)
+    try:
+        db.rollback()
+    except Exception:  # noqa: BLE001
+        pass
     logger.info("无头综合评价开始 task=%s batch=%s provider=%s runs=%d prompt_len=%d",
-                task.id, batch_id, provider_id, len(runs), len(prompt))
-    task.summary_status = "running"
-    db.commit()
-    # ⚠️ 整段(流式生成 + HTML 提取 + 消毒 + 落库)都必须在异常保护内:一旦设了 running 又让
-    # 任何异常(extract/sanitize 正则边界、长跑后 commit 连接失效等)裸逃,summary_status 会
-    # 永久卡在 running——无头调用方(_summary_with_retry→run_pipeline→后台线程)只兜底
-    # pipeline_status,从不回收 summary_status,前端遂"一直生成中"。手动 SSE 端点无此问题
-    # 是因其 finally 段同样兜底落库。见 scripts/test_eval_summary_status.py。
+                task_id, batch_id, provider_id, len(runs), len(prompt))
+    # 标记生成中(全新 session,不占用长跑连接)
+    _set_summary_status(sf, task_id, "running")
     raw = ""
     try:
         for evt in engine.stream_generate(
-            task.name,
+            task_name,
             prompt_builder=lambda _p=prompt: _p,
             system_prompt=claude_runner.EVAL_TASK_SUMMARY_SYSTEM_PROMPT,
         ):
@@ -603,25 +645,33 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
             elif etype == "result" and evt.get("text"):
                 raw = evt["text"]
             elif etype == "error":
-                task.summary_status = "failed"; db.commit()
+                _set_summary_status(sf, task_id, "failed")
                 return {"error": evt.get("msg") or "引擎报错"}
         html = claude_runner.extract_html_fragment(raw)
         if not html:
-            task.summary_status = "failed"; db.commit()
+            _set_summary_status(sf, task_id, "failed")
             return {"error": "引擎没有产出有效 HTML 评价"}
-        task.summary_html = _sanitize_html(html)
-        task.summary_status = "done"
-        task.summary_provider = provider_id
-        task.summary_at = datetime.now()
-        db.commit()
-        logger.info("无头综合评价完成 task=%s batch=%s html_len=%d", task.id, batch_id, len(task.summary_html or ""))
-        return {"ok": True}
-    except Exception as e:  # noqa: BLE001
-        logger.exception("无头综合评价生成失败 task=%s batch=%s", task.id, batch_id)
+        # 终态成功:全新 session 落 summary_html/done/provider/at + 分配短链码。
+        from app.api.eval_report import ensure_share_code
+        s2 = sf()
         try:
-            task.summary_status = "failed"; db.commit()
-        except Exception:  # noqa: BLE001 落 failed 都失败(连接彻底坏)→回滚,兜底线程再收口
-            db.rollback()
+            t2 = s2.get(EvalTask, task_id)
+            if t2 is None:
+                return {"error": "任务记录丢失"}
+            t2.summary_html = _sanitize_html(html)
+            t2.summary_status = "done"
+            t2.summary_provider = provider_id
+            t2.summary_at = datetime.now()
+            share_code = ensure_share_code(s2, t2)
+            s2.commit()
+            html_len = len(t2.summary_html or "")
+        finally:
+            s2.close()
+        logger.info("无头综合评价完成 task=%s batch=%s html_len=%d", task_id, batch_id, html_len)
+        return {"ok": True, "share_code": share_code}
+    except Exception as e:  # noqa: BLE001
+        logger.exception("无头综合评价生成失败 task=%s batch=%s", task_id, batch_id)
+        _set_summary_status(sf, task_id, "failed")
         return {"error": f"生成中断:{e}"}
 
 
@@ -713,9 +763,12 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
             t2.summary_status = "done"
             t2.summary_provider = provider_id
             t2.summary_at = datetime.now()
+            from app.api.eval_report import ensure_share_code
+            share_code = ensure_share_code(s, t2)
             s.commit()
             yield _sse({"type": "done", "status": "done",
                         "summary_html": t2.summary_html,
+                        "summary_share_code": share_code,
                         "duration_ms": int((time.monotonic() - t0) * 1000)})
         except Exception as e:  # noqa: BLE001
             logger.exception("综合评价落库失败")

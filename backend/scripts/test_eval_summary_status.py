@@ -68,7 +68,10 @@ def _call(engine_mode="ok", sanitize=None):
     if sanitize is not None:
         task_mod._sanitize_html = sanitize
     try:
-        res = task_mod.generate_task_summary_headless(_s, t, bid, provider="claude")
+        # session_factory=_Session:状态写库(running/failed/done)走全新 session,但都落在同一
+        # in-memory StaticPool 连接上(与模块级 _s 同库),故断言仍能用 _s 读到终态。
+        res = task_mod.generate_task_summary_headless(_s, t, bid, provider="claude",
+                                                      session_factory=_Session)
     finally:
         generators.get_provider, generators.normalize_provider, task_mod._sanitize_html = (
             orig_get, orig_norm, orig_san)

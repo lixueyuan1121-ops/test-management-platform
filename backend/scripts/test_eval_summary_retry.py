@@ -16,13 +16,20 @@ class _FakeDB:
     def get(self, model, pk):
         return object()
 
+    def close(self):
+        pass
+
+
+def _factory():
+    return _FakeDB()
+
 
 def _run(fake):
     import app.api.eval_task as et
     orig = et.generate_task_summary_headless
     et.generate_task_summary_headless = fake
     try:
-        return ep._summary_with_retry(_FakeDB(), 1, "b1")
+        return ep._summary_with_retry(_factory, 1, "b1")
     finally:
         et.generate_task_summary_headless = orig
 
@@ -30,7 +37,7 @@ def _run(fake):
 def test_busy_retry_then_ok():
     calls = {"n": 0}
 
-    def fake(db, task, batch_id, provider=None):
+    def fake(db, task, batch_id, provider=None, session_factory=None):
         calls["n"] += 1
         return {"ok": True} if calls["n"] >= 3 else {"error": BUSY_MSG}
 
@@ -43,7 +50,7 @@ def test_busy_retry_then_ok():
 def test_skipped_no_retry():
     calls = {"n": 0}
 
-    def fake(db, task, batch_id, provider=None):
+    def fake(db, task, batch_id, provider=None, session_factory=None):
         calls["n"] += 1
         return {"skipped": True}
 
@@ -55,7 +62,7 @@ def test_skipped_no_retry():
 def test_persistent_busy_gives_up():
     calls = {"n": 0}
 
-    def fake(db, task, batch_id, provider=None):
+    def fake(db, task, batch_id, provider=None, session_factory=None):
         calls["n"] += 1
         return {"error": BUSY_MSG}
 
@@ -68,7 +75,7 @@ def test_timeout_no_retry():
     """超时不是繁忙:重试只会再吃一个 15min 超时,必须立即收口(calls==1)。"""
     calls = {"n": 0}
 
-    def fake(db, task, batch_id, provider=None):
+    def fake(db, task, batch_id, provider=None, session_factory=None):
         calls["n"] += 1
         return {"error": TIMEOUT_MSG}
 
@@ -80,7 +87,7 @@ def test_timeout_no_retry():
 def test_generic_error_no_retry():
     calls = {"n": 0}
 
-    def fake(db, task, batch_id, provider=None):
+    def fake(db, task, batch_id, provider=None, session_factory=None):
         calls["n"] += 1
         return {"error": "引擎没有产出有效 HTML 评价"}
 

@@ -406,6 +406,7 @@ CREATE TABLE `eval_task` (
   `summary_status` VARCHAR(16) NULL,
   `summary_provider` VARCHAR(16) NULL,
   `summary_at` DATETIME NULL,
+  `summary_share_code` VARCHAR(16) NULL,
   `schedule_cron` VARCHAR(64) NULL,
   `schedule_enabled` TINYINT NOT NULL DEFAULT 0,
   `schedule_runner` VARCHAR(64) NULL,
@@ -418,6 +419,7 @@ CREATE TABLE `eval_task` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_evaltask_project` (`project_id`),
+  UNIQUE KEY `uq_evaltask_share_code` (`summary_share_code`),
   CONSTRAINT `fk_evaltask_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_evaltask_user` FOREIGN KEY (`created_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

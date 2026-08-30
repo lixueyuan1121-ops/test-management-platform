@@ -27,6 +27,15 @@ Base.metadata.create_all(_engine)
 _Session = sessionmaker(bind=_engine)
 _s = _Session()
 
+
+def _sf():
+    """session_factory：编排各步"新开 session"在测试里都复用同一 StaticPool 连接上的 session。
+
+    每次 new 一个 Session(共享同一 in-memory 连接),close 不销毁数据。run_pipeline 现按
+    session_factory 逐步取 session,故测试传入本工厂即可(断言仍用模块级 _s 读同一库)。
+    """
+    return _Session()
+
 # ── stub 外部依赖(判定引擎/综合评价引擎/飞书),只测编排逻辑 ──
 _notifications = []          # 收集分步通知 (title, lines)
 _judge_calls = []            # 记录批量判定调用
@@ -46,7 +55,7 @@ def _fake_run_batch_judge(db, project_id, batch_id, provider=None):
     return len(rows)
 
 
-def _fake_summary(db, task, batch_id, provider=None):
+def _fake_summary(db, task, batch_id, provider=None, session_factory=None):
     return dict(_summary_result)
 
 
@@ -138,7 +147,7 @@ def test_run_pipeline_four_steps():
     t = _task(auto=True, batch="br", pstatus="running")
     _run(t.id, "br", EvalRunStatus.done)
     _run(t.id, "br", EvalRunStatus.done)
-    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "br")
+    eval_pipeline.run_pipeline(_sf, t.id, 1, "任务X", "br")
     # 四条通知,顺序含关键词
     titles = [n[0] for n in _notifications]
     assert len(titles) == 4, f"应发 4 条通知,得 {titles}"
@@ -156,7 +165,7 @@ def test_summary_failure_not_block():
     _summary_result = {"error": "引擎不可用"}
     t = _task(auto=True, batch="bf", pstatus="running")
     _run(t.id, "bf", EvalRunStatus.done)
-    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "bf")
+    eval_pipeline.run_pipeline(_sf, t.id, 1, "任务X", "bf")
     titles = [n[0] for n in _notifications]
     assert len(titles) == 4, "评价失败也应发满 4 步(含最终摘要)"
     assert "未生成" in titles[2] or "综合评价" in titles[2]
@@ -194,7 +203,7 @@ def test_run_pipeline_creates_defect_draft():
     t = _task(auto=True, batch="bd", pstatus="running")
     _run(t.id, "bd", EvalRunStatus.done)   # 判定后 i=0 → pass(不建)
     _run(t.id, "bd", EvalRunStatus.done)   # 判定后 i=1 → fail(建草稿)
-    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "bd")
+    eval_pipeline.run_pipeline(_sf, t.id, 1, "任务X", "bd")
     drafts = _s.query(RemainingIssue).filter(RemainingIssue.eval_run_id.isnot(None)).all()
     assert len(drafts) == 1, f"fail 的 run 应建 1 条缺陷草稿,实际 {len(drafts)}"
     assert drafts[0].title.startswith("[自动] 测评失败"), drafts[0].title
@@ -212,7 +221,7 @@ def test_pipeline_summary_reports_errored():
     _run(t.id, "be", EvalRunStatus.done)
     _run(t.id, "be", EvalRunStatus.done)
     _run(t.id, "be", EvalRunStatus.judged, verdict="error")
-    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "be")
+    eval_pipeline.run_pipeline(_sf, t.id, 1, "任务X", "be")
     final = str(_notifications[-1])
     assert "1" in final and ("重判" in final or "判定失败" in final), final
     print("OK 摘要通知提示 error 待重判")

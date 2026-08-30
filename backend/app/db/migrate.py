@@ -529,6 +529,13 @@ def ensure_eval_task_tables() -> None:
             conn.execute(text("ALTER TABLE eval_task ADD COLUMN auto_pipeline TINYINT NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE eval_task ADD COLUMN pipeline_status VARCHAR(16) NULL"))
             conn.execute(text("ALTER TABLE eval_task ADD COLUMN pipeline_at DATETIME NULL"))
+    # eval_task 补综合评价在线短链码(对外匿名访问 /r/<code>;一条龙推推推链)。
+    # 重读列(上面可能刚补过 auto_pipeline 那批,但 share_code 是后加的独立列)。
+    tcols2 = _columns("eval_task")
+    if tcols2 and "summary_share_code" not in tcols2:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN summary_share_code VARCHAR(16) NULL"))
+        _ensure_index("eval_task", "uq_evaltask_share_code", "summary_share_code")
 
 
 def ensure_platform_columns() -> None:

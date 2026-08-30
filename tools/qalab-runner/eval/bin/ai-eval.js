@@ -825,6 +825,18 @@ program
       const reportRun = async (runId, result, ws) => {
         const trace = ws ? ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
         try {
+          // ⚠️ 顺序关键:必须【先传 trace，再 report(done)】。report 会让 run 达终态,
+          // 若这是本批最后一条,后端 eval_queue.report 会【同步】触发一条龙(on_batch_maybe_done)
+          // 立刻开始批量判定——判定读的是磁盘上的 trace 文件。若先 report 再传 trace,判定会在
+          // trace 落盘前跑,只能用 answer 兜底空壳判(无思考/工具/产物)→ 分数系统性偏低
+          // (与手动判定/单条判定出入很大)。故先 uploadTrace 落盘,再 report 收口。
+          // trace 上传失败【不阻断】report:吞掉异常仅告警,保证 run 仍能收口(否则卡 running 到 reaper),
+          // 最坏退化回"无 trace 判定"而非"永远不收口"。
+          try {
+            await client.uploadTrace(runId, trace);
+          } catch (te) {
+            logger.warn(`上传 run ${runId} 轨迹失败(判定将退化为无轨迹): ${te.message}`);
+          }
           await client.report(runId, {
             status: result.success ? 'done' : 'failed',
             share_link: result.shareLink || null, artifact_share_link: result.artifactShareLink || null,
@@ -834,7 +846,6 @@ program
             reason: result.success ? null : (result.completeReason || null),
             duration_ms: result.durationMs || null,
           });
-          await client.uploadTrace(runId, trace);
           logger.info(`✅ 回写 run ${runId} (${result.success ? 'done' : 'failed'}, ws=${trace.ws_captured})`);
         } catch (e) { logger.error(`回写 run ${runId} 失败: ${e.message}`); }
         if (ws && ws.reset) ws.reset();

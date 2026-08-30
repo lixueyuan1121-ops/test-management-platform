@@ -76,13 +76,23 @@ class Settings(BaseSettings):
     NOTIFY_TASK_ASSIGN: bool = True     # 任务指派到人
     NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
     NOTIFY_EVAL_PIPELINE: bool = True    # 测评任务一条龙(执行完自动判定+评价)分步通知
-    # 一条龙判定/综合评价用的引擎(claude/deepseek);留空=各自默认 provider。
+    # 【已废弃/保留兼容】一条龙曾用此指定判定/评价引擎;现一条龙固定走平台默认引擎(claude),
+    # 与手动批量判定/手动综合评价完全一致——避免自动与手动用不同引擎导致分数系统性出入。
+    # 仍读入以兼容旧 .env(不再影响行为)。
     EVAL_PIPELINE_PROVIDER: str = ""
     # 推推(TuiTui)机器人通知：一条龙分步通知走这里。appid+secret URL 鉴权，发到 togroups。
     TUITUI_BOT_APPID: str = ""
     TUITUI_BOT_SECRET: str = ""   # 敏感：只填进 .env
     TUITUI_BOT_GROUP: str = ""    # 目标群 id
     TUITUI_BASE_URL: str = "https://alarm.im.qihoo.net"  # 外网发送改 https://im.live.360.cn:8282/robot
+    # ---- Nami 静态部署(综合评价 HTML → 公网短链)----
+    # 一条龙生成综合评价后,把 HTML 部署到 n.cn 网关换公网短链(zhaomi.cn),经推推推给人。
+    # 依赖 nami cookie(与 skill nami-static-deploy 同源);两路径留空则用 skill 默认位置
+    # (~/.openclaw/workspace/config/{.cookie.json,cloud_config.json})。cookie 缺失/过期时
+    # 自动回落到平台自托管短链 /r/<code>(见 eval_pipeline),不阻断一条龙。
+    NAMI_DEPLOY_ENABLED: bool = True
+    NAMI_COOKIE_PATH: str = ""         # nami cookie json 路径;空=skill 默认
+    NAMI_CLOUD_CONFIG_PATH: str = ""   # cloud_config.json(含 vm_id)路径;空=skill 默认
     # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。
     AUTO_ISSUE_ON_FAIL: bool = True
     # auto/ci 批次失败自动重试次数上限（0=关闭；1=失败补发一次，重试通过标 flaky）。

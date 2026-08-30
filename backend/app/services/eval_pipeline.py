@@ -86,24 +86,48 @@ def _spawn_pipeline(task_id: int, project_id: int, task_name: str, batch_id: str
 
 
 def _run_pipeline_thread(task_id: int, project_id: int, task_name: str, batch_id: str) -> None:
-    """后台线程:独立 Session 跑完整编排,末尾把门闩落 done/failed。异常全捕获(线程不能抛)。"""
+    """后台线程:跑完整编排,末尾用【全新 session】把门闩/综合评价的残留 running 收口。
+
+    编排内各步各自开短命 session(见 run_pipeline),不再全程持有一条长连接——根治
+    「长跑后连接失效→写终态失败→前端一直生成中」。异常全捕获(线程不能抛)。
+    """
     from app.db.session import SessionLocal
-    db = SessionLocal()
     try:
-        run_pipeline(db, task_id, project_id, task_name, batch_id)
+        run_pipeline(SessionLocal, task_id, project_id, task_name, batch_id)
     except Exception:
         logger.exception("测评一条龙编排异常 task=%s", task_id)
+    finally:
+        # 兜底收口:无论编排如何结束,都用一条【全新 session】把可能残留的 running 落 failed。
+        # 用新连接(而非编排里那条可能已随长跑失效的连接)是关键——pool_pre_ping 取连接时探活,
+        # 确保这步一定写得进库。正常结束时门闩已是 done、综合评价已是 done/failed,此步无改动(幂等)。
+        _reconcile_stuck_status(SessionLocal, task_id)
+
+
+def _reconcile_stuck_status(session_factory, task_id: int) -> None:
+    """用全新 session 把某任务残留的 pipeline_status/summary_status='running' 收口为 failed。幂等、吞异常。"""
+    try:
+        db = session_factory()
+    except Exception:  # noqa: BLE001
+        logger.exception("一条龙兜底收口开 session 失败 task=%s", task_id)
+        return
+    try:
+        t = db.get(EvalTask, task_id)
+        if t is None:
+            return
+        changed = False
+        if t.pipeline_status == "running":
+            t.pipeline_status = "failed"; changed = True
+        if t.summary_status == "running":
+            t.summary_status = "failed"; changed = True
+        if changed:
+            db.commit()
+            logger.info("一条龙兜底收口残留 running task=%s", task_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("一条龙兜底收口失败 task=%s", task_id)
         try:
-            t = db.get(EvalTask, task_id)
-            if t:
-                t.pipeline_status = "failed"
-                # 防御纵深:编排异常时若综合评价还卡在 running(headless 落 failed 也失败的极端情况),
-                # 一并收口,避免前端"一直生成中"。
-                if t.summary_status == "running":
-                    t.summary_status = "failed"
-                db.commit()
-        except Exception:
             db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         db.close()
 
@@ -238,19 +262,27 @@ def _is_busy_error(err) -> bool:
     return bool(err) and ("繁忙" in err or "并发上限" in err)
 
 
-def _summary_with_retry(db, task_id, batch_id):
-    """综合评价生成;**仅**并发繁忙才退避重试。
+def _summary_with_retry(session_factory, task_id, batch_id):
+    """综合评价生成;**仅**并发繁忙才退避重试。每次用一条短命 session(见 headless 卡死根治)。
 
     超时/引擎报错/无有效输出等不重试:每次重试都会重新跑一个 AI_TIMEOUT_SECONDS(默认 15min)
     硬超时,4 次叠加能把前端「生成中」拖到最长 ~60min(线上实测卡 >15min 即此叠加),且毫无收益。
+    provider 固定为 None(= 平台默认引擎 claude),与手动生成综合评价完全一致。
     """
     from app.api.eval_task import generate_task_summary_headless
-    from app.core.config import settings
     import time as _t
     res = {}
     for _i in range(_SUMMARY_RETRY):
-        task = db.get(EvalTask, task_id)
-        res = generate_task_summary_headless(db, task, batch_id, provider=settings.EVAL_PIPELINE_PROVIDER or None)
+        db = session_factory()
+        try:
+            task = db.get(EvalTask, task_id)
+            res = generate_task_summary_headless(db, task, batch_id, provider=None,
+                                                 session_factory=session_factory)
+        finally:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
         if res.get("ok") or res.get("skipped") or "error" not in res:
             break
         if not _is_busy_error(res.get("error")):
@@ -260,69 +292,128 @@ def _summary_with_retry(db, task_id, batch_id):
     return res
 
 
-def run_pipeline(db: Session, task_id: int, project_id: int, task_name: str, batch_id: str) -> None:
-    """一条龙四步编排(同步执行,供后台线程调用)。各步失败不中断后续,分步发飞书。"""
-    from app.api.eval_judge import _run_batch_judge
-    from app.api.eval_task import generate_task_summary_headless
+def _summary_share_url(session_factory, task_id) -> str | None:
+    """综合评价在线短链:优先 nami 公网短链(部署整页 HTML),失败/未配则回落自托管 /r/<code>。
+
+    - nami:把 render_report_page 的完整 HTML 部署到 n.cn → zhaomi.cn 公网短链,任何人可点开
+      (推推群里直接可看)。依赖服务器上的 nami cookie;缺失/过期/网关错都回落,不阻断一条龙。
+    - 自托管回落:PLATFORM_BASE_URL + /r/<code>(需平台可达)。两者都不可用 → None(通知不带链接)。
+    """
     from app.core.config import settings
+    from app.api.eval_report import share_path, render_report_page
+
+    # 取任务(拿短链码 + 渲染整页 HTML)
+    db = session_factory()
+    try:
+        t = db.get(EvalTask, task_id)
+        if t is None:
+            return None
+        code = t.summary_share_code
+        page_html = render_report_page(t) if (t.summary_status == "done" and t.summary_html) else None
+    finally:
+        db.close()
+
+    # 优先 nami 公网短链
+    if settings.NAMI_DEPLOY_ENABLED and page_html:
+        try:
+            from app.services import nami_deploy
+            if nami_deploy.is_configured():
+                url = nami_deploy.deploy_html(page_html)
+                logger.info("综合评价 nami 短链部署成功 task=%s url=%s", task_id, url)
+                return url
+        except Exception as e:  # noqa: BLE001 nami 失败绝不阻断一条龙,回落自托管
+            logger.warning("综合评价 nami 短链部署失败 task=%s,回落自托管 /r:%s", task_id, e)
+
+    # 回落自托管 /r/<code>
+    base = (settings.PLATFORM_BASE_URL or "").rstrip("/")
+    if base and code:
+        return f"{base}{share_path(code)}"
+    return None
+
+
+def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str, batch_id: str) -> None:
+    """一条龙四步编排(同步执行,供后台线程调用)。
+
+    ⚠️ 每步各开一条【短命 session】(用完即关),不跨步持有长连接:综合评价那步会跑最长 15min
+    的 LLM 流,若全程持一条连接,长跑后它可能已被 MySQL/中间层断掉,写终态即失败→前端一直
+    「生成中」。短命 session + pool_pre_ping 保证每步都拿到活连接。各步失败不中断后续,分步发推推。
+    判定/综合评价均用平台默认引擎(provider=None,即 claude),与手动判定/手动综合评价完全一致。
+    """
+    from app.api.eval_judge import _run_batch_judge
     from app.services import notify
     from datetime import datetime
 
     COLOR_BLUE, COLOR_GREEN = "blue", "green"
 
     # 步骤 1:对话已完成(钩子触发即代表所有 run 已达终态)
-    settled = (db.query(EvalRun)
-               .filter(EvalRun.eval_task_id == task_id, EvalRun.batch_id == batch_id,
-                       EvalRun.status.in_([EvalRunStatus.done, EvalRunStatus.judged,
-                                           EvalRunStatus.failed])).count())
+    db = session_factory()
+    try:
+        settled = (db.query(EvalRun)
+                   .filter(EvalRun.eval_task_id == task_id, EvalRun.batch_id == batch_id,
+                           EvalRun.status.in_([EvalRunStatus.done, EvalRunStatus.judged,
+                                               EvalRunStatus.failed])).count())
+    finally:
+        db.close()
     notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成对话",
                                 [f"本批 {settled} 条对话执行完毕,开始批量判定…"], COLOR_BLUE)
 
-    # 步骤 2:批量判定(复用 eval_judge 内部逻辑)
+    # 步骤 2:批量判定(复用 eval_judge 内部逻辑;provider=None 与手动批量判定同引擎)
+    db = session_factory()
     try:
-        judged = _run_batch_judge(db, project_id, batch_id, provider=settings.EVAL_PIPELINE_PROVIDER or None)
+        judged = _run_batch_judge(db, project_id, batch_id, provider=None)
         notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成批量判定",
                                     [f"已判定 {judged} 条,开始生成综合评价…"], COLOR_BLUE)
     except Exception as e:  # noqa: BLE001
         logger.exception("一条龙批量判定失败 task=%s", task_id)
         notify.notify_eval_pipeline(task_name, project_id, "⚠️ 批量判定出错",
                                     [f"原因:{e}", "跳过判定,继续综合评价…"], "orange")
+    finally:
+        db.close()
 
-    # 步骤 3:综合评价(无头),繁忙退避重试
-    summary_res = _summary_with_retry(db, task_id, batch_id)
+    # 步骤 3:综合评价(无头,短命 session,繁忙退避重试);成功则生成在线短链
+    summary_res = _summary_with_retry(session_factory, task_id, batch_id)
+    share_url = _summary_share_url(session_factory, task_id) if summary_res.get("ok") else None
     if summary_res.get("ok"):
-        notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成综合评价",
-                                    ["综合评价已生成,可在平台查看 HTML 报告。"], COLOR_BLUE)
+        lines = ["综合评价已生成,可在平台查看 HTML 报告。"]
+        if share_url:
+            lines.append(f"在线报告:{share_url}")
+        notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成综合评价", lines, COLOR_BLUE)
     else:
         why = summary_res.get("reason") or summary_res.get("error") or "未知原因"
         notify.notify_eval_pipeline(task_name, project_id, "⚠️ 综合评价未生成",
                                     [f"原因:{why}"], "orange")
 
     # 步骤 4:结果摘要
-    s = _result_summary(db, task_id, batch_id)
-    # 失败/异常自动建缺陷草稿(供人复核后一键上报极库云)。失败不阻断收尾。
-    drafts = 0
+    db = session_factory()
     try:
-        drafts = len(auto_issue_for_eval_failures(db, task_id, project_id, batch_id))
-    except Exception:  # noqa: BLE001
-        logger.exception("一条龙自动建缺陷草稿失败 task=%s", task_id)
-    lines = [
-        f"**结果**:共 {s['total']} 条,通过 {s['passed']},失败 {s['failed']},异常 {s['abnormal']} 条"
-        + (f",平均分 {s['avg_score']}" if s['avg_score'] is not None else ""),
-    ]
-    if s["ab_line"]:
-        lines.append(f"**A/B 对比**:{s['ab_line']}")
-    if s.get("errored"):
-        lines.append(f"⚠️ {s['errored']} 条判定失败/无法定论，需到测评结果页重判。")
-    if drafts:
-        lines.append(f"已自动生成 {drafts} 条缺陷草稿,请复核后上报极库云。")
-    lines.append("详情与综合评价见平台测评任务页。")
-    notify.notify_eval_pipeline(task_name, project_id, "🎉 测评任务执行完毕", lines, COLOR_GREEN)
+        s = _result_summary(db, task_id, batch_id)
+        # 失败/异常自动建缺陷草稿(供人复核后一键上报极库云)。失败不阻断收尾。
+        drafts = 0
+        try:
+            drafts = len(auto_issue_for_eval_failures(db, task_id, project_id, batch_id))
+        except Exception:  # noqa: BLE001
+            logger.exception("一条龙自动建缺陷草稿失败 task=%s", task_id)
+        lines = [
+            f"**结果**:共 {s['total']} 条,通过 {s['passed']},失败 {s['failed']},异常 {s['abnormal']} 条"
+            + (f",平均分 {s['avg_score']}" if s['avg_score'] is not None else ""),
+        ]
+        if s["ab_line"]:
+            lines.append(f"**A/B 对比**:{s['ab_line']}")
+        if s.get("errored"):
+            lines.append(f"⚠️ {s['errored']} 条判定失败/无法定论，需到测评结果页重判。")
+        if drafts:
+            lines.append(f"已自动生成 {drafts} 条缺陷草稿,请复核后上报极库云。")
+        if share_url:
+            lines.append(f"在线报告:{share_url}")
+        lines.append("详情与综合评价见平台测评任务页。")
+        notify.notify_eval_pipeline(task_name, project_id, "🎉 测评任务执行完毕", lines, COLOR_GREEN)
 
-    # 落门闩 done
-    t2 = db.get(EvalTask, task_id)
-    if t2:
-        t2.pipeline_status = "done"
-        t2.pipeline_at = datetime.now()
-        db.commit()
+        # 落门闩 done
+        t2 = db.get(EvalTask, task_id)
+        if t2:
+            t2.pipeline_status = "done"
+            t2.pipeline_at = datetime.now()
+            db.commit()
+    finally:
+        db.close()
     logger.info("测评一条龙完成 task=%s batch=%s", task_id, batch_id)
