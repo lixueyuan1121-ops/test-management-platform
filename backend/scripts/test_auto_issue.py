@@ -139,12 +139,61 @@ def test_card_mentions_drafts():
     print("OK card mentions drafts")
 
 
+def test_auto_report_geelib():
+    """开 GEELIB_AUTO_REPORT:新草稿自动上报极库云并回填 external_ref;report_defect 抛异常被吞不影响建草稿。"""
+    from app.api import exec_queue
+    from app.services import geelib
+
+    _s.query(RemainingIssue).delete()
+    _s.commit()
+
+    orig_auto = settings.GEELIB_AUTO_REPORT
+    orig_enabled = settings.GEELIB_ENABLED
+    orig_sub_map = settings.GEELIB_SUB_MAP
+    orig_report = geelib.report_defect
+    settings.GEELIB_AUTO_REPORT = True
+    settings.GEELIB_ENABLED = True
+    settings.GEELIB_SUB_MAP = "nw:419"
+    calls = []
+
+    def fake_report(**kw):
+        calls.append(kw)
+        return {"ok": True, "matter_id": 90001, "ref": "geelib#90001", "reason": None}
+
+    geelib.report_defect = fake_report
+    try:
+        _meta("g1", "auto")
+        _run(ExecStatus.failed, "g1", case_id=41, fail_kind="business", priority="P0",
+             reason="断言失败:自动上报")
+        exec_queue.notify_batch_if_done(_s, "g1")
+        rows = _issues()
+        assert len(rows) == 1, rows
+        assert rows[0].external_ref == "geelib#90001", rows[0].external_ref
+        assert calls and calls[0]["sub_id"] == 419, calls
+        print("OK auto report geelib (回填 external_ref)")
+
+        # report_defect 抛异常 → 草稿照建、external_ref 留空、主流程不炸
+        geelib.report_defect = lambda **k: (_ for _ in ()).throw(geelib.GeelibError("极库云 500"))
+        _meta("g2", "auto")
+        _run(ExecStatus.failed, "g2", case_id=42, fail_kind="business", reason="x")
+        exec_queue.notify_batch_if_done(_s, "g2")   # 不应抛
+        it2 = _s.query(RemainingIssue).filter(RemainingIssue.title.contains("用例42")).first()
+        assert it2 is not None and it2.external_ref is None, it2
+        print("OK auto report geelib (异常安全,草稿仍建)")
+    finally:
+        settings.GEELIB_AUTO_REPORT = orig_auto
+        settings.GEELIB_ENABLED = orig_enabled
+        settings.GEELIB_SUB_MAP = orig_sub_map
+        geelib.report_defect = orig_report
+
+
 def main():
     _seed()
     test_auto_create_and_mapping()
     test_dedupe_and_resolve_cycle()
     test_manual_and_toggle()
     test_card_mentions_drafts()
+    test_auto_report_geelib()
     print("OK test_auto_issue")
 
 
