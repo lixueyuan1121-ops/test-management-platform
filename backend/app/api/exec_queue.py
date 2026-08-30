@@ -122,7 +122,10 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     # (a) 失败自动建缺陷草稿(与飞书通道独立,未配 webhook 也生效)
     auto_issues = 0
     try:
-        auto_issues = _auto_issue_for_failures(db, runs, batch_id, trigger)
+        created = _auto_issue_for_failures(db, runs, batch_id, trigger)
+        auto_issues = len(created)
+        # (a.2) 可选:开了 GEELIB_AUTO_REPORT 则把新草稿自动上报极库云(默认关,失败不影响主流程)
+        _auto_report_geelib(db, created)
     except Exception:
         pass  # 草稿失败不影响告警与主流程
     # (b) 飞书告警
@@ -160,19 +163,19 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
 _PRIORITY_SEVERITY = {"P0": "blocker", "P1": "major"}
 
 
-def _auto_issue_for_failures(db: Session, runs: list, batch_id: str, trigger: str) -> int:
-    """auto/ci 批次的 business 失败逐条生成 RemainingIssue 草稿。返回新建条数。
+def _auto_issue_for_failures(db: Session, runs: list, batch_id: str, trigger: str) -> list:
+    """auto/ci 批次的 business 失败逐条生成 RemainingIssue 草稿。返回新建的 issue 列表。
 
     去重:同一 test_case 已有 open 的自动草稿(exec_run_id 回查同 case)则跳过——
     夜夜失败的同一条用例不重复开单,解决/关闭后再失败才重新生成。
     """
     from app.core.config import settings
     if not settings.AUTO_ISSUE_ON_FAIL:
-        return 0
+        return []
     from app.core.enums import IssueSeverity, IssueStatus
     from app.models import RemainingIssue
 
-    created = 0
+    created = []
     for r in runs:
         if r.status != ExecStatus.failed or r.fail_kind != "business":
             continue  # selector 阻塞是环境问题,不开功能缺陷
@@ -198,7 +201,7 @@ def _auto_issue_for_failures(db: Session, runs: list, batch_id: str, trigger: st
         if r.evidence_url:
             desc_lines.append(f"证据：{r.evidence_url}")
         desc_lines.append("请复核：确认为真 bug 则补负责人/外部单号；误报请在执行结果页人工纠偏后关闭本条。")
-        db.add(RemainingIssue(
+        issue = RemainingIssue(
             report_id=None,
             task_id=r.task_id,
             checklist_item_id=r.checklist_item_id,
@@ -208,11 +211,50 @@ def _auto_issue_for_failures(db: Session, runs: list, batch_id: str, trigger: st
             description="\n".join(desc_lines),
             severity=IssueSeverity(sev),
             status=IssueStatus.open,
-        ))
-        created += 1
+        )
+        db.add(issue)
+        created.append(issue)
     if created:
         db.commit()
     return created
+
+
+def _auto_report_geelib(db: Session, issues: list) -> int:
+    """把刚建的自动缺陷草稿上报极库云并回填 external_ref。返回成功上报条数。
+
+    默认关（GEELIB_AUTO_REPORT=false）：先建本地草稿供人复核，人确认后走手动端点上报，
+    避免误报污染极库云。开启后为激进的全自动上报。任一条失败只记日志，不影响回归主流程。
+    """
+    from app.core.config import settings
+    if not settings.GEELIB_AUTO_REPORT or not issues:
+        return 0
+    from app.services import geelib
+    if not geelib.is_enabled():
+        return 0
+    from app.models import Project
+
+    reported = 0
+    for it in issues:
+        if it.external_ref:
+            continue
+        proj = db.get(Project, it.project_id)
+        sub_id = geelib.resolve_sub_id(proj.code if proj else None,
+                                       getattr(proj, "geelib_sub_id", None))
+        if not sub_id:
+            continue
+        try:
+            res = geelib.report_defect(
+                sub_id=sub_id, title=it.title, description=it.description,
+                severity=it.severity.value, extra=[f"平台遗留问题 #{it.id}", "自动回归失败自动上报"],
+            )
+            if res.get("ok"):
+                it.external_ref = res["ref"]
+                reported += 1
+        except Exception:  # noqa: BLE001
+            logger.warning("极库云自动上报失败 issue=%s", it.id, exc_info=True)
+    if reported:
+        db.commit()
+    return reported
 
 
 def _new_batch_id() -> str:

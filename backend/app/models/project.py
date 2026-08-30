@@ -16,6 +16,8 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # 平台类型：pc/app，控制发版记录页的子产品枚举与是否显示发版渠道列；NULL=未分类(按 PC 端展示)。
     platform_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 极库云(geelib)项目 ID：缺陷上报时把本项目的缺陷写进对应极库云项目；NULL=未映射(回退 GEELIB_SUB_MAP)。
+    geelib_sub_id: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus, length=16), default=ProjectStatus.active, server_default="active"
     )

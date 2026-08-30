@@ -26,6 +26,26 @@ EXEC_STALE_HOURS = 2
 _scheduler: BackgroundScheduler | None = None
 
 
+def _db_now(db) -> datetime:
+    """取数据库自己的当前时间(func.now())作时间基准,而非进程 datetime.utcnow()。
+
+    收口比较的 created_at/updated_at 是数据库用 func.now() 生成的,其时区随 DB 服务器
+    (生产内网 MySQL 5.6 很可能是东八区,非 UTC)。若用进程 utcnow() 作基准,两端时区错配会把
+    cutoff 整体推偏(东八区差 8h),超龄 run 被误判"还很新"永远收不了口。用同一口时钟消除该错配。
+    """
+    from sqlalchemy import func, select
+    try:
+        val = db.execute(select(func.now())).scalar()
+        if isinstance(val, datetime):
+            return val
+        if isinstance(val, str) and val:
+            # SQLite 的 func.now() 返回 "YYYY-MM-DD HH:MM:SS" 字符串,parse 回 datetime
+            return datetime.fromisoformat(val)
+    except Exception:
+        logger.exception("取数据库时钟失败,回退进程 utcnow")
+    return datetime.utcnow()
+
+
 def _job_id(set_id: int) -> str:
     return f"fbset-{set_id}"
 
@@ -74,7 +94,7 @@ def reap_stale_eval_runs() -> None:
     执行器单条上限 5 小时(responseTimeout),超 6 小时仍 running 必是执行机中断/回写失败的
     僵尸条目——不收口则设备看板长期显示「执行中」(线上出现过卡 89h 的案例)、任务永远收不了口。
     只收 running 不收 pending:pending 是排队,执行机重新上线仍会拉走执行,不算死。
-    created_at 由数据库 func.now() 生成(SQLite/docker MySQL 均为 UTC),比较用 utcnow 对齐。
+    created_at 由数据库 func.now() 生成;基准也取数据库时钟(_db_now)对齐,避免 DB 时区非 UTC 时错配。
     """
     from datetime import timedelta
 
@@ -82,9 +102,9 @@ def reap_stale_eval_runs() -> None:
     from app.db.session import SessionLocal
     from app.models import EvalRun
 
-    cutoff = datetime.utcnow() - timedelta(hours=6)
     db = SessionLocal()
     try:
+        cutoff = _db_now(db) - timedelta(hours=6)
         rows = (db.query(EvalRun)
                 .filter(EvalRun.status == EvalRunStatus.running, EvalRun.created_at < cutoff)
                 .all())
@@ -176,8 +196,8 @@ def reap_stale_exec_runs(session_factory=None) -> int:
     from app.db.session import SessionLocal
 
     sf = session_factory or SessionLocal
-    cutoff = datetime.utcnow() - timedelta(hours=EXEC_STALE_HOURS)
     db = sf()
+    cutoff = _db_now(db) - timedelta(hours=EXEC_STALE_HOURS)
     reaped = 0
     try:
         rows = (db.query(ExecRun)

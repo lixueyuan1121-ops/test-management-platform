@@ -273,7 +273,7 @@ def ensure_perf_run_columns() -> None:
 
 
 def ensure_issue_columns() -> None:
-    """remaining_issue 表补列 task_id / checklist_item_id（如缺失），并放宽 report_id 可空。
+    """remaining_issue 表补列 task_id / checklist_item_id / exec_run_id / eval_run_id（如缺失），并放宽 report_id 可空。
 
     放宽 report_id：SQLite 列约束宽松，NOT NULL 不阻塞新路径的 NULL 插入无需 DDL；
     MySQL 需 MODIFY COLUMN 去掉 NOT NULL。加列/放宽都幂等：ADD 前探列，MODIFY 重复执行安全。
@@ -290,6 +290,9 @@ def ensure_issue_columns() -> None:
         if "exec_run_id" not in cols:
             # 自动建缺陷草稿的来源执行追溯列(不在线加 FK,同 release_id 的取舍)
             conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN exec_run_id BIGINT NULL"))
+        if "eval_run_id" not in cols:
+            # AI 测评一条龙 fail/abnormal 自动建草稿的来源追溯列(同 exec_run_id,不在线加 FK)
+            conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN eval_run_id BIGINT NULL"))
         if dialect == "mysql":
             # report_id 放宽为可空。MySQL 不允许直接 MODIFY 被 FK 引用的列（errno 1832
             # "Cannot change column ... used in a foreign key constraint"），需先 drop 该 FK
@@ -316,13 +319,19 @@ def ensure_issue_columns() -> None:
 
 
 def ensure_project_columns() -> None:
-    """project 表补列 platform_type（如缺失）。pc/app，控制发版页子产品枚举与渠道列；NULL=未分类。"""
+    """project 表补列 platform_type / geelib_sub_id（如缺失）。
+
+    platform_type：pc/app，控制发版页子产品枚举与渠道列；NULL=未分类。
+    geelib_sub_id：极库云项目 ID，缺陷上报映射用；NULL=未映射(回退 GEELIB_SUB_MAP)。
+    """
     cols = _columns("project")
     if not cols:
         return  # 表尚未建，交给 create_all
     with engine.begin() as conn:
         if "platform_type" not in cols:
             conn.execute(text("ALTER TABLE project ADD COLUMN platform_type VARCHAR(16) NULL"))
+        if "geelib_sub_id" not in cols:
+            conn.execute(text("ALTER TABLE project ADD COLUMN geelib_sub_id BIGINT NULL"))
 
 
 def ensure_release_columns() -> None:

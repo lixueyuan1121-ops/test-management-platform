@@ -68,6 +68,37 @@ def test_reaper():
     print("OK reaper")
 
 
+def test_reaper_uses_db_clock_not_process_utc():
+    """reaper 时间基准须取自数据库(func.now())而非进程 utcnow——否则 DB 时区非 UTC 时收口失效。
+
+    生产是内网 MySQL 5.6,NOW() 用服务器时区(很可能东八区),存进 created_at/updated_at;
+    reaper 却用 datetime.utcnow() 作基准,两者差 8h → cutoff 被推早 8h,超龄 run 被误判"还很新"漏收,
+    设备看板长期卡"执行中"。这里 mock 进程 utcnow 比真实(≈SQLite DB now)早 8h 复现该错配。
+    """
+    import app.services.scheduler as sched
+
+    s = _Session()
+    p = _seed(s)
+    # 模拟生产:DB 会话时区东八区,NOW() 比进程 utcnow 大 8h
+    db_now = datetime.utcnow() + timedelta(hours=8)
+    r = _run(s, p.id, "running", minutes_ago=0, batch="b-tz")
+    r.updated_at = db_now - timedelta(hours=3)   # DB 时钟下的"3 小时前",已超 2h 阈值应收口
+    s.commit()
+
+    orig = sched._db_now
+    sched._db_now = lambda db: db_now            # reaper 应以数据库时钟为基准,而非进程 utcnow
+    try:
+        sched.reap_stale_exec_runs(session_factory=_Session)
+    finally:
+        sched._db_now = orig
+
+    s2 = _Session()
+    got = s2.get(ExecRun, r.id).status.value
+    s2.close(); s.close()
+    assert got == "failed", f"应以数据库时钟为基准收口,实际 {got}(reaper 误用进程 utcnow → DB 东八区时漏收)"
+    print("OK reaper 用数据库时钟(时区无关)")
+
+
 def test_batch_notify_hook():
     from app.api.exec_queue import notify_batch_if_done
     from app.services import notify
@@ -137,6 +168,7 @@ def test_notify_pure():
 def main():
     test_notify_pure()
     test_reaper()
+    test_reaper_uses_db_clock_not_process_utc()
     test_batch_notify_hook()
     print("OK test_exec_reaper_notify")
 

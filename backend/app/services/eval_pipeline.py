@@ -110,6 +110,7 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
     total = len(rows)
     passed = sum(1 for r in rows if r.verdict == "pass")
     failed = sum(1 for r in rows if r.verdict == "fail")
+    errored = sum(1 for r in rows if r.verdict == "error")   # 判定失败/无法定论,待重判
     abnormal = sum(1 for r in rows if r.is_abnormal)
     scores = [r.score for r in rows if r.score is not None]
     avg_score = round(sum(scores) / len(scores), 2) if scores else None
@@ -133,7 +134,72 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
             return f"{round(100 * x[0] / x[1])}%" if x[1] else "—"
         ab_line = f"A 组通过率 {_rate(ab['A'])}（{ab['A'][0]}/{ab['A'][1]}）｜B 组通过率 {_rate(ab['B'])}（{ab['B'][0]}/{ab['B'][1]}）"
     return {"total": total, "passed": passed, "failed": failed, "abnormal": abnormal,
-            "avg_score": avg_score, "ab_line": ab_line}
+            "errored": errored, "avg_score": avg_score, "ab_line": ab_line}
+
+
+# 测评失败严重度：执行异常(abnormal)比单纯判定不过(fail)更严重。
+_EVAL_SEVERITY = {"abnormal": "major", "fail": "minor"}
+
+
+def auto_issue_for_eval_failures(db: Session, task_id: int, project_id: int, batch_id: str) -> list:
+    """eval 批次里 verdict=fail 或 is_abnormal 的 run 逐条生成 RemainingIssue 草稿。返回新建列表。
+
+    对齐 exec 侧 _auto_issue_for_failures：AUTO_ISSUE_ON_FAIL 开关控制；按 eval_query 去重
+    （同题已有 open 的自动草稿则跳过，避免夜夜失败重复开单）；回指 eval_run_id/eval_task_id。
+    abnormal(执行异常)→major，纯判定 fail→minor。
+    """
+    from app.core.config import settings
+    if not settings.AUTO_ISSUE_ON_FAIL:
+        return []
+    from app.core.enums import IssueSeverity, IssueStatus
+    from app.models import EvalQuery, RemainingIssue
+
+    runs = (db.query(EvalRun)
+            .filter(EvalRun.eval_task_id == task_id, EvalRun.batch_id == batch_id).all())
+    created = []
+    seen_queries = set()   # 本批已开单的 eval_query_id（同批多设备分片同题只开一条）
+    for r in runs:
+        abnormal = bool(r.is_abnormal)
+        if not (r.verdict == "fail" or abnormal):
+            continue
+        if r.eval_query_id:
+            if r.eval_query_id in seen_queries:
+                continue
+            dup = (db.query(RemainingIssue.id)
+                   .join(EvalRun, EvalRun.id == RemainingIssue.eval_run_id)
+                   .filter(RemainingIssue.status == IssueStatus.open,
+                           EvalRun.eval_query_id == r.eval_query_id)
+                   .first())
+            if dup:
+                continue
+            seen_queries.add(r.eval_query_id)
+        q = db.get(EvalQuery, r.eval_query_id) if r.eval_query_id else None
+        q_title = (q.title if q else None) or f"run#{r.id}"
+        sev = _EVAL_SEVERITY["abnormal" if abnormal else "fail"]
+        desc_lines = [
+            f"AI 测评失败草稿（测评任务 #{task_id}，批次 {batch_id}，执行机 {r.runner}）",
+            f"判定：{'执行异常' if abnormal else '判定不通过'}"
+            + (f"，评分 {r.score}" if r.score is not None else ""),
+            f"理由：{(r.verdict_reason or r.reason or '无')[:500]}",
+        ]
+        if r.share_link:
+            desc_lines.append(f"会话：{r.share_link}")
+        desc_lines.append("请复核：确认为真 bug 则补负责人并上报极库云；误报请在测评结果页人工纠偏后关闭本条。")
+        issue = RemainingIssue(
+            report_id=None,
+            task_id=None,
+            eval_run_id=r.id,
+            project_id=project_id,
+            title=f"[自动] 测评失败：{q_title}"[:255],
+            description="\n".join(desc_lines),
+            severity=IssueSeverity(sev),
+            status=IssueStatus.open,
+        )
+        db.add(issue)
+        created.append(issue)
+    if created:
+        db.commit()
+    return created
 
 
 def run_pipeline(db: Session, task_id: int, project_id: int, task_name: str, batch_id: str) -> None:
@@ -178,12 +244,22 @@ def run_pipeline(db: Session, task_id: int, project_id: int, task_name: str, bat
 
     # 步骤 4:结果摘要
     s = _result_summary(db, task_id, batch_id)
+    # 失败/异常自动建缺陷草稿(供人复核后一键上报极库云)。失败不阻断收尾。
+    drafts = 0
+    try:
+        drafts = len(auto_issue_for_eval_failures(db, task_id, project_id, batch_id))
+    except Exception:  # noqa: BLE001
+        logger.exception("一条龙自动建缺陷草稿失败 task=%s", task_id)
     lines = [
         f"**结果**:共 {s['total']} 条,通过 {s['passed']},失败 {s['failed']},异常 {s['abnormal']} 条"
         + (f",平均分 {s['avg_score']}" if s['avg_score'] is not None else ""),
     ]
     if s["ab_line"]:
         lines.append(f"**A/B 对比**:{s['ab_line']}")
+    if s.get("errored"):
+        lines.append(f"⚠️ {s['errored']} 条判定失败/无法定论，需到测评结果页重判。")
+    if drafts:
+        lines.append(f"已自动生成 {drafts} 条缺陷草稿,请复核后上报极库云。")
     lines.append("详情与综合评价见平台测评任务页。")
     notify.notify_eval_pipeline(task_name, project_id, "🎉 测评任务执行完毕", lines, COLOR_GREEN)
 

@@ -172,14 +172,50 @@ def test_result_summary():
     _run(t.id, "bs", EvalRunStatus.judged, verdict="pass", score=4, compare="A")
     _run(t.id, "bs", EvalRunStatus.judged, verdict="pass", score=3, compare="B")
     _run(t.id, "bs", EvalRunStatus.judged, verdict="fail", score=1, compare="B", abnormal=True)
+    _run(t.id, "bs", EvalRunStatus.judged, verdict="error")   # 判定失败/无法定论,须在摘要可见
     _run(t.id, "bs", EvalRunStatus.cancelled, verdict="pass", score=5)  # cancelled 不计
     s = eval_pipeline._result_summary(_s, t.id, "bs")
-    assert s["total"] == 4, s          # 排除 cancelled
+    assert s["total"] == 5, s          # 排除 cancelled(含 error 那条)
     assert s["passed"] == 3 and s["failed"] == 1, s
     assert s["abnormal"] == 1, s
+    assert s["errored"] == 1, s        # error(判定失败)须单独统计,否则人不知有几条待重判
     assert s["avg_score"] == round((5 + 4 + 3 + 1) / 4, 2), s
     assert s["ab_line"] and "A 组" in s["ab_line"] and "B 组" in s["ab_line"], s["ab_line"]
     print("OK 结果摘要指标 + A/B 胜率")
+
+
+def test_run_pipeline_creates_defect_draft():
+    """一条龙收尾:判定出的 fail run 自动建缺陷草稿,最终摘要通知提及草稿数。"""
+    from app.models import RemainingIssue
+    _notifications.clear(); _judge_calls.clear()
+    global _summary_result
+    _summary_result = {"ok": True}
+    _s.query(RemainingIssue).delete(); _s.commit()
+    t = _task(auto=True, batch="bd", pstatus="running")
+    _run(t.id, "bd", EvalRunStatus.done)   # 判定后 i=0 → pass(不建)
+    _run(t.id, "bd", EvalRunStatus.done)   # 判定后 i=1 → fail(建草稿)
+    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "bd")
+    drafts = _s.query(RemainingIssue).filter(RemainingIssue.eval_run_id.isnot(None)).all()
+    assert len(drafts) == 1, f"fail 的 run 应建 1 条缺陷草稿,实际 {len(drafts)}"
+    assert drafts[0].title.startswith("[自动] 测评失败"), drafts[0].title
+    assert "缺陷草稿" in str(_notifications[-1]), _notifications[-1]
+    print("OK pipeline 收尾建缺陷草稿 + 通知提及")
+
+
+def test_pipeline_summary_reports_errored():
+    """一条龙收尾:批次含 error(判定失败/无法定论)时,结果摘要通知须显式提示待重判条数。"""
+    _notifications.clear()
+    global _summary_result
+    _summary_result = {"ok": True}
+    t = _task(auto=True, batch="be", pstatus="running")
+    # 造两条 done;fake judge 会把它们判成 pass/fail。再直接塞一条 error(judged)。
+    _run(t.id, "be", EvalRunStatus.done)
+    _run(t.id, "be", EvalRunStatus.done)
+    _run(t.id, "be", EvalRunStatus.judged, verdict="error")
+    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "be")
+    final = str(_notifications[-1])
+    assert "1" in final and ("重判" in final or "判定失败" in final), final
+    print("OK 摘要通知提示 error 待重判")
 
 
 def main():
@@ -191,6 +227,8 @@ def main():
     test_run_pipeline_four_steps()
     test_summary_failure_not_block()
     test_result_summary()
+    test_run_pipeline_creates_defect_draft()
+    test_pipeline_summary_reports_errored()
     print("OK test_eval_pipeline")
 
 

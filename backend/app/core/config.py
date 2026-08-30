@@ -110,9 +110,37 @@ class Settings(BaseSettings):
     # 空则拒绝一切 /api/hooks/* 请求（通道默认关闭）。
     CI_HOOK_TOKEN: str = ""
 
+    # ---- 极库云(geelib)缺陷上报（把遗留问题/回归失败推成极库云工作项「缺陷」）----
+    # 鉴权走 qihoo-sso-cli 取 app_token（与 sso-geelib-project-skill 同源），无人值守纯 HTTP，
+    # 不依赖 Node/skill。未开或缺 sub_id 映射即整条通道静默关闭，不影响任何业务流程。
+    GEELIB_ENABLED: bool = False
+    GEELIB_API_URL: str = "http://geelib.agent-auth.qihoo.net"
+    GEELIB_SSO_BIN: str = ""            # 空则运行时 shutil.which("qihoo-sso-cli")
+    GEELIB_SSO_APP: str = "geelib"      # qihoo-sso-cli -app 值
+    GEELIB_SSO_TOOL: str = "sso-geelib-project-skill"  # qihoo-sso-cli -tool 值（授权登记用）
+    GEELIB_DEFECT_TYPE: str = "缺陷"     # /openapi/Matter/add 的 type_id（工作项类型名）
+    # 平台项目→极库云项目(sub_id)的映射，形如 "nw:419,other:512"。也可在 Project.geelib_sub_id 单配。
+    GEELIB_SUB_MAP: str = ""
+    # auto/ci 批次失败自动上报开关（默认关：先建本地草稿供人复核，人确认后再上报，避免误报污染极库云）。
+    GEELIB_AUTO_REPORT: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def geelib_sub_map(self) -> dict[str, int]:
+        """解析 GEELIB_SUB_MAP("code:sub_id,code2:sub_id2") → {code: sub_id}。非法项跳过。"""
+        out: dict[str, int] = {}
+        for pair in (self.GEELIB_SUB_MAP or "").split(","):
+            pair = pair.strip()
+            if not pair or ":" not in pair:
+                continue
+            code, _, sid = pair.partition(":")
+            code, sid = code.strip(), sid.strip()
+            if code and sid.isdigit():
+                out[code] = int(sid)
+        return out
 
     @property
     def sqlalchemy_url(self) -> str:

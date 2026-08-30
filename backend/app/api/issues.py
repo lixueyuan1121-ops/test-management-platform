@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import IssueStatus, ProjectRole
 from app.db.session import get_db
-from app.models import DailyReport, RemainingIssue, Task, User
+from app.models import DailyReport, Project, RemainingIssue, Task, User
 from app.schemas.common import ok
 from app.schemas.issue import IssueUpdate
 
@@ -42,7 +42,7 @@ def _to_out(db: Session, it: RemainingIssue, names: dict | None = None, titles: 
     return {
         "id": it.id, "report_id": it.report_id, "project_id": it.project_id,
         "task_id": it.task_id, "checklist_item_id": it.checklist_item_id,
-        "exec_run_id": it.exec_run_id,
+        "exec_run_id": it.exec_run_id, "eval_run_id": it.eval_run_id,
         "title": it.title, "description": it.description,
         "severity": it.severity.value, "status": it.status.value,
         "owner": it.owner, "owner_name": owner_name,
@@ -105,3 +105,54 @@ def update_issue(
     db.commit()
     db.refresh(it)
     return ok(_to_out(db, it))
+
+
+@router.post("/{iid}/report-geelib")
+def report_issue_to_geelib(
+    iid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把遗留问题上报到极库云缺陷系统，成功后回填 external_ref（人复核后一键上报）。仅项目 admin。
+
+    已上报（external_ref 已含 geelib#）则幂等返回，不重复建单。通道未启用/未配 sub_id 返回 409，
+    上报失败返回 502，把极库云原因透传给前端。
+    """
+    from app.services import geelib
+    from app.core.config import settings
+
+    it = db.get(RemainingIssue, iid)
+    if not it:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="遗留问题不存在")
+    assert_project_role(db, user, it.project_id, (ProjectRole.admin,))
+
+    if it.external_ref and str(it.external_ref).startswith("geelib#"):
+        return ok({**_to_out(db, it), "already_reported": True})
+    if not geelib.is_enabled():
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="极库云上报通道未启用（GEELIB_ENABLED=false）")
+
+    proj = db.get(Project, it.project_id)
+    sub_id = geelib.resolve_sub_id(proj.code if proj else None,
+                                   getattr(proj, "geelib_sub_id", None))
+    if not sub_id:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            detail="该项目未映射极库云 sub_id（配 Project.geelib_sub_id 或 GEELIB_SUB_MAP）")
+
+    platform_url = None
+    if settings.PLATFORM_BASE_URL:
+        platform_url = f"{settings.PLATFORM_BASE_URL.rstrip('/')}/issues?project_id={it.project_id}"
+    try:
+        res = geelib.report_defect(
+            sub_id=sub_id, title=it.title, description=it.description,
+            severity=it.severity.value, platform_url=platform_url,
+            extra=[f"平台遗留问题 #{it.id}"],
+        )
+    except geelib.GeelibError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"极库云上报失败：{e}")
+    if not res.get("ok"):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=res.get("reason") or "上报未成功")
+
+    it.external_ref = res["ref"]
+    db.commit()
+    db.refresh(it)
+    return ok({**_to_out(db, it), "matter_id": res.get("matter_id")})

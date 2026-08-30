@@ -44,6 +44,7 @@ export const aiStats = (params) => http.get('/stats/ai', { params })
 export const aiFunnel = (days = 30) => http.get('/stats/ai-funnel', { params: { days } })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
 export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
+export const reportIssueToGeelib = (id) => http.post(`/issues/${id}/report-geelib`)
 
 // ===== 测试工具广场 =====
 export const listCategories = (include_inactive) => {
