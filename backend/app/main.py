@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import os
 
 from fastapi import FastAPI
@@ -16,6 +17,18 @@ from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+# 日志落盘:线上 uvicorn 裸跑、控制台日志不持久(cmd 窗口关即丢,远程也取不到),落文件便于事后
+# 排查(轮转防膨胀)。写到 backend/logs/backend.log,失败不影响启动(仍有控制台输出)。
+_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+try:
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    _fh = logging.handlers.RotatingFileHandler(
+        os.path.join(_LOG_DIR, "backend.log"), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_fh)
+except OSError:
+    logger.warning("日志落盘初始化失败(仅控制台输出)", exc_info=True)
 
 
 def init_db() -> None:

@@ -233,7 +233,17 @@ def auto_issue_for_eval_failures(db: Session, task_id: int, project_id: int, bat
     return created
 
 
+def _is_busy_error(err) -> bool:
+    """错误是否为「并发槽繁忙」——唯一值得退避重试的临时错误(引擎繁忙消息含「繁忙/并发上限」)。"""
+    return bool(err) and ("繁忙" in err or "并发上限" in err)
+
+
 def _summary_with_retry(db, task_id, batch_id):
+    """综合评价生成;**仅**并发繁忙才退避重试。
+
+    超时/引擎报错/无有效输出等不重试:每次重试都会重新跑一个 AI_TIMEOUT_SECONDS(默认 15min)
+    硬超时,4 次叠加能把前端「生成中」拖到最长 ~60min(线上实测卡 >15min 即此叠加),且毫无收益。
+    """
     from app.api.eval_task import generate_task_summary_headless
     from app.core.config import settings
     import time as _t
@@ -243,6 +253,8 @@ def _summary_with_retry(db, task_id, batch_id):
         res = generate_task_summary_headless(db, task, batch_id, provider=settings.EVAL_PIPELINE_PROVIDER or None)
         if res.get("ok") or res.get("skipped") or "error" not in res:
             break
+        if not _is_busy_error(res.get("error")):
+            break   # 非繁忙(超时/报错/无输出):重试徒增一个 15min 超时,立即收口
         if _i < _SUMMARY_RETRY - 1:
             _t.sleep(_SUMMARY_RETRY_SLEEP)
     return res

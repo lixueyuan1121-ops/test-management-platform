@@ -16,3 +16,6 @@ backend/uploads/
 # Claude 本地个人记忆（含推送习惯，勿入库）
 CLAUDE.local.md
 .claude/
+
+# 后端运行时日志(落盘,不入库)
+backend/logs/

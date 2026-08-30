@@ -582,12 +582,17 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
 
     tail = deque(maxlen=20)   # 保留最近的非目标输出，失败时帮助定位
     got_result = False
+    hb = 0            # 心跳计数(claude 思考、未吐字的空转轮数)
+    out_chars = 0     # 已产出正文字符数(超时诊断:0=claude 全程没吐字/纯 hang)
     start = time.monotonic()
+    logger.info("claude 生成启动 via_stdin=%s prompt_len=%d timeout=%ss", via_stdin, len(prompt), timeout)
     try:
         while True:
             remaining = timeout - (time.monotonic() - start)
             if remaining <= 0:
                 proc.kill()
+                logger.warning("claude 生成超时 >%ss via_stdin=%s prompt_len=%d hb=%d 已输出=%d字",
+                               timeout, via_stdin, len(prompt), hb, out_chars)
                 yield {"type": "error", "msg": f"生成超时（>{timeout}s）"}
                 return
             try:
@@ -597,6 +602,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                     break
                 # 空转(claude 还在思考、未吐字):发心跳,避免反向代理/网关按"空闲"掐断长连接
                 # (SSE 一个字节没动 → 常见 60s 空闲超时 → 前端"读取流失败")。端点转成 SSE 注释帧。
+                hb += 1
                 yield {"type": "heartbeat"}
                 continue
             if line is None:
@@ -609,12 +615,16 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                 continue
             if evt["type"] == "result":
                 got_result = True
+            elif evt["type"] == "delta":
+                out_chars += len(evt.get("text") or "")
             yield evt
     finally:
         if proc and proc.poll() is None:
             proc.kill()
         _slots.release()
 
+    logger.info("claude 生成结束 got_result=%s 耗时=%.1fs hb=%d 输出=%d字",
+                got_result, time.monotonic() - start, hb, out_chars)
     if not got_result:
         # 没拿到 result：多为 CLI 报错/异常退出，附最近输出片段便于排查
         detail = " | ".join(list(tail)[-3:]) or "无输出"

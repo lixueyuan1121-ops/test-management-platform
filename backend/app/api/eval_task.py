@@ -581,6 +581,8 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
         return {"skipped": True, "reason": "该批次无可评的执行记录"}
     items = _summary_items(db, runs)
     prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
+    logger.info("无头综合评价开始 task=%s batch=%s provider=%s runs=%d prompt_len=%d",
+                task.id, batch_id, provider_id, len(runs), len(prompt))
     task.summary_status = "running"
     db.commit()
     # ⚠️ 整段(流式生成 + HTML 提取 + 消毒 + 落库)都必须在异常保护内:一旦设了 running 又让
@@ -612,6 +614,7 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
         task.summary_provider = provider_id
         task.summary_at = datetime.now()
         db.commit()
+        logger.info("无头综合评价完成 task=%s batch=%s html_len=%d", task.id, batch_id, len(task.summary_html or ""))
         return {"ok": True}
     except Exception as e:  # noqa: BLE001
         logger.exception("无头综合评价生成失败 task=%s batch=%s", task.id, batch_id)
