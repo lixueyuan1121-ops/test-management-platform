@@ -21,6 +21,10 @@ from app.models.ai_eval import EvalTask
 
 logger = logging.getLogger("test_platform")
 
+# Retry summary generation when claude concurrency slots are exhausted (busy).
+_SUMMARY_RETRY = 4
+_SUMMARY_RETRY_SLEEP = 3.0
+
 # 门闩可抢占态:NULL(从未跑)或 idle;running/done/failed 都不再抢(done/failed 是上一轮结果,
 # 换批 dispatch 会重置回 NULL 才允许下一轮)。
 _CLAIMABLE = (None, "idle")
@@ -202,6 +206,21 @@ def auto_issue_for_eval_failures(db: Session, task_id: int, project_id: int, bat
     return created
 
 
+def _summary_with_retry(db, task_id, batch_id):
+    from app.api.eval_task import generate_task_summary_headless
+    from app.core.config import settings
+    import time as _t
+    res = {}
+    for _i in range(_SUMMARY_RETRY):
+        task = db.get(EvalTask, task_id)
+        res = generate_task_summary_headless(db, task, batch_id, provider=settings.EVAL_PIPELINE_PROVIDER or None)
+        if res.get("ok") or res.get("skipped") or "error" not in res:
+            break
+        if _i < _SUMMARY_RETRY - 1:
+            _t.sleep(_SUMMARY_RETRY_SLEEP)
+    return res
+
+
 def run_pipeline(db: Session, task_id: int, project_id: int, task_name: str, batch_id: str) -> None:
     """一条龙四步编排(同步执行,供后台线程调用)。各步失败不中断后续,分步发飞书。"""
     from app.api.eval_judge import _run_batch_judge
@@ -230,10 +249,8 @@ def run_pipeline(db: Session, task_id: int, project_id: int, task_name: str, bat
         notify.notify_eval_pipeline(task_name, project_id, "⚠️ 批量判定出错",
                                     [f"原因:{e}", "跳过判定,继续综合评价…"], "orange")
 
-    # 步骤 3:综合评价(无头)
-    task = db.get(EvalTask, task_id)
-    summary_res = generate_task_summary_headless(db, task, batch_id,
-                                                 provider=settings.EVAL_PIPELINE_PROVIDER or None)
+    # 步骤 3:综合评价(无头),繁忙退避重试
+    summary_res = _summary_with_retry(db, task_id, batch_id)
     if summary_res.get("ok"):
         notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成综合评价",
                                     ["综合评价已生成,可在平台查看 HTML 报告。"], COLOR_BLUE)
