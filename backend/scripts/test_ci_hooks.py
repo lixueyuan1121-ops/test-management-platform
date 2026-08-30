@@ -150,9 +150,10 @@ def test_ci_batch_notify(batch_id: str):
     from app.services import notify
 
     sent = []
-    orig_send, orig_url = notify._send_async, settings.FEISHU_WEBHOOK_URL
-    notify._send_async = lambda body: sent.append(body)
-    settings.FEISHU_WEBHOOK_URL = "http://fake.local/x"
+    orig_send = notify._tuitui_send
+    orig_cfg = (settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP)
+    notify._tuitui_send = lambda content, group=None: sent.append(content)
+    settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = "a", "s", "g"
     try:
         runs = _s.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
         runs[0].status = ExecStatus.failed
@@ -162,8 +163,8 @@ def test_ci_batch_notify(batch_id: str):
         notify_batch_if_done(_s, batch_id)
         assert len(sent) == 1, f"ci 批次完成有失败应发 1 张卡,实际 {len(sent)}"
     finally:
-        notify._send_async = orig_send
-        settings.FEISHU_WEBHOOK_URL = orig_url
+        notify._tuitui_send = orig_send
+        settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = orig_cfg
     print("OK ci batch notify")
 
 
