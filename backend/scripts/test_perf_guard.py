@@ -94,9 +94,10 @@ def test_report_triggers_alert():
     from app.services import notify
 
     sent = []
-    orig_send, orig_url = notify._send_async, settings.FEISHU_WEBHOOK_URL
-    notify._send_async = lambda body: sent.append(body)
-    settings.FEISHU_WEBHOOK_URL = "http://fake.local/x"
+    orig_send = notify._tuitui_send
+    orig_cfg = (settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP)
+    notify._tuitui_send = lambda content, group=None: sent.append(content)
+    settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = "a", "s", "g"
     try:
         # 超线 run(cpu.peak 95 > 80)→ 发卡
         r1 = PerfRun(id=901, project_id=100, report_set_id=5, runner="win-01",
@@ -132,8 +133,8 @@ def test_report_triggers_alert():
             "meta": {"summary": {"cpu": {"peak": 99}}}})
         assert len(sent) == 1, "failed 不应发卡"
     finally:
-        notify._send_async = orig_send
-        settings.FEISHU_WEBHOOK_URL = orig_url
+        notify._tuitui_send = orig_send
+        settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = orig_cfg
     print("OK report triggers alert")
 
 

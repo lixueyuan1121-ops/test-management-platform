@@ -104,10 +104,10 @@ def test_batch_notify_hook():
     from app.services import notify
 
     sent = []
-    orig = notify._send_async
-    notify._send_async = lambda body: sent.append(body)
-    orig_url = settings.FEISHU_WEBHOOK_URL
-    settings.FEISHU_WEBHOOK_URL = "http://fake-webhook.local/x"
+    orig = notify._tuitui_send
+    notify._tuitui_send = lambda content, group=None: sent.append(content)
+    orig_cfg = (settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP)
+    settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = "a", "s", "g"
     try:
         s = _Session()
         p = _seed(s)
@@ -140,8 +140,8 @@ def test_batch_notify_hook():
         assert len(sent) == 1, "全 passed 不应发"
         s.close()
     finally:
-        notify._send_async = orig
-        settings.FEISHU_WEBHOOK_URL = orig_url
+        notify._tuitui_send = orig
+        settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = orig_cfg
     print("OK batch notify hook")
 
 
@@ -151,17 +151,14 @@ def test_notify_pure():
     assert notify._esc("a*b_c[d]`e~") == "a b c d  e", notify._esc("a*b_c[d]`e~")
     assert len(notify._esc("x" * 999)) == 200
     assert notify._esc(None) == ""
-    # 签名算法自检:固定输入产出固定 base64(算法回归锚点)
-    sig = notify._sign("secret", "1700000000")
-    assert isinstance(sig, str) and len(sig) > 20
-    assert sig == notify._sign("secret", "1700000000")
-    orig_url = settings.FEISHU_WEBHOOK_URL
-    settings.FEISHU_WEBHOOK_URL = ""
+    # 推推通道:appid/secret/group 缺任一即未启用,send_card 静默不抛
+    orig_cfg = (settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP)
+    settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = "", "", ""
     try:
         assert not notify.is_enabled()
         notify.send_card("t", ["l"])   # 未配置直接静默,不抛
     finally:
-        settings.FEISHU_WEBHOOK_URL = orig_url
+        settings.TUITUI_BOT_APPID, settings.TUITUI_BOT_SECRET, settings.TUITUI_BOT_GROUP = orig_cfg
     print("OK notify pure")
 
 
