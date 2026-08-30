@@ -96,7 +96,12 @@ def _run_pipeline_thread(task_id: int, project_id: int, task_name: str, batch_id
         try:
             t = db.get(EvalTask, task_id)
             if t:
-                t.pipeline_status = "failed"; db.commit()
+                t.pipeline_status = "failed"
+                # 防御纵深:编排异常时若综合评价还卡在 running(headless 落 failed 也失败的极端情况),
+                # 一并收口,避免前端"一直生成中"。
+                if t.summary_status == "running":
+                    t.summary_status = "failed"
+                db.commit()
         except Exception:
             db.rollback()
     finally:

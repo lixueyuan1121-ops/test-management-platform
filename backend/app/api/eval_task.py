@@ -583,6 +583,11 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
     prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
     task.summary_status = "running"
     db.commit()
+    # ⚠️ 整段(流式生成 + HTML 提取 + 消毒 + 落库)都必须在异常保护内:一旦设了 running 又让
+    # 任何异常(extract/sanitize 正则边界、长跑后 commit 连接失效等)裸逃,summary_status 会
+    # 永久卡在 running——无头调用方(_summary_with_retry→run_pipeline→后台线程)只兜底
+    # pipeline_status,从不回收 summary_status,前端遂"一直生成中"。手动 SSE 端点无此问题
+    # 是因其 finally 段同样兜底落库。见 scripts/test_eval_summary_status.py。
     raw = ""
     try:
         for evt in engine.stream_generate(
@@ -598,19 +603,23 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
             elif etype == "error":
                 task.summary_status = "failed"; db.commit()
                 return {"error": evt.get("msg") or "引擎报错"}
+        html = claude_runner.extract_html_fragment(raw)
+        if not html:
+            task.summary_status = "failed"; db.commit()
+            return {"error": "引擎没有产出有效 HTML 评价"}
+        task.summary_html = _sanitize_html(html)
+        task.summary_status = "done"
+        task.summary_provider = provider_id
+        task.summary_at = datetime.now()
+        db.commit()
+        return {"ok": True}
     except Exception as e:  # noqa: BLE001
-        task.summary_status = "failed"; db.commit()
+        logger.exception("无头综合评价生成失败 task=%s batch=%s", task.id, batch_id)
+        try:
+            task.summary_status = "failed"; db.commit()
+        except Exception:  # noqa: BLE001 落 failed 都失败(连接彻底坏)→回滚,兜底线程再收口
+            db.rollback()
         return {"error": f"生成中断:{e}"}
-    html = claude_runner.extract_html_fragment(raw)
-    if not html:
-        task.summary_status = "failed"; db.commit()
-        return {"error": "引擎没有产出有效 HTML 评价"}
-    task.summary_html = _sanitize_html(html)
-    task.summary_status = "done"
-    task.summary_provider = provider_id
-    task.summary_at = datetime.now()
-    db.commit()
-    return {"ok": True}
 
 
 @router.post("/{task_id}/summarize")
