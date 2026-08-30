@@ -108,6 +108,28 @@ def _run_pipeline_thread(task_id: int, project_id: int, task_name: str, batch_id
         db.close()
 
 
+def reap_stale_running_on_startup(db: Session) -> dict:
+    """进程启动时收口僵尸 running。
+
+    后端重启(部署/崩溃/关窗口)后,内存里正在跑的综合评价/一条龙编排线程都已随进程消失,
+    但库里可能残留 summary_status='running' 或 pipeline_status='running'——这些是被重启
+    打断、再没有线程去落终态的僵尸态:不收口则前端永久"生成中"、编排门闩永远不能重跑。
+    uvicorn 单进程启动时不存在正在跑的这类线程,故此刻所有 running 都可安全收口为 failed
+    (综合评价可手动/换批重生成;pipeline 换批 dispatch 会重置门闩)。幂等,无 running 不写库。
+    """
+    r1 = db.execute(update(EvalTask).where(EvalTask.summary_status == "running")
+                    .values(summary_status="failed"))
+    r2 = db.execute(update(EvalTask).where(EvalTask.pipeline_status == "running")
+                    .values(pipeline_status="failed"))
+    n_sum, n_pipe = r1.rowcount or 0, r2.rowcount or 0
+    if n_sum or n_pipe:
+        db.commit()
+        logger.info("启动收口僵尸 running:综合评价 %d 条、一条龙 %d 条", n_sum, n_pipe)
+    else:
+        db.rollback()
+    return {"summary": n_sum, "pipeline": n_pipe}
+
+
 def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
     """收尾摘要指标:通过/失败/异常/均分 + A/B 胜率(若有对比组)。"""
     import json

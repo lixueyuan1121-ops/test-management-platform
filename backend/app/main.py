@@ -104,6 +104,17 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup():
         init_db()
+        # 收口僵尸 running:重启会打断内存里的综合评价/一条龙线程,库里残留的 running 再没人落
+        # 终态,前端遂永久「生成中」——启动时统一收口为 failed(可重生成/换批重跑)。不影响主服务。
+        try:
+            from app.services.eval_pipeline import reap_stale_running_on_startup
+            db = SessionLocal()
+            try:
+                reap_stale_running_on_startup(db)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("启动收口僵尸综合评价/一条龙状态失败（不影响主服务）")
         # 反馈定时回归调度器（APScheduler）：建表后启动 + 从 DB enabled 集重建 job
         try:
             from app.services.scheduler import start_scheduler

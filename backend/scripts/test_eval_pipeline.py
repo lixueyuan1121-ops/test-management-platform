@@ -218,6 +218,22 @@ def test_pipeline_summary_reports_errored():
     print("OK 摘要通知提示 error 待重判")
 
 
+def test_reap_stale_running_on_startup():
+    """重启自愈:僵尸 summary_status/pipeline_status='running' 收口为 failed;非 running 不动。"""
+    t1 = _task(auto=True, batch="rs1")
+    t1.summary_status = "running"; _s.commit()
+    t2 = _task(auto=True, batch="rs2", pstatus="running")
+    t3 = _task(auto=True, batch="rs3", pstatus="done")
+    t3.summary_status = "done"; _s.commit()
+    res = eval_pipeline.reap_stale_running_on_startup(_s)
+    _s.refresh(t1); _s.refresh(t2); _s.refresh(t3)
+    assert t1.summary_status == "failed", t1.summary_status
+    assert t2.pipeline_status == "failed", t2.pipeline_status
+    assert t3.summary_status == "done" and t3.pipeline_status == "done", "非 running 不应被动"
+    assert res["summary"] >= 1 and res["pipeline"] >= 1, res
+    print("OK 启动收口僵尸 running")
+
+
 def main():
     _seed()
     test_claim_once()
@@ -229,6 +245,7 @@ def main():
     test_result_summary()
     test_run_pipeline_creates_defect_draft()
     test_pipeline_summary_reports_errored()
+    test_reap_stale_running_on_startup()
     print("OK test_eval_pipeline")
 
 
