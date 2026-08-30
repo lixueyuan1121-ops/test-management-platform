@@ -54,7 +54,7 @@
     <!-- 性能红线:超线的采集完成即推飞书告警 -->
     <el-dialog v-model="thVisible" title="性能红线（阈值告警）" width="560px">
       <el-alert type="info" :closable="false" show-icon class="th-tip"
-        title="给本报告集设红线：采集完成时逐指标比对，超线自动推飞书告警（需配置通知通道）。留空=不检查该指标。" />
+        title="给本报告集设红线：采集完成时逐指标比对，超线自动推送推推告警（需配置通知通道）。留空=不检查该指标。" />
       <el-table :data="thRows" size="small" border>
         <el-table-column prop="label" label="指标" width="110" />
         <el-table-column label="单位" width="60" align="center">

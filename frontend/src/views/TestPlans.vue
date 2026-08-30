@@ -17,7 +17,7 @@
 
       <el-alert type="info" :closable="false" show-icon class="intro">
         把主用例库的用例组成<b>测试计划</b>（固定集合），可<b>立即执行</b>整计划、或设<b>定时自动回归</b>（到点自动下发）。
-        计划内 manual 用例执行时自动跳过；定时批次失败会推飞书告警（需配置通知通道）。
+        计划内 manual 用例执行时自动跳过；定时批次失败会推送推推告警（需配置通知通道）。
       </el-alert>
 
       <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="暂无测试计划（先选项目，再新建）">

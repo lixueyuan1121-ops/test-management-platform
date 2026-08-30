@@ -203,7 +203,7 @@
         </template>
         <el-form-item label="一条龙">
           <el-switch v-model="runForm.auto_pipeline" />
-          <span class="cmp-hint">⚡ 全部执行完自动「批量判定 → 综合评价」，并飞书分步通知</span>
+          <span class="cmp-hint">⚡ 全部执行完自动「批量判定 → 综合评价」，并推推分步通知</span>
         </el-form-item>
         <el-alert type="info" :closable="false" show-icon
           :title="`将下发 ${(runTask?.query_ids?.length || 0) * (runForm.compare ? 2 : 1)} 条用例${runForm.auto ? '(自动铺到在线执行机并行)' : (runForm.runners.length > 1 ? `(分片到 ${runForm.runners.length} 台并行)` : '')}${runForm.compare ? '(A/B 各一遍)' : ''};重复执行会生成新批次,综合评价需重新生成`" />
