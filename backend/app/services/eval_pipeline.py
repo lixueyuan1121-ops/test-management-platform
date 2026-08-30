@@ -110,6 +110,7 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
     total = len(rows)
     passed = sum(1 for r in rows if r.verdict == "pass")
     failed = sum(1 for r in rows if r.verdict == "fail")
+    errored = sum(1 for r in rows if r.verdict == "error")   # 判定失败/无法定论,待重判
     abnormal = sum(1 for r in rows if r.is_abnormal)
     scores = [r.score for r in rows if r.score is not None]
     avg_score = round(sum(scores) / len(scores), 2) if scores else None
@@ -133,7 +134,7 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
             return f"{round(100 * x[0] / x[1])}%" if x[1] else "—"
         ab_line = f"A 组通过率 {_rate(ab['A'])}（{ab['A'][0]}/{ab['A'][1]}）｜B 组通过率 {_rate(ab['B'])}（{ab['B'][0]}/{ab['B'][1]}）"
     return {"total": total, "passed": passed, "failed": failed, "abnormal": abnormal,
-            "avg_score": avg_score, "ab_line": ab_line}
+            "errored": errored, "avg_score": avg_score, "ab_line": ab_line}
 
 
 # 测评失败严重度：执行异常(abnormal)比单纯判定不过(fail)更严重。
@@ -255,6 +256,8 @@ def run_pipeline(db: Session, task_id: int, project_id: int, task_name: str, bat
     ]
     if s["ab_line"]:
         lines.append(f"**A/B 对比**:{s['ab_line']}")
+    if s.get("errored"):
+        lines.append(f"⚠️ {s['errored']} 条判定失败/无法定论，需到测评结果页重判。")
     if drafts:
         lines.append(f"已自动生成 {drafts} 条缺陷草稿,请复核后上报极库云。")
     lines.append("详情与综合评价见平台测评任务页。")
