@@ -121,6 +121,7 @@ CREATE TABLE `remaining_issue` (
   `task_id` BIGINT DEFAULT NULL,
   `checklist_item_id` BIGINT DEFAULT NULL,
   `exec_run_id` BIGINT DEFAULT NULL,
+  `eval_run_id` BIGINT DEFAULT NULL,
   `project_id` BIGINT NOT NULL,
   `title` VARCHAR(255) NOT NULL,
   `description` TEXT,
@@ -137,7 +138,8 @@ CREATE TABLE `remaining_issue` (
   CONSTRAINT `fk_issue_owner` FOREIGN KEY (`owner`) REFERENCES `user`(`id`) ON DELETE SET NULL,
   KEY `idx_issue_task` (`task_id`),
   KEY `idx_issue_checklist` (`checklist_item_id`),
-  KEY `idx_issue_execrun` (`exec_run_id`)
+  KEY `idx_issue_execrun` (`exec_run_id`),
+  KEY `idx_issue_evalrun` (`eval_run_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------- 验收清单（测试点回流任务） ----------

@@ -26,6 +26,10 @@ class RemainingIssue(Base):
     exec_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("exec_run.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 来源测评执行:AI 对话测评一条龙里 verdict=fail/abnormal 自动建草稿时回指该 eval_run。
+    eval_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("eval_run.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

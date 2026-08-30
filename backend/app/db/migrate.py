@@ -273,7 +273,7 @@ def ensure_perf_run_columns() -> None:
 
 
 def ensure_issue_columns() -> None:
-    """remaining_issue 表补列 task_id / checklist_item_id（如缺失），并放宽 report_id 可空。
+    """remaining_issue 表补列 task_id / checklist_item_id / exec_run_id / eval_run_id（如缺失），并放宽 report_id 可空。
 
     放宽 report_id：SQLite 列约束宽松，NOT NULL 不阻塞新路径的 NULL 插入无需 DDL；
     MySQL 需 MODIFY COLUMN 去掉 NOT NULL。加列/放宽都幂等：ADD 前探列，MODIFY 重复执行安全。
@@ -290,6 +290,9 @@ def ensure_issue_columns() -> None:
         if "exec_run_id" not in cols:
             # 自动建缺陷草稿的来源执行追溯列(不在线加 FK,同 release_id 的取舍)
             conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN exec_run_id BIGINT NULL"))
+        if "eval_run_id" not in cols:
+            # AI 测评一条龙 fail/abnormal 自动建草稿的来源追溯列(同 exec_run_id,不在线加 FK)
+            conn.execute(text("ALTER TABLE remaining_issue ADD COLUMN eval_run_id BIGINT NULL"))
         if dialect == "mysql":
             # report_id 放宽为可空。MySQL 不允许直接 MODIFY 被 FK 引用的列（errno 1832
             # "Cannot change column ... used in a foreign key constraint"），需先 drop 该 FK

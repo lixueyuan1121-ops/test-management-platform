@@ -182,6 +182,24 @@ def test_result_summary():
     print("OK 结果摘要指标 + A/B 胜率")
 
 
+def test_run_pipeline_creates_defect_draft():
+    """一条龙收尾:判定出的 fail run 自动建缺陷草稿,最终摘要通知提及草稿数。"""
+    from app.models import RemainingIssue
+    _notifications.clear(); _judge_calls.clear()
+    global _summary_result
+    _summary_result = {"ok": True}
+    _s.query(RemainingIssue).delete(); _s.commit()
+    t = _task(auto=True, batch="bd", pstatus="running")
+    _run(t.id, "bd", EvalRunStatus.done)   # 判定后 i=0 → pass(不建)
+    _run(t.id, "bd", EvalRunStatus.done)   # 判定后 i=1 → fail(建草稿)
+    eval_pipeline.run_pipeline(_s, t.id, 1, "任务X", "bd")
+    drafts = _s.query(RemainingIssue).filter(RemainingIssue.eval_run_id.isnot(None)).all()
+    assert len(drafts) == 1, f"fail 的 run 应建 1 条缺陷草稿,实际 {len(drafts)}"
+    assert drafts[0].title.startswith("[自动] 测评失败"), drafts[0].title
+    assert "缺陷草稿" in str(_notifications[-1]), _notifications[-1]
+    print("OK pipeline 收尾建缺陷草稿 + 通知提及")
+
+
 def main():
     _seed()
     test_claim_once()
@@ -191,6 +209,7 @@ def main():
     test_run_pipeline_four_steps()
     test_summary_failure_not_block()
     test_result_summary()
+    test_run_pipeline_creates_defect_draft()
     print("OK test_eval_pipeline")
 
 
