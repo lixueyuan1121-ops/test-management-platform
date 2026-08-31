@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     PLATFORM_BASE_URL: str = ""
     # 各告警场景开关（通道总开关是 FEISHU_WEBHOOK_URL，这里做细粒度静音）。
     NOTIFY_EXEC_FAIL: bool = True       # 自动回归批次出现失败
-    NOTIFY_TASK_ASSIGN: bool = True     # 任务指派到人
+    NOTIFY_TASK_ASSIGN: bool = False    # 任务指派到人（按产品要求：任务分配不走推推推送，默认关）
     NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
     NOTIFY_EVAL_PIPELINE: bool = True    # 测评任务一条龙(执行完自动判定+评价)分步通知
     NOTIFY_PLAN_RESULT: bool = True      # 测试计划执行完毕结果回执(手动+定时、成败都发)
