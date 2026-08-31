@@ -138,7 +138,6 @@ def create_task(
     if t.assigned_to != t.assigned_by:
         try:
             from app.services.notify import notify_task_assigned
-            from app.models import User
             proj = db.get(Project, t.project_id)
             assignee = db.get(User, t.assigned_to)
             assigner = db.get(User, t.assigned_by)
