@@ -3,6 +3,8 @@
 // script 形状(设计稿 §5.1):[{ name, request:{method,path,headers?,query?,body?},
 //   asserts:[{type,path?,op,value?}], extract?:{var:"点路径"}, cleanup?:bool }, ...]
 
+import { computeSignature } from "./api-signers.mjs";
+
 // 点路径取值:"data.list.0.id" → 逐段下钻;任一段不存在返回 undefined。
 export function getPath(obj, path) {
   if (obj == null || !path) return undefined;
@@ -71,6 +73,9 @@ export async function run(script, apiEnv, log = () => {}, fetchImpl = fetch) {
   const vars = {};
   // fixed 鉴权:预置固定 header,注入每个请求(login 模式靠用例内登录步骤 extract token)。
   const fixedHeaders = (apiEnv.auth_type === "fixed" && apiEnv.auth && apiEnv.auth.headers) ? apiEnv.auth.headers : {};
+  // sign 鉴权:被测系统客户端内动态签名,在执行机侧按已知算法**每请求现算**(见 api-signers.mjs)。
+  // 典型 namisoa/claw:每请求 sign/timestamp/signnonce 都不同,不能用 fixed 存死。
+  const signAuth = apiEnv.auth_type === "sign" ? (apiEnv.auth || {}) : null;
 
   const steps = [];
   const normals = [];
@@ -83,9 +88,21 @@ export async function run(script, apiEnv, log = () => {}, fetchImpl = fetch) {
     const name = st.name || `step${i + 1}`;
     const req = substitute(st.request || {}, vars);
     const headers = { "Content-Type": "application/json", ...fixedHeaders, ...(req.headers || {}) };
+    // sign 鉴权:每请求现算签名,合并 query + headers(用例内 headers/query 优先,不被签名覆盖)。
+    let signQuery = null;
+    if (signAuth) {
+      try {
+        const sig = computeSignature(signAuth, req);
+        Object.assign(headers, sig.headers || {}, req.headers || {});
+        signQuery = sig.query || null;
+      } catch (e) {
+        return { ok: false, reason: `${name} 动态签名失败: ${e.message}` };
+      }
+    }
     let url = baseUrl + (req.path || "");
-    if (req.query && typeof req.query === "object") {
-      const qs = new URLSearchParams(Object.entries(req.query).map(([k, v]) => [k, String(v)])).toString();
+    const mergedQuery = { ...(signQuery || {}), ...(req.query || {}) };
+    if (Object.keys(mergedQuery).length) {
+      const qs = new URLSearchParams(Object.entries(mergedQuery).map(([k, v]) => [k, String(v)])).toString();
       if (qs) url += (url.includes("?") ? "&" : "?") + qs;
     }
     const method = String(req.method || "GET").toUpperCase();

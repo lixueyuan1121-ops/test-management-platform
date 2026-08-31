@@ -29,10 +29,11 @@
           <el-radio-group v-model="form.auth_type">
             <el-radio value="fixed">固定 token/header</el-radio>
             <el-radio value="login">用例内登录取 token</el-radio>
+            <el-radio value="sign">客户端动态签名</el-radio>
           </el-radio-group>
         </el-form-item>
 
-        <el-form-item :label="form.auth_type === 'fixed' ? '固定鉴权' : '登录信息'">
+        <el-form-item :label="authLabel">
           <el-input
             v-model="form.authText" type="textarea" :rows="5"
             :placeholder="authPlaceholder" spellcheck="false" class="mono"
@@ -40,6 +41,13 @@
           <div class="form-hint">
             <template v-if="form.auth_type === 'fixed'">
               JSON 对象，执行器把 <code>auth.headers</code> 预置进每个请求。示例：<code>{"headers":{"Authorization":"Bearer xxx"}}</code>
+            </template>
+            <template v-else-if="form.auth_type === 'sign'">
+              被测系统「客户端内动态签名」在执行机侧按已知算法<b>每请求现算</b>（namisoa/纳米Work 等）。JSON 对象，需含
+              <code>scheme</code>（如 <code>namisoa</code>）、<code>device_platform</code>（android/iOS/HarmonyOS/Web…）、
+              <code>access_token</code>、<code>mid</code>、<code>app_version</code>、<code>api_version</code>、<code>channel</code>、<code>app_name</code>；
+              可选 <code>credentials</code>（按平台分凭据）、<code>headers</code>（Auth-Token/Sid/Cookie 等固定头）、<code>zm_ver</code>/<code>sec_ver</code>（Web 端）。
+              签名字段（sign/timestamp/signnonce）执行时自动生成，勿手填。
             </template>
             <template v-else>
               登录模式下 token 由用例内「登录步骤」的 <code>extract</code> 取得，此处可留 <code>{}</code> 或存登录接口备注。
@@ -152,8 +160,24 @@ const form = reactive({ base_url: '', auth_type: 'fixed', authText: DEFAULT_AUTH
 // 项目 admin 才可读写（GET/PUT 后端强制 admin；平台管理员在任何项目视为 admin）。
 const isAdmin = computed(() => !!pid.value && (auth.isPlatformAdmin || auth.roleIn(pid.value) === 'admin'))
 
+const SIGN_AUTH_SAMPLE = JSON.stringify({
+  scheme: 'namisoa',
+  device_platform: 'android',
+  access_token: '<access-token>',
+  mid: 'aaaabbbbcccc6',
+  app_version: '4.14.3',
+  api_version: '20211122',
+  channel: '10001',
+  app_name: 'com.qihoo.namisoa',
+  headers: { 'Auth-Token': '<jwt>', Sid: 'bbb' },
+}, null, 2)
+
+const authLabel = computed(() =>
+  form.auth_type === 'fixed' ? '固定鉴权' : form.auth_type === 'sign' ? '签名配置' : '登录信息')
+
 const authPlaceholder = computed(() =>
-  form.auth_type === 'fixed' ? '{"headers":{"Authorization":"Bearer xxx"}}' : '{}')
+  form.auth_type === 'fixed' ? '{"headers":{"Authorization":"Bearer xxx"}}'
+    : form.auth_type === 'sign' ? SIGN_AUTH_SAMPLE : '{}')
 
 const hasKeys = (o) => o && typeof o === 'object' && Object.keys(o).length > 0
 
