@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     NOTIFY_TASK_ASSIGN: bool = True     # 任务指派到人
     NOTIFY_REPORT_MISSING: bool = True  # 日报缺交提醒
     NOTIFY_EVAL_PIPELINE: bool = True    # 测评任务一条龙(执行完自动判定+评价)分步通知
+    NOTIFY_PLAN_RESULT: bool = True      # 测试计划执行完毕结果回执(手动+定时、成败都发)
     # 【已废弃/保留兼容】一条龙曾用此指定判定/评价引擎;现一条龙固定走平台默认引擎(claude),
     # 与手动批量判定/手动综合评价完全一致——避免自动与手动用不同引擎导致分数系统性出入。
     # 仍读入以兼容旧 .env(不再影响行为)。

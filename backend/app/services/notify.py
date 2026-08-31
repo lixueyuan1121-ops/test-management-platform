@@ -111,6 +111,35 @@ def notify_batch_result(batch_id: str, project_name: str, total: int, passed: in
               link_path=f"/exec-results?batch_id={batch_id}", link_text="查看执行结果")
 
 
+# ---------------- 场景一·补：测试计划执行结果回执（手动+定时、成败都发） ----------------
+def notify_plan_result(batch_id: str, plan_name: str, project_name: str, trigger: str,
+                       total: int, passed: int, failed: int, blocked: int,
+                       failed_titles: list[str] | None = None,
+                       auto_issues: int = 0, flaky: int = 0) -> None:
+    """测试计划整集执行完毕的结果回执。与「回归失败告警」不同：无论成败都发一条，
+    让发起人/群里第一时间拿到整集结论。全通过绿色✅，有失败/阻塞红色。"""
+    if not settings.NOTIFY_PLAN_RESULT or not is_enabled():
+        return
+    ok_all = failed <= 0 and blocked <= 0
+    color = COLOR_GREEN if ok_all else COLOR_RED
+    lines = [
+        f"计划：{_esc(plan_name)}",
+        f"项目：{_esc(project_name)}",
+        f"触发方式：{'定时自动回归' if trigger == 'auto' else '手动执行'}",
+        f"结果：共 {total} 条，通过 {passed}，失败 {failed}，阻塞 {blocked}"
+        + (f"，抖动 {flaky}（重试后通过）" if flaky else ""),
+        "结论：全部通过" if ok_all else "结论：存在未通过用例，请及时跟进",
+    ]
+    for t in (failed_titles or [])[:5]:
+        lines.append(f"• {_esc(t)}")
+    if failed_titles and len(failed_titles) > 5:
+        lines.append(f"• …另有 {len(failed_titles) - 5} 条")
+    if auto_issues > 0:
+        lines.append(f"已自动生成 {auto_issues} 条缺陷草稿（遗留问题页复核，误报请纠偏后关闭）")
+    send_card(title=f"测试计划执行完毕（批次 {_esc(batch_id)[:12]}）", lines=lines, color=color,
+              link_path=f"/exec-results?batch_id={batch_id}", link_text="查看执行结果")
+
+
 # ---------------- 场景二：任务指派通知 ----------------
 def notify_task_assigned(task_title: str, project_name: str, assignee_name: str,
                          assigner_name: str, assigned_date, priority: str) -> None:

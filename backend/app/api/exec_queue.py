@@ -41,6 +41,24 @@ def _batch_trigger(db: Session, batch_id: str | None) -> str | None:
     return pr.trigger if pr else None
 
 
+def _plan_run_of(db: Session, batch_id: str | None):
+    """批次若来自测试计划，返回其 TestPlanRun（否则 None）——用于区分通知口径。"""
+    if not batch_id:
+        return None
+    from app.models import TestPlanRun
+    return db.query(TestPlanRun).filter(TestPlanRun.batch_id == batch_id).first()
+
+
+def _plan_name_of(db: Session, plan_run) -> str:
+    """取计划名（计划已删或无 plan_id 时回退）。"""
+    from app.models import TestPlan
+    if plan_run is not None and plan_run.plan_id:
+        p = db.get(TestPlan, plan_run.plan_id)
+        if p:
+            return p.name
+    return "（未命名计划）"
+
+
 def effective_runs(runs: list) -> list:
     """重试链聚合:剔除「已被重试覆盖」的原始行(id 出现在他行 retry_of),留链上最终结果。
 
@@ -110,25 +128,30 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     )
     if pending_or_running:
         return
-    # 凑齐终态了，查批次元数据确认 trigger（feedback 集或 test_plan 计划，两个来源）
+    # 凑齐终态了，查批次来源：test_plan 计划 vs feedback 集 vs 无元数据
     from app.models import Project
     trigger = _batch_trigger(db, batch_id)
-    if trigger not in ("auto", "ci"):
-        return  # manual 批次或无批次元数据 → 不发（auto=定时、ci=流水线触发，均无人盯页面）
+    plan_run = _plan_run_of(db, batch_id)
+    # 非计划来源(feedback manual 或无元数据)的 manual 批次 → 不发(沿用原约定:无人盯页面才推)。
+    # 计划来源不受此限:手动执行也要回执(用户诉求)。
+    if plan_run is None and trigger not in ("auto", "ci"):
+        return
     all_rows = db.query(ExecRun).filter(ExecRun.batch_id == batch_id).all()
     if not all_rows:
         return
     runs = effective_runs(all_rows)   # 重试链聚合:以链上最终结果计
-    # (a) 失败自动建缺陷草稿(与飞书通道独立,未配 webhook 也生效)
+    # (a) 失败自动建缺陷草稿:仅 auto/ci(定时/流水线无人盯;手动执行不打扰,转缺陷走手动入口)。
+    #     与通知通道独立,未配也生效。
     auto_issues = 0
-    try:
-        created = _auto_issue_for_failures(db, runs, batch_id, trigger)
-        auto_issues = len(created)
-        # (a.2) 可选:开了 GEELIB_AUTO_REPORT 则把新草稿自动上报极库云(默认关,失败不影响主流程)
-        _auto_report_geelib(db, created)
-    except Exception:
-        pass  # 草稿失败不影响告警与主流程
-    # (b) 飞书告警
+    if trigger in ("auto", "ci"):
+        try:
+            created = _auto_issue_for_failures(db, runs, batch_id, trigger)
+            auto_issues = len(created)
+            # (a.2) 可选:开了 GEELIB_AUTO_REPORT 则把新草稿自动上报极库云(默认关,失败不影响主流程)
+            _auto_report_geelib(db, created)
+        except Exception:
+            pass  # 草稿失败不影响告警与主流程
+    # (b) 推推通知
     from app.services import notify
     if not notify.is_enabled():
         return
@@ -137,10 +160,9 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
     failed = sum(1 for r in runs if r.status == ExecStatus.failed)
     blocked = sum(1 for r in runs if r.status == ExecStatus.blocked)
     flaky = sum(1 for r in runs if r.flaky)
-    if failed <= 0 and blocked <= 0:
-        return  # 全 passed 不发(含 flaky 通过——抖动在结果页可见,不打扰)
     proj = db.get(Project, runs[0].project_id)
-    # 提取失败用例标题（payload 快照里的 title）
+    proj_name = proj.name if proj else f"项目#{runs[0].project_id}"
+    # 失败/阻塞用例标题（payload 快照里的 title），两类通知都用
     failed_titles = []
     for r in runs:
         if r.status in (ExecStatus.failed, ExecStatus.blocked):
@@ -150,9 +172,21 @@ def notify_batch_if_done(db: Session, batch_id: str) -> None:
                 failed_titles.append(t)
             except (json.JSONDecodeError, ValueError):
                 failed_titles.append(f"run#{r.id}")
+    # 测试计划来源:成败都发结果回执(手动+定时都发)。
+    if plan_run is not None:
+        notify.notify_plan_result(
+            batch_id=batch_id, plan_name=_plan_name_of(db, plan_run),
+            project_name=proj_name, trigger=trigger,
+            total=total, passed=passed, failed=failed, blocked=blocked,
+            failed_titles=failed_titles, auto_issues=auto_issues, flaky=flaky,
+        )
+        return
+    # feedback / 其它来源:沿用原「回归失败告警」——全通过不发,仅失败/阻塞推。
+    if failed <= 0 and blocked <= 0:
+        return  # 全 passed 不发(含 flaky 通过——抖动在结果页可见,不打扰)
     notify.notify_batch_result(
         batch_id=batch_id,
-        project_name=proj.name if proj else f"项目#{runs[0].project_id}",
+        project_name=proj_name,
         total=total, passed=passed, failed=failed, blocked=blocked,
         trigger="auto", failed_titles=failed_titles, auto_issues=auto_issues,
         flaky=flaky,
