@@ -2,6 +2,7 @@
 
 走线上 HTTP API(不直连库,故本机即可运行,只要能访问到线上 backend)。文件格式
 与内置 selectors.json 一致:{vmIframe?, coreKeys?, registry:{key:{frame,page,desc,candidates}}}。
+--file 支持纯 JSON,也支持 markdown(自动抽取其中带 registry 的 ```json 代码块,便于直接导登记 md)。
 导入为指定项目的【项目级共享】选择器(sub_product 默认空)。幂等:同名 key 默认跳过,
 --overwrite 则以文件为准 PATCH 覆盖(frame/page/desc/candidates)。
 
@@ -19,6 +20,7 @@ http://127.0.0.1:8000 在服务器上跑。
 """
 import argparse
 import json
+import re
 import sys
 
 import requests
@@ -36,6 +38,29 @@ def _unwrap(resp: requests.Response):
             raise RuntimeError(f"接口报错 code={body['code']}: {body.get('msg')}")
         return body.get("data")
     return body
+
+
+def _load_registry(path: str) -> dict:
+    """读取 registry 配置。支持纯 JSON 文件,或 markdown(抽取带 registry 的 ```json 代码块)。"""
+    with open(path, encoding="utf-8-sig") as f:  # utf-8-sig 去 BOM
+        raw = f.read()
+    try:
+        return json.loads(raw)  # 整体就是 JSON
+    except json.JSONDecodeError:
+        pass
+    blocks = re.findall(r"```json\s*\n(.*?)```", raw, re.DOTALL)  # md 代码块
+    parsed = []
+    for b in blocks:
+        try:
+            parsed.append(json.loads(b))
+        except json.JSONDecodeError:
+            continue
+    for d in parsed:  # 优先取含 registry 的块
+        if isinstance(d, dict) and "registry" in d:
+            return d
+    if parsed:
+        return parsed[0]
+    raise ValueError(f"无法从 {path} 解析出 registry JSON(既非纯 JSON,也无可解析的 ```json 代码块)")
 
 
 def _login(sess, base, username, password) -> str:
@@ -85,8 +110,7 @@ def main():
     if args.project is None or not args.file:
         sys.exit("正式导入需 --project 和 --file(先用 --list-projects 查项目号)")
 
-    with open(args.file, encoding="utf-8-sig") as f:  # utf-8-sig 去 BOM
-        data = json.load(f)
+    data = _load_registry(args.file)
     reg = data.get("registry", {})
     sub = args.sub_product
     print(f"文件含 {len(reg)} 个 key → 项目 {args.project} / "
