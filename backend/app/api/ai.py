@@ -653,25 +653,22 @@ def gen_script(
         norm, verr = revalidate_for_backfill(tc_old_script, project_id=tc_project_id)
         if verr is None:
             db.close()
-            return _write_back_script(cid, norm, kind, sel_fix, tc_project_id)
-    db.close()
+            res = _write_back_script(cid, norm, kind, sel_fix, tc_project_id)
+            res["data"]["job_id"] = None   # 快路径同步完成,无 job(前端据 job_id 判是否轮询)
+            return res
 
-    # ---- 调 AI 引擎（阻塞,可能数十秒~数分钟）----
-    script, err = engine.generate_script(kind, tc_title, tc_steps, tc_expected, project_id=tc_project_id)
-    if err:
-        detail = f"生成 script 失败:{err}"
-        # db 已在调 AI 前关闭,另开 session 落库失败原因(供事后逐条回看修复),再 raise。
-        es = SessionLocal()
-        try:
-            etc = es.get(TestCase, cid)
-            if etc:
-                etc.last_gen_error = detail[:2000]
-                es.commit()
-        finally:
-            es.close()
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=detail)
-    # ---- 新 session 写回结果(与确定性回填共用)----
-    return _write_back_script(cid, script, kind, sel_fix, tc_project_id)
+    # ---- AI 路径改入队(方案2 P2):建 script_gen job 立即返回 {job_id},worker 池异步生成、
+    # 前端轮询 /api/ai-jobs/{id};done 后重拉用例看新 script。彻底消除长阻塞占 HTTP 线程/504。
+    from app.services import ai_jobs
+    job = ai_jobs.enqueue(
+        db, "script_gen", provider=getattr(tc, "provider", None), project_id=tc_project_id,
+        user_id=user.id,
+        input={"cid": cid, "kind": kind, "sel_fix": sel_fix, "project_id": tc_project_id,
+               "title": tc_title, "steps": tc_steps, "expected": tc_expected,
+               "provider": getattr(tc, "provider", None)},
+        ref_kind="test_case", ref_id=cid,
+    )
+    return ok({"job_id": job.id})
 
 
 def _load_script_list(raw) -> list | None:
@@ -710,6 +707,49 @@ def _write_back_script(cid: int, script: list, kind: str, sel_fix: bool, project
         return ok(_to_case_out(tc2))
     finally:
         s.close()
+
+
+def run_script_gen_job(db: Session, job) -> dict:
+    """AI 任务队列的脚本生成 handler(方案2 P2):按快照重生 gui/e2e/api 用例的结构化 script,写回 TestCase。
+
+    job.input = {cid,kind,sel_fix,project_id,title,steps,expected,provider?}(下发那刻快照)。
+    与端点旧同步路径同款写回(script/exec_kind/清降级标识/重打页面标);失败落 last_gen_error 并抛错。
+    前端轮询到 done 后重拉列表看新 script(故 result 只回 {cid,kind})。
+    """
+    inp = json.loads(job.input or "{}")
+    cid = inp["cid"]
+    kind = inp.get("kind") or "gui"
+    sel_fix = bool(inp.get("sel_fix"))
+    pid = inp.get("project_id")
+    engine = generators.get_provider(inp.get("provider"))
+    if not engine.is_available():
+        engine = generators.get_provider(generators.DEFAULT_PROVIDER)
+    script, err = engine.generate_script(kind, inp.get("title") or "", inp.get("steps") or "",
+                                         inp.get("expected") or "", project_id=pid)
+    tc = db.get(TestCase, cid)
+    if err:
+        if tc is not None:
+            tc.last_gen_error = f"生成 script 失败:{err}"[:2000]
+            db.commit()
+        raise ValueError(f"生成 script 失败:{err}")
+    if tc is None:
+        raise ValueError("测试点已被删除")
+    tc.script = json.dumps(script, ensure_ascii=False)
+    if kind in ("gui", "e2e"):
+        tc.exec_kind = kind          # 降级用例重生成功 → 恢复可执行类型
+    if sel_fix:
+        tc.kind_reason = None        # 清「选择器待补」标识
+    tc.last_gen_error = None
+    p = pages_for_script(script, pid)
+    if p:
+        tc.page = p
+    db.commit()
+    return {"cid": cid, "kind": kind}
+
+
+# 注册为队列 handler(ai_jobs 惰性 import 本模块时触发)
+from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402
+_ai_jobs_reg.register_handler("script_gen", run_script_gen_job)
 
 
 # ---- 导出 Playwright 脚本（回归用例库：给开发本地自测）----

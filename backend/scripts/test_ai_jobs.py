@@ -268,6 +268,43 @@ def test_run_job_eval_judge():
     print("OK run_job eval_judge")
 
 
+# ─── P2b: 脚本生成 handler(script_gen)经队列跑通 ──────────────────────────────────
+
+class _FakeScriptEngine:
+    def is_available(self): return True
+    def generate_script(self, kind, title, steps, expected, project_id=None):
+        return [{"action": "goto", "url": "/"}], None   # (script_list, err)
+
+
+def test_run_job_script_gen():
+    from app.models import AiTask, TestCase
+    from app.core.enums import AiInputType
+    _clear()
+    if not _s.get(User, 1):
+        _s.add(User(id=1, username="admin", name="管理员", password_hash="x", is_platform_admin=True))
+    if not _s.get(Project, 100):
+        _s.add(Project(id=100, name="P1", code="p1"))
+    _s.flush()
+    at = AiTask(project_id=100, user_id=1, kind="testcase_gen", input_type=AiInputType.text, status="done")
+    _s.add(at); _s.flush()
+    tc = TestCase(ai_task_id=at.id, project_id=100, title="登录用例", steps="1.打开", expected="成功",
+                  exec_kind="gui")
+    _s.add(tc); _s.commit()
+    job = ai_jobs.enqueue(_s, "script_gen", provider="claude", project_id=100, user_id=1,
+                          input={"cid": tc.id, "kind": "gui", "sel_fix": False, "project_id": 100,
+                                 "title": "登录用例", "steps": "1.打开", "expected": "成功"},
+                          ref_kind="test_case", ref_id=tc.id)
+    with patch("app.services.generators.get_provider", return_value=_FakeScriptEngine()), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    got = _s.get(AiJob, job.id)
+    assert got.status == "done", (got.status, got.error)
+    tc2 = _s.get(TestCase, tc.id)
+    assert tc2.script and "goto" in tc2.script, tc2.script
+    print("OK run_job script_gen")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
@@ -282,6 +319,7 @@ def main():
     test_api_auth_non_member_denied()
     test_api_cancel_pending_only()
     test_run_job_eval_judge()
+    test_run_job_script_gen()
     print("OK test_ai_jobs")
 
 
