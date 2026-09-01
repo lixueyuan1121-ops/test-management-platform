@@ -305,6 +305,54 @@ def test_run_job_script_gen():
     print("OK run_job script_gen")
 
 
+# ─── P3b: 测试点生成 handler(testcase_gen)经队列跑通 ────────────────────────────
+
+class _FakeGenEngine:
+    """测试点生成引擎:stream_generate 吐一段用例 JSON;parse_testcases 复用真实解析。"""
+    _CASES = '[{"title":"登录成功","category":"功能","steps":"1.输入账号密码 2.提交","expected":"进入首页","priority":"P1","kind":"manual"}]'
+    def is_available(self): return True
+    def stream_generate(self, *_a, **_kw):
+        yield {"type": "result", "text": self._CASES,
+               "output_tokens": 10, "cost_usd": 0.01, "duration_ms": 123}
+    def parse_testcases(self, raw, project_id=None):
+        from app.services import claude_runner
+        return claude_runner.parse_testcases(raw, project_id=project_id)
+
+
+def test_run_job_testcase_gen():
+    from app.models import AiTask, Task, TestCase
+    from app.core.enums import AiInputType
+    from datetime import date
+    _clear()
+    if not _s.get(User, 1):
+        _s.add(User(id=1, username="admin", name="管理员", password_hash="x", is_platform_admin=True))
+    if not _s.get(Project, 100):
+        _s.add(Project(id=100, name="P1", code="p1"))
+    _s.flush()
+    if not _s.get(Task, 5):
+        _s.add(Task(id=5, project_id=100, title="登录任务", assigned_by=1, assigned_to=1,
+                    assigned_date=date(2026, 9, 1)))
+    at = AiTask(project_id=100, task_id=5, user_id=1, kind="testcase_gen",
+                input_type=AiInputType.text, status="running")
+    _s.add(at); _s.commit()
+    job = ai_jobs.enqueue(_s, "testcase_gen", provider="claude", project_id=100, user_id=1,
+                          input={"ai_task_id": at.id, "project_id": 100, "task_id": 5,
+                                 "requirement": "登录需求", "pages": None,
+                                 "requirement_id": None, "provider": "claude"},
+                          ref_kind="ai_task", ref_id=at.id)
+    with patch("app.services.generators.get_provider", return_value=_FakeGenEngine()), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    got = _s.get(AiJob, job.id)
+    assert got.status == "done", (got.status, got.error)
+    assert json.loads(got.result)["case_count"] == 1, got.result
+    assert _s.get(AiTask, at.id).status.value == "done"
+    tcs = _s.query(TestCase).filter(TestCase.ai_task_id == at.id).all()
+    assert len(tcs) == 1 and tcs[0].title == "登录成功", [t.title for t in tcs]
+    print("OK run_job testcase_gen")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
@@ -320,6 +368,7 @@ def main():
     test_api_cancel_pending_only()
     test_run_job_eval_judge()
     test_run_job_script_gen()
+    test_run_job_testcase_gen()
     print("OK test_ai_jobs")
 
 
