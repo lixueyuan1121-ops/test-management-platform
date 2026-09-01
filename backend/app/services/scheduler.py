@@ -510,16 +510,50 @@ def sync_set_job(set_id: int, cron: str | None, enabled: bool) -> datetime | Non
         return None
 
 
+_EVERY_PREFIX = "@every:"
+_EVERY_MIN = 1
+_EVERY_MAX = 1440   # 上限一天：超过一天的周期请用标准 cron 表达
+
+def _parse_every(expr: str | None) -> int | None:
+    """解析「每 N 分钟」间隔哨兵串 "@every:N"。
+
+    返回:非 @every 前缀 → None(交给 cron 处理);合法 @every:N → int N;
+    非法(非整数/越界 1..1440) → 抛 ValueError(调用方转 400)。
+    """
+    if not expr or not expr.startswith(_EVERY_PREFIX):
+        return None
+    raw = expr[len(_EVERY_PREFIX):].strip()
+    if not raw.isdigit():   # 排除空串/负号/小数/字母
+        raise ValueError(f"间隔分钟数非法：{raw!r}（需 {_EVERY_MIN}..{_EVERY_MAX} 的整数）")
+    n = int(raw)
+    if n < _EVERY_MIN or n > _EVERY_MAX:
+        raise ValueError(f"间隔分钟数越界：{n}（允许 {_EVERY_MIN}..{_EVERY_MAX}）")
+    return n
+
+
+def _build_plan_trigger(expr: str):
+    """把计划的定时表达式构造成 APScheduler trigger。
+
+    "@every:N" → IntervalTrigger(minutes=N)（每 N 分钟精确间隔，cron 表达不了的任意分钟）；
+    其余 → CronTrigger.from_crontab（标准 5 段 cron，Asia/Shanghai）。任一非法均抛错。
+    """
+    n = _parse_every(expr)   # 越界/非法在此抛 ValueError
+    if n is not None:
+        return IntervalTrigger(minutes=n, timezone="Asia/Shanghai")
+    return CronTrigger.from_crontab(expr, timezone="Asia/Shanghai")
+
+
 def sync_plan_job(plan_id: int, cron: str | None, enabled: bool) -> datetime | None:
     """按测试计划的 cron/开关 增删 job，返回下次触发时间（供回填 next_run_at）。
 
     enabled 且 cron 合法 → add_job（replace_existing 幂等）；否则 remove_job。
+    cron 支持两种表达式（见 _build_plan_trigger）：标准 5 段 cron，或 "@every:N" 每 N 分钟间隔。
     """
     if _scheduler is None:
         return None
     jid = _plan_job_id(plan_id)
     if enabled and cron:
-        trigger = CronTrigger.from_crontab(cron, timezone="Asia/Shanghai")
+        trigger = _build_plan_trigger(cron)
         job = _scheduler.add_job(
             run_plan_job, trigger=trigger, id=jid,
             args=[plan_id], replace_existing=True, misfire_grace_time=300,

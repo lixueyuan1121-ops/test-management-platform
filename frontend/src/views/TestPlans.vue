@@ -31,7 +31,7 @@
           <template #default="{ row }">
             <template v-if="row.schedule_enabled && row.schedule_cron">
               <el-tag type="success" size="small">已启用</el-tag>
-              <code class="cron">{{ row.schedule_cron }}</code>
+              <code class="cron">{{ cronText(row.schedule_cron) }}</code>
               <div class="next">下次：{{ fmt(row.next_run_at) }}</div>
             </template>
             <el-tag v-else type="info" size="small">未设定时</el-tag>
@@ -77,6 +77,7 @@
             <el-radio-group v-model="sched.freq" @change="syncCron">
               <el-radio value="daily">每天</el-radio>
               <el-radio value="weekly">每周</el-radio>
+              <el-radio value="interval">间隔</el-radio>
               <el-radio value="custom">自定义</el-radio>
             </el-radio-group>
           </el-form-item>
@@ -85,13 +86,21 @@
               <el-option v-for="(w, i) in WEEKDAYS" :key="i" :label="w" :value="i" />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="sched.freq !== 'custom'" label="时间">
+          <el-form-item v-if="sched.freq === 'interval'" label="每隔">
+            <el-input-number v-model="sched.intervalMin" :min="1" :max="1440" :step="5" size="small"
+                             controls-position="right" style="width:130px" @change="syncCron" />
+            <span class="interval-unit">分钟执行一次</span>
+          </el-form-item>
+          <el-form-item v-if="sched.freq === 'daily' || sched.freq === 'weekly'" label="时间">
             <el-time-picker v-model="sched.time" format="HH:mm" value-format="HH:mm" size="small" @change="syncCron" />
           </el-form-item>
           <el-form-item label="cron">
             <el-input v-model="sched.cron" size="small" :disabled="sched.freq !== 'custom'" placeholder="分 时 日 月 周" />
           </el-form-item>
-          <div class="cron-hint">当前 cron：<code>{{ sched.cron || '（待设置）' }}</code>（分 时 日 月 周，5 段）</div>
+          <div class="cron-hint">
+            <template v-if="sched.freq === 'interval'">当前：<code>{{ sched.cron }}</code>（每 {{ sched.intervalMin }} 分钟执行一次）</template>
+            <template v-else>当前 cron：<code>{{ sched.cron || '（待设置）' }}</code>（分 时 日 月 周，5 段）</template>
+          </div>
         </template>
       </el-form>
       <template #footer>
@@ -223,7 +232,7 @@ const form = reactive({ id: null, name: '', description: '', runner: 'mac-01' })
 const saving = ref(false)
 
 const schedDlg = ref(false)
-const sched = reactive({ id: null, enabled: false, freq: 'daily', weekday: 1, time: '02:00', cron: '0 2 * * *' })
+const sched = reactive({ id: null, enabled: false, freq: 'daily', weekday: 1, time: '02:00', intervalMin: 15, cron: '0 2 * * *' })
 const savingSched = ref(false)
 
 const casesDrawer = ref(false)
@@ -299,8 +308,17 @@ function openSchedule(row) {
   parseCron(sched.cron)
   schedDlg.value = true
 }
+// 列表定时列友好展示：@every:N → 「每 N 分钟」；标准 cron 原样。
+function cronText(cron) {
+  const m = String(cron || '').trim().match(/^@every:(\d+)$/)
+  return m ? `每 ${m[1]} 分钟` : cron
+}
 function parseCron(cron) {
-  const parts = (cron || '').trim().split(/\s+/)
+  const raw = (cron || '').trim()
+  // 「每 N 分钟」间隔哨兵串：@every:N
+  const m = raw.match(/^@every:(\d+)$/)
+  if (m) { sched.freq = 'interval'; sched.intervalMin = +m[1]; return }
+  const parts = raw.split(/\s+/)
   if (parts.length === 5 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
     const hh = String(parts[1]).padStart(2, '0'), mm = String(parts[0]).padStart(2, '0')
     sched.time = `${hh}:${mm}`
@@ -311,6 +329,13 @@ function parseCron(cron) {
 }
 function syncCron() {
   if (sched.freq === 'custom') return
+  if (sched.freq === 'interval') {
+    // 钳制到 1..1440，避免非法值发到后端（后端也会 400 兜底）
+    const n = Math.min(1440, Math.max(1, Math.round(+sched.intervalMin || 1)))
+    sched.intervalMin = n
+    sched.cron = `@every:${n}`
+    return
+  }
   const [hh, mm] = (sched.time || '02:00').split(':')
   sched.cron = sched.freq === 'daily' ? `${+mm} ${+hh} * * *` : `${+mm} ${+hh} * * ${sched.weekday}`
 }
@@ -409,6 +434,7 @@ onMounted(async () => {
 .cron { background: #f4f4f5; padding: 1px 6px; border-radius: 4px; font-size: 12px; margin-left: 4px; }
 .next { font-size: 11px; color: #909399; margin-top: 2px; }
 .cron-hint { font-size: 12px; color: #909399; margin-top: 4px; }
+.interval-unit { margin-left: 8px; font-size: 13px; color: #606266; }
 .drawer-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .add-filters { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .hint { font-size: 12px; color: #909399; }

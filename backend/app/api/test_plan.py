@@ -439,8 +439,11 @@ def set_schedule(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """设置计划的定时执行。cron 存库 + 联动调度器 add/remove job + 回填 next_run_at。"""
-    from app.services.scheduler import sync_plan_job
+    """设置计划的定时执行。cron 存库 + 联动调度器 add/remove job + 回填 next_run_at。
+
+    cron 支持两种：标准 5 段 cron（分 时 日 月 周），或「每 N 分钟」间隔哨兵串 "@every:N"（N=1..1440）。
+    """
+    from app.services.scheduler import _parse_every, sync_plan_job
 
     p = db.get(TestPlan, pid)
     if not p:
@@ -449,11 +452,18 @@ def set_schedule(
     if body.enabled:
         if not body.cron:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="启用定时需提供 cron 表达式")
+        # 间隔哨兵串 "@every:N"：校验 N 范围（越界/非法在 _parse_every 抛 ValueError）；
+        # 非 @every 前缀返回 None → 落到标准 cron 校验分支。
         try:
-            from apscheduler.triggers.cron import CronTrigger
-            CronTrigger.from_crontab(body.cron)
-        except Exception:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"cron 表达式非法：{body.cron}")
+            is_every = _parse_every(body.cron) is not None
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if not is_every:
+            try:
+                from apscheduler.triggers.cron import CronTrigger
+                CronTrigger.from_crontab(body.cron)
+            except Exception:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"cron 表达式非法：{body.cron}")
     p.schedule_cron = body.cron
     p.schedule_enabled = body.enabled
     next_run = sync_plan_job(pid, body.cron, body.enabled)
