@@ -136,6 +136,42 @@ def test_run_job_triage_bad_output_failed_no_overwrite():
     print("OK run_job triage failed (no overwrite)")
 
 
+# ─── Task4: worker 池 / 启动收口 ──────────────────────────────────────────────────
+
+def test_reap_stale_on_startup():
+    _clear()
+    for i in range(2):
+        _s.add(AiJob(kind="triage", status="running", input="{}"))
+    _s.commit()
+    n = ai_jobs.reap_stale_ai_jobs_on_startup(_s)
+    assert n == 2, n
+    _s.expire_all()
+    assert _s.query(AiJob).filter(AiJob.status == "failed").count() == 2
+    print("OK reap stale on startup")
+
+
+def test_drain_once_consumes():
+    _clear(); _seed_exec()
+    job = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1,
+                          input={"run_id": 501})
+    fake = _FakeEngine('{"kind":"selector","confidence":0.7,"reason":"元素找不到","suggestion":"补选择器"}')
+    with patch("app.services.generators.get_provider", return_value=fake), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        drained = ai_jobs._drain_once(_Session)
+    assert drained is True
+    _s.expire_all()
+    assert _s.get(AiJob, job.id).status == "done"
+    assert ai_jobs._drain_once(_Session) is False, "空队列应返回 False"
+    print("OK drain once consumes")
+
+
+def test_pool_start_stop_smoke():
+    # 空队列起停:worker 起来等事件、stop 后退出,不抛、不挂
+    ai_jobs.start_pool(2, factory=_Session)
+    ai_jobs.stop_pool()
+    print("OK pool start/stop smoke")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
@@ -143,6 +179,9 @@ def main():
     test_queue_position()
     test_run_job_triage_success()
     test_run_job_triage_bad_output_failed_no_overwrite()
+    test_reap_stale_on_startup()
+    test_drain_once_consumes()
+    test_pool_start_stop_smoke()
     print("OK test_ai_jobs")
 
 

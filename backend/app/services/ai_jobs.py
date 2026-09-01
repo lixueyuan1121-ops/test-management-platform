@@ -141,9 +141,74 @@ def run_job(session_factory, job_id: int) -> None:
         s.close()
 
 
-# ── 唤醒(Task4 填实现;此处占位,enqueue 已可调用) ──────────────────────────────────
+# ── 唤醒 / worker 池 ──────────────────────────────────────────────────────────────
 _wake = threading.Event()
+_stop = threading.Event()
+_threads: list[threading.Thread] = []
+_IDLE_POLL_SEC = 2.0  # 空转兜底轮询间隔(错过唤醒也能捡起 pending)
 
 
 def notify_new_job() -> None:
     _wake.set()
+
+
+def reap_stale_ai_jobs_on_startup(db: Session) -> int:
+    """启动收口:把重启打断残留的 running job 落 failed(防前端永久「生成中」)。返回条数。"""
+    res = db.execute(
+        update(AiJob).where(AiJob.status == "running")
+        .values(status="failed", error="服务重启中断,请重试")
+    )
+    db.commit()
+    return res.rowcount or 0
+
+
+def _drain_once(session_factory) -> bool:
+    """抢占并执行一条 pending(有则跑、返回 True;空队列返回 False)。worker 循环与测试共用。"""
+    s = session_factory()
+    try:
+        job = claim_next(s)
+    finally:
+        s.close()
+    if job is None:
+        return False
+    run_job(session_factory, job.id)
+    return True
+
+
+def _worker_loop(session_factory) -> None:
+    """worker 线程主体:连续抢占执行,空转时等唤醒(带兜底超时),收到停止即退出。"""
+    while not _stop.is_set():
+        try:
+            worked = _drain_once(session_factory)
+        except Exception:  # noqa: BLE001
+            logger.exception("AI worker 循环异常(继续)")
+            worked = False
+        if worked:
+            continue  # 还有活尽快接着抢
+        _wake.wait(timeout=_IDLE_POLL_SEC)
+        _wake.clear()
+
+
+def start_pool(size: int | None = None, factory=None) -> None:
+    """启动 worker 线程池(daemon)。size 缺省取 AI_WORKER_CONCURRENCY;factory 供测试注入。"""
+    from app.core.config import settings
+    from app.db.session import SessionLocal
+
+    _ensure_handlers()
+    sf = factory or SessionLocal
+    n = size if size is not None else max(1, getattr(settings, "AI_WORKER_CONCURRENCY", 2))
+    _stop.clear()
+    for i in range(n):
+        t = threading.Thread(target=_worker_loop, args=(sf,), name=f"ai-worker-{i}", daemon=True)
+        t.start()
+        _threads.append(t)
+    logger.info("AI worker 池已启动:%d 线程", n)
+
+
+def stop_pool(timeout: float = 2.0) -> None:
+    """停止 worker 池:置停止标志 + 唤醒,等线程退出(尽力而为)。"""
+    _stop.set()
+    _wake.set()
+    for t in _threads:
+        t.join(timeout=timeout)
+    _threads.clear()

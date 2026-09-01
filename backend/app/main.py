@@ -134,6 +134,18 @@ def create_app() -> FastAPI:
             start_scheduler()
         except Exception:
             logger.exception("启动反馈定时调度器失败（不影响主服务）")
+        # AI 任务队列(方案2):收口重启残留的 running job + 启动 worker 池(异步消费 pending)。
+        # 失败不影响主服务(队列只是增强;未迁移的 AI 调用仍走旧同步路径)。
+        try:
+            from app.services import ai_jobs
+            db2 = SessionLocal()
+            try:
+                ai_jobs.reap_stale_ai_jobs_on_startup(db2)
+            finally:
+                db2.close()
+            ai_jobs.start_pool()
+        except Exception:
+            logger.exception("启动 AI 任务队列/worker 池失败（不影响主服务）")
 
     @app.on_event("shutdown")
     def _shutdown():
@@ -142,6 +154,11 @@ def create_app() -> FastAPI:
             shutdown_scheduler()
         except Exception:
             logger.exception("关闭反馈定时调度器失败")
+        try:
+            from app.services import ai_jobs
+            ai_jobs.stop_pool()
+        except Exception:
+            logger.exception("关闭 AI worker 池失败")
 
     _mount_uploads(app)
     _mount_frontend(app)
