@@ -333,7 +333,10 @@ async function doTriage(row) {
     row.triage_kind = res.kind
     row.triage = res
     ElMessage.success(`归因完成:${TRIAGE_LABEL[res.kind] || res.kind}(置信 ${Math.round((res.confidence || 0) * 100)}%)`)
-  } catch { /* 拦截器已提示 */ } finally {
+  } catch (e) {
+    // triageExecRun 走原生 fetch(SSE),不经 axios 拦截器,错误在此自行提示
+    ElMessage.error(e?.message || '归因失败')
+  } finally {
     row._triaging = false
   }
 }

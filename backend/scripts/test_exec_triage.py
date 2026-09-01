@@ -88,35 +88,74 @@ class _FakeEngine:
         yield {"type": "delta", "text": self._out}
 
 
+class _HbEngine:
+    """先发心跳再出结果——验证 SSE 端点转发心跳(防代理 504)。"""
+    def is_available(self): return True
+    def stream_generate(self, *_a, **_kw):
+        yield {"type": "heartbeat"}
+        yield {"type": "result",
+               "text": '{"kind":"environment","confidence":0.7,"reason":"超时","suggestion":"重跑"}'}
+
+
+def _sse_events(text: str) -> list:
+    """从 SSE 响应体抽取所有 data: JSON 事件。"""
+    evts = []
+    for frame in text.split("\n\n"):
+        line = next((l for l in frame.split("\n") if l.startswith("data:")), None)
+        if not line:
+            continue
+        js = line[5:].strip()
+        if js:
+            try:
+                evts.append(json.loads(js))
+            except json.JSONDecodeError:
+                pass
+    return evts
+
+
+def _post_triage(run_id, engine):
+    with patch("app.services.generators.get_provider", return_value=engine), \
+         patch("app.services.generators.normalize_provider", return_value="claude"), \
+         patch("app.api.exec_queue.SessionLocal", _Session):
+        return client.post(f"/api/exec-queue/{run_id}/triage")
+
+
 def test_endpoint():
     fake = _FakeEngine('{"kind":"bug","confidence":0.85,"reason":"接口500导致断言失败","suggestion":"提缺陷"}')
-    with patch("app.services.generators.get_provider", return_value=fake), \
-         patch("app.services.generators.normalize_provider", return_value="claude"):
-        d = client.post("/api/exec-queue/501/triage").json()
-    assert d["code"] == 0, d
-    assert d["data"]["kind"] == "bug" and d["data"]["provider"] == "claude"
+    r = _post_triage(501, fake)
+    assert r.status_code == 200, r.text
+    done = [e for e in _sse_events(r.text) if e.get("type") == "done"][-1]
+    assert done["status"] == "done" and done["kind"] == "bug" and done["provider"] == "claude", done
     _s.expire_all()
     row = _s.get(ExecRun, 501)
     assert row.triage_kind == "bug"
     saved = json.loads(row.triage)
     assert saved["suggestion"] == "提缺陷" and saved["at"]
 
-    # passed 不可归因
+    # passed 不可归因 → 流开始前普通 400
     d2 = client.post("/api/exec-queue/502/triage").json()
     assert d2["code"] == 400, d2
 
-    # 引擎输出坏 JSON → 502,且不覆盖已有归因
+    # 引擎输出坏 JSON → done/failed,且不覆盖已有归因
     bad = _FakeEngine("我觉得是环境问题")
-    with patch("app.services.generators.get_provider", return_value=bad), \
-         patch("app.services.generators.normalize_provider", return_value="claude"):
-        d3 = client.post("/api/exec-queue/501/triage").json()
-    assert d3["code"] == 502, d3
+    r3 = _post_triage(501, bad)
+    done3 = [e for e in _sse_events(r3.text) if e.get("type") == "done"][-1]
+    assert done3["status"] == "failed", done3
     _s.expire_all()
     assert _s.get(ExecRun, 501).triage_kind == "bug", "解析失败不应覆盖已有归因"
 
     # 404
     assert client.post("/api/exec-queue/9999/triage").json()["code"] == 404
-    print("OK endpoint")
+    print("OK endpoint (SSE)")
+
+
+def test_endpoint_heartbeat():
+    r = _post_triage(501, _HbEngine())
+    assert r.status_code == 200, r.text
+    assert ": hb" in r.text, "应转发心跳保活(防代理空闲切断→504)"
+    done = [e for e in _sse_events(r.text) if e.get("type") == "done"][-1]
+    assert done["status"] == "done" and done["kind"] == "environment", done
+    print("OK heartbeat forwarded")
 
 
 def main():
@@ -124,6 +163,7 @@ def main():
     test_parse()
     test_prompt()
     test_endpoint()
+    test_endpoint_heartbeat()
     print("OK test_exec_triage")
 
 

@@ -110,6 +110,7 @@ async function reportGeelib(row) {
     const res = await reportIssueToGeelib(row.id)
     ElMessage.success(res?.already_reported ? '该问题已上报过' : `已上报极库云：${res?.external_ref || '成功'}`)
     await load()
+  } catch { /* 拦截器已弹友好提示(如「通道未启用」);此处吞掉,避免 reject 冒泡到全局兜底再弹一条「页面异常」 */
   } finally { reporting.value = null }
 }
 

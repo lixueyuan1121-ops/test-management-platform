@@ -9,24 +9,32 @@
 沿用全项目约定：{code,msg,data} 信封（ok/fail）、手写 _to_out、体外 assert_project_role。
 """
 import json
+import logging
 import os
 import secrets
 import time
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
-from app.db.session import get_db
+from app.db.session import get_db, SessionLocal
 from app.models import ChecklistItem, ExecRun, RunnerDevice, TestCase, User
 from app.schemas.common import ok
 from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn, ExecCorrectIn
 
 router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
 
+logger = logging.getLogger("test_platform")
+
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
+
+
+def _sse(obj: dict) -> str:
+    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
 
 def _batch_trigger(db: Session, batch_id: str | None) -> str | None:
@@ -742,20 +750,87 @@ def triage(
 ):
     """对一条失败/阻塞的执行做 AI 根因归因(selector/environment/assertion/bug)。
 
-    同步调用生成引擎(秒级~分钟级),前端需放长超时。结果落 exec_run.triage_kind/triage;
+    SSE 流式(与生成/测评同款):每隔发心跳 `: hb` 保活,避免长调用被反代/网关空闲超时切成 504
+    (归因原是同步阻塞 POST,不发字节 → 冷启动/排队稍久即被中间层掐断)。事件:heartbeat / error /
+    done(status=done 含归因结果,或 status=failed 含 msg)。结果落 exec_run.triage_kind/triage;
     失败不覆盖已有归因,可重试。归因是参考不是裁决——改判仍走人工纠偏。
     """
+    from app.services import generators
+    from app.services.exec_triage import build_triage_prompt, parse_triage, _SYSTEM_PROMPT
+
     r = db.get(ExecRun, run_id)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
     if r.status not in (ExecStatus.failed, ExecStatus.blocked):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="只能归因失败/阻塞的执行")
-    from app.services.exec_triage import triage_run
-    res = triage_run(db, r, provider)
-    if res.get("error"):
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"归因失败:{res['error']}")
-    return ok({"run_id": r.id, **res})
+    provider_id = generators.normalize_provider(provider)
+    engine = generators.get_provider(provider_id)
+    if not engine.is_available():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"归因引擎「{provider_id}」未启用或不可用")
+
+    # ⚠️ 在流开始前(请求 db 尚存活)取齐要用的数据:SSE 生成器在 get_db 关闭后才迭代,
+    # 之后不能再碰 r/db;落库另开 SessionLocal(与 gen_testcases/summarize 同套路)。
+    try:
+        payload = json.loads(r.payload or "{}")
+    except (json.JSONDecodeError, ValueError):
+        payload = {}
+    try:
+        report = json.loads(r.report) if r.report else None
+    except (json.JSONDecodeError, ValueError):
+        report = None
+    run_pk = r.id
+    title = payload.get("title") or "失败归因"
+    prompt = build_triage_prompt(payload, r.reason, r.fail_kind, report)
+
+    def sse():
+        raw = ""
+        err = None
+        try:
+            for evt in engine.stream_generate(
+                title,
+                prompt_builder=lambda: prompt,
+                system_prompt=_SYSTEM_PROMPT,
+            ):
+                et = evt.get("type")
+                if et == "heartbeat":
+                    yield ": hb\n\n"
+                elif et == "delta":
+                    raw += evt.get("text") or ""
+                elif et == "result":
+                    if evt.get("text"):
+                        raw = evt["text"]
+                elif et == "error":
+                    err = evt.get("msg")
+        except Exception as e:  # noqa: BLE001
+            logger.exception("归因引擎调用异常 run=%s", run_pk)
+            err = err or str(e)
+
+        parsed = parse_triage(raw)
+        if err or parsed.get("error"):
+            yield _sse({"type": "done", "status": "failed",
+                        "msg": (err or parsed.get("error"))[:500]})
+            return
+        parsed["provider"] = provider_id
+        parsed["at"] = datetime.utcnow().isoformat()
+        s = SessionLocal()
+        try:
+            rr = s.get(ExecRun, run_pk)
+            if rr is not None:
+                rr.triage_kind = parsed["kind"]
+                rr.triage = json.dumps(parsed, ensure_ascii=False)
+                s.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("归因落库失败 run=%s", run_pk)
+            s.rollback()
+            yield _sse({"type": "done", "status": "failed", "msg": f"落库失败:{e}"})
+            return
+        finally:
+            s.close()
+        yield _sse({"type": "done", "status": "done", "run_id": run_pk, **parsed})
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @router.patch("/{run_id}/verdict")
