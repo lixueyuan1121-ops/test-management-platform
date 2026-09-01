@@ -353,6 +353,114 @@ def test_run_job_testcase_gen():
     print("OK run_job testcase_gen")
 
 
+# ─── 分片并行:handler 走分片路径 + 部分分片失败仍落库 ──────────────────────────────
+
+class _ShardAwareEngine:
+    """按分片产不同用例的假引擎:会真的调 prompt_builder,故能验证 handler 是否走了分片路径。"""
+
+    def __init__(self, fail_ids=()):
+        self.fail_ids = set(fail_ids)
+        self.seen = []
+
+    def is_available(self): return True
+
+    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None):
+        return f"P::{shard['id'] if shard else 'full'}"
+
+    def stream_generate(self, requirement, project_id=None, timeout=None, pages=None,
+                        prompt_builder=None, system_prompt=None):
+        sid = prompt_builder().split("::")[1] if prompt_builder else "full"
+        self.seen.append(sid)
+        if sid in self.fail_ids:
+            yield {"type": "error", "msg": f"{sid} 片超时"}
+            return
+        yield {"type": "result",
+               "text": json.dumps([{"title": f"{sid} 用例", "category": "功能", "steps": "1.做",
+                                    "expected": "成", "priority": "P1", "kind": "manual"}], ensure_ascii=False),
+               "output_tokens": 10, "cost_usd": 0.01, "duration_ms": 123}
+
+    def parse_testcases(self, raw, project_id=None):
+        from app.services import claude_runner
+        return claude_runner.parse_testcases(raw, project_id=project_id)
+
+
+def _run_gen_job(engine, project_id=100):
+    """建 AiTask+job 并用给定引擎跑 testcase_gen handler。返回 (job, ai_task)。"""
+    from app.models import AiTask, Task
+    from app.core.enums import AiInputType
+    from datetime import date
+    if not _s.get(User, 1):
+        _s.add(User(id=1, username="admin", name="管理员", password_hash="x", is_platform_admin=True))
+    if not _s.get(Project, project_id):
+        _s.add(Project(id=project_id, name="P1", code="p1"))
+    _s.flush()
+    if not _s.get(Task, 5):
+        _s.add(Task(id=5, project_id=project_id, title="任务", assigned_by=1, assigned_to=1,
+                    assigned_date=date(2026, 9, 1)))
+    at = AiTask(project_id=project_id, task_id=5, user_id=1, kind="testcase_gen",
+                input_type=AiInputType.text, status="running")
+    _s.add(at); _s.commit()
+    job = ai_jobs.enqueue(_s, "testcase_gen", provider="claude", project_id=project_id, user_id=1,
+                          input={"ai_task_id": at.id, "project_id": project_id, "task_id": 5,
+                                 "requirement": "需求", "pages": None,
+                                 "requirement_id": None, "provider": "claude"},
+                          ref_kind="ai_task", ref_id=at.id)
+    with patch("app.services.generators.get_provider", return_value=engine), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    return _s.get(AiJob, job.id), _s.get(AiTask, at.id)
+
+
+def test_gen_job_uses_shards():
+    """handler 应把 K 个分片都跑到,每片各落一条(证明不是单次调用)。"""
+    from app.models import TestCase
+    from app.services.claude_runner import plan_shards
+    _clear()
+    eng = _ShardAwareEngine()
+    job, at = _run_gen_job(eng)
+    want = [s["id"] for s in plan_shards(100)]      # 项目无 api 契约 → 不含 api 片
+    assert sorted(eng.seen) == sorted(want), f"应逐片调用:{eng.seen} vs {want}"
+    assert job.status == "done", (job.status, job.error)
+    assert json.loads(job.result)["case_count"] == len(want), job.result
+    titles = sorted(t.title for t in _s.query(TestCase).filter(TestCase.ai_task_id == at.id))
+    assert titles == sorted(f"{s} 用例" for s in want), titles
+    assert at.error is None, f"全片成功不该留错误:{at.error}"
+    print(f"OK 分片并行 handler({len(want)} 片)")
+
+
+def test_gen_job_partial_shard_failure():
+    """一片失败不整批失败:其余照常落库,失败片写进 AiTask.error 供前端提示。"""
+    from app.models import TestCase
+    from app.services.claude_runner import plan_shards
+    _clear()
+    want = [s["id"] for s in plan_shards(100)]
+    eng = _ShardAwareEngine(fail_ids=[want[0]])
+    job, at = _run_gen_job(eng)
+    assert job.status == "done", (job.status, job.error)
+    assert json.loads(job.result)["case_count"] == len(want) - 1
+    assert len(_s.query(TestCase).filter(TestCase.ai_task_id == at.id).all()) == len(want) - 1
+    assert at.error and "部分分片未产出" in at.error and want[0] in at.error, at.error
+    assert json.loads(job.result)["partial_errors"], "partial_errors 应回传给前端"
+    print("OK 分片部分失败仍落库")
+
+
+def test_gen_job_single_shard_fallback():
+    """AI_SHARD_CONCURRENCY<=1 → 回落单次调用(不传 prompt_builder),行为与分片改造前一致。"""
+    from app.core.config import settings
+    _clear()
+    eng = _ShardAwareEngine()
+    old = settings.AI_SHARD_CONCURRENCY
+    settings.AI_SHARD_CONCURRENCY = 1
+    try:
+        job, at = _run_gen_job(eng)
+    finally:
+        settings.AI_SHARD_CONCURRENCY = old
+    assert eng.seen == ["full"], f"单片回退不应带 shard:{eng.seen}"
+    assert job.status == "done" and json.loads(job.result)["case_count"] == 1
+    print("OK 单片回退路径")
+
+
 def test_run_job_eval_summary():
     from app.models import EvalRun
     from app.models.ai_eval import EvalTask
@@ -403,6 +511,9 @@ def main():
     test_run_job_eval_judge()
     test_run_job_script_gen()
     test_run_job_testcase_gen()
+    test_gen_job_uses_shards()
+    test_gen_job_partial_shard_failure()
+    test_gen_job_single_shard_fallback()
     test_run_job_eval_summary()
     print("OK test_ai_jobs")
 

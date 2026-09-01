@@ -82,6 +82,16 @@ docker compose up -d   # 前端 :80，后端 :8000，MySQL :3306
 - `ai_task.provider` / `test_case.provider` 两列记录生成引擎（老库由 `migrate.ensure_ai_provider_columns` 补，缺省 claude）；`/stats/ai` 的 `by_provider` 做引擎横向对比（战绩墙）。前端 `/ai/status` 返回 `providers` 列表供引擎选择器渲染。
 - **deepseek 注意**：端点须 OpenAI 兼容；`DEEPSEEK_ENABLED` + `DEEPSEEK_BASE_URL`/`API_KEY`/`MODEL` 配好即用；推理模型 reasoning 占 token 多，`DEEPSEEK_MAX_TOKENS` 须配大否则正文被截断。
 
+### 测试点生成的分片并行（提效核心，改 prompt 前必读）
+- **为什么分片**：生成耗时由**输出 token 串行生成**主导（100 条用例 × ~800 token ≈ 8 万 output token，实测顶死 `AI_TIMEOUT_SECONDS=900`）。所以拆成 K 个**正交维度**的分片并行跑，墙钟≈1/K。
+- 分片定义在 `claude_runner.TESTCASE_SHARDS`（flow / boundary / exception / scenario / api），每片带成对的 `focus`（本片管什么）+ `exclude`（不归本片，其余由别的分片产），**exclude 是防各片重复产出的关键**。`plan_shards(project_id)` 决定排产哪几片——项目没配 api 契约时自动剔掉 api 片（`api-executor` 无 `base_url` 必 fail，不产废用例）。
+- 编排在 `generators/sharded.py::generate_sharded`：`ThreadPoolExecutor` 并行 → 按 title 归一化兜底去重 → 合并。**一片失败不整批失败**（其余照常落库，失败片进 `errors`→`AiTask.error`→前端 warning）；`meta.duration_ms` 取各片**最大值**（并行墙钟，不是求和）。
+- `build_testcase_prompt(..., shard=None)`：给了 shard 就只带该片需要的规格段（gui 片不带 api spec、api 片不带 gui DSL/key 清单）；`shard=None` 是全量拼装，**单片回退路径**（`AI_SHARD_CONCURRENCY<=1` 或只排到一片时走它），行为与拆分前一致。
+- **prompt 段已拆成可组合常量**（`_STEPS_SPEC`/`_SCENARIO_SPEC`/`_GUI_SCRIPT_SPEC`/`_API_SCRIPT_SPEC`/`_API_DESIGN_SPEC`/`_kind_spec()`），条目序号由 `enumerate` 生成——**加减段落不用手改编号**。各段是**普通字符串**（非 f-string）：段内 `{字段}`、`{{变量}}` 原样保留，由组装处插值。
+- **并发闸联动**：`AI_MAX_CONCURRENCY` 必须 ≥ 分片数，否则分片会被这道全局闸重新串行化、提效归零（现为 6，分片上限 `AI_SHARD_CONCURRENCY=5`）。
+- api 用例的判定口径**按项目有无 api 契约切换**（`_kind_spec(has_contract)`）：有契约 → 接口层验证点正常判 api；无契约 → 劝退到 gui/e2e。改这块要同步 `scripts/test_prompt_quality.py`。
+- e2e 的 `steps` 要求写成**人工可照做的编号步骤**且与 script **同序一一对应**（`_STEPS_SPEC` + `_STEPS_TO_SCRIPT_RULE`，生成侧与单条重生侧两处配套，改一处须同步另一处）。
+
 ### tools 模块与其余模块风格不一致（留意）
 `api/tools.py` 把 Pydantic schema **内联定义在路由文件里**（不像其他模块放 `app/schemas/`），且用了 `class Config: pass`、单行 `if ...: ...` 等紧凑写法。改这个文件时沿用它自己的风格即可；新增**其他**模块仍应把 schema 放 `app/schemas/`。
 

@@ -14,6 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import AiTaskStatus, ChecklistStatus, ProjectRole, ReviewStatus
 from app.db.session import SessionLocal, get_db
@@ -22,6 +23,7 @@ from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRe
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, generators, selectors
 from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script, revalidate_for_backfill, validate_script_for_edit
+from app.services.generators.sharded import generate_sharded
 from app.services.playwright_exporter import export_case_to_playwright
 
 logger = logging.getLogger("test_platform")
@@ -654,12 +656,35 @@ from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402
 _ai_jobs_reg.register_handler("script_gen", run_script_gen_job)
 
 
+def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str] | None):
+    """单次(不分片)跑引擎,累积流式事件。返回 (raw, meta, err)。
+
+    分片被关掉(AI_SHARD_CONCURRENCY<=1)或只排到一片时走这条,行为与分片改造前一致。
+    """
+    raw, meta, err = "", None, None
+    for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages):
+        et = evt.get("type")
+        if et == "delta":
+            raw += evt.get("text") or ""
+        elif et == "result":
+            meta = evt
+            if evt.get("text"):
+                raw = evt["text"]
+        elif et == "error":
+            err = evt.get("msg")
+    return raw, meta, err
+
+
 def run_testcase_gen_job(db: Session, job) -> dict:
     """AI 任务队列的测试点生成 handler(方案2 P3b):跑引擎→解析→落 TestCase→更新 AiTask。
 
     job.input = {ai_task_id, project_id, task_id, requirement, pages, requirement_id, provider}
-    (AiTask 已由端点建为 running)。与原 SSE 落库同逻辑,只是不流式。无有效用例 → AiTask=failed+
-    commit 后抛错(run_job 置 job failed;已 commit 的 AiTask=failed 不被回滚)。
+    (AiTask 已由端点建为 running)。
+
+    **分片并行**(提效):把"一次吐全部用例"拆成 K 个正交维度分片并行跑(见 generators/sharded.py),
+    墙钟≈1/K。AI_SHARD_CONCURRENCY=1 或只排到一片时回落单次调用(与拆分前完全一致)。
+    一片失败不整批失败:其余片照常落库,失败片写进 AiTask.error 供前端提示。
+    无有效用例 → AiTask=failed + commit 后抛错(run_job 置 job failed;已 commit 的 failed 不被回滚)。
     """
     import time as _time
     inp = json.loads(job.input or "{}")
@@ -676,27 +701,26 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     if at is None:
         raise ValueError("生成任务记录丢失")
 
-    raw = ""
-    meta = None
-    err = None
     t0 = _time.monotonic()
-    for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages):
-        et = evt.get("type")
-        if et == "delta":
-            raw += evt.get("text") or ""
-        elif et == "result":
-            meta = evt
-            if evt.get("text"):
-                raw = evt["text"]
-        elif et == "error":
-            err = evt.get("msg")
+    shards = claude_runner.plan_shards(project_id)
+    # 分片数 ≤1 或配置关掉分片 → 回落单次调用(与拆分前完全一致的行为)
+    if getattr(settings, "AI_SHARD_CONCURRENCY", 5) <= 1 or len(shards) <= 1:
+        raw, meta, err = _gen_once(engine, requirement, project_id, pages)
+        cases = engine.parse_testcases(raw, project_id=project_id) if raw else []
+        part_errors: list[str] = []
+    else:
+        res = generate_sharded(engine, requirement, project_id=project_id, pages=pages, shards=shards)
+        raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
+        err = "；".join(part_errors) if not cases else None
+        logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
+                    ai_task_id, len(shards), res["shard_stats"], res["dropped_dup"])
+
     if meta:
         at.duration_ms = meta.get("duration_ms") or int((_time.monotonic() - t0) * 1000)
         at.cost_usd = meta.get("cost_usd")
         at.output_tokens = meta.get("output_tokens")
     at.output_raw = raw or None
 
-    cases = engine.parse_testcases(raw, project_id=project_id)
     if not cases:
         at.status = AiTaskStatus.failed
         detail = err or ("未检测到有效测试点:引擎无任何输出(可能被网关/超时切断)" if not raw
@@ -719,10 +743,13 @@ def run_testcase_gen_job(db: Session, job) -> dict:
         db.add(tc); objs.append(tc)
     at.status = AiTaskStatus.done
     at.case_count = len(cases)
+    # 部分分片失败:用例照常落库,但把失败片记下来(前端可提示"某维度未产出")
+    at.error = ("部分分片未产出:" + "；".join(part_errors))[:2000] if part_errors else None
     db.commit()
     for tc in objs:
         db.refresh(tc)
     return {"ai_task_id": ai_task_id, "status": "done", "case_count": len(cases),
+            "partial_errors": part_errors,
             "cases": [_to_case_out(tc) for tc in objs]}
 
 

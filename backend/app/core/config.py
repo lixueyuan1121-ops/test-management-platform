@@ -42,7 +42,13 @@ class Settings(BaseSettings):
     CLAUDE_BIN: str = ""            # 空则运行时 shutil.which("claude")
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
-    AI_MAX_CONCURRENCY: int = 2    # 全局引擎并发上限(信号量)——控成本/机器负载;超限改为排队等待(非拒绝)
+    # 全局引擎并发上限(信号量)——控成本/机器负载;超限改为排队等待(非拒绝)。
+    # 分片并行生成会同时占多个槽(一个 job 最多 AI_SHARD_CONCURRENCY 个),故须 ≥ 分片数,
+    # 否则分片会被这道闸重新串行化、提效归零。
+    AI_MAX_CONCURRENCY: int = 6
+    # 单次生成里并行跑的分片数上限(见 services/generators/sharded.py)。
+    # 生成耗时由输出 token 串行主导,拆 K 片并行 → 墙钟≈1/K。设 1 等于回到"单次吐全部"的旧行为。
+    AI_SHARD_CONCURRENCY: int = 5
     # 超限时最多排队等待多久拿槽(秒);超时才报「繁忙」。0=不等(旧「立即拒绝」行为)。
     AI_ACQUIRE_TIMEOUT_SECONDS: int = 600
     # AI 任务队列(方案2)worker 池线程数=并发上限。多余任务排队而非拒绝。claude 每任务 fork 子进程,勿过大。
