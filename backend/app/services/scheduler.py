@@ -471,7 +471,7 @@ def start_scheduler() -> None:
                  .all())
         for p in plans:
             try:
-                sync_plan_job(p.id, p.schedule_cron, True)
+                rebuild_plan_job_if_absent(p.id, p.schedule_cron)
             except Exception:
                 logger.exception("重建定时 job 失败 plan=%s", p.id)
     finally:
@@ -548,15 +548,22 @@ def sync_plan_job(plan_id: int, cron: str | None, enabled: bool) -> datetime | N
 
     enabled 且 cron 合法 → add_job（replace_existing 幂等）；否则 remove_job。
     cron 支持两种表达式（见 _build_plan_trigger）：标准 5 段 cron，或 "@every:N" 每 N 分钟间隔。
+
+    间隔计划(@every:N)启用时**立即先跑一次**(next_run_time=now)，之后每 N 分钟——否则
+    IntervalTrigger 首次触发要等满 N 分钟，用户「设了就想先验证一次」的预期落空。
     """
     if _scheduler is None:
         return None
     jid = _plan_job_id(plan_id)
     if enabled and cron:
         trigger = _build_plan_trigger(cron)
+        kwargs = {}
+        if _parse_every(cron) is not None:
+            # 间隔计划:首次触发设为「现在」,立即先跑一次(用户主动启用的即时反馈)
+            kwargs["next_run_time"] = datetime.now(_scheduler.timezone)
         job = _scheduler.add_job(
             run_plan_job, trigger=trigger, id=jid,
-            args=[plan_id], replace_existing=True, misfire_grace_time=300,
+            args=[plan_id], replace_existing=True, misfire_grace_time=300, **kwargs,
         )
         return job.next_run_time
     else:
@@ -565,3 +572,36 @@ def sync_plan_job(plan_id: int, cron: str | None, enabled: bool) -> datetime | N
         except Exception:
             pass
         return None
+
+
+def rebuild_plan_job_if_absent(plan_id: int, cron: str | None) -> None:
+    """重启重建定时计划 job:仅当 job 不存在时才建(保留持久化的 next_run_time)。
+
+    ⚠️ 关键(修复「间隔计划到点不触发」):SQLAlchemyJobStore 是持久化的,重启后 job 及其
+    next_run_time 仍在。若启动无条件 add_job(replace_existing=True),会把 @every:N 间隔计划的
+    倒计时**重置为 now+N**——生产每次 pull 后手动重启,只要重启间隔 < N 分钟,该计划永远触发不了。
+    故:存在则保留(不动 next_run_time);cron 变了则重建;不存在才建(cron 计划无害,间隔计划立即跑)。
+    """
+    if _scheduler is None or not cron:
+        return
+    jid = _plan_job_id(plan_id)
+    existing = _scheduler.get_job(jid)
+    if existing is not None:
+        # 已在 store 里:cron 表达式没变则原样保留(含 next_run_time);变了才按新表达式重建。
+        stored = _job_cron_marker(existing)
+        if stored == cron:
+            return
+    sync_plan_job(plan_id, cron, True)
+
+
+def _job_cron_marker(job) -> str | None:
+    """从已持久化的 job 反推其定时表达式,用于判断 cron 是否变化。
+
+    IntervalTrigger → "@every:<分钟>";CronTrigger → None(cron 计划按绝对时刻,重建无害,
+    交由 sync_plan_job 直接重建即可,不需精确比对)。
+    """
+    trig = getattr(job, "trigger", None)
+    if isinstance(trig, IntervalTrigger):
+        mins = int(trig.interval.total_seconds() // 60)
+        return f"{_EVERY_PREFIX}{mins}"
+    return None

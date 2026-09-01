@@ -114,8 +114,60 @@ def test_set_schedule_endpoint():
     print("OK set_schedule 端点(间隔/非法/cron/关闭)")
 
 
+def _with_memory_scheduler(fn):
+    """在一个临时内存 BackgroundScheduler 上跑 fn(sched);跑完关闭并复位模块全局。"""
+    from datetime import datetime as _dt
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.jobstores.memory import MemoryJobStore
+    from app.services import scheduler as sched
+    prev = sched._scheduler
+    s = BackgroundScheduler(jobstores={"default": MemoryJobStore()}, timezone="Asia/Shanghai")
+    s.start()
+    sched._scheduler = s
+    try:
+        return fn(sched, s)
+    finally:
+        s.shutdown(wait=False)
+        sched._scheduler = prev
+
+
+def test_interval_runs_immediately():
+    """符号①:设置间隔应「立即先跑一次」——间隔 job 的 next_run_time 应≈现在(而非 now+N 分钟)。"""
+    from datetime import datetime
+    def _body(sched, s):
+        nxt = sched.sync_plan_job(10, "@every:180", True)
+        assert nxt is not None, "启用应返回 next_run_time"
+        now = datetime.now(s.timezone)
+        delta = abs((nxt - now).total_seconds())
+        assert delta < 60, f"间隔计划应立即先跑一次(next≈now),实际距今 {delta/60:.1f} 分钟"
+        # 对照:cron 计划不应被强制立即(仍按 cron 绝对时刻)
+    _with_memory_scheduler(_body)
+    print("OK 间隔计划立即先跑一次")
+
+
+def test_rebuild_preserves_interval_next_run():
+    """符号②(核心):重启重建 job 时不得重置间隔倒计时——已存在的 job 应保留其 next_run_time。"""
+    from datetime import datetime, timedelta
+    def _body(sched, s):
+        sched.sync_plan_job(10, "@every:180", True)
+        # 模拟「已运行一段时间后」——把 next_run_time 手工推到 2 小时后的哨兵时刻
+        jid = sched._plan_job_id(10)
+        sentinel = datetime.now(s.timezone) + timedelta(hours=2)
+        s.modify_job(jid, next_run_time=sentinel)
+        preserved = s.get_job(jid).next_run_time
+        # 重建(模拟重启):对已存在的 plan job 应「保留」,不 replace 重置
+        sched.rebuild_plan_job_if_absent(10, "@every:180")
+        after = s.get_job(jid).next_run_time
+        assert abs((after - preserved).total_seconds()) < 1, \
+            f"重建不应重置间隔倒计时:重建前 {preserved} → 重建后 {after}(被重置=bug)"
+    _with_memory_scheduler(_body)
+    print("OK 重启重建保留间隔倒计时(不重置)")
+
+
 if __name__ == "__main__":
     test_parse_every()
     test_build_trigger()
     test_set_schedule_endpoint()
+    test_interval_runs_immediately()
+    test_rebuild_preserves_interval_next_run()
     print("\n全部通过 ✅")
