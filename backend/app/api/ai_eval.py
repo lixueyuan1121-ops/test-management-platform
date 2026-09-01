@@ -7,16 +7,14 @@
 import json
 import logging
 import re
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import AiTaskStatus, ProjectRole
-from app.db.session import SessionLocal, get_db
+from app.db.session import get_db
 from app.models import AiTask, EvalQuery, Project, User
 from app.models.ai_eval import EvalTask
 from app.schemas.ai import EvalQueryGenIn
@@ -28,10 +26,6 @@ logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/ai", tags=["ai-eval"])
 
 _WRITE_ROLES = (ProjectRole.admin, ProjectRole.member)
-
-
-def _sse(obj: dict) -> str:
-    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
 
 def _to_query_out(q: EvalQuery) -> dict:
@@ -89,128 +83,108 @@ def gen_eval_queries(
     db.refresh(at)
 
     ai_task_id = at.id
-    project_id = body.project_id
-    task_id = body.task_id
-    eval_task_id = body.eval_task_id
-    requirement = body.requirement
-    dimensions = body.dimensions
+    from app.services import ai_jobs
+    job = ai_jobs.enqueue(
+        db, "eval_query_gen", provider=provider_id, project_id=body.project_id, user_id=user.id,
+        input={"ai_task_id": ai_task_id, "project_id": body.project_id, "task_id": body.task_id,
+               "eval_task_id": body.eval_task_id, "requirement": body.requirement,
+               "dimensions": body.dimensions, "provider": provider_id},
+        ref_kind="ai_task", ref_id=ai_task_id,
+    )
+    return ok({"job_id": job.id, "ai_task_id": ai_task_id})
 
-    def sse():
-        raw = ""
-        meta: dict | None = None
-        err: str | None = None
-        t0 = time.monotonic()
+
+def run_eval_query_gen_job(db: Session, job) -> dict:
+    """AI 任务队列的对话 query 生成 handler(方案2 P3b):引擎→解析→落 EvalQuery→更新 AiTask→挂测评任务。
+
+    job.input = {ai_task_id, project_id, task_id, eval_task_id, requirement, dimensions, provider}
+    (AiTask 已由端点建为 running)。无有效 query → AiTask=failed+commit 后抛错(job failed)。
+    """
+    import time as _time
+    inp = json.loads(job.input or "{}")
+    ai_task_id = inp["ai_task_id"]
+    project_id = inp["project_id"]
+    task_id = inp.get("task_id")
+    eval_task_id = inp.get("eval_task_id")
+    requirement = inp.get("requirement") or ""
+    dimensions = inp.get("dimensions")
+    provider_id = generators.normalize_provider(inp.get("provider"))
+    engine = generators.get_provider(provider_id)
+
+    at = db.get(AiTask, ai_task_id)
+    if at is None:
+        raise ValueError("生成任务记录丢失")
+
+    raw = ""
+    meta = None
+    err = None
+    t0 = _time.monotonic()
+    for evt in engine.stream_generate(
+        requirement, project_id=project_id,
+        prompt_builder=lambda: claude_runner.build_eval_query_prompt(requirement, dimensions),
+        system_prompt=claude_runner.EVAL_SYSTEM_PROMPT,
+    ):
+        et = evt.get("type")
+        if et == "delta":
+            raw += evt.get("text") or ""
+        elif et == "result":
+            meta = evt
+            if evt.get("text"):
+                raw = evt["text"]
+        elif et == "error":
+            err = evt.get("msg")
+    if meta:
+        at.duration_ms = meta.get("duration_ms") or int((_time.monotonic() - t0) * 1000)
+        at.cost_usd = meta.get("cost_usd")
+        at.output_tokens = meta.get("output_tokens")
+    at.output_raw = raw or None
+
+    queries = claude_runner.parse_eval_queries(raw)
+    if not queries:
+        at.status = AiTaskStatus.failed
+        detail = err or ("未生成有效 query：引擎无任何输出(可能被网关/超时切断)" if not raw
+                         else f"未生成有效 query：输出 {len(raw)} 字但未解析出 query 数组(尾部:…{raw[-200:]})")
+        at.error = detail[:2000]
+        db.commit()
+        raise ValueError(detail)
+
+    objs = []
+    for i, c in enumerate(queries):
+        cg = c["conversation_group"] or f"g{ai_task_id}_{i}"
+        q = EvalQuery(
+            ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
+            title=c["title"], prompt=c["prompt"], dimension=c.get("dimension"),
+            expected=c.get("expected"),
+            attachments=json.dumps(c["attachments"], ensure_ascii=False) if c.get("attachments") else None,
+            conversation_group=cg, turn_index=c.get("turn_index") or 0,
+        )
+        db.add(q); objs.append(q)
+    at.status = AiTaskStatus.done
+    at.case_count = len(queries)
+    db.commit()
+    for q in objs:
+        db.refresh(q)
+
+    attached = 0
+    if eval_task_id is not None:
         try:
-            for evt in engine.stream_generate(
-                requirement, project_id=project_id,
-                prompt_builder=lambda: claude_runner.build_eval_query_prompt(requirement, dimensions),
-                system_prompt=claude_runner.EVAL_SYSTEM_PROMPT,
-            ):
-                etype = evt.get("type")
-                if etype == "heartbeat":
-                    yield ": hb\n\n"
-                elif etype == "delta":
-                    raw += evt["text"]
-                    yield _sse({"type": "delta", "text": evt["text"]})
-                elif etype == "result":
-                    meta = evt
-                    if evt.get("text"):
-                        raw = evt["text"]
-                elif etype == "error":
-                    err = evt.get("msg")
-                    yield _sse({"type": "error", "msg": err})
-        except Exception as e:
-            logger.exception("AI 对话 query 流式生成异常")
-            err = err or f"生成中断：{e}"
+            et2 = db.get(EvalTask, eval_task_id)
+            if et2 is not None:
+                qids = json.loads(et2.query_ids) if et2.query_ids else []
+                merged = list(dict.fromkeys(qids + [q.id for q in objs]))
+                et2.query_ids = json.dumps(merged, ensure_ascii=False)
+                db.commit()
+                attached = len(merged) - len(qids)
+        except Exception:
+            logger.exception("挂载测评任务失败 eval_task_id=%s", eval_task_id)
+            db.rollback()
+    return {"ai_task_id": ai_task_id, "status": "done", "eval_task_id": eval_task_id,
+            "attached": attached, "case_count": len(queries),
+            "queries": [_to_query_out(q) for q in objs]}
 
-        s = SessionLocal()
-        try:
-            at2 = s.get(AiTask, ai_task_id)
-            if at2 is None:
-                yield _sse({"type": "error", "msg": "任务记录丢失"})
-                return
-            if meta:
-                at2.duration_ms = meta.get("duration_ms") or int((time.monotonic() - t0) * 1000)
-                at2.cost_usd = meta.get("cost_usd")
-                at2.output_tokens = meta.get("output_tokens")
-            at2.output_raw = raw or None
 
-            queries = claude_runner.parse_eval_queries(raw)
-            if not queries:
-                at2.status = AiTaskStatus.failed
-                if err:
-                    detail = err
-                elif not raw:
-                    detail = "未生成有效 query：引擎无任何输出(可能被网关/超时切断)"
-                else:
-                    detail = f"未生成有效 query：输出 {len(raw)} 字但未解析出 query 数组(尾部:…{raw[-200:]})"
-                at2.error = detail[:2000]
-                s.commit()
-                yield _sse({"type": "done", "ai_task_id": ai_task_id,
-                            "status": "failed", "msg": at2.error, "queries": []})
-                return
-
-            objs = []
-            for i, c in enumerate(queries):
-                # conversation_group 为空 → 补唯一组名(单轮题各自独立),避免与别批/别题混淆
-                cg = c["conversation_group"] or f"g{ai_task_id}_{i}"
-                q = EvalQuery(
-                    ai_task_id=ai_task_id,
-                    provider=provider_id,
-                    project_id=project_id,
-                    task_id=task_id,
-                    title=c["title"],
-                    prompt=c["prompt"],
-                    dimension=c.get("dimension"),
-                    expected=c.get("expected"),
-                    attachments=json.dumps(c["attachments"], ensure_ascii=False) if c.get("attachments") else None,
-                    conversation_group=cg,
-                    turn_index=c.get("turn_index") or 0,
-                )
-                s.add(q)
-                objs.append(q)
-            at2.status = AiTaskStatus.done
-            at2.case_count = len(queries)
-            s.commit()
-            for q in objs:
-                s.refresh(q)
-            # 关联了测评任务 → 把本批 query 追加进任务用例集(有序去重,与 eval_task.py 同口径)。
-            # 挂载失败不能连累已生成的用例:单独 try,仅在 done 帧标记 attached。
-            attached = 0
-            if eval_task_id is not None:
-                try:
-                    et2 = s.get(EvalTask, eval_task_id)
-                    if et2 is not None:
-                        qids = json.loads(et2.query_ids) if et2.query_ids else []
-                        merged = list(dict.fromkeys(qids + [q.id for q in objs]))
-                        et2.query_ids = json.dumps(merged, ensure_ascii=False)
-                        s.commit()
-                        attached = len(merged) - len(qids)
-                except Exception:
-                    logger.exception("挂载测评任务失败 eval_task_id=%s", eval_task_id)
-                    s.rollback()
-            yield _sse({
-                "type": "done",
-                "ai_task_id": ai_task_id,
-                "status": "done",
-                "eval_task_id": eval_task_id,
-                "attached": attached,
-                "queries": [_to_query_out(q) for q in objs],
-                "meta": {
-                    "case_count": at2.case_count,
-                    "duration_ms": at2.duration_ms,
-                    "cost_usd": float(at2.cost_usd) if at2.cost_usd is not None else None,
-                    "output_tokens": at2.output_tokens,
-                },
-            })
-        except Exception as e:
-            logger.exception("对话 query 落库失败")
-            s.rollback()
-            yield _sse({"type": "error", "msg": f"落库失败：{e}"})
-        finally:
-            s.close()
-
-    return StreamingResponse(sse(), media_type="text/event-stream")
+from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402
+_ai_jobs_reg.register_handler("eval_query_gen", run_eval_query_gen_job)
 
 
 @router.get("/eval-dimensions")

@@ -417,53 +417,21 @@ export async function streamTestcases(payload, { onDone, onError, signal, onTick
 // SSE 流式生成对话测评 query：与 streamTestcases 同构（有意复制，两条 SSE 消费链路隔离，
 // 与后端 ai_eval.py 独立于 api/ai.py 一致），仅 URL 不同（/api/ai/eval-queries）。
 // done 帧字段为 queries（而非 testcases 的 cases）；onDone 收到整包 evt，由调用方读 evt.queries。
-export async function streamEvalQueries(payload, { onDelta, onDone, onError, signal } = {}) {
-  let resp
+// 对话测评 query 生成(方案2 P3b:改入队+轮询)。保持 onDone/onError 形状:
+// done 时 onDone({queries, meta, status, attached})。onTick 回传排队位次。
+export async function streamEvalQueries(payload, { onDone, onError, signal, onTick } = {}) {
   try {
-    resp = await fetch('/api/ai/eval-queries', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('tp_token') || ''}`,
-      },
-      body: JSON.stringify(payload),
-      signal,
+    const { job_id } = await http.post('/ai/eval-queries', payload, { silent: true })
+    const r = await pollAiJob(job_id, { signal, onTick })
+    onDone?.({
+      queries: r.queries || [],
+      status: r.status || 'done',
+      attached: r.attached || 0,
+      meta: { case_count: r.case_count, duration_ms: r.duration_ms,
+              cost_usd: r.cost_usd, output_tokens: r.output_tokens },
     })
   } catch (e) {
-    onError?.(e.name === 'AbortError' ? '已取消' : '网络错误，无法连接生成服务')
-    return
-  }
-  if (!resp.ok || !resp.body) {
-    let msg = `生成请求失败（${resp.status}）`
-    try { const j = await resp.json(); if (j?.msg) msg = j.msg } catch { /* 非 JSON 忽略 */ }
-    onError?.(msg)
-    return
-  }
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'))
-        if (!dataLine) continue
-        const jsonStr = dataLine.slice(5).trim()
-        if (!jsonStr) continue
-        let evt
-        try { evt = JSON.parse(jsonStr) } catch { continue }
-        if (evt.type === 'delta') onDelta?.(evt.text)
-        else if (evt.type === 'done') onDone?.(evt)
-        else if (evt.type === 'error') onError?.(evt.msg)
-      }
-    }
-  } catch (e) {
-    onError?.(e.name === 'AbortError' ? '已取消' : '读取流失败')
+    onError?.(e?.message || '生成失败')
   }
 }
 

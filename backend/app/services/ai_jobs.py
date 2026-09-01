@@ -101,7 +101,9 @@ def _ensure_handlers() -> None:
     if "eval_judge" not in _HANDLERS:
         import app.services.eval_judge  # noqa: F401  (import 时 register eval_judge handler)
     if "script_gen" not in _HANDLERS:
-        import app.api.ai  # noqa: F401  (import 时 register script_gen handler)
+        import app.api.ai  # noqa: F401  (import 时 register script_gen + testcase_gen handler)
+    if "eval_query_gen" not in _HANDLERS:
+        import app.api.ai_eval  # noqa: F401  (import 时 register eval_query_gen handler)
 
 
 def run_job(session_factory, job_id: int) -> None:
