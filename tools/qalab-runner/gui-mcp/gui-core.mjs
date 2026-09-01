@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
 import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { rectInsideRatio } from "./probe-collect.mjs";
+import { toUrlMatcher, buildMockResponse } from "./mock-route.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
 
@@ -134,6 +135,30 @@ export function createGuiCore(opts = {}) {
   const HEALS = [];
   const HEAL_ENABLED = String(process.env.GUI_HEAL ?? "1") !== "0";
   let ctx = null;   // BrowserContext — 与 browser/page 同生命周期; mockRoute/unmockRoute 需要 context 级拦截
+
+  // 已注册的网络拦截:pattern -> { matcher, handler, stat:{pattern,status,hits} }。
+  // 必须记账,原因有二:①注册用的是编译后的正则,ctx.unroute 只认同一个 matcher 对象,拿原始 glob 撤不掉;
+  // ②用例中途失败会跳过 unmock_route 步,拦截器残留下来会污染后续每一条用例(上一条的 mock 数据串台),
+  //   故 StepExecutor 收尾与用例前复位都调 unmockAll 兜底清干净。
+  const MOCKS = new Map();
+
+  // 撤销单条拦截并返回其命中次数。没记账过 → 尽力按原串撤一次(兼容手工注册),不抛错。
+  async function unregisterMock(pattern) {
+    const rec = MOCKS.get(pattern);
+    MOCKS.delete(pattern);
+    try {
+      if (rec) await ctx?.unroute(rec.matcher, rec.handler);
+      else await ctx?.unroute(pattern);
+    } catch { /* 连接已断/本就没注册,忽略 */ }
+    return { unrouted: pattern, hits: rec ? rec.stat.hits : 0, registered: !!rec };
+  }
+
+  // 撤销本实例注册的全部拦截(用例收尾/复位前调)。返回逐条命中统计,供上层诊断"mock 有没有真拦到"。
+  async function unregisterAllMocks() {
+    const stats = [];
+    for (const p of [...MOCKS.keys()]) stats.push(await unregisterMock(p));
+    return stats;
+  }
 
   async function ensureConnected() {
     if (browser && browser.isConnected() && page && !page.isClosed()) return;
@@ -455,6 +480,7 @@ export function createGuiCore(opts = {}) {
     // 让进入段自导航从首页开始。首页锚点尽力等,探不到不抛(交上层就绪门禁/自愈裁决)。
     async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
       await ensureConnected();
+      await unregisterAllMocks();   // 清上一条用例遗留的网络拦截:残留 mock 会让本条用例拿到串台的假数据
       await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       await waitForContentFrame();
       await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);
@@ -631,36 +657,54 @@ export function createGuiCore(opts = {}) {
     },
     // mockRoute —— 拦截匹配 urlPattern 的 fetch/XHR 请求，直接返回 args 指定的 status+body。
     // urlPattern: glob 模式，如 "**/api/tasks" 或 "**/api/**"。
-    // body: 将被 JSON.stringify 后作为响应体，contentType 固定 application/json。
-    // status: HTTP 状态码，默认 200。
+    // body: 对象则 JSON 序列化；已是字符串则原样透传。status: HTTP 状态码，默认 200。
     // 用 ctx.route（BrowserContext 级）而非 page.route：
     //   Electron 客户端业务逻辑在嵌套 iframe（<vm_id>.work.n.cn）里发起 fetch，
     //   page.route 只拦截顶层 Page 的请求，不覆盖跨域 iframe 内的请求；
     //   ctx.route 覆盖整个 BrowserContext 下所有 Frame，才能真正拦截到 iframe 内请求。
-    // 多次调用同一 pattern 会叠加；用 unmockRoute 清除。
+    // 匹配用 toUrlMatcher 编译出的正则而非原始 glob 串：Playwright 的 glob 要匹配**整个 URL**，
+    //   `**/api/tasks` 对真实请求 `.../api/tasks?project_id=1` 匹配不上（详见 mock-route.mjs 根因①）。
+    // 响应头由 buildMockResponse 补 CORS：fulfill 出去的响应不会自动带 Access-Control-Allow-Origin，
+    //   跨域场景下浏览器会直接拦掉 mock 响应（根因②）。
+    // 同 pattern 重复注册先撤旧的（避免叠加后第一个 handler 恒定生效、改了 body 却不变）。
     async mockRoute(args) {
       await ensureConnected();
       const pattern = String(args.url || "");
       if (!pattern) throw new Error("mockRoute: 缺少 url（glob 模式，如 **/api/tasks）");
-      const status = Number(args.status ?? 200);
-      const body = JSON.stringify(args.body ?? {});
-      await ctx.route(pattern, (route) => {
-        route.fulfill({ status, contentType: "application/json", body });
-      });
-      return { mocked: pattern, status };
+      if (MOCKS.has(pattern)) await unregisterMock(pattern);
+      const matcher = toUrlMatcher(pattern);
+      const stat = { pattern, status: Number(args.status ?? 200), hits: 0 };
+      const handler = async (route) => {
+        stat.hits += 1;
+        const { status, body, headers } = buildMockResponse(args, route.request().headers());
+        // fulfill 可能因页面已跳走/请求已被别处处理而抛错；此时放行真实请求，别让这条请求悬着超时。
+        try { await route.fulfill({ status, body, headers }); }
+        catch { try { await route.fallback(); } catch { /* 请求已终结,忽略 */ } }
+      };
+      await ctx.route(matcher, handler);
+      MOCKS.set(pattern, { matcher, handler, stat });
+      return { mocked: pattern, status: stat.status };
     },
-    // unmockRoute —— 取消对 urlPattern 的拦截，恢复真实请求。
+    // unmockRoute —— 取消对 urlPattern 的拦截，恢复真实请求。返回 hits=该拦截器实际命中的请求数，
+    // 0 即"这条 mock 全程没拦到任何请求"（URL 模式没匹配上），是排查 mock 不生效的第一手证据。
     async unmockRoute(args) {
-      await ensureConnected();
       const pattern = String(args.url || "");
       if (!pattern) throw new Error("unmockRoute: 缺少 url");
-      await ctx.unroute(pattern);
-      return { unrouted: pattern };
+      return await unregisterMock(pattern);
+    },
+    // 清空本实例注册的全部拦截（用例收尾/用例前复位调）。不需要连接也可安全调用。
+    async unmockAll() {
+      return { unrouted: await unregisterAllMocks() };
+    },
+    // 当前存活拦截器的命中统计（[{pattern,status,hits}]），供 StepExecutor 判断 mock 是否真生效。
+    mockStats() {
+      return [...MOCKS.values()].map((r) => ({ ...r.stat }));
     },
     async close() {
       // connectOverCDP 的 close 只断开连接,不关被测客户端
       if (browser) { try { await browser.close(); } catch { /* 已断开 */ } }
-      browser = null; page = null;
+      MOCKS.clear();   // 连接已断,旧 ctx 上的拦截器随之失效,记账一并作废(免得下次误撤/误报命中数)
+      browser = null; page = null; ctx = null;
     },
   };
 }

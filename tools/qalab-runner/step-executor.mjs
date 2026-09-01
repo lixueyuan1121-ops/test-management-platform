@@ -39,6 +39,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   const steps = [];      // 结构化步骤结果
   const report = [];     // 执行报告:每步 { no, action, desc, ok, error?, shotBuf? }
   const captured = [];   // judge 步的上下文素材(前面 get_text 文本 / screenshot 路径)
+  // 本条用例注册过的网络拦截:pattern -> { pattern, status, hits }。按**整条用例**累计,
+  // 而非收尾时问一次 gui —— 脚本尾部跑过 unmock_route 的拦截器那时已不在 gui 里,统计会凭空丢掉。
+  const mocksSeen = new Map();
 
   // 截当前视口为 Buffer 挂到某 report 步(关键步/失败存证);失败静默,不阻断执行。
   const capShot = async (rep) => {
@@ -50,13 +53,45 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     report.push(rep);
     return rep;
   };
+  // 每条返回路径的统一出口(失败早退/断言失败/全部通过都经此),负责两件收尾:
+  //  ① 兜底清掉本条用例注册的全部网络拦截 —— 用例中途失败会直接早退、跳过脚本尾部的 unmock_route,
+  //     而拦截器挂在 BrowserContext 上跨用例存活,不清就会让后续每一条用例都吃到这条假数据;
+  //  ② 把 mock 命中统计挂进结果,并在「注册了 mock 却全程 0 拦截」+ 用例失败时点名 ——
+  //     这正是 mock 不生效最常见的形态(URL 模式没匹配上真实请求),不点名就只剩一句看不出所以然的断言失败。
+  // 老 gui 没有 mockStats/unmockAll → 各自跳过(向后兼容)。
+  const finish = async (result) => {
+    // 收尾时仍存活的拦截器命中数以 gui 为准(它一直在计数);已被 unmock_route 撤掉的以 mocksSeen 记的为准。
+    // 老 gui 不会计数,此时 hits 恒 0 并不代表"没拦到",不能据此报警 —— 整块统计一并跳过。
+    let counted = typeof gui.mockStats === "function";
+    if (counted) {
+      try { for (const s of gui.mockStats() || []) mocksSeen.set(s.pattern, { ...s }); }
+      catch { counted = false; }
+    }
+    if (typeof gui.unmockAll === "function") {
+      try { await gui.unmockAll(); } catch (e) { log(`  mock 收尾清理失败(不影响本条判定):${e.message || e}`); }
+    }
+    if (!counted || !mocksSeen.size) return result;
+    const stats = [...mocksSeen.values()];
+    result.mock_stats = stats;
+    const dead = stats.filter((s) => !s.hits).map((s) => s.pattern);
+    if (dead.length) {
+      log(`  ⚠ mock 未生效:「${dead.join("、")}」全程 0 拦截(URL 模式可能与真实请求不匹配)`);
+      // 结论里必须说清:失败时它常常就是失败主因;通过时更要说 —— 那是在真实数据上通过的「假通过」,
+      // mock 场景其实一次都没被验证过,不点破就会被当成"这个异常分支已覆盖"。
+      const why = `mock「${dead.join("、")}」全程未拦截到任何请求,URL 模式可能与真实请求不匹配`;
+      result.reason = result.verdict === "fail"
+        ? `${result.reason}（注意:${why},mock 数据未生效）`
+        : `${result.reason}（注意:${why},本条实际是在真实数据上通过的,mock 场景未被验证）`;
+    }
+    return result;
+  };
   // 失败:记该步 + 截图,返回 fail 结果(带 report/steps)。
   // failKind 归类失败性质(接后端 L2):"selector"=定位/操作/环境阻塞(不计功能失败率),
   // "business"=断言不通过(真功能 bug)。缺省 selector(定位/操作抛错走 catch 兜底,均属阻塞类)。
   const failAt = async (i, action, desc, reason, failKind = "selector", extraSteps) => {
     const rep = rec(i, action, desc, false, reason);
     await capShot(rep);
-    return { verdict: "fail", fail_kind: failKind, reason, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps: extraSteps || steps, report };
+    return finish({ verdict: "fail", fail_kind: failKind, reason, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps: extraSteps || steps, report });
   };
 
   for (let i = 0; i < script.length; i++) {
@@ -80,8 +115,8 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         // mock_route: 拦截匹配 args.url 的 fetch/XHR 请求，直接返回 args.status + args.body。
         // 用于模拟后端返回数据，验证前端在各种响应下的行为。
         // unmock_route: 取消拦截，恢复真实请求。
-        case "mock_route": { const r = await gui.mockRoute(args); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "unmock_route": { const r = await gui.unmockRoute(args); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "mock_route": { const r = await gui.mockRoute(args); mocksSeen.set(String(args.url || ""), { pattern: String(args.url || ""), status: Number(args.status ?? 200), hits: 0 }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "unmock_route": { const r = await gui.unmockRoute(args); const seen = mocksSeen.get(String(args.url || "")); if (seen) seen.hits = Number(r?.hits ?? seen.hits); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_response": {
           const r = await gui.waitResponse({ timeout_ms: args.timeout_ms });
@@ -137,7 +172,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
             const rep = rec(i, action, desc, false, `step${i + 1} 断言文本失败:期望${rel}「${args.expected}」,实际「${r.actual}」`);
             rep.check = { actual: r.actual, expected: args.expected, mode: r.mode, negate: !!r.negate };  // 结构化证据,供纠偏一眼分辨真假 fail
             await capShot(rep);
-            return { verdict: "fail", fail_kind: "business", reason: rep.error, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps, report };
+            return finish({ verdict: "fail", fail_kind: "business", reason: rep.error, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps, report });
           }
           const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
           break;
@@ -150,13 +185,13 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   }
   // 所有步骤(含断言/judge)通过
   const checks = steps.filter((s) => s.action.startsWith("assert") || s.action === "judge").length;
-  return {
+  return finish({
     verdict: "pass",
     reason: `结构化执行通过:${script.length} 步,${checks} 处判定全部满足`,
     evidence: evidence[evidence.length - 1] || null,
     duration_ms: Date.now() - started,
     steps,
     report,
-  };
+  });
 }
 

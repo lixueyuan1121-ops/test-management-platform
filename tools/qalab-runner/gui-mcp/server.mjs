@@ -6,7 +6,8 @@
 // 前提:namiclaw 已带 --remote-debugging-port=9222 启动(由 runner 的 ensureNamiclaw 保证)。
 //
 // 暴露工具:gui_connect / gui_list_keys / gui_probe / gui_goto / gui_click / gui_hover / gui_fill /
-//           gui_get_text / gui_wait_for / gui_assert_text / gui_screenshot
+//           gui_get_text / gui_wait_for / gui_assert_text / gui_screenshot /
+//           gui_mock_route / gui_unmock_route
 // 语义 key 用法见 selectors.json 与 gui-mcp/README.md;更新选择器只改 selectors.json。
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,6 +33,8 @@ const TOOLS = [
   { name: "gui_wait_for", description: "等待元素在指定毫秒内变为可见;超时抛错。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, timeout_ms: { type: "number" } } } },
   { name: "gui_assert_text", description: "断言元素文本等于(默认)或包含 expected;不满足则判定失败。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, expected: { type: "string" }, contains: { type: "boolean" } }, required: ["expected"] } },
   { name: "gui_screenshot", description: "对当前顶层页面截图并保存到 path,返回保存路径(用作 evidence)。", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+  { name: "gui_mock_route", description: "拦截匹配 url 的接口请求,直接返回 status+body(模拟后端返回,验证空态/异常/报错等真实请求难构造的状态)。url 用 glob 且**只写到路径为止**(如 **/api/tasks),查询串会自动容忍;必须在触发该请求的导航/点击**之前**调用,否则拦截器晚于请求必然无效。用完调 gui_unmock_route 还原。", inputSchema: { type: "object", properties: { url: { type: "string", description: "glob 模式,如 **/api/tasks" }, status: { type: "number", description: "HTTP 状态码,默认 200" }, body: { type: "object", description: "响应体(JSON 对象)" } }, required: ["url"] } },
+  { name: "gui_unmock_route", description: "取消对 url 的拦截,恢复真实请求。返回 hits=该拦截器实际拦到的请求数——hits=0 说明这条 mock 全程没生效(url 模式没匹配上真实请求),据此纠正模式重试。", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
 ];
 
 const ok = (v) => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }] });
@@ -53,6 +56,8 @@ async function dispatch(name, args) {
       return res.pass ? ok(res) : fail(res);   // 保持原契约:断言失败 isError=true
     }
     case "gui_screenshot": return ok(await gui.screenshot(args.path));
+    case "gui_mock_route": return ok(await gui.mockRoute(args));
+    case "gui_unmock_route": return ok(await gui.unmockRoute(args));
     default: return fail(`unknown tool ${name}`);
   }
 }
