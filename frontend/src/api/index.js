@@ -163,53 +163,14 @@ export const retryEvalRunAny = (runId) => http.post(`/eval-queue/${runId}/retry`
 export const retryFailedEvalRuns = (payload) => http.post('/eval-queue/retry-failed', payload)
 export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
 
-export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, onError, signal } = {}) {
-  let resp
+export async function streamEvalTaskSummary(taskId, payload, { onDone, onError, signal, onTick } = {}) {
   try {
-    resp = await fetch(`/api/eval-tasks/${taskId}/summarize`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('tp_token') || ''}`,
-      },
-      body: JSON.stringify(payload),
-      signal,
-    })
+    const { job_id } = await http.post(`/eval-tasks/${taskId}/summarize`, payload || {}, { silent: true })
+    const r = await pollAiJob(job_id, { signal, onTick })
+    if (r && r.skipped) onDone?.({ status: 'failed', msg: r.reason || '无可评素材' })
+    else onDone?.({ status: 'done', summary_share_code: r?.share_code })
   } catch (e) {
-    onError?.(e.name === 'AbortError' ? '已取消' : '网络错误')
-    return
-  }
-  if (!resp.ok || !resp.body) {
-    let msg = `请求失败（${resp.status}）`
-    try { const j = await resp.json(); if (j?.msg) msg = j.msg } catch { /* 非 JSON 忽略 */ }
-    onError?.(msg)
-    return
-  }
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'))
-        if (!dataLine) continue
-        const jsonStr = dataLine.slice(5).trim()
-        if (!jsonStr) continue
-        let evt
-        try { evt = JSON.parse(jsonStr) } catch { continue }
-        if (evt.type === 'delta') onDelta?.(evt.text)
-        else if (evt.type === 'done') onDone?.(evt)
-        else if (evt.type === 'error') onError?.(evt.msg)
-      }
-    }
-  } catch (e) {
-    onError?.(e.name === 'AbortError' ? '已取消' : '读取流失败')
+    onError?.(e?.message || '生成失败')
   }
 }
 

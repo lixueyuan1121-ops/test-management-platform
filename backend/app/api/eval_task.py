@@ -6,16 +6,14 @@
 import json
 import logging
 import re
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import EvalRunStatus, EvalTaskStatus, ProjectRole
-from app.db.session import SessionLocal, get_db
+from app.db.session import get_db
 from app.models import EvalQuery, EvalRun, User
 from app.models.ai_eval import EvalTask
 from app.schemas.common import ok
@@ -56,10 +54,6 @@ def _sanitize_html(html: str) -> str:
         close = m.group(1)
         return f"<{close}{tag}{attrs}>"
     return _TAG_RE.sub(_repl, html or "")
-
-
-def _sse(obj: dict) -> str:
-    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
 
 # ─── 序列化 ────────────────────────────────────────────────────────────────────
@@ -707,74 +701,36 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             detail="该批次没有可评的执行记录(全部未回填或已取消),等执行完成或重跑后再生成")
 
-    # 组装素材(在请求 db 存活期内取齐)
-    items = _summary_items(db, runs)
-    prompt = claude_runner.build_eval_task_summary_prompt(task.name, task.description or "", items)
-    task_pk = task.id
-    # ⚠️ 必须在 commit 前取成局部变量:commit 会 expire ORM 属性,而 sse 生成器在请求 db 关闭后才迭代,
-    # 届时再访问 task.name 会抛 DetachedInstanceError(fastapi≥0.106 yield 依赖在流开始前收尾)。
-    task_name = task.name
+    # 方案2 P3b:改入队。校验通过即建 eval_summary job,返回 {job_id};worker 调无头生成器
+    # (generate_task_summary_headless,自管短命 session 抗长跑连接失效),前端轮询 /api/ai-jobs/{id}。
+    from app.services import ai_jobs
+    job = ai_jobs.enqueue(
+        db, "eval_summary", provider=provider_id, project_id=task.project_id, user_id=user.id,
+        input={"task_id": task.id, "batch_id": bid, "provider": provider_id},
+        ref_kind="eval_task", ref_id=task.id,
+    )
+    return ok({"job_id": job.id})
 
-    # 标记生成中(前端轮询/重进页面可见)
-    task.summary_status = "running"
-    db.commit()
 
-    def sse():
-        raw = ""
-        err = None
-        t0 = time.monotonic()
-        try:
-            for evt in engine.stream_generate(
-                task_name,
-                prompt_builder=lambda _p=prompt: _p,
-                system_prompt=claude_runner.EVAL_TASK_SUMMARY_SYSTEM_PROMPT,
-            ):
-                etype = evt.get("type")
-                if etype == "heartbeat":
-                    yield ": hb\n\n"
-                elif etype == "delta":
-                    raw += evt["text"]
-                    yield _sse({"type": "delta", "text": evt["text"]})
-                elif etype == "result":
-                    if evt.get("text"):
-                        raw = evt["text"]
-                elif etype == "error":
-                    err = evt.get("msg")
-                    yield _sse({"type": "error", "msg": err})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("测评任务综合评价生成异常")
-            err = err or f"生成中断:{e}"
+def run_eval_summary_job(db: Session, job) -> dict:
+    """AI 任务队列的综合评价 handler(方案2 P3b):复用 generate_task_summary_headless。
 
-        s = SessionLocal()
-        try:
-            t2 = s.get(EvalTask, task_pk)
-            if t2 is None:
-                yield _sse({"type": "error", "msg": "任务记录丢失"})
-                return
-            html = claude_runner.extract_html_fragment(raw)
-            if err or not html:
-                t2.summary_status = "failed"
-                s.commit()
-                yield _sse({"type": "done", "status": "failed",
-                            "msg": err or "引擎没有产出有效 HTML 评价", "summary_html": None})
-                return
-            from datetime import datetime
-            t2.summary_html = _sanitize_html(html)
-            t2.summary_status = "done"
-            t2.summary_provider = provider_id
-            t2.summary_at = datetime.now()
-            from app.api.eval_report import ensure_share_code
-            share_code = ensure_share_code(s, t2)
-            s.commit()
-            yield _sse({"type": "done", "status": "done",
-                        "summary_html": t2.summary_html,
-                        "summary_share_code": share_code,
-                        "duration_ms": int((time.monotonic() - t0) * 1000)})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("综合评价落库失败")
-            s.rollback()
-            yield _sse({"type": "error", "msg": f"落库失败:{e}"})
-        finally:
-            s.close()
+    job.input = {task_id, batch_id, provider}。headless 自管短命 session(抗 15min 长跑后连接失效),
+    故传一个基于当前引擎的 sessionmaker 作 session_factory。error → 抛错(job failed);
+    ok/skipped 原样返回(前端轮询到 done 后重拉任务看 summary_html)。
+    """
+    from sqlalchemy.orm import sessionmaker
+    inp = json.loads(job.input or "{}")
+    task = db.get(EvalTask, inp["task_id"])
+    if task is None:
+        raise ValueError("测评任务不存在")
+    sf = sessionmaker(bind=db.get_bind())
+    res = generate_task_summary_headless(db, task, inp["batch_id"], provider=inp.get("provider"),
+                                         session_factory=sf)
+    if res.get("error"):
+        raise ValueError(res["error"])
+    return res
 
-    return StreamingResponse(sse(), media_type="text/event-stream")
+
+from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402
+_ai_jobs_reg.register_handler("eval_summary", run_eval_summary_job)

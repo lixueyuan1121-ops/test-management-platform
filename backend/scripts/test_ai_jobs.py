@@ -353,6 +353,40 @@ def test_run_job_testcase_gen():
     print("OK run_job testcase_gen")
 
 
+def test_run_job_eval_summary():
+    from app.models import EvalRun
+    from app.models.ai_eval import EvalTask
+    _clear()
+    if not _s.get(Project, 100):
+        _s.add(Project(id=100, name="P1", code="p1"))
+    _s.flush()
+    task = EvalTask(project_id=100, name="评价任务", last_batch_id="B1")
+    _s.add(task); _s.flush()
+    _s.add(EvalRun(project_id=100, eval_task_id=task.id, batch_id="B1", runner="m", status="done",
+                   answer="回答内容", verdict="pass", score=4,
+                   payload=json.dumps({"title": "题1", "prompt": "问1"})))
+    _s.commit()
+
+    class _FakeSummaryEngine:
+        def is_available(self): return True
+        def stream_generate(self, *_a, **_kw):
+            yield {"type": "result", "text": "<h2>综合评价</h2><p>整体优秀</p>"}
+
+    job = ai_jobs.enqueue(_s, "eval_summary", provider="claude", project_id=100, user_id=1,
+                          input={"task_id": task.id, "batch_id": "B1", "provider": "claude"},
+                          ref_kind="eval_task", ref_id=task.id)
+    with patch("app.services.generators.get_provider", return_value=_FakeSummaryEngine()), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    got = _s.get(AiJob, job.id)
+    assert got.status == "done", (got.status, got.error)
+    t2 = _s.get(EvalTask, task.id)
+    assert t2.summary_status == "done" and t2.summary_html and "综合评价" in t2.summary_html, \
+        (t2.summary_status, t2.summary_html)
+    print("OK run_job eval_summary")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
@@ -369,6 +403,7 @@ def main():
     test_run_job_eval_judge()
     test_run_job_script_gen()
     test_run_job_testcase_gen()
+    test_run_job_eval_summary()
     print("OK test_ai_jobs")
 
 
