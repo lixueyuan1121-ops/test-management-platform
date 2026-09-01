@@ -22,7 +22,7 @@ from app.core.deps import get_current_user
 from app.core.enums import ExecStatus
 from app.db.session import Base, get_db
 from app.main import app
-from app.models import AiJob, ExecRun, Project, User
+from app.models import AiJob, EvalQuery, EvalRun, ExecRun, Project, User
 from app.services import ai_jobs
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
@@ -232,6 +232,42 @@ def test_api_cancel_pending_only():
     print("OK api cancel pending only")
 
 
+# ─── P2a: 判定 handler(eval_judge)经队列跑通 ────────────────────────────────────
+
+class _FakeJudgeEngine:
+    """判定引擎:stream_generate 返回一段三维 JSON,driver judge_run 落 verdict。"""
+    def is_available(self): return True
+    def stream_generate(self, *_a, **_kw):
+        yield {"type": "result", "text": json.dumps({
+            "thinking": {"pass": True, "note": "ok"},
+            "answer": {"pass": True, "note": "ok"},
+            "overall": {"pass": True, "note": "好"},
+            "score": 4, "summary": "回答正确",
+        }, ensure_ascii=False)}
+
+
+def test_run_job_eval_judge():
+    _clear()
+    if not _s.get(Project, 100):
+        _s.add(Project(id=100, name="P1", code="p1"))
+    q = EvalQuery(project_id=100, title="t", prompt="p", expected="应正确", dimension="thinking")
+    _s.add(q); _s.flush()
+    run = EvalRun(project_id=100, eval_query_id=q.id, runner="m", status="done",
+                  answer="这是回答", trace=None)
+    _s.add(run); _s.commit()
+    job = ai_jobs.enqueue(_s, "eval_judge", provider="claude", project_id=100, user_id=1,
+                          input={"run_id": run.id, "votes": 1}, ref_kind="eval_run", ref_id=run.id)
+    with patch("app.services.generators.get_provider", return_value=_FakeJudgeEngine()), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    got = _s.get(AiJob, job.id)
+    assert got.status == "done", (got.status, got.error)
+    assert json.loads(got.result)["verdict"] in ("pass", "fail", "error"), got.result
+    assert _s.get(EvalRun, run.id).verdict is not None
+    print("OK run_job eval_judge")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
@@ -245,6 +281,7 @@ def main():
     test_api_get_status_and_position()
     test_api_auth_non_member_denied()
     test_api_cancel_pending_only()
+    test_run_job_eval_judge()
     print("OK test_ai_jobs")
 
 

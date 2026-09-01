@@ -111,13 +111,15 @@ def test_report_rejected_after_cancel():
 
 
 def test_batch_judge_skips_cancelled():
-    # 手工/漂移把 cancelled 的 run 显式送批量判定 → 应被跳过,不产出误判(结果作废、不进判定)
+    # 手工/漂移把 cancelled 的 run 显式送批量判定 → 应进 skipped(不建 job、不判定),结果作废
     rid = _s.query(EvalRun).filter(EvalRun.status == EvalRunStatus.cancelled).first().id
     d = client.post("/api/eval-judge/batch",
                     json={"project_id": 100, "run_ids": [rid]}).json()
     assert d["code"] == 0, d
-    res = d["data"]["results"]
-    assert len(res) == 1 and res[0].get("skipped") and "cancelled" in res[0]["reason"], res
+    data = d["data"]
+    # 方案2:批量判定改入队,cancelled 不可判 → 不产 job、进 skipped
+    assert data["count"] == 0 and not data["job_ids"], data
+    assert len(data["skipped"]) == 1 and "cancelled" in data["skipped"][0]["reason"], data
     _s.expire_all()
     assert _s.get(EvalRun, rid).verdict is None, "取消的 run 不应被判出 verdict"
     print("OK batch judge skips cancelled")

@@ -180,3 +180,35 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
     db.commit()
     return {"verdict": verdict, "verdict_dims": dims, "score": run.score,
             "is_abnormal": run.is_abnormal, "judged_by": run.judged_by}
+
+
+def run_judge_job(db: Session, job) -> dict:
+    """AI 任务队列的判定 handler(方案2 P2):判定单条 eval_run。
+
+    job.input = {"run_id": int, "provider"?: str, "votes"?: int}。复用 judge_run(它自身落库
+    verdict/score/status)。返回 run_out 形状,供前端轮询后原地更新行(status/verdict/dims/reason)。
+    """
+    inp = json.loads(job.input or "{}")
+    run_id = inp.get("run_id")
+    if not run_id:
+        raise ValueError("判定 job 缺少 run_id")
+    run = db.get(EvalRun, run_id)
+    if run is None:
+        raise ValueError(f"执行项不存在:{run_id}")
+    judge_run(db, run, provider=inp.get("provider"), votes=inp.get("votes") or 1)
+    db.refresh(run)
+    return {
+        "run_id": run.id,
+        "status": getattr(run.status, "value", run.status),
+        "verdict": run.verdict,
+        "score": run.score,
+        "verdict_dims": json.loads(run.verdict_dims) if run.verdict_dims else None,
+        "verdict_reason": run.verdict_reason,
+        "is_abnormal": bool(run.is_abnormal),
+        "judged_by": run.judged_by,
+    }
+
+
+# 注册为队列 handler(ai_jobs 惰性 import 本模块时触发)
+from app.services import ai_jobs as _ai_jobs  # noqa: E402
+_ai_jobs.register_handler("eval_judge", run_judge_job)

@@ -98,7 +98,7 @@
               size="small" type="primary" :icon="DataAnalysis" :loading="batchJudging"
               :disabled="!pid || !doneCount"
               @click="batchJudge"
-            >批量判定 done（{{ doneCount }}）</el-button>
+            >{{ batchJudging && batchProgress ? batchProgress : `批量判定 done（${doneCount}）` }}</el-button>
             <el-popconfirm v-if="failedCount" :title="`重跑当前列表全部 ${failedCount} 条失败？`" width="240" @confirm="retryAllFailed">
               <template #reference>
                 <el-button size="small" type="success">重跑失败（{{ failedCount }}）</el-button>
@@ -302,7 +302,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -364,6 +364,7 @@ const batchOptions = computed(() => [...trend.value].reverse())
 const expanded = ref([])
 const judgingIds = ref(new Set())
 const batchJudging = ref(false)
+const batchProgress = ref('')   // 批量判定进度文案「判定中 done/total」
 const robustJudge = ref(false)
 
 // 导出飞书 / 推送 multica
@@ -497,23 +498,27 @@ async function judgeOne(row) {
     })
     if (res.verdict === 'error') ElMessage.warning(res.verdict_reason || '判定出错，可重试')
     else ElMessage.success(`判定完成：${VERDICT_LABEL[res.verdict] || res.verdict}`)
-  } catch { /* http 拦截器已提示 */ }
+  } catch (e) { ElMessage.error(e?.message || '判定失败') }
   finally {
     const s = new Set(judgingIds.value); s.delete(row.run_id); judgingIds.value = s
   }
 }
 
-// 批量判定该项目所有 done 的 run（run_ids 留空 → 后端判全部 done）；完成后整表刷新看结果。
+// 批量判定改入队(方案2 P2):后端每条 run 建一个 job,前端轮询这批 job;完成后整表刷新。
 async function batchJudge() {
   if (!pid.value || !doneCount.value) return
   batchJudging.value = true
   try {
     const res = await judgeEvalBatch({ project_id: pid.value, votes: robustJudge.value ? 3 : 1 })
-    const errs = (res.results || []).filter((x) => x.error).length
-    ElMessage.success(`已判定 ${res.judged} 条${errs ? `（${errs} 条失败）` : ''}`)
+    if (!res.count) { ElMessage.info('没有可判定的执行项'); return }
+    const results = await pollAiJobs(res.job_ids, {
+      onProgress: ({ done, total }) => { batchProgress.value = `判定中 ${done}/${total}` },
+    })
+    const errs = results.filter((x) => x.error || x.verdict === 'error').length
+    ElMessage.success(`已判定 ${res.count} 条${errs ? `（${errs} 条失败）` : ''}`)
     await load()
-  } catch { /* http 拦截器已提示 */ }
-  finally { batchJudging.value = false }
+  } catch (e) { ElMessage.error(e?.message || '批量判定失败') }
+  finally { batchJudging.value = false; batchProgress.value = '' }
 }
 
 // 导出到飞书：填目标表链接 +（可选）仅异常，调 /eval-export/feishu。

@@ -255,7 +255,7 @@
               <el-tooltip content="每条判 3 次取多数票（更稳，但 3 倍耗时）" placement="top"><span>稳健(3票)</span></el-tooltip>
             </el-checkbox>
             <el-button size="small" type="primary" :loading="batchJudging" :disabled="!judgeableRuns.length" @click="judgeAll">
-              批量判定（{{ judgeableRuns.length }}）
+              {{ batchJudging && batchProgress ? batchProgress : `批量判定（${judgeableRuns.length}）` }}
             </el-button>
             <el-popconfirm v-if="failedRunIds.length" :title="`重跑该批次全部 ${failedRunIds.length} 条失败？`" width="240" @confirm="retryAllFailed">
               <template #reference>
@@ -403,7 +403,7 @@ import { Tickets, Plus, Refresh, InfoFilled, Download } from '@element-plus/icon
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
+  listEvalDimensions, judgeEvalBatch, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -462,6 +462,7 @@ const running = ref(false)
 const detailVisible = ref(false)
 const detail = ref(null)
 const batchJudging = ref(false)
+const batchProgress = ref('')   // 批量判定进度「判定中 done/total」
 const robustJudge = ref(false)
 const summarizing = ref(false)
 const summaryStream = ref('')
@@ -729,14 +730,18 @@ async function judgeAll() {  const runs = judgeableRuns.value
     const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id).filter((id) => Number.isInteger(id))
     if (!runIds.length) { ElMessage.warning('没有待判定的用例（done 状态）'); return }
     const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds, votes: robustJudge.value ? 3 : 1 })
-    // 逐条结果里可能有 error(单条异常)/skipped(未执行完)/verdict=error(未回填、引擎不可用等):
-    // 区分提示,别把带失败的批次一律报成功
-    const bad = (res.results || []).filter((x) => x.error || x.skipped || x.verdict === 'error').length
-    if (bad) ElMessage.warning(`已处理 ${res.judged} 条，其中 ${bad} 条判定失败/跳过（未回填的会话请重跑后再判）`)
-    else ElMessage.success(`已判定 ${res.judged} 条`)
+    if (!res.count) { ElMessage.info('没有可判定的用例'); return }
+    // 每条 run 一个 job,轮询这批 job(方案2 P2);done 结果里 verdict=error 计失败
+    const results = await pollAiJobs(res.job_ids, {
+      onProgress: ({ done, total }) => { batchProgress.value = `判定中 ${done}/${total}` },
+    })
+    const bad = results.filter((x) => x.error || x.verdict === 'error').length
+      + (res.skipped?.length || 0)
+    if (bad) ElMessage.warning(`已处理 ${res.count} 条，其中 ${bad} 条判定失败/跳过（未回填的会话请重跑后再判）`)
+    else ElMessage.success(`已判定 ${res.count} 条`)
     await refreshDetail()
-  } catch { /* 拦截器已提示 */ }
-  finally { batchJudging.value = false }
+  } catch (e) { ElMessage.error(e?.message || '批量判定失败') }
+  finally { batchJudging.value = false; batchProgress.value = '' }
 }
 
 async function markFailed(row) {

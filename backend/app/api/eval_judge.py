@@ -48,10 +48,30 @@ def _run_out(r: EvalRun) -> dict:
 # (此前顺序反了,批量判定端点上线以来从未被真正命中过)。
 @router.post("/batch")
 def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """批量判定改入队(方案2 P2):可判的每条 run 各建一个 eval_judge job,worker 池并发消费,
+    返回 {job_ids, count, skipped}。前端轮询这批 job 汇总。pending/running/cancelled 不可判→skipped。"""
+    from app.core.enums import EvalRunStatus
+    from app.services import ai_jobs
+
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
-    results = _batch_judge_results(db, body.project_id, run_ids=body.run_ids,
-                                   provider=body.provider, votes=body.votes)
-    return ok({"judged": len(results), "results": results})
+    q = db.query(EvalRun).filter(EvalRun.project_id == body.project_id)
+    if body.run_ids:
+        q = q.filter(EvalRun.id.in_(body.run_ids))
+    else:
+        q = q.filter(EvalRun.status == EvalRunStatus.done)
+    rows = q.all()
+    job_ids, skipped = [], []
+    for r in rows:
+        st = getattr(r.status, "value", r.status)
+        if st in ("pending", "running", "cancelled"):
+            skipped.append({"run_id": r.id, "reason": f"状态 {st},不判定"})
+            continue
+        job = ai_jobs.enqueue(db, "eval_judge", provider=body.provider, project_id=body.project_id,
+                              user_id=user.id, input={"run_id": r.id, "provider": body.provider,
+                                                      "votes": body.votes},
+                              ref_kind="eval_run", ref_id=r.id)
+        job_ids.append(job.id)
+    return ok({"job_ids": job_ids, "count": len(job_ids), "skipped": skipped})
 
 
 def _batch_judge_results(db: Session, project_id: int, run_ids: list[int] | None = None,
@@ -99,13 +119,18 @@ def _run_batch_judge(db: Session, project_id: int, batch_id: str, provider: str 
 
 @router.post("/{run_id}")
 def judge_one(run_id: int, body: JudgeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """单条判定改入队(方案2 P2):建 eval_judge job 立即返回 {job_id},前端轮询取判定结果。"""
+    from app.services import ai_jobs
+
     r = db.get(EvalRun, run_id)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
-    eval_judge.judge_run(db, r, provider=body.provider, votes=body.votes)
-    db.refresh(r)
-    return ok(_run_out(r))
+    job = ai_jobs.enqueue(db, "eval_judge", provider=body.provider, project_id=r.project_id,
+                          user_id=user.id, input={"run_id": run_id, "provider": body.provider,
+                                                  "votes": body.votes},
+                          ref_kind="eval_run", ref_id=run_id)
+    return ok({"job_id": job.id})
 
 
 class ReviewMarkIn(BaseModel):

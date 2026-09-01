@@ -210,15 +210,30 @@ export async function streamEvalTaskSummary(taskId, payload, { onDelta, onDone, 
   }
 }
 
-export const judgeEvalRun = (runId, provider) => http.post(`/eval-judge/${runId}`, { provider }, { timeout: 90000 })
+// 单条判定改入队(方案2 P2):POST 拿 job_id → 轮询取判定结果(与归因同款)。
+// 返回 judge result {run_id,status,verdict,verdict_dims,verdict_reason,is_abnormal,...}。
+export async function judgeEvalRun(runId, provider, { onTick } = {}) {
+  const { job_id } = await http.post(`/eval-judge/${runId}`, { provider }, { silent: true })
+  return pollAiJob(job_id, { onTick })
+}
 // 人工复核标注(失败收敛):mark = confirmed/false_positive/false_negative/null(清除),note 可空
 export const reviewEvalRun = (runId, mark, note) => http.post(`/eval-judge/${runId}/review`, { mark, note })
 // 判定质量统计(evaluator alignment):用复核标注反推 AI 判定准确率/误报率/漏报率,按引擎横评
 export const evalJudgeQuality = (projectId) => http.get('/eval-judge/judge-quality', { params: { project_id: projectId } })
-// 批量判定；payload: { project_id, run_ids?（空则判该项目所有 done）, provider? } → { judged, results:[...] }
-// 批量逐条同步判定，每条一次 LLM 调用（可达分钟级）、条数不可控，5 分钟上限仍会超时报错——
-// 改为不超时（timeout:0），等服务端跑完；页面有 loading 态兜住交互。
-export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payload, { timeout: 0 })
+// 批量判定改入队(方案2 P2):POST 返回 {job_ids,count,skipped},每条 run 一个 job 由 worker 池并发跑。
+// 调用方拿 job_ids 后自行轮询(见 pollAiJobs)。
+export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payload, { silent: true })
+
+// 批量轮询一组 job 直到全部终态(done/failed/cancelled);onProgress 回传 {done,total}。返回 results 数组。
+export async function pollAiJobs(jobIds, { interval = 2000, onProgress } = {}) {
+  const results = []
+  for (let i = 0; i < jobIds.length; i++) {
+    try { results.push(await pollAiJob(jobIds[i], { interval })) }
+    catch (e) { results.push({ error: e?.message || '失败' }) }
+    onProgress?.({ done: i + 1, total: jobIds.length })
+  }
+  return results
+}
 // 异常会话（is_abnormal=判定 fail）列表，供复核/推送
 export const listAbnormalEvalRuns = (projectId) => http.get('/eval-judge/abnormal', { params: { project_id: projectId } })
 // eval 执行历史（子项2 端点 /eval-queue/history；此前未在 api 封装，新增）；返回 _to_out 列表（含 payload/status/verdict）
