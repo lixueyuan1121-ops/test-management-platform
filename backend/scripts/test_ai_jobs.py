@@ -11,12 +11,15 @@
 """
 import json
 
+from unittest.mock import patch
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.enums import ExecStatus
 from app.db.session import Base
-from app.models import AiJob
+from app.models import AiJob, ExecRun, Project, User
 from app.services import ai_jobs
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
@@ -79,11 +82,67 @@ def test_queue_position():
     print("OK queue position")
 
 
+# ─── Task3: handler + run_job(归因) ──────────────────────────────────────────────
+
+class _FakeEngine:
+    def __init__(self, out): self._out = out
+    def is_available(self): return True
+    def stream_generate(self, *_a, **_kw):
+        yield {"type": "delta", "text": self._out}
+
+
+def _seed_exec():
+    if not _s.get(User, 1):
+        _s.add(User(id=1, username="admin", name="管理员", password_hash="x", is_platform_admin=True))
+    if not _s.get(Project, 100):
+        _s.add(Project(id=100, name="P1", code="p1"))
+    if not _s.get(ExecRun, 501):
+        _s.add(ExecRun(id=501, project_id=100, runner="m", status=ExecStatus.failed,
+                       fail_kind="business", reason="断言失败",
+                       payload=json.dumps({"title": "登录", "steps": "s", "expected": "欢迎"})))
+    _s.commit()
+
+
+def test_run_job_triage_success():
+    _clear(); _seed_exec()
+    job = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1,
+                          input={"run_id": 501}, ref_kind="exec_run", ref_id=501)
+    fake = _FakeEngine('{"kind":"bug","confidence":0.85,"reason":"接口500","suggestion":"提缺陷"}')
+    with patch("app.services.generators.get_provider", return_value=fake), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    got = _s.get(AiJob, job.id)
+    assert got.status == "done", (got.status, got.error)
+    assert json.loads(got.result)["kind"] == "bug"
+    assert _s.get(ExecRun, 501).triage_kind == "bug"
+    print("OK run_job triage success")
+
+
+def test_run_job_triage_bad_output_failed_no_overwrite():
+    _clear(); _seed_exec()
+    # 先成功归因一次(triage_kind=bug),再用坏输出跑 → job failed 且不覆盖已有归因
+    _s.get(ExecRun, 501).triage_kind = "bug"; _s.commit()
+    job = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1,
+                          input={"run_id": 501})
+    bad = _FakeEngine("我觉得是环境问题")  # 无 JSON
+    with patch("app.services.generators.get_provider", return_value=bad), \
+         patch("app.services.generators.normalize_provider", return_value="claude"):
+        ai_jobs.run_job(_Session, job.id)
+    _s.expire_all()
+    got = _s.get(AiJob, job.id)
+    assert got.status == "failed" and got.error, got.status
+    assert _s.get(ExecRun, 501).triage_kind == "bug", "失败不应覆盖已有归因"
+    print("OK run_job triage failed (no overwrite)")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
     test_claim_atomic()
     test_queue_position()
+    test_run_job_triage_success()
+    test_run_job_triage_bad_output_failed_no_overwrite()
     print("OK test_ai_jobs")
 
 

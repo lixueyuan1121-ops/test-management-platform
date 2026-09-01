@@ -92,6 +92,55 @@ def get_job(db: Session, job_id: int) -> AiJob | None:
     return db.get(AiJob, job_id)
 
 
+# ── 执行 ─────────────────────────────────────────────────────────────────────────
+
+def _ensure_handlers() -> None:
+    """惰性 import 各特性模块,触发其 register_handler(避免循环导入,worker 启动/首跑前确保就位)。"""
+    if "triage" not in _HANDLERS:
+        import app.services.exec_triage  # noqa: F401  (import 时 register triage handler)
+
+
+def run_job(session_factory, job_id: int) -> None:
+    """另开 session 跑一条 job:查 handler → 执行 → 成功 done+result / 失败 failed+error。
+
+    handler 负责写域表(TestCase/ExecRun.triage/…)并返回 result dict;失败(抛异常)时
+    **不覆盖域数据**(handler 内在解析失败前不写域表)。异常全捕获——worker 线程不能抛。
+    session_factory 供测试注入(=SessionLocal)。
+    """
+    _ensure_handlers()
+    s = session_factory()
+    try:
+        job = s.get(AiJob, job_id)
+        if job is None:
+            return
+        handler = _HANDLERS.get(job.kind)
+        if handler is None:
+            job.status = "failed"
+            job.error = f"未知的 AI 任务类型:{job.kind}"
+            s.commit()
+            return
+        t0 = datetime.now()
+        try:
+            result = handler(s, job) or {}
+        except Exception as e:  # noqa: BLE001
+            logger.exception("AI job 执行失败 id=%s kind=%s", job_id, job.kind)
+            s.rollback()
+            job2 = s.get(AiJob, job_id)
+            if job2 is not None:
+                job2.status = "failed"
+                job2.error = str(e)[:2000]
+                s.commit()
+            return
+        job.status = "done"
+        job.result = json.dumps(result, ensure_ascii=False)
+        if result.get("output_raw"):
+            job.output_raw = result.get("output_raw")
+        job.duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
+        s.commit()
+    finally:
+        s.close()
+
+
 # ── 唤醒(Task4 填实现;此处占位,enqueue 已可调用) ──────────────────────────────────
 _wake = threading.Event()
 

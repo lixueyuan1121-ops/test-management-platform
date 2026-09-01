@@ -148,3 +148,72 @@ def triage_run(db: Session, run, provider: str | None = None) -> dict:
     run.triage = json.dumps(parsed, ensure_ascii=False)
     db.commit()
     return parsed
+
+
+def run_triage_job(db: Session, job) -> dict:
+    """AI 任务队列的归因 handler(方案2):读 job 入参 → 引擎 → 解析 → 写域表 → 返回 result。
+
+    job.input = {"run_id": int, "provider"?: str}。解析失败抛异常(由 run_job 置 job failed,
+    不覆盖已有归因);域写入只在解析成功、引擎无 error 时发生——失败天然不覆盖。
+    """
+    from app.core.enums import ExecStatus
+    from app.models import ExecRun
+
+    inp = json.loads(job.input or "{}")
+    run_id = inp.get("run_id")
+    if not run_id:
+        raise ValueError("归因 job 缺少 run_id")
+    run = db.get(ExecRun, run_id)
+    if run is None:
+        raise ValueError(f"执行项不存在:{run_id}")
+    # 域写入前校验(与端点一致):失败/阻塞才可归因
+    if run.status not in (ExecStatus.failed, ExecStatus.blocked):
+        raise ValueError(f"只能归因失败/阻塞的执行(当前 {getattr(run.status, 'value', run.status)})")
+    provider_id = generators.normalize_provider(inp.get("provider"))
+    engine = generators.get_provider(provider_id)
+    if not engine.is_available():
+        raise ValueError(f"归因引擎「{provider_id}」未启用或不可用")
+
+    try:
+        payload = json.loads(run.payload or "{}")
+    except (json.JSONDecodeError, ValueError):
+        payload = {}
+    try:
+        report = json.loads(run.report) if run.report else None
+    except (json.JSONDecodeError, ValueError):
+        report = None
+    prompt = build_triage_prompt(payload, run.reason, run.fail_kind, report)
+    system = _SYSTEM_PROMPT
+    title = payload.get("title") or "失败归因"
+
+    raw = ""
+    err = None
+    try:
+        for evt in engine.stream_generate(title, prompt_builder=lambda: prompt, system_prompt=system):
+            et = evt.get("type")
+            if et == "delta":
+                raw += evt.get("text") or ""
+            elif et == "result":
+                if evt.get("text"):
+                    raw = evt["text"]
+            elif et == "error":
+                err = evt.get("msg")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("归因引擎调用异常 run=%s", run_id)
+        err = err or str(e)
+    if err:
+        raise ValueError(err[:500])
+    parsed = parse_triage(raw)
+    if parsed.get("error"):
+        raise ValueError(parsed["error"])
+    parsed["provider"] = provider_id
+    parsed["at"] = datetime.utcnow().isoformat()
+    run.triage_kind = parsed["kind"]
+    run.triage = json.dumps(parsed, ensure_ascii=False)
+    db.commit()
+    return {"run_id": run_id, **parsed}
+
+
+# 注册为队列 handler(ai_jobs 惰性 import 本模块时触发)
+from app.services import ai_jobs as _ai_jobs  # noqa: E402
+_ai_jobs.register_handler("triage", run_triage_job)
