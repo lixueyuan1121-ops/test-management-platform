@@ -16,9 +16,12 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient
 
+from app.core.deps import get_current_user
 from app.core.enums import ExecStatus
-from app.db.session import Base
+from app.db.session import Base, get_db
+from app.main import app
 from app.models import AiJob, ExecRun, Project, User
 from app.services import ai_jobs
 
@@ -27,6 +30,16 @@ _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread":
 Base.metadata.create_all(_engine)
 _Session = sessionmaker(bind=_engine)
 _s = _Session()
+
+
+def _get_db():
+    yield _s
+
+
+_current_uid = 1
+app.dependency_overrides[get_db] = _get_db
+app.dependency_overrides[get_current_user] = lambda: _s.get(User, _current_uid)
+client = TestClient(app)
 
 
 # ─── Task1: 模型 ────────────────────────────────────────────────────────────────
@@ -172,6 +185,53 @@ def test_pool_start_stop_smoke():
     print("OK pool start/stop smoke")
 
 
+# ─── Task5: 轮询端点 + cancel ─────────────────────────────────────────────────────
+
+def test_api_get_status_and_position():
+    _clear(); _seed_exec()
+    global _current_uid; _current_uid = 1
+    j1 = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1, input={"n": 1})
+    j2 = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1, input={"n": 2})
+    d = client.get(f"/api/ai-jobs/{j2.id}").json()
+    assert d["code"] == 0, d
+    assert d["data"]["status"] == "pending" and d["data"]["queue_position"] == 1, d
+    # done job 带 result
+    j1.status = "done"; j1.result = json.dumps({"kind": "bug"}); _s.commit()
+    d1 = client.get(f"/api/ai-jobs/{j1.id}").json()
+    assert d1["data"]["status"] == "done" and d1["data"]["result"]["kind"] == "bug", d1
+    print("OK api get status/position")
+
+
+def test_api_auth_non_member_denied():
+    _clear()
+    # 建一个非平台管理员、非成员用户 2
+    if not _s.get(User, 2):
+        _s.add(User(id=2, username="u2", name="路人", password_hash="x", is_platform_admin=False))
+        _s.commit()
+    job = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1, input={"n": 1})
+    global _current_uid; _current_uid = 2
+    r = client.get(f"/api/ai-jobs/{job.id}")
+    assert r.json()["code"] != 0, "非 owner 非成员应被拒"
+    _current_uid = 1
+    print("OK api auth non-member denied")
+
+
+def test_api_cancel_pending_only():
+    _clear()
+    global _current_uid; _current_uid = 1
+    job = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1, input={"n": 1})
+    d = client.post(f"/api/ai-jobs/{job.id}/cancel").json()
+    assert d["code"] == 0, d
+    _s.expire_all()
+    assert _s.get(AiJob, job.id).status == "cancelled"
+    # running 不可取消
+    job2 = ai_jobs.enqueue(_s, "triage", provider="claude", project_id=100, user_id=1, input={"n": 2})
+    job2.status = "running"; _s.commit()
+    r = client.post(f"/api/ai-jobs/{job2.id}/cancel")
+    assert r.status_code == 409, r.text
+    print("OK api cancel pending only")
+
+
 def main():
     test_model_defaults()
     test_enqueue()
@@ -182,6 +242,9 @@ def main():
     test_reap_stale_on_startup()
     test_drain_once_consumes()
     test_pool_start_stop_smoke()
+    test_api_get_status_and_position()
+    test_api_auth_non_member_denied()
+    test_api_cancel_pending_only()
     print("OK test_ai_jobs")
 
 
