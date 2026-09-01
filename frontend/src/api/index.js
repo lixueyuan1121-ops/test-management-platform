@@ -537,43 +537,27 @@ export const requirementCases = (rid) => http.get(`/requirements/${rid}/cases`)
 export const linkRequirementCases = (rid, case_ids) => http.post(`/requirements/${rid}/cases`, { case_ids })
 export const unlinkRequirementCases = (rid, case_ids) => http.delete(`/requirements/${rid}/cases`, { data: { case_ids } })
 
-// AI 失败归因:SSE 流式(后端每隔发心跳保活,防反代空闲超时切成 504)。
-// 忽略心跳,读到 done 帧 resolve 归因结果(status=failed 则 reject)。前置校验错误(404/400/503)
-// 是普通 JSON 响应,取 msg 抛出。注:走原生 fetch,绕过 axios 拦截器,故错误由调用方自行提示。
-export async function triageExecRun(run_id, provider) {
-  const qs = provider ? `?provider=${encodeURIComponent(provider)}` : ''
-  const resp = await fetch(`/api/exec-queue/${run_id}/triage${qs}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${localStorage.getItem('tp_token') || ''}` },
-  })
-  if (!resp.ok || !resp.body) {
-    let msg = `归因请求失败（${resp.status}）`
-    try { const j = await resp.json(); if (j?.msg) msg = j.msg } catch { /* 非 JSON 忽略 */ }
-    throw new Error(msg)
-  }
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
+// ===== AI 任务队列(方案2):POST 特性端点拿 job_id → 轮询 GET /ai-jobs/{id} 取结果 =====
+// 统一轮询助手:done→resolve result;failed/cancelled→reject;onTick 回传 {status,queue_position}
+// 供「排队第 N 位/生成中…」展示。silent:true 让拦截器不弹错,错误由调用方统一提示。
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+export async function pollAiJob(jobId, { interval = 2000, signal, onTick } = {}) {
   while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    let idx
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const frame = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      const line = frame.split('\n').find((l) => l.startsWith('data:'))
-      if (!line) continue
-      const jsonStr = line.slice(5).trim()
-      if (!jsonStr) continue
-      let evt
-      try { evt = JSON.parse(jsonStr) } catch { continue }
-      if (evt.type === 'done') {
-        if (evt.status === 'failed') throw new Error(evt.msg || '归因失败')
-        return evt   // {kind, confidence, reason, suggestion, provider, at, run_id}
-      }
-      if (evt.type === 'error') throw new Error(evt.msg || '归因失败')
-    }
+    if (signal?.aborted) throw new Error('已取消')
+    const job = await http.get(`/ai-jobs/${jobId}`, { silent: true })
+    onTick?.(job)
+    if (job.status === 'done') return job.result
+    if (job.status === 'failed') throw new Error(job.error || 'AI 任务失败')
+    if (job.status === 'cancelled') throw new Error('任务已取消')
+    await _sleep(interval)
   }
-  throw new Error('归因未返回结果')
+}
+
+// AI 失败归因:入队拿 job_id → 轮询取结果。结果 = {kind,confidence,reason,suggestion,provider,at,run_id}。
+// 前置校验错误(404/400/503)由 POST 直接抛(silent 交调用方提示);onTick 供展示排队/进行中。
+export async function triageExecRun(run_id, provider, { onTick } = {}) {
+  const { job_id } = await http.post(`/exec-queue/${run_id}/triage`, null,
+    { params: provider ? { provider } : {}, silent: true })
+  return pollAiJob(job_id, { onTick })
 }

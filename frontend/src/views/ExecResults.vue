@@ -92,7 +92,7 @@
                 <el-link type="primary" @click="openCorrect(row)">纠偏</el-link>
                 <el-link v-if="canTriage(row)" type="warning" class="triage-btn"
                          :class="{ busy: row._triaging }" @click="doTriage(row)">
-                  {{ row._triaging ? '归因中…' : 'AI归因' }}
+                  {{ row._triaging ? `归因中${row._pos > 0 ? `（排队第 ${row._pos + 1} 位）` : '…'}` : 'AI归因' }}
                 </el-link>
               </template>
             </el-table-column>
@@ -328,13 +328,16 @@ function triageTip(row) {
 async function doTriage(row) {
   if (row._triaging) return
   row._triaging = true
+  row._pos = 0
   try {
-    const res = await triageExecRun(row.run_id)
+    // 入队+轮询;onTick 回传排队位次驱动按钮文案。错误在此自行提示(silent 已让拦截器不弹)。
+    const res = await triageExecRun(row.run_id, undefined, {
+      onTick: (job) => { row._pos = job.queue_position || 0 },
+    })
     row.triage_kind = res.kind
     row.triage = res
     ElMessage.success(`归因完成:${TRIAGE_LABEL[res.kind] || res.kind}(置信 ${Math.round((res.confidence || 0) * 100)}%)`)
   } catch (e) {
-    // triageExecRun 走原生 fetch(SSE),不经 axios 拦截器,错误在此自行提示
     ElMessage.error(e?.message || '归因失败')
   } finally {
     row._triaging = false
