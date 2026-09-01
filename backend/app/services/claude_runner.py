@@ -186,6 +186,19 @@ EVAL_SYSTEM_PROMPT = (
 _slots = threading.BoundedSemaphore(max(1, settings.AI_MAX_CONCURRENCY))
 
 
+def _acquire_slot(slots, timeout: float | None = None) -> bool:
+    """获取并发槽:超限时【排队等待】而非立即拒绝(方案2 P3a——根治「并发门槛硬拒绝」)。
+
+    timeout 缺省取 settings.AI_ACQUIRE_TIMEOUT_SECONDS;=0 保留旧「立即拒绝」语义(可配置回退);
+    >0 则最多等这么久,等到返回 True、超时返回 False(不永久阻塞,防 worker/请求线程僵死)。
+    """
+    if timeout is None:
+        timeout = getattr(settings, "AI_ACQUIRE_TIMEOUT_SECONDS", 600)
+    if timeout and timeout > 0:
+        return slots.acquire(timeout=timeout)
+    return slots.acquire(blocking=False)
+
+
 def _claude_bin() -> str | None:
     return settings.CLAUDE_BIN or shutil.which("claude")
 
@@ -409,8 +422,8 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     ]
     if settings.AI_MODEL:
         cmd += ["--model", settings.AI_MODEL]
-    if not _slots.acquire(blocking=False):
-        return [], "AI 生成繁忙(已达并发上限),请稍后重试"
+    if not _acquire_slot(_slots):
+        return [], "AI 生成繁忙(等待超时,并发持续打满),请稍后重试"
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=tempfile.gettempdir())
     except subprocess.TimeoutExpired:
@@ -536,8 +549,8 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     via_stdin = len(prompt) > _PROMPT_ARGV_MAX  # 超长走 stdin,避开 Windows argv 32K 上限
     cmd = _build_cmd(prompt, system_prompt, prompt_via_stdin=via_stdin)
 
-    if not _slots.acquire(blocking=False):
-        yield {"type": "error", "msg": "AI 生成繁忙（已达并发上限），请稍后重试"}
+    if not _acquire_slot(_slots):
+        yield {"type": "error", "msg": "AI 生成繁忙（等待超时，并发持续打满），请稍后重试"}
         return
 
     proc: subprocess.Popen | None = None

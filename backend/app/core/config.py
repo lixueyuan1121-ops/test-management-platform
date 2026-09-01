@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     CLAUDE_BIN: str = ""            # 空则运行时 shutil.which("claude")
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
-    AI_MAX_CONCURRENCY: int = 2    # 全局并发上限（控成本，超出即拒绝）——旧信号量口径,迁移完成后退场
+    AI_MAX_CONCURRENCY: int = 2    # 全局引擎并发上限(信号量)——控成本/机器负载;超限改为排队等待(非拒绝)
+    # 超限时最多排队等待多久拿槽(秒);超时才报「繁忙」。0=不等(旧「立即拒绝」行为)。
+    AI_ACQUIRE_TIMEOUT_SECONDS: int = 600
     # AI 任务队列(方案2)worker 池线程数=并发上限。多余任务排队而非拒绝。claude 每任务 fork 子进程,勿过大。
     AI_WORKER_CONCURRENCY: int = 2
     # gui/e2e 用例生成时注入的语义选择器注册表路径（runner 侧 gui-mcp/selectors.json）。

@@ -46,6 +46,8 @@ logger = logging.getLogger("test_platform")
 
 # 全局并发闸：与 claude 侧独立计数（两引擎成本/负载分开控）
 _slots = threading.BoundedSemaphore(max(1, settings.AI_MAX_CONCURRENCY))
+# 超限「排队等待」而非拒绝(方案2 P3a);复用 claude_runner 的 _acquire_slot(同一策略/配置)
+from app.services.claude_runner import _acquire_slot  # noqa: E402
 
 
 def is_available() -> bool:
@@ -98,8 +100,8 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
 
-    if not _slots.acquire(blocking=False):
-        yield {"type": "error", "msg": "DeepSeek 生成繁忙（已达并发上限），请稍后重试"}
+    if not _acquire_slot(_slots):
+        yield {"type": "error", "msg": "DeepSeek 生成繁忙（等待超时），请稍后重试"}
         return
 
     resp = None
@@ -175,8 +177,8 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
     if kind not in ("gui", "e2e", "api"):
         return [], "仅 gui/e2e/api 用例支持生成 script"
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
-    if not _slots.acquire(blocking=False):
-        return [], "DeepSeek 生成繁忙（已达并发上限），请稍后重试"
+    if not _acquire_slot(_slots):
+        return [], "DeepSeek 生成繁忙（等待超时），请稍后重试"
 
     prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
     try:

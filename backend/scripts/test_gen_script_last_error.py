@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.deps import get_current_user
 from app.db.session import Base, get_db
-from app.models import AiTask, TestCase, Project
+from app.models import AiJob, AiTask, TestCase, Project
 from app.services import generators
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -63,12 +63,22 @@ app.dependency_overrides[get_db] = _override_db
 client = TestClient(app)
 
 
-def main():
-    # ---- ① gui 用例:先失败,落库 last_gen_error ----
-    _MODE["ok"] = False
-    r = client.post("/api/ai/testcases/1/gen-script")
-    assert r.json()["code"] != 0, "引擎报错应返回失败"
+def _gen_via_job(cid):
+    """gen-script 改入队(方案2 P2):POST 拿 job_id → 同步 run_job 跑一次 → 返回 job。"""
+    from app.services import ai_jobs
+    r = client.post(f"/api/ai/testcases/{cid}/gen-script")
+    assert r.json()["code"] == 0, r.text   # 入队本身成功(AI 成败在 job 上体现)
+    job_id = r.json()["data"]["job_id"]
+    ai_jobs.run_job(_Session, job_id)
     _s.expire_all()
+    return _s.get(AiJob, job_id)
+
+
+def main():
+    # ---- ① gui 用例:先失败,落库 last_gen_error(job failed) ----
+    _MODE["ok"] = False
+    job = _gen_via_job(1)
+    assert job.status == "failed" and job.error, "引擎报错应使 job 失败"
     row = _s.get(TestCase, 1)
     assert row.last_gen_error and "未注册" in row.last_gen_error, f"失败原因应落库,实际 {row.last_gen_error!r}"
     assert row.script is None, "失败不应写坏 script"
@@ -76,20 +86,17 @@ def main():
     d = client.get("/api/ai/testcases/1").json()["data"]
     assert "last_gen_error" in d and d["last_gen_error"], f"接口应返回 last_gen_error,实际 {d.get('last_gen_error')!r}"
 
-    # ---- ① gui 用例:补齐后成功,清空 last_gen_error ----
+    # ---- ① gui 用例:补齐后成功,清空 last_gen_error(job done) ----
     _MODE["ok"] = True
-    r = client.post("/api/ai/testcases/1/gen-script")
-    assert r.status_code == 200 and r.json()["code"] == 0, r.text
-    assert r.json()["data"]["last_gen_error"] is None, "重生成功应清空 last_gen_error"
-    _s.expire_all()
+    job = _gen_via_job(1)
+    assert job.status == "done", (job.status, job.error)
     row = _s.get(TestCase, 1)
     assert row.last_gen_error is None and row.script, "DB 应清空错误并写入 script"
 
     # ---- ② 选择器待补 manual:失败 → 落库且仍 manual、标识保留 ----
     _MODE["ok"] = False
-    r = client.post("/api/ai/testcases/2/gen-script")
-    assert r.json()["code"] != 0, "仍缺 key 应失败"
-    _s.expire_all()
+    job = _gen_via_job(2)
+    assert job.status == "failed", "仍缺 key 应失败"
     row = _s.get(TestCase, 2)
     assert row.exec_kind == "manual", "重生失败不应恢复类型"
     assert row.kind_reason and row.kind_reason.startswith("[选择器待补]"), "失败应保留待补标识"
@@ -97,12 +104,8 @@ def main():
 
     # ---- ② 补齐后成功 → 恢复 gui + 清标识 + 清 last_gen_error ----
     _MODE["ok"] = True
-    r = client.post("/api/ai/testcases/2/gen-script")
-    d = r.json()["data"]
-    assert d["exec_kind"] == "gui", f"应恢复 gui,实际 {d['exec_kind']}"
-    assert d["selector_fix"] is False and not d["kind_reason"], "成功应清除待补标识"
-    assert d["last_gen_error"] is None, "成功应清空 last_gen_error"
-    _s.expire_all()
+    job = _gen_via_job(2)
+    assert job.status == "done", (job.status, job.error)
     row = _s.get(TestCase, 2)
     assert row.exec_kind == "gui" and row.kind_reason is None and row.last_gen_error is None and row.script
 

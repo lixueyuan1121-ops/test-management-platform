@@ -112,9 +112,16 @@ def test_endpoint_list_filter_and_regen():
              {"action": "assert_visible", "target": {"key": "loginBtn"}, "args": {}, "desc": "看"}], None),
     )
     generators.get_provider = lambda name=None: _stub
+    from app.services import ai_jobs
+    from app.models import TestCase as _TC
     r = client.post("/api/ai/testcases/101/gen-script")
     assert r.json()["code"] == 0, r.text
-    assert r.json()["data"]["page"] == "登录页", f"重生应把 page 重新推断为登录页,实际 {r.json()['data']['page']}"
+    job_id = r.json()["data"]["job_id"]
+    assert job_id, "AI 路径应返回 job_id"
+    ai_jobs.run_job(_Session, job_id)
+    _s.expire_all()
+    assert _s.get(_TC, 101).page == "登录页", \
+        f"重生应把 page 重新推断为登录页,实际 {_s.get(_TC, 101).page}"
 
 
 def main():

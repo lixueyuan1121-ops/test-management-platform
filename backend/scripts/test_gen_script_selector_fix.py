@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.deps import get_current_user
 from app.db.session import Base, get_db
-from app.models import AiTask, TestCase, Project
+from app.models import AiJob, AiTask, TestCase, Project
 from app.services import generators
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -56,20 +56,21 @@ client = TestClient(app)
 
 
 def main():
-    # ① 降级用例一键重生 → 200,恢复 gui,清标识,带 script
+    from app.services import ai_jobs
+    # ① 降级用例一键重生(无旧 script → 走 AI 入队路径)→ job done,DB 恢复 gui,清标识,带 script
     r = client.post("/api/ai/testcases/1/gen-script")
     assert r.status_code == 200 and r.json()["code"] == 0, r.text
-    d = r.json()["data"]
-    assert d["exec_kind"] == "gui", f"应恢复 gui,实际 {d['exec_kind']}"
-    assert d["selector_fix"] is False, "重生成功应清除待补标识"
-    assert not d["kind_reason"], f"kind_reason 应清空,实际 {d['kind_reason']}"
-    assert d["script"], "应写入 script"
-    # DB 落地核验
+    job_id = r.json()["data"]["job_id"]
+    assert job_id, "AI 路径应返回 job_id"
+    ai_jobs.run_job(_Session, job_id)
     _s.expire_all()
+    assert _s.get(AiJob, job_id).status == "done", _s.get(AiJob, job_id).error
     row = _s.get(TestCase, 1)
-    assert row.exec_kind == "gui" and row.kind_reason is None and row.script
+    assert row.exec_kind == "gui", f"应恢复 gui,实际 {row.exec_kind}"
+    assert row.kind_reason is None, f"kind_reason 应清空,实际 {row.kind_reason}"
+    assert row.script, "应写入 script"
 
-    # ② 纯人工用例 → 400(不可重生)
+    # ② 纯人工用例 → 400(入队前即拒,不可重生)
     r2 = client.post("/api/ai/testcases/2/gen-script")
     assert r2.json()["code"] != 0, "纯 manual 应拒绝重生"
 
