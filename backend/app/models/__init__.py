@@ -7,6 +7,7 @@ from app.models.issue import RemainingIssue
 from app.models.integration import Integration, ApiToken, IntegrationEvent
 from app.models.tool import ToolCategory, TestTool
 from app.models.ai import AiTask, TestCase
+from app.models.ai_job import AiJob
 from app.models.checklist import ChecklistItem
 from app.models.exec_queue import ExecRun
 from app.models.runner_device import RunnerDevice
@@ -38,6 +39,7 @@ __all__ = [
     "TestTool",
     "AiTask",
     "TestCase",
+    "AiJob",
     "ChecklistItem",
     "ExecRun",
     "RunnerDevice",

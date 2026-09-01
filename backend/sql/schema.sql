@@ -810,3 +810,31 @@ CREATE TABLE `requirement` (
   CONSTRAINT `fk_req_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 -- test_case.requirement_id 软链本表(建表顺序在前无法加 FK,索引已建)
+
+-- ---------- AI 任务队列（方案2：全平台 AI 动作入队→worker 池消费→前端轮询；无 JSON 列，MySQL5.6 安全） ----------
+CREATE TABLE `ai_job` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `kind` VARCHAR(32) NOT NULL,
+  `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `project_id` INT DEFAULT NULL,
+  `user_id` INT DEFAULT NULL,
+  `input` TEXT,
+  `result` TEXT,
+  `output_raw` TEXT,
+  `error` TEXT,
+  `ref_kind` VARCHAR(24) DEFAULT NULL,
+  `ref_id` INT DEFAULT NULL,
+  `tokens` VARCHAR(32) DEFAULT NULL,
+  `cost_usd` DECIMAL(10,4) DEFAULT NULL,
+  `duration_ms` INT DEFAULT NULL,
+  `worker` VARCHAR(48) DEFAULT NULL,
+  `claimed_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_aijob_kind` (`kind`),
+  KEY `idx_aijob_status` (`status`),
+  KEY `idx_aijob_project` (`project_id`),
+  KEY `idx_aijob_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
