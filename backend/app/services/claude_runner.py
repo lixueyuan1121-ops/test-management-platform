@@ -232,95 +232,294 @@ _API_SCRIPT_SPEC = """api script(当 kind=api)——请求-断言-提取原子�
      ]"""
 
 
-def build_testcase_prompt(requirement: str, project_id: int | None = None, pages: list[str] | None = None) -> str:
+# ---- 测试点 prompt 的可组合规格段 ------------------------------------------------
+# 分片(shard)生成时按需拼装:gui 片不带 api spec、api 片不带 gui DSL/key 清单,
+# 单片 input 从 ~7k 降到 ~3k token。shard=None 时全量拼装(单片回退 / 老调用方)。
+# 各段一律用**普通字符串**(非 f-string):段内 {字段} JSON 示例与 {{变量}} 模板原样保留,
+# 由组装处 f-string 以 {_XXX_SPEC} 插值(f-string 不会二次解释被插值变量里的花括号)。
+
+_STEPS_SPEC = """steps 的书写粒度(**按 kind 分级**——直接决定人工能否照做、能否顺畅转成 script,务必执行):
+   - **e2e**:写成**人工测试可直接照着执行**的编号步骤(`1. ` `2. ` …,通常 ≥5 步),每步写全四要素:
+     **动作 + 操作对象(界面上的可见名称) + 输入数据(给具体值) + 该步的即时可见反馈**。
+     steps 与下方 script 必须**同序、一一对应**(script 就是这些人工步骤的机器翻译:一条人工步骤对应
+     一个或几个 script 步,不得出现 steps 有而 script 没有的动作,反之亦然)——这样人工执行、脚本转换、
+     失败复现三者能对上。格式示例:
+     `1. 在首页底部「输入框」输入"帮我写一份周报" → 输入框显示该文本,发送按钮变为可点击`
+     `2. 点击输入框右侧「@专家」按钮 → 弹出专家选择浮层,列表显示可选专家`
+     `3. 在浮层中点击专家「周报助手」 → 输入框上方出现该专家的 Chip 标签`
+     `4. 点击「发送」 → 进入该专家会话页,消息气泡显示刚才的问题,下方出现"正在思考"`
+   - **gui**:同样写清操作对象与具体数据,但只围绕单点验证,通常 2-4 步,不展开整条业务流。
+   - **api**:每步写清「调哪个接口(方法+路径) + 关键入参 + 校验哪些响应字段」,与 script 步骤同序。
+   - **manual**:写清人工怎么操作、观察什么、依据什么判定。
+   - 通用:**只写与本测试点直接相关的操作与断言**;不要写"刷新页面""确认在首页""确保已登录"这类
+     无被测价值的环境确认(默认已登录、页面就绪)。**但用例依赖特定前置状态时,必须在 steps 首行用
+     `前置：…` 写清该状态如何构造或确认**(见下方场景组合设计)。"""
+
+# 单条重生 script 时的「按人工步骤同序翻译」约束(build_script_prompt 用)。
+# 与 _STEPS_SPEC 配套:生成侧把 e2e 的 steps 写成人工可照做的编号步骤,转换侧照着逐条翻译,
+# 两头对齐,script 才不会跟人读步骤各说各话(改一处须同步另一处)。
+_STEPS_TO_SCRIPT_RULE = (
+    "**严格按上面「步骤」逐条翻译**:script 必须与 steps **同序、一一对应**"
+    "(一条人工步骤对应一个或几个 script 步),不得漏掉 steps 里的动作,也不得凭空加 steps 里没有的动作。"
+    "steps 里以 `前置：` 开头的那行是本用例的前置状态——把\"构造/选中该状态\"的动作显式写进 script 开头,"
+    "不要假设环境天然就处于该状态。"
+)
+
+_SCENARIO_SPEC = """场景组合设计(**多场景覆盖的关键**——不要只产"单一前置状态下的正常路径"):
+   先从需求里识别**前置状态变量**:同一条操作路径,会因这些状态不同而走出**不同分支**。常见的有:
+   - 资源是否已就绪(某能力/插件/专家**已安装 / 未安装**——未安装分支路径上会多出下载安装过程与等待)
+   - 数据是否为空(有数据 / 空列表 / 仅一条 / 超量到需要分页或滚动)
+   - 身份与权限(管理员 / 普通成员 / 访客 / 未登录 / 无该功能权限)
+   - 后端与网络状态(正常 / 慢响应 / 超时 / 报错 / 部分字段缺失)
+   - 使用阶段(首次使用无历史 / 已有历史记录 / 已达数量上限)
+   对**同一条操作路径**,按前置状态**拆成多条并列用例**,每条只覆盖一个分支,并且:
+   - steps 首行用 `前置：…` 写清该分支状态**如何构造或确认**(如"前置：专家「周报助手」处于未安装状态");
+   - script 里把"构造/选中该前置状态"的动作**显式写出来**(如未安装分支要显式选一个未安装的专家),
+     不要假设环境天然就处于该状态;
+   - expected 要写出该分支**特有的中间过程**与最终结果,而不是只写终态;
+   - script 在中间过程处插 wait_for / wait_response 再断言,不要跳过中间态直接断终态。
+   正例(同一条路径「首页输入问题 + 选择专家 → 触发对话」按前置状态拆成三条并列用例):
+   - A「专家已安装」:前置：专家 X 已安装 → 输入问题 → 选择 X → 发送 → **直接**进入 X 的会话并出现回复
+   - B「专家未安装」:前置：专家 Y 未安装 → 输入问题 → 选择 Y → 发送 → **先**出现安装提示/安装进度 →
+     等安装完成 → 自动进入 Y 的会话,且**刚才输入的问题被带过去并已发出**
+   - C「未安装且安装失败」:mock 安装接口返回失败 → 提示安装失败、不进入会话、**输入内容不丢失**
+   (上面的专家/安装只是**示意**,请按实际需求里真实存在的资源与状态,套用这套"前置状态分支"的设计思路。)"""
+
+_API_DESIGN_SPEC = """api 用例设计规范(接口测试口径——**逐条对照,别只写正例**):
+   - 每个被测接口至少覆盖下面几类,各自成一条独立用例:
+     · **正例**:合法入参 → 断言业务码 code + 关键业务字段(如 data.id 存在、回显字段等于入参)
+     · **必填校验**:逐个缺必填字段 → 断言明确的错误码/错误信息(不能只断 status=200)
+     · **参数边界**:超长字符串、越界数值、类型不符、非法枚举值、特殊字符——**给具体示例值**
+     · **鉴权与越权**:未携带凭据 / 凭据失效 / 访问他人或他项目的资源 → 断言 401/403 或业务拒绝码
+     · **幂等与重复提交**:同一写请求连发两次 → 断言不产生重复数据(或第二次返回明确的冲突码)
+   - **断言不得只断 HTTP status**:必须同时断业务码(本平台统一 {code,msg,data} 信封,成功为 code=0)
+     与关键业务字段;查询类要断结构与关键字段值,不要只断"有返回"。
+   - **数据自备**:写操作用例自己先 POST 造数据、末尾用 cleanup:true 删掉,不依赖环境里已有的数据。
+   - **有依赖关系的接口串进同一条用例**(创建→查询→更新→删除),中间用 extract 传 id;
+     不要拆成多条互相依赖的用例(用例之间不保证执行顺序)。"""
+
+# gui/e2e 的 script DSL(原 prompt 条目 5+6)。抽成常量供分片按需拼装;api 分片不带此段。
+_GUI_SCRIPT_SPEC = """script(gui/e2e)——有序步骤数组,每步一个对象 {action, target?, args?, desc}:
+   - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route(拦截网络请求返回模拟数据)、unmock_route(取消拦截)
+   - target:定位元素,**优先用语义 key**:{"key":"<下方清单里的 key>"};清单没有的元素才用 {"selector":"<CSS>"}
+   - **hover 用于"悬停才显示"的元素**(如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip):先 hover 到承载元素,再 wait_for 等浮层出现,然后 click/assert;hover 本身不做断言
+   - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
+   - args:assert_text 用 {"expected":"...","contains":true};fill/type 用 {"text":"..."};press 用 {"key_name":"End"}(Playwright 按键名,如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {"timeout_ms":6000}(超时上限,仍需配 target);mock_route 用 {"url":"**/api/tasks","status":200,"body":{"code":0,"data":[]}};unmock_route 用 {"url":"**/api/tasks"}
+   - **否定断言(极重要,别写反)**:验证"某文案**不显示** / 菜单**已关闭** / 某项**不含** / Chip/Tag **已移除/已消失**"这类**否定**预期时,**严禁**写成 `assert_text` 去 equals/contains 那个"不该出现的文案"(元素消失后 textContent 为空,equals 恒不等 → 必然假失败)。正确写法二选一:
+     · 目标元素**整体应消失/不存在** → 用 `assert_absent`(target 指向该元素;定位不到即通过)。如"移除后专家 Tag 消失""关闭后菜单消失"。
+     · 目标元素**还在、只是其文本不应等于/不应包含某值** → 用 `assert_text` 且 `args.negate=true`(如 {"expected":"纳米Work","negate":true} 表示"该处文本不应是纳米Work")。
+   - **expected 必须是界面上真实可见的文案**,不得填 CSS 类名(如 is-open)、语义 key 名(如 composeAddMenuExpertChip)或占位符(如 "/")——要判元素状态/存在性,用 assert_visible / assert_absent,不要用 assert_text 断类名。
+   - desc:该步人读说明
+   - **每条 gui/e2e 至少有一个 assert_text / assert_visible / assert_absent**(否则没有判定依据,应改判 manual)
+   - target.key 优先取下方清单里的 key。**清单里没有合适 key 时**:不要瞎编 selector、也不要直接判 manual——给该元素起一个语义化新 key 名(如 submitOrderBtn),照常写进 script,并在该步 desc 里**描述这个元素**(可见文案 / 角色 / 页面位置)。用到未注册 key 的用例会被自动标为「选择器待补」,补齐后即可自动执行;只有确无界面元素可操作/断言时才判 manual、script=[]。
+   - **用例自治(关键——直接决定连续执行成功率,务必执行)**:多条用例在**同一客户端、同一页面**上连续执行,执行器不会在用例之间重置页面。每条用例必须能**单独、从初始态、一步步执行到底**,不得依赖上一条遗留的页面状态。按「进入→执行」两段组织:
+     · **进入(不假设当前页)**:connect 后先用导航/入口类 key(如 navHome/navTasks,见下方清单)**显式进入本用例目标功能页**,再开始操作;不要假设"当前已在该页"。默认起点为**已登录的应用主界面**(登录流程单列为一条 e2e 用例,其它用例不重复写登录步)。清单无对应导航 key 时,按上一条缺 key 规则起语义化 key 名 + desc 描述该导航元素。**自治靠每条用例开头这一步自导航保证——下一条用例进来会自己导航到位,故不需要在结尾做任何还原/回起点步。**
+     · **进入段只写一步真实导航动作**(一个 click 导航 key),**严禁**出现下列"环境确认/复位"类步骤:❌"刷新页面 / 重新加载"❌"确认当前在首页 / 确认已在首页 / 校验处于主界面"❌"确保已登录 / 检查登录状态"❌"回到首页后再开始"。这些都不是被测点、且锚点不稳会拖垮整条用例——直接 connect→导航到目标页即可,不做任何页面状态的前置确认或刷新。
+     · **执行**:完成本用例的操作与断言。**用例到此为止,不要再加"关闭弹窗/清空输入/导航回首页"之类的收尾还原步**(这类结尾步常因锚点不稳而整条失败)。
+   - 按 kind 的 script 编写偏重(**务必区分,别把 e2e 写成 gui**):
+     · **gui**:单点/局部验证,但**仍需自治**——结构为「进入导航 + 单点操作/断言」,通常 **2–5 步**(含进入步;不写收尾还原步)。断言聚焦单点,不要串联整条业务流程。
+     · **e2e**:**端到端多步流程,通常 ≥5 步**,从已登录主界面**导航进入 → 操作 → 关键节点分别断言**。必须串联多个界面动作,并在**关键节点分别断言**(不止最后断一次);不写收尾还原步。若流程中触发了 AI 生成/异步加载(发消息、提交后等结果),**必须插入 wait_response 或 wait_for** 再断言,不能立刻断。一条 e2e 的 script 明显比 gui 长、动作更丰富;若你发现某"e2e"剔除进入步后只需 2–3 步就能验完,说明它其实是 gui,请改判 kind=gui。
+   正例(gui,单点,含进入):connect → click(navTasks) → wait_for(任务页锚点) → assert_visible(目标元素)
+   正例(e2e,多步,含进入):connect → click(navTasks) → click(新建按钮) → fill(表单字段) → click(提交) → wait_for(结果锚点) → assert_text(结果文案,contains)
+   登录单列(其它用例默认已登录):connect → fill(loginUserName) → fill(loginPassword) → click(loginAgree) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle)
+   - **mock_route 使用场景(重要——主动生成这类用例,覆盖真实请求难以构造的状态)**:凡依赖后端返回特定数据才能验证的前端行为,优先用 mock_route 注入数据、在客户端内断言渲染结果。典型场景:
+     · **空状态**:mock 接口返回空列表/空数据,验证前端展示"暂无数据"提示,如 {"code":0,"data":[]}
+     · **多数据/分页**:mock 返回大量条目(如 50 条),验证列表滚动、分页控件、数量展示是否正确
+     · **异常数据**:mock 返回超长文本、特殊字符、极端数值,验证前端截断/溢出/格式化是否健壮
+     · **后端报错**:mock 返回 {"code":-1,"msg":"服务器异常"} 或 HTTP 500,验证前端是否展示错误提示而非白屏/崩溃
+     · **权限不足**:mock 返回 {"code":403,"msg":"无权限"},验证无权限时的降级展示
+     · **字段缺失**:mock 返回缺少部分字段的对象,验证前端容错(不崩溃、字段缺失时有兜底展示)
+     · mock_route 必须在用例结尾前加 unmock_route 还原,避免影响后续用例
+     正例(mock空状态,gui):connect → mock_route(**/api/tasks) → click(navTasks) → wait_for(任务列表锚点) → assert_text("暂无数据",contains) → unmock_route(**/api/tasks)
+     正例(mock报错,gui):connect → mock_route(**/api/tasks,status=500) → click(navTasks) → wait_for(错误提示锚点) → assert_visible(错误提示) → unmock_route(**/api/tasks)
+     **mock 时序(重要)**:mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束;若断言依赖首屏接口数据,正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert,而非 connect → click → mock_route(拦截器注册晚于请求,必然无效)。
+     **时间敏感文本(重要)**:问候语时间段前缀(早上好/下午好/晚上好等)由客户端按本地时间实时计算,断言中**严禁**写死时间段,否则非对应时段执行必然失败。只断言稳定部分,如称呼"小马"(contains),或断言不含默认文案(negate)。"""
+
+
+def _kind_spec(has_contract: bool) -> str:
+    """kind 判定规则 + 自动化优先原则。api 的取舍按项目**有无 api 契约**切换。
+
+    有契约 → api 用例能在执行机上确定性执行(api-executor 拿 base_url+鉴权直接跑),
+             接口层验证点正常判 api,不再往 gui/e2e 挤(恢复 api 用例产出)。
+    无契约 → api-executor 缺 base_url 必 fail「项目未配置 api 环境」,继续劝退到 gui/e2e,
+             否则只是产一批下发即失败的废用例。
+    """
+    api_rule = (
+        "   - **本项目已配置 api 契约**(见下方接口清单),api 用例可在执行机上确定性执行。"
+        "**接口层的验证点(响应码、响应体字段、错误码、鉴权、参数校验、幂等)请正常判 api**,不要再往 gui/e2e 挤。\n"
+        "   - 判 api 还是 gui/e2e,看**验证点落在哪一层**:验证\"接口返回了什么\"→ api;"
+        "验证\"界面上呈现了什么\"→ gui/e2e。同一个验证点不要既写 api 又写 gui/e2e(各测试点应正交)。\n"
+        "   - 界面上的操作与呈现:单点/局部验证判 gui,跨界面的流程判 e2e。\n"
+        "   - 只有连客观断言都给不出的(纯主观感受),才判 manual。\n"
+    ) if has_contract else (
+        "   - 凡能\"在被测客户端界面上操作、并对结果做客观断言\"的验证点,一律**优先判 gui/e2e**,"
+        "不要动辄判 manual:单点/局部验证判 gui,跨界面的流程判 e2e。\n"
+        "   - 后端/接口行为若在界面上有可观察结果(如\"创建后列表出现该项\"\"删除后该项消失\""
+        "\"出错时界面弹出某提示文案\"),**优先设计成 gui/e2e**(在界面触发操作并断言界面结果),而不是判 api。\n"
+        "   - 只有确无界面入口可验证、且非主观感受时,才考虑 api/cli;连客观断言都给不出的,才判 manual。\n"
+    )
+    return (
+        "kind 判定规则:\n"
+        "   - gui:在被测客户端界面上点击/输入/断言某元素或文案(单点、一两步)\n"
+        "   - api:调接口、校验响应码/响应体\n"
+        "   - cli:跑命令行、校验退出码/输出\n"
+        "   - e2e:跨多个界面步骤的端到端流程(如登录→进入某页→操作→验证结果),比单点 gui 长\n"
+        "   - manual:仅当验证点**依赖人的主观判断、无法给出客观断言**时才用"
+        "(如\"页面美观\"\"交互流畅\"\"体验是否顺滑\"这类无明确可断言元素的)。\n"
+        "   **自动化优先原则(重要——直接决定自动化执行率、减轻人力,请认真执行)**:\n"
+        + api_rule.rstrip("\n")
+    )
+
+
+# ---- 生成分片(shard):把"一次吐 100 条"拆成 K 路正交并行 ---------------------------
+# 单次调用的耗时由**输出 token 串行**主导(100 条 × ~800 token ≈ 8 万 token,顶死 15min 硬超时)。
+# 拆成 K 片并行 → 墙钟≈1/K;且每片只带自己需要的规则段,input 也减半。
+# focus/exclude 成对出现:exclude 是防重复的关键(各片明确"不归我管",否则 K 片会产出大量同义用例)。
+# need_contract=True 的片仅在项目配了 api 契约时才排产(见 plan_shards)。
+TESTCASE_SHARDS = [
+    {
+        "id": "flow",
+        "name": "核心功能主流程",
+        "kinds": "gui/e2e",
+        "focus": "需求描述的正常业务路径:每条主路径完整走通,在关键节点分别断言。"
+                 "跨界面的完整流程判 e2e、单点验证判 gui。含登录/入口等基础主流程。",
+        "exclude": "输入边界值与格式校验、后端报错与异常态、按前置状态拆分的分支用例、接口层验证",
+    },
+    {
+        "id": "boundary",
+        "name": "边界值与输入校验",
+        "kinds": "gui/e2e",
+        "focus": "输入框与参数的边界及合法性:空值、必填、超长、最短/最长、最小/最大、"
+                 "特殊字符与表情、格式非法、数量上限、重复提交。每条**给出具体示例数据**。",
+        "exclude": "正常主流程、后端报错与网络异常、前置状态分支、接口层验证",
+    },
+    {
+        "id": "exception",
+        "name": "异常容错与数据态",
+        "kinds": "gui/e2e",
+        "focus": "后端报错/超时/空数据/超量数据/权限不足/字段缺失时前端的表现。"
+                 "**优先用 mock_route 注入这些数据态**,在客户端内断言渲染结果(空态提示、错误提示、不白屏)。",
+        "exclude": "正常主流程、输入框边界值、接口层验证",
+    },
+    {
+        "id": "scenario",
+        "name": "多场景组合(前置状态分支)",
+        "kinds": "e2e",
+        "focus": "同一条操作路径在**不同前置状态**下的分支差异(已就绪/未就绪、有数据/无数据、"
+                 "有权限/无权限、首次/已有历史)。每个分支单独成一条用例,写清前置如何构造、"
+                 "断言该分支**特有的中间过程**(如未就绪分支的安装/加载过程)。",
+        "exclude": "单一前置状态下的正常主流程(归主流程片)、纯输入边界、纯后端报错、接口层验证",
+    },
+    {
+        "id": "api",
+        "name": "接口测试",
+        "kinds": "api",
+        "need_contract": True,
+        "focus": "契约清单里各接口的正例、必填校验、参数边界、鉴权与越权、幂等与重复提交。"
+                 "断言业务码 + 关键业务字段,写操作自备数据并清理。",
+        "exclude": "界面操作与界面断言(归 gui/e2e 分片);契约清单之外的接口",
+    },
+]
+
+# 分片模式下每片的条数区间(全量模式仍是 8-20/最多 100)。K 片相加约 25-75 条,复杂需求可到 100+。
+_SHARD_CASE_RANGE = "5-12 条;该维度在本需求里确实丰富时可到 25 条"
+
+
+def plan_shards(project_id: int | None = None) -> list[dict]:
+    """决定本次生成排哪几个分片。无 api 契约 → 剔掉 api 片(不产下发即 fail 的废用例)。"""
+    has_contract = _load_api_contract(project_id) is not None
+    return [s for s in TESTCASE_SHARDS if has_contract or not s.get("need_contract")]
+
+
+def build_testcase_prompt(requirement: str, project_id: int | None = None, pages: list[str] | None = None,
+                          shard: dict | None = None) -> str:
     """把需求文本包装成「生成结构化测试点」的指令。
 
     用 <requirement> 标签包裹用户输入（而非引号），避免内容里的引号破坏边界。
     强约束只输出 JSON 数组；即便模型仍包了 markdown fence，解析层也能兜底剥离。
-    project_id:注入该项目共享 key 清单;为空则不注入(见 _load_selector_keys)。
+    project_id:注入该项目共享 key 清单 + api 契约;为空则不注入(见 _load_selector_keys)。
     pages:非空时只注入这些页面(+未分类)的 key,收窄噪声、减少降级(见 _load_selector_keys)。
+    shard:分片描述符(取自 TESTCASE_SHARDS)。给了就**只产该维度**、且只带该片需要的规则段
+        (gui 片不带 api spec、api 片不带 gui DSL/key 清单),单片 input 减半;
+        为 None 则全量拼装(单片回退 / 老调用方,与拆分前行为一致)。
     """
-    # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
-    keys = _load_selector_keys(project_id, pages)
-    if keys:
-        lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
-        keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
-    else:
-        keys_block = "\n   （当前无可用语义 key 清单：gui/e2e 若无法用 key 表达，请改判 manual）"
-    api_contract_block = _api_contract_block(project_id)  # api 用例的接口清单/无契约提示
-    return f"""请基于以下需求，设计一份结构化测试点清单。
+    is_api_shard = bool(shard and shard.get("kinds") == "api")
+    has_contract = _load_api_contract(project_id) is not None
+    # 有序规格段:末尾统一编号,增删段落无需手改序号(旧版手写 1.~11. 改一处要重排全篇)
+    secs: list[str] = []
 
-输出要求：
-1. 覆盖多个维度：功能、边界、异常、兼容、性能（按需选取，不必每类都有）。
-2. 每个测试点是一个对象，字段：
+    if shard:
+        secs.append(
+            f"**本次只负责「{shard['name']}」这一个维度**：\n"
+            f"   - 覆盖范围：{shard['focus']}\n"
+            f"   - 不归本片：{shard['exclude']}——其余维度由其它分片并行产出，你**不要**产出，避免重复。\n"
+            f"   - 本片用例的 kind 只应是 {shard['kinds']}"
+            + ("（契约清单里没有的接口不要臆造，改判 manual）。" if is_api_shard
+               else "（确无客观断言可给时才 manual）。")
+        )
+    else:
+        secs.append("覆盖多个维度：功能、边界、异常、兼容、性能（按需选取，不必每类都有）。")
+
+    secs.append("""每个测试点是一个对象，字段：
    - category：维度（功能/边界/异常/兼容/性能 之一）
    - title：一句话标题
-   - steps：操作步骤（可多步，用换行分隔；给人读）。**只写与本测试点直接相关的操作与断言**；不要写“刷新页面”“确认在首页/确认已进入主界面”“确保已登录”这类环境确认或复位描述（默认已登录、页面就绪，直接从进入目标页开始）。
+   - steps：操作步骤（多步用换行分隔；给人读，粒度要求见下条）
    - expected：预期结果
    - priority：优先级（P0/P1/P2/P3，判定标准见下）
    - kind：自动化执行类型，只能是 gui/api/cli/e2e/manual 之一（判定规则见下）
    - kind_reason：一句话说明为何判该 kind
-   - script:**gui/e2e 给界面步骤数组、api 给请求-断言-提取数组**(schema 各见下);cli/manual 一律给 []
-3. priority 判定规则（按"失败后果的严重性"定级，不要随意打分）：
+   - script:""" + (
+        "**api 给请求-断言-提取数组**(schema 见下);manual 一律给 []"
+        if is_api_shard else
+        "**gui/e2e 给界面步骤数组**(schema 见下);cli/manual 一律给 []"
+        if shard else
+        "**gui/e2e 给界面步骤数组、api 给请求-断言-提取数组**(schema 各见下);cli/manual 一律给 []"))
+
+    secs.append(_STEPS_SPEC)
+
+    secs.append("""priority 判定规则（按"失败后果的严重性"定级，不要随意打分）：
    - P0：核心主流程 / 一旦失败即阻断使用或造成数据错误（如登录、支付、下单、提交保存主数据）。
    - P1：重要功能 / 常见路径上的异常与校验（如必填校验、关键按钮不可用、主功能的边界）。
    - P2：次要功能、一般边界场景，以及**文案、样式、提示语、界面美观**类问题（文案/样式一律 P2）。
-   - P3：极端罕见场景 / 影响面很小的细节。
-4. kind 判定规则：
-   - gui：在被测客户端界面上点击/输入/断言某元素或文案（单点、一两步）
-   - api：调接口、校验响应码/响应体
-   - cli：跑命令行、校验退出码/输出
-   - e2e：跨多个界面步骤的端到端流程（如登录→进入某页→操作→验证结果），比单点 gui 长
-   - manual：仅当验证点**依赖人的主观判断、无法给出客观断言**时才用（如"页面美观""交互流畅""体验是否顺滑"这类无明确可断言元素的）。
-   **自动化优先原则（重要——直接决定自动化执行率、减轻人力，请认真执行）**：
-   - 凡能"在被测客户端界面上操作、并对结果做客观断言"的验证点，一律**优先判 gui/e2e**，不要动辄判 manual：单点/局部验证判 gui，跨界面的流程判 e2e。
-   - 后端/接口行为若在界面上有可观察结果（如"创建后列表出现该项""删除后该项消失""出错时界面弹出某提示文案"），**优先设计成 gui/e2e**（在界面触发操作并断言界面结果），而不是判 api。
-   - 只有确无界面入口可验证、且非主观感受时，才考虑 api/cli；连客观断言都给不出的，才判 manual。
-5. script（gui/e2e）——有序步骤数组，每步一个对象 {{action, target?, args?, desc}}：
-   - action 只能取：connect（第一步必须，连接客户端）、click、hover（鼠标悬停到元素，触发悬浮态）、fill、type（追加输入不清空）、press（发送按键如 End/Enter/Escape）、wait_for、wait_response（发消息后等 AI 回复生成完成，e2e 用）、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route（拦截网络请求返回模拟数据）、unmock_route（取消拦截）
-   - target：定位元素，**优先用语义 key**：{{"key":"<下方清单里的 key>"}}；清单没有的元素才用 {{"selector":"<CSS>"}}
-   - **hover 用于"悬停才显示"的元素**（如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip）：先 hover 到承载元素，再 wait_for 等浮层出现，然后 click/assert；hover 本身不做断言
-   - **wait_for 是"等某个元素出现"，必须带 target（key 或 selector）**——它不是纯计时等待；只想等异步结果（发消息/提交后等生成）用 wait_response，不要写没有 target 的 wait_for
-   - args：assert_text 用 {{"expected":"...","contains":true}}；fill/type 用 {{"text":"..."}}；press 用 {{"key_name":"End"}}（Playwright 按键名，如 End/Home/Enter/Escape/Tab/Control+A）；wait_for 用 {{"timeout_ms":6000}}（超时上限，仍需配 target）；mock_route 用 {{"url":"**/api/tasks","status":200,"body":{{"code":0,"data":[]}}}}；unmock_route 用 {{"url":"**/api/tasks"}}
-   - **否定断言（极重要，别写反）**：验证"某文案**不显示** / 菜单**已关闭** / 某项**不含** / Chip/Tag **已移除/已消失**"这类**否定**预期时，**严禁**写成 `assert_text` 去 equals/contains 那个"不该出现的文案"（元素消失后 textContent 为空，equals 恒不等 → 必然假失败）。正确写法二选一：
-     · 目标元素**整体应消失/不存在** → 用 `assert_absent`（target 指向该元素；定位不到即通过）。如"移除后专家 Tag 消失""关闭后菜单消失"。
-     · 目标元素**还在、只是其文本不应等于/不应包含某值** → 用 `assert_text` 且 `args.negate=true`（如 {{"expected":"纳米Work","negate":true}} 表示"该处文本不应是纳米Work"）。
-   - **expected 必须是界面上真实可见的文案**，不得填 CSS 类名（如 is-open）、语义 key 名（如 composeAddMenuExpertChip）或占位符（如 "/"）——要判元素状态/存在性，用 assert_visible / assert_absent，不要用 assert_text 断类名。
-   - desc：该步人读说明
-   - **每条 gui/e2e 至少有一个 assert_text / assert_visible / assert_absent**（否则没有判定依据，应改判 manual）
-   - target.key 优先取下方清单里的 key。**清单里没有合适 key 时**：不要瞎编 selector、也不要直接判 manual——给该元素起一个语义化新 key 名（如 submitOrderBtn），照常写进 script，并在该步 desc 里**描述这个元素**（可见文案 / 角色 / 页面位置）。用到未注册 key 的用例会被自动标为「选择器待补」，补齐后即可自动执行；只有确无界面元素可操作/断言时才判 manual、script=[]。
-   - **用例自治（关键——直接决定连续执行成功率，务必执行）**：多条用例在**同一客户端、同一页面**上连续执行，执行器不会在用例之间重置页面。每条用例必须能**单独、从初始态、一步步执行到底**，不得依赖上一条遗留的页面状态。按「进入→执行」两段组织：
-     · **进入（不假设当前页）**：connect 后先用导航/入口类 key（如 navHome/navTasks，见下方清单）**显式进入本用例目标功能页**，再开始操作；不要假设“当前已在该页”。默认起点为**已登录的应用主界面**（登录流程单列为一条 e2e 用例，其它用例不重复写登录步）。清单无对应导航 key 时，按上一条缺 key 规则起语义化 key 名 + desc 描述该导航元素。**自治靠每条用例开头这一步自导航保证——下一条用例进来会自己导航到位，故不需要在结尾做任何还原/回起点步。**
-     · **进入段只写一步真实导航动作**（一个 click 导航 key），**严禁**出现下列"环境确认/复位"类步骤：❌“刷新页面 / 重新加载”❌“确认当前在首页 / 确认已在首页 / 校验处于主界面”❌“确保已登录 / 检查登录状态”❌“回到首页后再开始”。这些都不是被测点、且锚点不稳会拖垮整条用例——直接 connect→导航到目标页即可，不做任何页面状态的前置确认或刷新。
-     · **执行**：完成本用例的操作与断言。**用例到此为止，不要再加“关闭弹窗/清空输入/导航回首页”之类的收尾还原步**（这类结尾步常因锚点不稳而整条失败）。
-6. 按 kind 的 script 编写偏重（**务必区分，别把 e2e 写成 gui**）：
-   - **gui**：单点/局部验证，但**仍需自治**——结构为「进入导航 + 单点操作/断言」，通常 **2–5 步**（含进入步；不写收尾还原步）。断言聚焦单点，不要串联整条业务流程。
-   - **e2e**：**端到端多步流程，通常 ≥5 步**，从已登录主界面**导航进入 → 操作 → 关键节点分别断言**。必须串联多个界面动作，并在**关键节点分别断言**（不止最后断一次）；不写收尾还原步。
-     · 若流程中触发了 AI 生成/异步加载（发消息、提交后等结果），**必须插入 wait_response 或 wait_for** 再断言，不能立刻断。
-     · 一条 e2e 的 script 明显比 gui 长、动作更丰富；若你发现某"e2e"剔除进入步后只需 2–3 步就能验完，说明它其实是 gui，请改判 kind=gui。
-   - **判定自检**：kind=e2e 但剔除进入步后实质交互不足或总步数过短 → 改判 gui。
-   正例(gui,单点,含进入)：connect → click(navTasks) → wait_for(任务页锚点) → assert_visible(目标元素)
-   正例(e2e,多步,含进入)：connect → click(navTasks) → click(新建按钮) → fill(表单字段) → click(提交) → wait_for(结果锚点) → assert_text(结果文案,contains)
-   登录单列(其它用例默认已登录)：connect → fill(loginUserName) → fill(loginPassword) → click(loginAgree) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle)
-   - **mock_route 使用场景（重要——主动生成这类用例，覆盖真实请求难以构造的状态）**：凡依赖后端返回特定数据才能验证的前端行为，优先用 mock_route 注入数据、在客户端内断言渲染结果。典型场景：
-     · **空状态**：mock 接口返回空列表/空数据，验证前端展示"暂无数据"提示，如 {{"code":0,"data":[]}}
-     · **多数据/分页**：mock 返回大量条目（如 50 条），验证列表滚动、分页控件、数量展示是否正确
-     · **异常数据**：mock 返回超长文本、特殊字符、极端数值，验证前端截断/溢出/格式化是否健壮
-     · **后端报错**：mock 返回 {{"code":-1,"msg":"服务器异常"}} 或 HTTP 500，验证前端是否展示错误提示而非白屏/崩溃
-     · **权限不足**：mock 返回 {{"code":403,"msg":"无权限"}}，验证无权限时的降级展示
-     · **字段缺失**：mock 返回缺少部分字段的对象，验证前端容错（不崩溃、字段缺失时有兜底展示）
-     · mock_route 必须在用例结尾前加 unmock_route 还原，避免影响后续用例
-     正例(mock空状态,gui)：connect → mock_route(**/api/tasks) → click(navTasks) → wait_for(任务列表锚点) → assert_text("暂无数据",contains) → unmock_route(**/api/tasks)
-     正例(mock报错,gui)：connect → mock_route(**/api/tasks,status=500) → click(navTasks) → wait_for(错误提示锚点) → assert_visible(错误提示) → unmock_route(**/api/tasks)
-     **mock 时序（重要）**：mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束；若断言依赖首屏接口数据，正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert，而非 connect → click → mock_route（拦截器注册晚于请求，必然无效）。
-     **时间敏感文本（重要）**：问候语时间段前缀（早上好/下午好/晚上好等）由客户端按本地时间实时计算，断言中**严禁**写死时间段，否则非对应时段执行必然失败。只断言稳定部分，如称呼"小马"（contains），或断言不含默认文案（negate）。
-{keys_block}
-7. {_API_SCRIPT_SPEC}
-{api_contract_block}
-8. 只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。
-9. 数量随需求复杂度伸缩：一般 8-20 条；简单需求可少于 8 条，复杂需求可到 100 条（最多 100 条，别超）。聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。
-10. 各测试点应相互正交：不同用例覆盖不同的验证点，不要用不同措辞重复验证同一件事。
-11. 边界/异常类用例的 steps 要给出**具体示例数据**（如手机号填 "13800138000"、金额填 "-1"、超长字符串给出长度），不要只写"输入无效值"这类空泛描述。
+   - P3：极端罕见场景 / 影响面很小的细节。""")
+
+    secs.append(_kind_spec(has_contract))
+
+    if is_api_shard:
+        secs.append(_API_DESIGN_SPEC)
+        secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
+    else:
+        # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
+        keys = _load_selector_keys(project_id, pages)
+        if keys:
+            lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
+            keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
+        else:
+            keys_block = "\n   （当前无可用语义 key 清单：gui/e2e 若无法用 key 表达，请改判 manual）"
+        secs.append(_GUI_SCRIPT_SPEC + keys_block)
+        if not shard:   # 全量模式仍带 api 规范段(单片回退时一并产 api 用例)
+            secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
+
+    # 场景组合设计:scenario 片是主场;全量模式也带(单片回退时不丢多场景覆盖)
+    if (not shard) or shard.get("id") == "scenario":
+        secs.append(_SCENARIO_SPEC)
+
+    secs.append("只输出一个 JSON 数组，不要任何解释文字，不要 markdown 代码块标记。")
+    secs.append(
+        f"数量：**本分片**产 {_SHARD_CASE_RANGE}。聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。"
+        if shard else
+        "数量随需求复杂度伸缩：一般 8-20 条；简单需求可少于 8 条，复杂需求可到 100 条（最多 100 条，别超）。"
+        "聚焦关键路径与高风险场景，**不要为凑数写重复或无价值的用例**。"
+    )
+    secs.append("各测试点应相互正交：不同用例覆盖不同的验证点，不要用不同措辞重复验证同一件事。")
+    secs.append('边界/异常类用例的 steps 要给出**具体示例数据**（如手机号填 "13800138000"、金额填 "-1"、'
+                '超长字符串给出长度），不要只写"输入无效值"这类空泛描述。')
+
+    body = "\n".join(f"{i}. {sec}" for i, sec in enumerate(secs, 1))
+    return f"""请基于以下需求，设计一份结构化测试点清单。
+
+输出要求：
+{body}
 
 需求内容：
 <requirement>
@@ -352,6 +551,8 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
     """把单条用例转成"只产出该用例结构化 script"的指令。
 
     gui/e2e 注入选择器 key 清单;api 注入请求-断言-提取规范段 + 项目 api 契约。
+    steps 已按人工测试粒度编号书写(见 _STEPS_SPEC),故统一要求 script 与之同序一一对应
+    ——生成侧写详细步骤、转换侧照着翻译,两头对齐才能"转 script 快捷方便"。
     """
     if kind == "api":
         return f"""为下面这条 api 测试用例设计**可执行的结构化 script**(请求-断言-提取原子)。
@@ -363,7 +564,8 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 
 输出要求:
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
-2. 数组每步的结构与规则:
+2. {_STEPS_TO_SCRIPT_RULE}
+3. 数组每步的结构与规则:
 {_API_SCRIPT_SPEC}
 {_api_contract_block(project_id)}"""
     keys = _load_selector_keys(project_id)
@@ -377,7 +579,8 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 
 输出要求:
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
-2. 每步一个对象 {{action, target?, args?, desc}}:
+2. {_STEPS_TO_SCRIPT_RULE}
+3. 每步一个对象 {{action, target?, args?, desc}}:
    - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route(拦截网络请求返回模拟数据)、unmock_route(取消拦截)
    - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
    - **hover 用于"悬停才显示"的元素**(列表项 hover 出的更多/菜单按钮、tooltip):先 hover 承载元素→wait_for 等浮层→再 click/assert;hover 本身不断言
@@ -399,7 +602,7 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
      · mock_route 必须在用例结尾前加 unmock_route 还原,避免影响后续用例
      **mock 时序（重要）**：mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束；若断言依赖首屏接口数据，正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert，而非 connect → click → mock_route（拦截器注册晚于请求，必然无效）。
      **时间敏感文本（重要）**：问候语时间段前缀（早上好/下午好/晚上好等）由客户端按本地时间实时计算，断言中**严禁**写死时间段，否则非对应时段执行必然失败。只断言稳定部分，如称呼"小马"（contains），或断言不含默认文案（negate）。
-3. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
+4. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
 
@@ -1356,6 +1559,26 @@ _API_OPS_NEED_VALUE = _API_OPS - {"exists"}
 _VAR_REF_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
+def _expects_failure(asserts: list) -> bool:
+    """该步是否断言"这次请求应当失败"(必填校验/越权/参数非法这类**负例**)。
+
+    判据(任一命中):
+    - status 断言的期望值是 4xx/5xx(如 400/401/403/404/409/422)
+    - 业务码断言 code neq 0(平台统一 {code,msg,data} 信封,成功为 0)
+
+    用途:预期失败的写请求**不会落数据**,不该被"写操作必带 cleanup"规则要求补删除步
+    ——否则接口测试规范里的负例(必填、边界、鉴权、幂等冲突)会全被降级 manual,
+    api 覆盖只剩正例。这是 api 用例恢复产出后暴露的真实缺口。
+    """
+    for a in asserts:
+        atype, op, val = a.get("type"), a.get("op"), a.get("value")
+        if atype == "status" and op == "eq" and isinstance(val, (int, float)) and 400 <= val < 600:
+            return True
+        if atype == "jsonpath" and str(a.get("path") or "") == "code" and op == "neq" and val == 0:
+            return True
+    return False
+
+
 def _collect_var_refs(value) -> set[str]:
     """递归收集一个值(str/dict/list)里所有 {{var}} 引用名(用于变量闭环校验)。"""
     refs: set[str] = set()
@@ -1407,8 +1630,6 @@ def _validate_api_script(script, auth_vars: set[str] | None = None) -> tuple[lis
         is_cleanup = bool(st.get("cleanup"))
         if is_cleanup:
             has_cleanup = True
-        elif method in _API_WRITE_METHODS:
-            has_write = True
         # 变量引用闭环:本步 request 引用的 {{var}} 必须已定义(extract 在发请求后,故检查在登记前)
         undefined = _collect_var_refs(req) - defined
         if undefined:
@@ -1437,6 +1658,11 @@ def _validate_api_script(script, auth_vars: set[str] | None = None) -> tuple[lis
             if "value" in a:
                 na["value"] = a.get("value")
             norm_asserts.append(na)
+        # 写操作是否需要清理:**只有"预期成功"的写才会落数据**。必填校验/越权/参数非法这类
+        # 负例断言的就是失败(4xx/5xx 或 code neq 0),不产生数据,强要 cleanup 会把接口测试
+        # 规范里的负例全降级 manual(见 _expects_failure)。
+        if not is_cleanup and method in _API_WRITE_METHODS and not _expects_failure(norm_asserts):
+            has_write = True
         # extract:登记新变量(供后续步骤引用)
         norm_extract = None
         extract = st.get("extract")

@@ -83,6 +83,22 @@ def main():
     # 纯只读无需 cleanup(合法)
     _ok([{"request": {"method": "GET", "path": "/a"}, "asserts": [{"type": "status", "op": "eq", "value": 200}]}])
 
+    # ---- **预期失败的写操作无需 cleanup**(必填校验/越权/参数非法这类负例本就不产生数据)----
+    # 不放行会把接口测试规范里的负例(必填/边界/鉴权)全降级 manual,api 覆盖只剩正例。
+    # 判据:该步断言了"业务失败"(code neq 0 / 4xx-5xx status)→ 请求预期不落数据 → 免 cleanup。
+    _ok([{"name": "缺 name 创建应失败", "request": {"method": "POST", "path": "/api/projects", "body": {"code": "A1"}},
+          "asserts": [{"type": "jsonpath", "path": "code", "op": "neq", "value": 0}]}])
+    _ok([{"name": "越权删除应 403", "request": {"method": "DELETE", "path": "/api/projects/999"},
+          "asserts": [{"type": "status", "op": "eq", "value": 403}]}])
+    _ok([{"name": "未授权创建应 401", "request": {"method": "POST", "path": "/api/projects", "body": {"name": "n"}},
+          "asserts": [{"type": "status", "op": "eq", "value": 401}]}])
+    # 但"预期成功的写"仍必须清理:同一段里既有成功写又有失败写 → 仍要求 cleanup
+    _bad([{"name": "先建成功", "request": {"method": "POST", "path": "/api/projects", "body": {"name": "n"}},
+           "asserts": [{"type": "jsonpath", "path": "code", "op": "eq", "value": 0}], "extract": {"pid": "data.id"}},
+          {"name": "再建重复应失败", "request": {"method": "POST", "path": "/api/projects", "body": {"name": "n"}},
+           "asserts": [{"type": "jsonpath", "path": "code", "op": "neq", "value": 0}]}],
+         "cleanup")
+
     # ---- _collect_var_refs 辅助 ----
     assert _collect_var_refs({"h": "Bearer {{token}}", "p": "/x/{{pid}}", "n": 1}) == {"token", "pid"}
     assert _collect_var_refs("no vars here") == set()

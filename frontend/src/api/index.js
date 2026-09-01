@@ -363,6 +363,9 @@ export async function streamTestcases(payload, { onDone, onError, signal, onTick
     onDone?.({
       cases: result.cases || [],
       status: result.status || 'done',
+      // 分片并行生成时,个别维度分片可能未产出(后端 partial_errors);用例照常落库,
+      // 这里透传给页面提示"哪个维度没产出",避免用户以为覆盖是全的。
+      partialErrors: result.partial_errors || [],
       meta: {
         case_count: result.case_count,
         duration_ms: result.duration_ms,

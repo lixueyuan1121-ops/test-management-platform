@@ -304,7 +304,7 @@ const ENGINE_META = {
   deepseek: { label: 'DeepSeek', dot: '#3b82f6' },
 }
 const engineMeta = (id) => ENGINE_META[id] || { label: id, dot: '#94a3b8' }
-const PHASES = ['正在拆解需求要点…', '覆盖功能主流程…', '补充边界与异常场景…', '评估优先级并成稿…']
+const PHASES = ['正在拆解需求要点…', '主流程 / 边界 / 异常 / 场景组合 多路并行生成中…', '合并去重、校验脚本…', '评估优先级并成稿…']
 const MODES = [
   { k: 'text', label: '粘贴文本' },
   { k: 'url', label: '需求链接' },
@@ -554,7 +554,13 @@ function generate() {
         cases.value = evt.cases || []
         meta.value = evt.meta || null
         if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效测试点')
-        else ElMessage.success(`已生成 ${cases.value.length} 条测试点`)
+        else {
+          ElMessage.success(`已生成 ${cases.value.length} 条测试点`)
+          // 分片并行:个别维度没产出时用例仍落库,单独告警,别让人以为覆盖是全的
+          if (evt.partialErrors?.length) {
+            ElMessage.warning({ message: `部分维度未产出：${evt.partialErrors.join('；')}`, duration: 8000 })
+          }
+        }
         stop()
       },
       onError: (msg) => { ElMessage.error(msg || '生成失败'); stop() },
