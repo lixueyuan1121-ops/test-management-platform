@@ -168,6 +168,12 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
     """
     now = datetime.now()
     utc_now = datetime.utcnow()   # 在线判定专用：对齐 last_seen_at 的 utcnow 写入（避免时区偏移误判离线）
+    # created_at 由 DB func.now() 生成——生产 MySQL(东八区)非 UTC。凡与 created_at 比较(elapsed 相减、
+    # today 当日过滤)都必须用【DB 时钟】为基准,否则用进程 utcnow/now 会整体差 8h(elapsed 恒 -8h、
+    # today 跨日错位)。与 scheduler._db_now / reaper 同源治法。online 判定仍用 utcnow(对齐 last_seen)。
+    from app.services.scheduler import _db_now
+    db_now = _db_now(db)
+    db_today = db_now.date()
     devices = db.query(RunnerDevice).order_by(RunnerDevice.id).all()
     # owner 姓名批量取(避免逐设备查 user)
     owner_ids = {d.owner_id for d in devices}
@@ -195,13 +201,13 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
     today_by_runner: dict[str, dict] = {}
     for runner, st, cnt in (
         db.query(ExecRun.runner, ExecRun.status, func.count(ExecRun.id))
-        .filter(func.date(ExecRun.created_at) == now.date())
+        .filter(func.date(ExecRun.created_at) == db_today)
         .group_by(ExecRun.runner, ExecRun.status).all()
     ):
         today_by_runner.setdefault(runner, {})[getattr(st, "value", st)] = cnt
     for runner, st, cnt in (
         db.query(EvalRun.runner, EvalRun.status, func.count(EvalRun.id))
-        .filter(func.date(EvalRun.created_at) == now.date())
+        .filter(func.date(EvalRun.created_at) == db_today)
         .group_by(EvalRun.runner, EvalRun.status).all()
     ):
         key = _EVAL_STATUS_MAP.get(getattr(st, "value", st))
@@ -223,7 +229,7 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         # 耗时/开始时间必须用 UTC 对齐:created_at 由数据库 func.now() 生成——SQLite 的
         # CURRENT_TIMESTAMP 与 docker MySQL 默认时区都是 UTC;此前用本地 now 相减、且
         # started_at 不带 Z 让前端按本地时区解析,CST 下执行时长凭空多 8 小时(同 last_seen_at 的坑)。
-        elapsed = int((utc_now - r.created_at).total_seconds() * 1000) if r.created_at else None
+        elapsed = int((db_now - r.created_at).total_seconds() * 1000) if r.created_at else None
         all_active.append((r.runner, {
             "run_id": r.id,
             "kind": "func",
@@ -244,7 +250,7 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
             payload = json.loads(r.payload) if r.payload else {}
         except (ValueError, TypeError):
             payload = {}
-        elapsed = int((utc_now - r.created_at).total_seconds() * 1000) if r.created_at else None
+        elapsed = int((db_now - r.created_at).total_seconds() * 1000) if r.created_at else None
         all_active.append((r.runner, {
             "run_id": r.id,
             "kind": "eval",
