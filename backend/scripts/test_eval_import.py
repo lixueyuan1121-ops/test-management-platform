@@ -225,6 +225,20 @@ def test_import_from_feishu_url_mock():
     print("OK import from feishu url (mock)")
 
 
+def test_import_feishu_url_must_be_feishu_host():
+    # SSRF 护栏:非飞书主机的 URL 必须在取文前被拒(extract_from_url 不得被调用)
+    from unittest.mock import MagicMock
+    m = MagicMock()
+    with patch("app.api.ai_eval.extractors.extract_from_url", m):
+        r = client.post("/api/ai/eval-queries/import",
+                        json={"project_id": 1, "feishu_url": "http://169.254.169.254/latest/meta-data",
+                              "dry_run": True})
+    assert r.status_code == 400, r.text
+    assert "飞书" in r.json().get("msg", ""), r.text
+    m.assert_not_called()
+    print("OK import rejects non-feishu url (SSRF guard)")
+
+
 def test_import_requires_source():
     d = client.post("/api/ai/eval-queries/import", json={"project_id": 1, "dry_run": True}).json()
     assert d["code"] != 0, "无 text/feishu_url 应报错"
@@ -280,6 +294,7 @@ def _endpoint_tests():
     test_import_real_persists()
     test_import_attach_to_task()
     test_import_from_feishu_url_mock()
+    test_import_feishu_url_must_be_feishu_host()
     test_import_requires_source()
     test_import_bad_header_400()
     test_search_by_dimension()

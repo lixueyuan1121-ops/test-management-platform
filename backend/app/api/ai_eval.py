@@ -21,7 +21,7 @@ from app.models import AiTask, EvalQuery, Project, User
 from app.models.ai_eval import EvalTask
 from app.schemas.ai import EvalQueryGenIn
 from app.schemas.common import ok
-from app.services import claude_runner, extractors, generators
+from app.services import claude_runner, extractors, feishu, generators
 from app.services.eval_import import parse_eval_template
 
 logger = logging.getLogger("test_platform")
@@ -301,6 +301,11 @@ def import_eval_queries(body: EvalQueryImportIn, db: Session = Depends(get_db), 
         url = (body.feishu_url or "").strip()
         if not url:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="请粘贴模板文本或提供飞书文档链接")
+        # 仅放行飞书文档链接:飞书分支只用 URL 里的 token 调飞书 OpenAPI(固定 open.feishu.cn),
+        # 从不直接请求用户给的主机 → 本端点无 SSRF 面(不做通用 URL 抓取,与"飞书导入"语义一致)。
+        if not feishu.is_feishu_url(url):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                detail="仅支持飞书文档链接(docx/wiki/sheets/base)")
         try:
             _, text = extractors.extract_from_url(url)
         except ValueError as e:
