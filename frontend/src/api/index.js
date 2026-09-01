@@ -120,7 +120,9 @@ export const enqueueEvalQueries = (payload) => http.post('/eval-queue/enqueue', 
 // 对话测评:某执行机上报的客户端设备(vm)列表,供下发时选目标设备。
 export const listEvalDevices = (runner) => http.get('/eval-devices', { params: { runner } })
 // 对话测评用例库:某项目历史生成的 eval_query 列表(再次触发验证用)。
-export const listEvalQueries = (projectId) => http.get('/ai/eval-queries', { params: { project_id: projectId } })
+// filters 可带 dimension(按维度) / eval_task_id(只看某测评任务用例集),二者可叠加。
+export const listEvalQueries = (projectId, filters = {}) =>
+  http.get('/ai/eval-queries', { params: { project_id: projectId, ...filters } })
 
 // ===== 对话测评判定（读 trace + 引擎判三维：思考/工具/产物）=====
 // 单条触发判定；provider 可空（后端按默认引擎）。返回已解包的 _run_out（含 verdict/verdict_dims/is_abnormal）。
@@ -132,6 +134,9 @@ export const listEvalDimensions = () => http.get('/ai/eval-dimensions')
 export const createEvalQueryManual = (payload) => http.post('/ai/eval-queries/manual', payload)
 // 占位符模板展开:base 题 {{变量}} × 取值列表笛卡尔积,批量生成变体题
 export const expandEvalQuery = (payload) => http.post('/ai/eval-queries/expand', payload)
+// 模板导入(CSV/TSV):{project_id, text?|feishu_url?, eval_task_id?, dry_run?}
+// dry_run=true 仅解析预览(返回 count/skipped/preview,不落库);false 落库返回 count/skipped/attached/queries
+export const importEvalQueries = (payload) => http.post('/ai/eval-queries/import', payload)
 export const updateEvalQuery = (id, payload) => http.patch(`/ai/eval-queries/${id}`, payload)
 export const deleteEvalQuery = (id) => http.delete(`/ai/eval-queries/${id}`)
 

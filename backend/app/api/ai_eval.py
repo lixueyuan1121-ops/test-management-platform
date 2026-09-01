@@ -21,7 +21,8 @@ from app.models import AiTask, EvalQuery, Project, User
 from app.models.ai_eval import EvalTask
 from app.schemas.ai import EvalQueryGenIn
 from app.schemas.common import ok
-from app.services import claude_runner, generators
+from app.services import claude_runner, extractors, generators
+from app.services.eval_import import parse_eval_template
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/ai", tags=["ai-eval"])
@@ -269,6 +270,86 @@ def create_eval_query_manual(body: EvalQueryManualIn, db: Session = Depends(get_
     return ok(_to_query_out(q))
 
 
+class EvalQueryImportIn(BaseModel):
+    """模板导入(本地 CSV/TSV 文本 或 飞书文档链接)。text 与 feishu_url 二选一。"""
+    project_id: int
+    text: str | None = None
+    feishu_url: str | None = None
+    eval_task_id: int | None = None
+    dry_run: bool = False
+
+
+@router.post("/eval-queries/import")
+def import_eval_queries(body: EvalQueryImportIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """按模板(CSV/TSV)批量导入对话测评用例。
+
+    text=本地粘贴/上传的模板文本;feishu_url=飞书电子表格/文档链接(走 extractors 取文,
+    自动路由飞书 sheets/docx)。二选一。dry_run=True 仅解析预览、不落库。
+    可选 eval_task_id:导入的同时追加进该测评任务用例集(有序去重,与生成侧同口径)。
+    """
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    if not db.get(Project, body.project_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    et = None
+    if body.eval_task_id is not None:
+        et = db.get(EvalTask, body.eval_task_id)
+        if not et or et.project_id != body.project_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在或不属于该项目")
+
+    text = (body.text or "").strip()
+    if not text:
+        url = (body.feishu_url or "").strip()
+        if not url:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="请粘贴模板文本或提供飞书文档链接")
+        try:
+            _, text = extractors.extract_from_url(url)
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    try:
+        rows, skipped = parse_eval_template(text)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    if body.dry_run:
+        return ok({"dry_run": True, "count": len(rows), "skipped": skipped, "preview": rows})
+
+    objs = []
+    for r in rows:
+        q = EvalQuery(
+            project_id=body.project_id,
+            title=r["title"],
+            prompt=r["prompt"],
+            dimension=r["dimension"],
+            expected=r["expected"],
+            conversation_group=r["conversation_group"],
+            turn_index=r["turn_index"],
+            provider="import",
+        )
+        db.add(q); db.flush()
+        # 单轮无对话组补唯一组名(与手工录入/生成落库口径一致,避免与别题混组)
+        if not q.conversation_group:
+            q.conversation_group = f"i{q.id}"
+        objs.append(q)
+
+    attached = 0
+    if et is not None:
+        qids = json.loads(et.query_ids) if et.query_ids else []
+        merged = list(dict.fromkeys(qids + [q.id for q in objs]))
+        et.query_ids = json.dumps(merged, ensure_ascii=False)
+        attached = len(merged) - len(qids)
+    db.commit()
+    for q in objs:
+        db.refresh(q)
+    return ok({
+        "dry_run": False,
+        "count": len(objs),
+        "skipped": skipped,
+        "attached": attached,
+        "queries": [_to_query_out(q) for q in objs],
+    })
+
+
 class EvalQueryExpandIn(BaseModel):
     """占位符模板展开(promptfoo 式参数化):base 题的 title/prompt/expected 里写 {{变量}},
     variables 给每个变量的取值列表,笛卡尔积批量生成变体题——同一考点稳定产出 N 个变体。"""
@@ -363,12 +444,26 @@ def delete_eval_query(query_id: int, db: Session = Depends(get_db), user: User =
 @router.get("/eval-queries")
 def list_eval_queries(
     project_id: int = Query(...),
+    dimension: str | None = Query(None),
+    eval_task_id: int | None = Query(None),
     limit: int = Query(200, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """列出某项目历史生成的对话测评 query(供用例库查看 + 再次下发)。"""
+    """列出某项目历史生成的对话测评 query(供用例库查看 + 再次下发)。
+
+    可选筛选:dimension=按测评维度、eval_task_id=只看某测评任务用例集内的题(读其 query_ids);
+    二者可叠加(AND)。测评任务无用例时返回空列表。
+    """
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
-    rows = (db.query(EvalQuery).filter(EvalQuery.project_id == project_id)
-            .order_by(EvalQuery.id.desc()).limit(limit).all())
-    return ok([_to_query_out(q) for q in rows])
+    q = db.query(EvalQuery).filter(EvalQuery.project_id == project_id)
+    if dimension:
+        q = q.filter(EvalQuery.dimension == dimension)
+    if eval_task_id is not None:
+        task = db.get(EvalTask, eval_task_id)
+        qids = json.loads(task.query_ids) if (task and task.query_ids) else []
+        if not qids:
+            return ok([])
+        q = q.filter(EvalQuery.id.in_(qids))
+    rows = q.order_by(EvalQuery.id.desc()).limit(limit).all()
+    return ok([_to_query_out(r) for r in rows])
