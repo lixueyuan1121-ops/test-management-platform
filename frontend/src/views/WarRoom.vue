@@ -40,11 +40,14 @@
       <div class="wr-panel">
         <div class="wr-ph">// AI VALUE FUNNEL · 价值转化</div>
         <div class="wr-funnel">
-          <div v-for="(s, i) in funnel.funnel" :key="s.stage" class="wr-step"
-               :style="{ width: stepWidth(i), background: STEP_COLORS[i] }">
-            <span class="wr-step-n">{{ s.count }}</span>
-            <span class="wr-step-l">{{ s.label }}</span>
-          </div>
+          <template v-for="g in funnelGroups" :key="g.key">
+            <div class="wr-funnel-cap">{{ g.title }}</div>
+            <div v-for="s in g.steps" :key="s.stage" class="wr-step"
+                 :style="{ width: s.width, background: s.color }">
+              <span class="wr-step-n">{{ s.count }}</span>
+              <span class="wr-step-l">{{ s.label }}</span>
+            </div>
+          </template>
         </div>
       </div>
       <div class="wr-panel">
@@ -110,11 +113,27 @@ const dateLine = computed(() =>
   new Date(now.value).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' }))
 
 const STEP_COLORS = ['#2a78d6', '#3f8fc9', '#31a3ab', '#19b394', '#00b386']
-function stepWidth(i) {
-  const max = funnel.value.funnel[0]?.count || 1
-  const c = funnel.value.funnel[i]?.count || 0
-  return Math.max(22, Math.round((c / max) * 100)) + '%'
-}
+// 价值漏斗分两组各自归一:AI 产出链(生成→采纳→自动化)与执行链(已执行→通过)口径不同,
+// 混在一起按全局最大值算宽会让「已执行」(常>AI生成)凸出、破坏漏斗形态。分组后每组内部单调收窄。
+const GEN_STAGES = ['generated', 'adopted', 'automatable']
+const funnelGroups = computed(() => {
+  const f = funnel.value.funnel || []
+  if (!f.length) return []
+  const build = (steps) => {
+    const max = Math.max(1, ...steps.map((s) => s.count || 0))  // 按本组最大值归一
+    return steps.map((s) => ({
+      ...s,
+      color: STEP_COLORS[f.indexOf(s)] || STEP_COLORS[STEP_COLORS.length - 1],
+      width: Math.max(22, Math.round(((s.count || 0) / max) * 100)) + '%',
+    }))
+  }
+  const gen = f.filter((s) => GEN_STAGES.includes(s.stage))
+  const exec = f.filter((s) => !GEN_STAGES.includes(s.stage))
+  const groups = []
+  if (gen.length) groups.push({ key: 'gen', title: '// 产出', steps: build(gen) })
+  if (exec.length) groups.push({ key: 'exec', title: '// 执行', steps: build(exec) })
+  return groups
+})
 const passRate = computed(() => {
   const ex = funnel.value.funnel[3]?.count || 0
   const ps = funnel.value.funnel[4]?.count || 0
@@ -185,6 +204,9 @@ onUnmounted(() => {
 .wr-ph { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #00e5a0; margin-bottom: 14px; }
 
 .wr-funnel { display: flex; flex-direction: column; gap: 5px; }
+.wr-funnel-cap { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.5px;
+  color: #5f6b7a; margin-top: 6px; margin-bottom: 1px; }
+.wr-funnel-cap:first-child { margin-top: 0; }
 .wr-step { min-height: 34px; border-radius: 5px; padding: 4px 12px; display: flex; align-items: center; gap: 10px; color: #fff;
   clip-path: polygon(0 0, 100% 0, calc(100% - 12px) 100%, 0 100%); transition: width .5s ease; }
 .wr-step-n { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 800; }
