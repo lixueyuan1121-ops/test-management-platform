@@ -18,7 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_platform_admin
-from app.core.enums import EvalRunStatus
+from app.core.enums import EvalRunStatus, normalize_capabilities
 from app.db.session import get_db
 from app.models import EvalRun, ExecRun, Project, RunnerDevice, TestCase, User
 from app.schemas.common import ok
@@ -38,6 +38,16 @@ class DeviceIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     # platform: web(PC端) / android / ios；默认 web 保持向后兼容。
     platform: str = Field("web", pattern="^(web|android|ios)$")
+    # capabilities: 逗号分隔能力集(func=功能测试 / eval=对话测评)。默认全能力(与存量口径一致);
+    # 落库前经 normalize_capabilities 去重/去非法/排序,空/全非法回落 'func,eval'。
+    capabilities: str = Field("func,eval", max_length=64)
+
+
+class DevicePatchIn(BaseModel):
+    """编辑设备:三项均可选,只更新传入的字段(None=不改)。runner_id 不可改(是稳定标识)。"""
+    name: str | None = Field(None, min_length=1, max_length=128)
+    platform: str | None = Field(None, pattern="^(web|android|ios)$")
+    capabilities: str | None = Field(None, max_length=64)
 
 
 def _mask(token: str) -> str:
@@ -53,6 +63,7 @@ def _to_out(d: RunnerDevice, *, reveal_token: bool = False) -> dict:
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
+        "capabilities": d.capabilities or "func,eval",   # 老行空值兜底全能力(与迁移 default 一致)
         "token": d.token if reveal_token else _mask(d.token),  # 仅注册/重置时给明文
         "last_seen_at": (d.last_seen_at.isoformat() + "Z") if d.last_seen_at else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
@@ -85,12 +96,31 @@ def register_device(body: DeviceIn, db: Session = Depends(get_db), user: User = 
         runner_id=body.runner_id.strip(),
         name=body.name.strip(),
         platform=body.platform,
+        capabilities=normalize_capabilities(body.capabilities),
         token=secrets.token_hex(32),   # 64 位十六进制长随机串
     )
     db.add(device)
     db.commit()
     db.refresh(device)
     return ok(_to_out(device, reveal_token=True))
+
+
+@router.patch("/{device_id}")
+def update_device(device_id: int, body: DevicePatchIn,
+                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """编辑我的设备(name/platform/capabilities)。runner_id 是稳定标识,不可改。"""
+    device = db.get(RunnerDevice, device_id)
+    if not device or device.owner_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="设备不存在或不属于你")
+    if body.name is not None:
+        device.name = body.name.strip()
+    if body.platform is not None:
+        device.platform = body.platform
+    if body.capabilities is not None:
+        device.capabilities = normalize_capabilities(body.capabilities)
+    db.commit()
+    db.refresh(device)
+    return ok(_to_out(device))
 
 
 @router.post("/{device_id}/reset-token")
@@ -138,6 +168,7 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
+        "capabilities": d.capabilities or "func,eval",   # 能力集(func/eval),看板展示标识用
         "owner": {"id": d.owner_id, "name": owner_name},
         # 加 Z 标明 UTC：last_seen_at 是 naive UTC(utcnow 写入)，不带时区前端会当本地时间解析、
         # 凭空差 8h(CST)→ 显示「刚掉线就 8 小时前」。补 Z 让前端 new Date 正确按 UTC 解析。

@@ -335,6 +335,32 @@ def _check_platform(runner_id: str, tc_platform: str, db: Session, owner_id: int
         )
 
 
+def _check_capability(runner_id: str, db: Session, owner_id: int | None = None) -> None:
+    """手动下发功能测试前校验:目标设备须具备 func 能力,否则 400 拒绝。
+
+    - 未登记设备(查无 RunnerDevice)→ 不阻塞(旧 runner/外部 runner 向后兼容,同 _check_platform);
+    - capabilities 为空 → 视为全能力、不阻塞(迁移前老行兜底);
+    - 明确不含 func(如只勾了 eval 的测评专用机)→ 400,避免功能用例落到跑不了的机器。
+    优先按 (runner_id, owner_id) 取当前用户的设备;owner_id 未传时全局首条兜底。
+    """
+    from app.core.enums import DeviceCapability, parse_capabilities
+
+    q = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id)
+    dev = None
+    if owner_id is not None:
+        dev = q.filter(RunnerDevice.owner_id == owner_id).first()
+    if dev is None:
+        dev = q.first()
+    if dev is None:
+        return   # 未登记设备,不阻塞
+    caps = parse_capabilities(dev.capabilities)
+    if caps and DeviceCapability.func.value not in caps:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"执行机「{dev.name}」未开启『功能测试』能力,不能下发功能用例,请改选功能测试执行机",
+        )
+
+
 # test_case.exec_kind（若存在）→ ExecKind；缺省 gui。exec_kind 列由 migrate 补，
 # 老库/未设值的用例回落到 gui（GUI 是被测客户端的主要形态）。
 def _kind_of(tc: TestCase | None) -> ExecKind:
@@ -496,6 +522,7 @@ def enqueue(
         tc_platform = getattr(tc, "platform", "web") or "web"
         runner = _resolve_runner(db, body.runner, tc_platform, auto_cache)
         _check_platform(runner, tc_platform, db, owner_id=user.id)
+        _check_capability(runner, db, owner_id=user.id)
         row = ExecRun(
             checklist_item_id=it.id,
             test_case_id=it.test_case_id,
@@ -550,6 +577,7 @@ def enqueue_cases(
         tc_platform = getattr(tc, "platform", "web") or "web"
         runner = _resolve_runner(db, body.runner, tc_platform, auto_cache)
         _check_platform(runner, tc_platform, db, owner_id=user.id)
+        _check_capability(runner, db, owner_id=user.id)
         resolved[cid] = runner
 
     created = []

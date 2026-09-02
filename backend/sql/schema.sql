@@ -446,6 +446,7 @@ CREATE TABLE `runner_device` (
   `runner_id` VARCHAR(64) NOT NULL,
   `name` VARCHAR(128) NOT NULL,
   `platform` VARCHAR(16) NOT NULL DEFAULT 'web',
+  `capabilities` VARCHAR(64) NOT NULL DEFAULT 'func,eval',
   `token` VARCHAR(128) NOT NULL,
   `last_seen_at` DATETIME DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

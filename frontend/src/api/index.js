@@ -323,7 +323,8 @@ export const startProbe = (body) => http.post('/probe', body)
 export const getProbe = (id) => http.get(`/probe/${id}`)
 
 export const listMyDevices = () => http.get('/devices')
-export const registerDevice = (runner_id, name, platform = 'web') => http.post('/devices', { runner_id, name, platform })
+export const registerDevice = (runner_id, name, platform = 'web', capabilities = 'func,eval') => http.post('/devices', { runner_id, name, platform, capabilities })
+export const updateDevice = (id, patch) => http.patch(`/devices/${id}`, patch)
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
 export const deleteDevice = (id) => http.delete(`/devices/${id}`)
 // 设备看板只读聚合(平台管理员)：全平台设备 + 在线状态 + 各状态执行计数 + 执行中明细

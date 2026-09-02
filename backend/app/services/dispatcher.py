@@ -12,11 +12,24 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.enums import DeviceCapability, parse_capabilities
 from app.models import ExecRun, RunnerDevice
 
 logger = logging.getLogger("test_platform")
 
 AUTO_RUNNER = "auto"   # enqueue 传这个值即触发自动挑设备
+
+
+def _has_cap(dev: RunnerDevice, cap: str) -> bool:
+    """设备是否具备某能力(func/eval)。
+
+    未标注(capabilities 为空)→ 视为全能力、不阻塞:兼容迁移前的行、异常空值,
+    与 DB server_default='func,eval' 及「存量默认全能力」口径一致(fail-open)。
+    """
+    caps = parse_capabilities(getattr(dev, "capabilities", None))
+    if not caps:
+        return True
+    return cap in caps
 
 
 def touch_runner_heartbeat(db: Session, runner_id: str | None) -> int:
@@ -60,6 +73,10 @@ def online_eval_runners(db: Session) -> list[str]:
     devices = db.query(RunnerDevice).all()
     if not devices:
         return []
+    # 只保留具备 eval 能力的设备:堵住「测评任务被分配到只跑功能测试的机器」的根。
+    devices = [d for d in devices if _has_cap(d, DeviceCapability.eval.value)]
+    if not devices:
+        return []
     cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
     busy = {r for (r,) in db.query(EvalRun.runner)
             .filter(EvalRun.status == EvalRunStatus.running).distinct().all()}
@@ -69,13 +86,16 @@ def online_eval_runners(db: Session) -> list[str]:
 
 
 def _online_devices(db: Session, platform: str | None = None) -> list[RunnerDevice]:
-    """在线设备列表(与看板同口径:窗口内有心跳,或有 running)。platform 传入时精确匹配。"""
+    """在线设备列表(与看板同口径:窗口内有心跳,或有 running)。platform 传入时精确匹配。
+
+    只返回具备 func 能力的设备:功能测试点(exec_run)派单专用,避免落到「只跑测评」的机器。
+    """
     from app.api.devices import ONLINE_WINDOW_SEC
 
     q = db.query(RunnerDevice)
     if platform:
         q = q.filter(RunnerDevice.platform == platform)
-    devices = q.all()
+    devices = [d for d in q.all() if _has_cap(d, DeviceCapability.func.value)]
     if not devices:
         return []
     cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)

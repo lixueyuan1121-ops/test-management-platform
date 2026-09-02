@@ -569,3 +569,19 @@ def ensure_platform_columns() -> None:
                 "ALTER TABLE runner_device ADD COLUMN platform VARCHAR(16) NOT NULL DEFAULT 'web'"
             ))
         _ensure_index("runner_device", "idx_runnerdev_platform", "platform")
+
+
+def ensure_runner_device_capabilities() -> None:
+    """runner_device 补 capabilities 列（设备能力标识：func=功能测试 / eval=对话测评）。
+
+    DEFAULT 'func,eval'（全能力）保证存量设备迁移后不改变现有可派单范围——上线零中断，
+    与「存量默认全能力」口径一致。逗号分隔存储而非 JSON：对齐 platform 字符串风格，
+    且生产 MySQL 5.6 无 JSON 类型。幂等：ADD 前先探列。新库由 create_all 自带此列。
+    """
+    rd_cols = _columns("runner_device")
+    if rd_cols and "capabilities" not in rd_cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE runner_device ADD COLUMN capabilities VARCHAR(64) "
+                "NOT NULL DEFAULT 'func,eval'"
+            ))

@@ -31,6 +31,13 @@ class RunnerDevice(Base):
     name: Mapped[str] = mapped_column(String(128))                   # 展示名(如「我的 Mac」)
     # platform: web(PC端) / android / ios。标识该执行机能运行哪类用例，派单时做匹配检查。
     platform: Mapped[str] = mapped_column(String(16), default="web", server_default="web", index=True)
+    # capabilities: 逗号分隔的能力集(func=功能测试 / eval=对话测评)。标识该机能承接哪类下发,
+    # 两处 auto 分配(pick_runner / online_eval_runners)据此过滤,避免测评任务错派到只跑功能测试的机器。
+    # 存量行由 migrate 以 server_default 填 'func,eval'(全能力),向后兼容零中断。逗号分隔而非 JSON:
+    # 对齐 platform 字符串风格,且绕开生产 MySQL 5.6 无 JSON 类型的坑。
+    capabilities: Mapped[str] = mapped_column(
+        String(64), default="func,eval", server_default="func,eval"
+    )
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True)  # 专属长期 token(runner 鉴权)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 最近一次该设备 runner 拉取时间
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

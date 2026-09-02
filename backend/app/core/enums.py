@@ -97,6 +97,47 @@ class ExecKind(str, enum.Enum):
     manual = "manual"  # 不可自动化：纯人工/探索性/主观体验；平台不派发到执行机
 
 
+class DeviceCapability(str, enum.Enum):
+    """执行机能力：一台设备能承接哪类下发任务。
+
+    背景：功能测试(run.sh)与对话测评(run-eval.sh)两套 runner 共用同一份 .env，
+    抢同一个 Namiwork 客户端 + CDP 端口，不能在一台机器上同时跑（见设备并行冲突）。
+    故一台机器实际只应承接自己启动的那类 runner；此维度让下发按能力精准匹配，
+    避免「测评任务被自动分配到只跑功能测试的机器」这类错派。
+
+    值刻意与设备看板 active_runs 的 kind(func/eval) 同源，跨端口径一致。
+    """
+    func = "func"   # 功能测试点执行（exec_run，对应 run.sh / runner.mjs）
+    eval = "eval"   # 对话测评执行（eval_run，对应 run-eval.sh / ai-eval platform）
+
+
+# 设备能力：合法值集合 + 全能力默认串（存量设备迁移默认值，逗号分隔存储绕开 MySQL 5.6 无 JSON）
+DEVICE_CAPABILITIES = {c.value for c in DeviceCapability}
+DEFAULT_DEVICE_CAPABILITIES = "func,eval"
+
+
+def parse_capabilities(raw: str | None) -> set[str]:
+    """把逗号分隔的能力串解析成合法能力值集合（过滤空串/非法值）。
+
+    空/None → 空集（调用方按「未标注」处理，不等同于「无能力」）。
+    """
+    if not raw:
+        return set()
+    return {p.strip() for p in raw.split(",") if p.strip() in DEVICE_CAPABILITIES}
+
+
+def normalize_capabilities(raw: str | None) -> str:
+    """规范化能力串：去重、只留合法值、按枚举顺序稳定排序，逗号连接。
+
+    结果为空（全非法/空输入）时回落到全能力默认——设备至少要能承接一类任务，
+    与「存量默认全能力」口径一致，避免落库出一台谁都不匹配的死设备。
+    """
+    caps = parse_capabilities(raw)
+    if not caps:
+        return DEFAULT_DEVICE_CAPABILITIES
+    return ",".join(c.value for c in DeviceCapability if c.value in caps)
+
+
 class ExecStatus(str, enum.Enum):
     """执行队列项（exec_run）的生命周期。
 
