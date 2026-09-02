@@ -29,17 +29,18 @@ def _norm_title(title: str) -> str:
     return _NORM_RE.sub("", str(title or "")).lower()
 
 
-def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None) -> dict:
+def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, no_script=False) -> dict:
     """跑单个分片:引擎流式生成 → 解析。返回 {shard, cases, raw, meta, error}。
 
     引擎异常在此就地捕获成 error(不外抛),保证一片炸掉不影响其它片的 future。
+    no_script:透传给 prompt 构造——只产用例文本、script 一律 [](见 build_testcase_prompt)。
     """
     sid = shard["id"]
     raw, meta, err = "", None, None
     try:
         for evt in engine.stream_generate(
             requirement, project_id=project_id, pages=pages, timeout=timeout,
-            prompt_builder=lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard),
+            prompt_builder=lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard, no_script),
         ):
             et = evt.get("type")
             if et == "delta":
@@ -65,7 +66,8 @@ def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None) 
 
 def generate_sharded(engine, requirement: str, *, project_id: int | None = None,
                      pages: list[str] | None = None, shards: list[dict] | None = None,
-                     max_workers: int | None = None, timeout: int | None = None) -> dict:
+                     max_workers: int | None = None, timeout: int | None = None,
+                     no_script: bool = False) -> dict:
     """并行跑各分片并合并结果。
 
     返回 {cases, raw, meta:{duration_ms,cost_usd,output_tokens}, errors:[str],
@@ -86,7 +88,7 @@ def generate_sharded(engine, requirement: str, *, project_id: int | None = None,
     n = max_workers or min(len(shards), max(1, getattr(settings, "AI_SHARD_CONCURRENCY", 5)))
     with ThreadPoolExecutor(max_workers=n, thread_name_prefix="shard-gen") as ex:
         results = list(ex.map(
-            lambda sh: _run_one_shard(engine, requirement, project_id, pages, sh, timeout), shards))
+            lambda sh: _run_one_shard(engine, requirement, project_id, pages, sh, timeout, no_script), shards))
 
     cases: list[dict] = []
     seen: set[str] = set()

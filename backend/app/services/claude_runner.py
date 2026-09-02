@@ -423,8 +423,8 @@ TESTCASE_SHARDS = [
     },
 ]
 
-# 分片模式下每片的条数区间(全量模式仍是 8-20/最多 100)。K 片相加约 25-75 条,复杂需求可到 100+。
-_SHARD_CASE_RANGE = "5-12 条;该维度在本需求里确实丰富时可到 25 条"
+# 分片模式下每片的条数区间(全量模式仍是 8-20/最多 100)。K 片相加约 12-32 条,复杂需求更多。
+_SHARD_CASE_RANGE = "3-8 条;该维度在本需求里确实丰富时可到 12 条"
 
 
 def plan_shards(project_id: int | None = None) -> list[dict]:
@@ -434,7 +434,7 @@ def plan_shards(project_id: int | None = None) -> list[dict]:
 
 
 def build_testcase_prompt(requirement: str, project_id: int | None = None, pages: list[str] | None = None,
-                          shard: dict | None = None) -> str:
+                          shard: dict | None = None, no_script: bool = False) -> str:
     """把需求文本包装成「生成结构化测试点」的指令。
 
     用 <requirement> 标签包裹用户输入（而非引号），避免内容里的引号破坏边界。
@@ -444,6 +444,8 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
     shard:分片描述符(取自 TESTCASE_SHARDS)。给了就**只产该维度**、且只带该片需要的规则段
         (gui 片不带 api spec、api 片不带 gui DSL/key 清单),单片 input 减半;
         为 None 则全量拼装(单片回退 / 老调用方,与拆分前行为一致)。
+    no_script:True 则**只产用例文本(title/steps/expected/…)、script 一律 []**,跳过 gui/api script
+        规格段(输出的最大头)——用于「仅场景组合」等快速生成,待用户采纳后再逐条重生 script。
     """
     is_api_shard = bool(shard and shard.get("kinds") == "api")
     has_contract = _load_api_contract(project_id) is not None
@@ -471,6 +473,8 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    - kind：自动化执行类型，只能是 gui/api/cli/e2e/manual 之一（判定规则见下）
    - kind_reason：一句话说明为何判该 kind
    - script:""" + (
+        "**本次一律给 `[]`**(不产 script,待采纳后再单独生成)"
+        if no_script else
         "**api 给请求-断言-提取数组**(schema 见下);manual 一律给 []"
         if is_api_shard else
         "**gui/e2e 给界面步骤数组**(schema 见下);cli/manual 一律给 []"
@@ -487,20 +491,25 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
 
     secs.append(_kind_spec(has_contract))
 
-    if is_api_shard:
-        secs.append(_API_DESIGN_SPEC)
-        secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
-    else:
-        # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
-        keys = _load_selector_keys(project_id, pages)
-        if keys:
-            lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
-            keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
-        else:
-            keys_block = "\n   （当前无可用语义 key 清单：gui/e2e 若无法用 key 表达，请改判 manual）"
-        secs.append(_GUI_SCRIPT_SPEC + keys_block)
-        if not shard:   # 全量模式仍带 api 规范段(单片回退时一并产 api 用例)
+    # no_script:跳过 gui/api script 规格段(输出的最大头),script 一律 [] —— 显著减输出、提速。
+    if not no_script:
+        if is_api_shard:
+            secs.append(_API_DESIGN_SPEC)
             secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
+        else:
+            # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
+            keys = _load_selector_keys(project_id, pages)
+            if keys:
+                lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
+                keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
+            else:
+                keys_block = "\n   （当前无可用语义 key 清单：gui/e2e 若无法用 key 表达，请改判 manual）"
+            secs.append(_GUI_SCRIPT_SPEC + keys_block)
+            if not shard:   # 全量模式仍带 api 规范段(单片回退时一并产 api 用例)
+                secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
+    elif is_api_shard:
+        # 不产 script 但仍要正确判 api 用例:带设计规范(判定口径),不带 script schema
+        secs.append(_API_DESIGN_SPEC)
 
     # 场景组合设计:scenario 片是主场;全量模式也带(单片回退时不丢多场景覆盖)
     if (not shard) or shard.get("id") == "scenario":

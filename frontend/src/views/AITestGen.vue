@@ -179,6 +179,16 @@
           {{ running ? '生成中…' : '生成测试点' }}
         </el-button>
         <el-button v-if="running" size="large" @click="cancel">取消</el-button>
+        <el-checkbox v-model="scenarioOnly" :disabled="running" class="scenario-only">
+          仅生成场景组合用例
+          <el-tooltip placement="top">
+            <template #content>
+              只产「多场景组合(前置状态分支)」维度的用例，聚焦不同前置状态下的分支差异。<br>
+              产出更快、更聚焦；此模式<b>不生成 script</b>，采纳后到「用例库」点「保存并重生 script」逐条补齐。
+            </template>
+            <el-icon class="scenario-help"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </el-checkbox>
       </div>
     </el-card>
 
@@ -286,7 +296,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { MagicStick, UploadFilled, Document, Connection } from '@element-plus/icons-vue'
+import { MagicStick, UploadFilled, Document, Connection, QuestionFilled } from '@element-plus/icons-vue'
 import {
   listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
   cancelAiJob,
@@ -338,6 +348,8 @@ const taskId = ref(null)
 const targetPages = ref([])        // 生成的目标页面(收窄注入 key + 给该批用例打页面标)
 const pageOptions = ref([])        // 目标页面下拉候选:当前项目选择器里已有的 page(去重)
 const requirement = ref('')
+// 仅生成场景组合用例:只产 scenario 维度、不产 script(采纳后到用例库逐条重生 script)
+const scenarioOnly = ref(false)
 const aiAvailable = ref(true)
 const providers = ref([])          // [{id, available}] 来自 /ai/status
 const engine = ref('claude')       // 当前选中的生成引擎
@@ -582,7 +594,8 @@ function generate() {
   ctrl = new AbortController()
   streamTestcases(
     { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined,
-      requirement_url: sourceUrl.value || undefined, requirement_title: sourceInfo.value?.label || undefined },
+      requirement_url: sourceUrl.value || undefined, requirement_title: sourceInfo.value?.label || undefined,
+      scenario_only: scenarioOnly.value || undefined },
     {
       signal: ctrl.signal,
       // 轮询回传真实状态:排队位次 / 执行中;记录进入 running 的时刻供超时判定
@@ -598,6 +611,10 @@ function generate() {
         if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效测试点')
         else {
           ElMessage.success(`已生成 ${cases.value.length} 条测试点`)
+          // 场景组合模式不产 script:提示去用例库逐条补齐(复用「保存并重生 script」)
+          if (scenarioOnly.value && cases.value.length) {
+            ElMessage.info({ message: '场景组合用例未生成 script，采纳后到「用例库」点「保存并重生 script」逐条补齐', duration: 8000 })
+          }
           // 分片并行:个别维度没产出时用例仍落库,单独告警,别让人以为覆盖是全的
           if (evt.partialErrors?.length) {
             ElMessage.warning({ message: `部分维度未产出：${evt.partialErrors.join('；')}`, duration: 8000 })
@@ -694,6 +711,9 @@ function fmtTime(s) {
 
 <style scoped>
 .ai-testgen { display: flex; flex-direction: column; gap: 16px; }
+.actions { display: flex; align-items: center; gap: 12px; }
+.scenario-only { margin-left: 4px; }
+.scenario-help { color: #909399; margin-left: 2px; vertical-align: -2px; cursor: help; }
 .task-cases-tip { margin: 4px 0 12px; }
 .task-cases-list { margin-top: 6px; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 .task-case-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5a6b7b; }

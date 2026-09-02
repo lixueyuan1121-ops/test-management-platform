@@ -23,7 +23,7 @@ class FakeEngine:
         self.threads = set()
         self._lock = threading.Lock()
 
-    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None):
+    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None, no_script=False):
         return f"PROMPT::{shard['id'] if shard else 'full'}::{requirement}"
 
     def stream_generate(self, requirement, project_id=None, timeout=None, pages=None,

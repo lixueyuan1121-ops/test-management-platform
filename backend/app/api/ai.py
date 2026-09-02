@@ -200,7 +200,8 @@ def gen_testcases(
         db, "testcase_gen", provider=provider_id, project_id=body.project_id, user_id=user.id,
         input={"ai_task_id": at.id, "project_id": body.project_id, "task_id": body.task_id,
                "requirement": body.requirement, "pages": body.pages or None,
-               "requirement_id": requirement_id, "provider": provider_id},
+               "requirement_id": requirement_id, "provider": provider_id,
+               "scenario_only": bool(body.scenario_only)},
         ref_kind="ai_task", ref_id=at.id,
     )
     return ok({"job_id": job.id, "ai_task_id": at.id})
@@ -656,13 +657,18 @@ from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402
 _ai_jobs_reg.register_handler("script_gen", run_script_gen_job)
 
 
-def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str] | None):
+def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str] | None,
+              shard: dict | None = None, no_script: bool = False):
     """单次(不分片)跑引擎,累积流式事件。返回 (raw, meta, err)。
 
     分片被关掉(AI_SHARD_CONCURRENCY<=1)或只排到一片时走这条,行为与分片改造前一致。
+    shard/no_script 非默认时透传给 prompt 构造(如「仅场景组合」:只排 scenario 片、不产 script)。
     """
     raw, meta, err = "", None, None
-    for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages):
+    builder = None
+    if shard or no_script:
+        builder = lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard, no_script)  # noqa: E731
+    for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages, prompt_builder=builder):
         et = evt.get("type")
         if et == "delta":
             raw += evt.get("text") or ""
@@ -696,20 +702,28 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     requirement_id = inp.get("requirement_id")
     provider_id = generators.normalize_provider(inp.get("provider"))
     engine = generators.get_provider(provider_id)
+    # 「仅场景组合」:只排 scenario 分片、不产 script(采纳后在用例库逐条重生),产出快、聚焦场景覆盖。
+    scenario_only = bool(inp.get("scenario_only"))
 
     at = db.get(AiTask, ai_task_id)
     if at is None:
         raise ValueError("生成任务记录丢失")
 
     t0 = _time.monotonic()
-    shards = claude_runner.plan_shards(project_id)
-    # 分片数 ≤1 或配置关掉分片 → 回落单次调用(与拆分前完全一致的行为)
+    if scenario_only:
+        shards = [s for s in claude_runner.TESTCASE_SHARDS if s["id"] == "scenario"]
+    else:
+        shards = claude_runner.plan_shards(project_id)
+    # 分片数 ≤1 或配置关掉分片 → 回落单次调用(scenario_only 只 1 片也走这条,透传 shard+no_script)
     if getattr(settings, "AI_SHARD_CONCURRENCY", 5) <= 1 or len(shards) <= 1:
-        raw, meta, err = _gen_once(engine, requirement, project_id, pages)
+        one = shards[0] if len(shards) == 1 else None
+        raw, meta, err = _gen_once(engine, requirement, project_id, pages,
+                                   shard=one, no_script=scenario_only)
         cases = engine.parse_testcases(raw, project_id=project_id) if raw else []
         part_errors: list[str] = []
     else:
-        res = generate_sharded(engine, requirement, project_id=project_id, pages=pages, shards=shards)
+        res = generate_sharded(engine, requirement, project_id=project_id, pages=pages,
+                               shards=shards, no_script=scenario_only)
         raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
         err = "；".join(part_errors) if not cases else None
         logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",

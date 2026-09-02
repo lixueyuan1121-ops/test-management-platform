@@ -17,6 +17,9 @@ class TestCaseGenIn(BaseModel):
     provider: str | None = None  # 生成引擎 claude/deepseek/...；空/非法由后端 normalize 回落 claude
     requirement: str = Field(min_length=1, max_length=REQUIREMENT_MAX_LEN)  # M1：需求正文（url/file 由前端取文后填此字段）
     pages: list[str] | None = None  # 目标页面(选择器管理里的 page):①收窄注入的 key ②给该批无 key 用例兜底打页面标
+    # 仅生成「多场景组合(前置状态分支)」维度的用例,且不产 script(待采纳后在用例库逐条重生)。
+    # 勾选后只排 scenario 分片、跳过 flow/boundary/exception/api,产出快、聚焦场景覆盖。
+    scenario_only: bool = False
     # 需求追溯(建议项⑥):需求文档来源 url/标题(前端 extract-url 后带上)。
     # 有 url 时后端幂等 upsert 需求实体并给该批用例挂 requirement_id;纯文本粘贴无 url 不建实体。
     requirement_url: str | None = Field(None, max_length=512)
