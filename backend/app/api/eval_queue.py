@@ -170,12 +170,16 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
 @router.get("")
 def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
                  db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
+    # 本端点被测评 runner(run-eval.sh)轮询 → 刷 last_eval_at 记「该机当前在跑测评 runner」(运行时类型感知)。
     if ctx.device is not None:
         runner = ctx.device.runner_id
-        ctx.device.last_seen_at = datetime.utcnow(); db.commit()
+        now = datetime.utcnow()
+        ctx.device.last_seen_at = now
+        ctx.device.last_eval_at = now
+        db.commit()
     else:
         from app.services.dispatcher import touch_runner_heartbeat
-        touch_runner_heartbeat(db, runner)   # 共享 token:按 runner_id 刷心跳(在线判定统一口径)
+        touch_runner_heartbeat(db, runner, kind="eval")   # 共享 token:按 runner_id 刷心跳(在线判定统一口径)
     # 多轮会话各轮必须同批下发(见 _take_whole_groups),故不能用 SQL .limit() 硬切(会拦腰截断某组)。
     rows = (db.query(EvalRun)
             .filter(EvalRun.status == EvalRunStatus.pending, EvalRun.runner == runner)

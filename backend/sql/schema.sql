@@ -446,9 +446,11 @@ CREATE TABLE `runner_device` (
   `runner_id` VARCHAR(64) NOT NULL,
   `name` VARCHAR(128) NOT NULL,
   `platform` VARCHAR(16) NOT NULL DEFAULT 'web',
-  `capabilities` VARCHAR(64) NOT NULL DEFAULT 'func,eval',
+  `capabilities` VARCHAR(64) NOT NULL DEFAULT 'func,eval',  -- 【已弃用】改运行时感知(last_exec_at/last_eval_at)后不再据此判断,保留死列
   `token` VARCHAR(128) NOT NULL,
   `last_seen_at` DATETIME DEFAULT NULL,
+  `last_exec_at` DATETIME DEFAULT NULL,   -- 最近一次功能 runner 拉 exec-queue(运行时类型感知)
+  `last_eval_at` DATETIME DEFAULT NULL,   -- 最近一次测评 runner 拉 eval-queue(运行时类型感知)
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_owner_runner` (`owner_id`,`runner_id`),

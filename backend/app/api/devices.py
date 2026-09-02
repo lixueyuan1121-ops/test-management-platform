@@ -18,7 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_platform_admin
-from app.core.enums import EvalRunStatus, normalize_capabilities
+from app.core.enums import EvalRunStatus
 from app.db.session import get_db
 from app.models import EvalRun, ExecRun, Project, RunnerDevice, TestCase, User
 from app.schemas.common import ok
@@ -33,21 +33,35 @@ ONLINE_WINDOW_SEC = 180
 ACTIVE_RUNS_LIMIT = 8
 
 
+def _active_kinds(d: RunnerDevice, utc_now: datetime,
+                  exec_running: set | None = None, eval_running: set | None = None) -> list[str]:
+    """设备当前在跑哪类 runner:['func'] / ['eval'] / [](未启动任何 runner)。
+
+    复用 dispatcher.current_kind(单一类型;切换重叠期取更晚时间戳,执行期用 running 补偿),
+    使看板显示与派单/拦截口径完全一致。返回列表(前端 v-for 兼容),同时刻至多一个元素。
+    exec_running/eval_running:有 running 的 runner_id 集合(看板批量传入补偿心跳滞后);不传
+    (如「我的设备」列表)则空集,仅按 last_exec_at/last_eval_at 时间戳判断,够用。
+    """
+    from app.services.dispatcher import current_kind
+    cutoff = utc_now - timedelta(seconds=ONLINE_WINDOW_SEC)
+    cur = current_kind(d, cutoff, exec_running or set(), eval_running or set())
+    return [cur] if cur else []
+
+
 class DeviceIn(BaseModel):
     runner_id: str = Field(..., min_length=1, max_length=64)
     name: str = Field(..., min_length=1, max_length=128)
     # platform: web(PC端) / android / ios；默认 web 保持向后兼容。
     platform: str = Field("web", pattern="^(web|android|ios)$")
-    # capabilities: 逗号分隔能力集(func=功能测试 / eval=对话测评)。默认全能力(与存量口径一致);
-    # 落库前经 normalize_capabilities 去重/去非法/排序,空/全非法回落 'func,eval'。
-    capabilities: str = Field("func,eval", max_length=64)
 
 
 class DevicePatchIn(BaseModel):
-    """编辑设备:三项均可选,只更新传入的字段(None=不改)。runner_id 不可改(是稳定标识)。"""
+    """编辑设备:两项均可选,只更新传入的字段(None=不改)。runner_id 不可改(是稳定标识)。
+
+    能力(func/eval)不再手工配置——改为按设备实际在跑的 runner 运行时感知,无需在此维护。
+    """
     name: str | None = Field(None, min_length=1, max_length=128)
     platform: str | None = Field(None, pattern="^(web|android|ios)$")
-    capabilities: str | None = Field(None, max_length=64)
 
 
 def _mask(token: str) -> str:
@@ -57,13 +71,15 @@ def _mask(token: str) -> str:
     return f"{token[:6]}…{token[-4:]}"
 
 
-def _to_out(d: RunnerDevice, *, reveal_token: bool = False) -> dict:
+def _to_out(d: RunnerDevice, *, reveal_token: bool = False,
+            exec_running: set | None = None, eval_running: set | None = None) -> dict:
     return {
         "id": d.id,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
-        "capabilities": d.capabilities or "func,eval",   # 老行空值兜底全能力(与迁移 default 一致)
+        # 当前在跑哪类 runner(运行时感知);列表页传入 running 集合补偿执行长任务期不轮询的心跳滞后
+        "active_kinds": _active_kinds(d, datetime.utcnow(), exec_running, eval_running),
         "token": d.token if reveal_token else _mask(d.token),  # 仅注册/重置时给明文
         "last_seen_at": (d.last_seen_at.isoformat() + "Z") if d.last_seen_at else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
@@ -72,13 +88,16 @@ def _to_out(d: RunnerDevice, *, reveal_token: bool = False) -> dict:
 
 @router.get("")
 def list_my_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.dispatcher import _eval_running_runners, _exec_running_runners
     rows = (
         db.query(RunnerDevice)
         .filter(RunnerDevice.owner_id == user.id)
         .order_by(RunnerDevice.id)
         .all()
     )
-    return ok([_to_out(d) for d in rows])
+    # running 补偿:设备执行长任务期不轮询队列、时间戳会超窗,叠加 running 集合避免误显「未启动」
+    er, evr = _exec_running_runners(db), _eval_running_runners(db)
+    return ok([_to_out(d, exec_running=er, eval_running=evr) for d in rows])
 
 
 @router.post("")
@@ -96,7 +115,6 @@ def register_device(body: DeviceIn, db: Session = Depends(get_db), user: User = 
         runner_id=body.runner_id.strip(),
         name=body.name.strip(),
         platform=body.platform,
-        capabilities=normalize_capabilities(body.capabilities),
         token=secrets.token_hex(32),   # 64 位十六进制长随机串
     )
     db.add(device)
@@ -108,7 +126,7 @@ def register_device(body: DeviceIn, db: Session = Depends(get_db), user: User = 
 @router.patch("/{device_id}")
 def update_device(device_id: int, body: DevicePatchIn,
                   db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """编辑我的设备(name/platform/capabilities)。runner_id 是稳定标识,不可改。"""
+    """编辑我的设备(name/platform)。runner_id 是稳定标识,不可改;能力改为运行时感知,无需配置。"""
     device = db.get(RunnerDevice, device_id)
     if not device or device.owner_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="设备不存在或不属于你")
@@ -116,8 +134,6 @@ def update_device(device_id: int, body: DevicePatchIn,
         device.name = body.name.strip()
     if body.platform is not None:
         device.platform = body.platform
-    if body.capabilities is not None:
-        device.capabilities = normalize_capabilities(body.capabilities)
     db.commit()
     db.refresh(device)
     return ok(_to_out(device))
@@ -155,7 +171,8 @@ _EVAL_STATUS_MAP = {"pending": "pending", "running": "running",
 
 
 def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
-                         counts: dict, today: dict, active: list) -> dict:
+                         counts: dict, today: dict, active: list,
+                         exec_running_ids: set, eval_running_ids: set) -> dict:
     # 在线判定必须用 UTC：last_seen_at 由 runner 拉取时以 datetime.utcnow() 写入
     # （见 exec_queue/perf/eval_queue/probe），判定端若用本地 now() 会凭空多算时区偏移
     # （CST 差 8h → 永远离线）。故此处与写入侧统一用 utcnow。
@@ -168,7 +185,9 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
-        "capabilities": d.capabilities or "func,eval",   # 能力集(func/eval),看板展示标识用
+        # active_kinds:当前实际在跑哪类 runner(func/eval)——运行时感知,叠加 running 补偿执行期心跳滞后。
+        # 看板据此显示「这台机此刻在跑功能测试/对话测评」,而非静态配置(一台机同时刻只能跑一类)。
+        "active_kinds": _active_kinds(d, utc_now, exec_running_ids, eval_running_ids),
         "owner": {"id": d.owner_id, "name": owner_name},
         # 加 Z 标明 UTC：last_seen_at 是 naive UTC(utcnow 写入)，不带时区前端会当本地时间解析、
         # 凭空差 8h(CST)→ 显示「刚掉线就 8 小时前」。补 Z 让前端 new Date 正确按 UTC 解析。
@@ -301,11 +320,15 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
     out = []
     online_cnt = 0
     running_cnt = 0
+    # 运行时类型判定的 running 补偿集合:有 running exec/eval 的 runner_id(执行期不轮询、心跳滞后时兜底)
+    exec_running_ids = {r.runner for r, _, _ in running_rows}
+    eval_running_ids = {r.runner for r, _ in eval_running_rows}
     for d in devices:
         counts = counts_by_runner.get(d.runner_id, {})
         today = today_by_runner.get(d.runner_id, {})
         active = active_by_runner.get(d.runner_id, [])
-        dev = _overview_device_out(d, owner_names.get(d.owner_id, ""), utc_now, counts, today, active)
+        dev = _overview_device_out(d, owner_names.get(d.owner_id, ""), utc_now, counts, today, active,
+                                   exec_running_ids, eval_running_ids)
         if dev["online"]:
             online_cnt += 1
         if dev["run_counts"]["running"] > 0:

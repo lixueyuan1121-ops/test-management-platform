@@ -572,11 +572,11 @@ def ensure_platform_columns() -> None:
 
 
 def ensure_runner_device_capabilities() -> None:
-    """runner_device 补 capabilities 列（设备能力标识：func=功能测试 / eval=对话测评）。
+    """runner_device 补 capabilities 列(设备能力标识：func=功能测试 / eval=对话测评）。
 
-    DEFAULT 'func,eval'（全能力）保证存量设备迁移后不改变现有可派单范围——上线零中断，
-    与「存量默认全能力」口径一致。逗号分隔存储而非 JSON：对齐 platform 字符串风格，
-    且生产 MySQL 5.6 无 JSON 类型。幂等：ADD 前先探列。新库由 create_all 自带此列。
+    【已弃用】改为运行时感知(见 ensure_runner_device_runner_kind)后不再据此判断,但保留本迁移
+    幂等建列以兼容:①上个版本已建此列的生产库;②新库 create_all 仍带该列(model 保留定义)。
+    列存在无害(死列),不删以避免删列迁移风险。DEFAULT 'func,eval' 保持存量行有值。
     """
     rd_cols = _columns("runner_device")
     if rd_cols and "capabilities" not in rd_cols:
@@ -585,3 +585,20 @@ def ensure_runner_device_capabilities() -> None:
                 "ALTER TABLE runner_device ADD COLUMN capabilities VARCHAR(64) "
                 "NOT NULL DEFAULT 'func,eval'"
             ))
+
+
+def ensure_runner_device_runner_kind() -> None:
+    """runner_device 补 last_exec_at / last_eval_at 两列(运行时 runner 类型感知)。
+
+    功能 runner 轮询 exec-queue 刷 last_exec_at、测评 runner 轮询 eval-queue 刷 last_eval_at;
+    「当前在跑哪类」据这两个时间戳是否在在线窗口内判断,看板/派单/拦截皆用。两方言通用 ADD COLUMN,
+    幂等(ADD 前先探列)。NULL 缺省 = 从未以该类 runner 拉取过。新库由 create_all 自带此二列。
+    """
+    rd_cols = _columns("runner_device")
+    if not rd_cols:
+        return  # 表尚未建,交给 create_all
+    with engine.begin() as conn:
+        if "last_exec_at" not in rd_cols:
+            conn.execute(text("ALTER TABLE runner_device ADD COLUMN last_exec_at DATETIME NULL"))
+        if "last_eval_at" not in rd_cols:
+            conn.execute(text("ALTER TABLE runner_device ADD COLUMN last_eval_at DATETIME NULL"))

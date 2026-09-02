@@ -38,11 +38,21 @@ app.dependency_overrides[get_current_user] = lambda: _s.get(User, 1)
 client = TestClient(app)
 
 
-def _dev(rid, platform="web", seen_ago_sec=None, caps="func,eval"):
-    d = RunnerDevice(owner_id=1, runner_id=rid, name=rid, platform=platform,
-                     capabilities=caps, token=f"tk-{rid}")
+def _dev(rid, platform="web", seen_ago_sec=None, eval_ago=None):
+    """seen_ago_sec:最近作为【功能 runner】拉 exec-queue 的秒数前 → 设 last_seen_at + last_exec_at
+    (在线且在跑功能 runner,现有功能派单测试的默认语境)。eval_ago:最近作为【测评 runner】拉 eval-queue。
+    运行时感知下,派单/看板据 last_exec_at/last_eval_at 判断设备当前在跑哪类 runner。"""
+    d = RunnerDevice(owner_id=1, runner_id=rid, name=rid, platform=platform, token=f"tk-{rid}")
+    now = datetime.utcnow()
     if seen_ago_sec is not None:
-        d.last_seen_at = datetime.utcnow() - timedelta(seconds=seen_ago_sec)
+        t = now - timedelta(seconds=seen_ago_sec)
+        d.last_seen_at = t
+        d.last_exec_at = t
+    if eval_ago is not None:
+        t = now - timedelta(seconds=eval_ago)
+        d.last_eval_at = t
+        if d.last_seen_at is None:
+            d.last_seen_at = t
     _s.add(d)
     _s.commit()
     return d
@@ -195,11 +205,12 @@ def test_shared_token_heartbeat():
     print("OK shared-token heartbeat")
 
 
-def test_capability_filter():
-    """设备能力标识(func/eval)精准下发:auto 按能力过滤,手动指定能力不符报错。
+def test_runtime_kind_filter():
+    """运行时 runner 类型感知:设备在跑哪类 runner(拉哪个队列)决定它接哪类任务,而非静态配置。
 
-    根因:两套 runner 抢同一客户端不能并行,一台机实际只承接一类任务。此前测评 auto
-    (online_eval_runners)不看能力、把所有在线设备铺开 → 测评任务错派到只跑功能测试的机器。
+    根因:两套 runner 抢同一客户端不能并行,一台机同时刻只跑一类。功能 runner 拉 exec-queue
+    刷 last_exec_at、测评 runner 拉 eval-queue 刷 last_eval_at;据此运行时判断当前在跑哪类,
+    auto 派单/手动拦截/看板皆用,从根上杜绝「测评任务派到只跑功能测试的机器」。
     """
     from app.services.dispatcher import online_eval_runners
 
@@ -207,51 +218,58 @@ def test_capability_filter():
     _s.query(RunnerDevice).delete()
     _s.commit()
 
-    # 三台在线设备:全能力 / 只功能 / 只测评
-    _dev("both-01", "web", seen_ago_sec=10, caps="func,eval")
-    _dev("func-only", "web", seen_ago_sec=10, caps="func")
-    _dev("eval-only", "web", seen_ago_sec=10, caps="eval")
+    # 三台在线设备:正在跑功能 runner / 正在跑测评 runner / 注册但没启动任何 runner(空闲)
+    _dev("func-run", "web", seen_ago_sec=10)          # last_exec_at 新鲜 → 在跑功能
+    _dev("eval-run", "web", eval_ago=10)              # last_eval_at 新鲜 → 在跑测评
+    _dev("idle-dev", "web")                           # 两个时间戳都空 → 空闲
 
-    # 功能 auto(pick_runner)只在 func 能力设备里选,绝不选 eval-only
-    picks = {pick_runner(_s, "web") for _ in range(5)}   # 负载相同,取 id 最小者稳定
-    assert picks <= {"both-01", "func-only"}, f"功能 auto 不应选中 eval-only: {picks}"
+    # 功能 auto(pick_runner)只选在跑功能 runner 的机,绝不选在跑测评的
+    picks = {pick_runner(_s, "web") for _ in range(5)}
+    assert picks == {"func-run"}, f"功能 auto 应只选在跑功能 runner 的机: {picks}"
 
-    # 测评 auto(online_eval_runners)只返回含 eval 的设备,绝不含 func-only
+    # 测评 auto(online_eval_runners)只返回在跑测评 runner 的机
     ev = set(online_eval_runners(_s))
-    assert ev == {"both-01", "eval-only"}, f"测评 auto 应仅含 eval 能力设备,实际 {ev}"
+    assert ev == {"eval-run"}, f"测评 auto 应只含在跑测评 runner 的机: {ev}"
 
-    # 手动下发功能用例到只测评的机器 → 400 拦截
+    # 手动下发功能用例到「正在跑测评 runner」的机 → 400 拦截
     d = client.post("/api/exec-queue/enqueue-cases", json={
-        "project_id": 100, "runner": "eval-only", "test_case_ids": [1],
+        "project_id": 100, "runner": "eval-run", "test_case_ids": [1],
     }).json()
-    assert d["code"] == 400 and "功能测试" in d["msg"], d
+    assert d["code"] == 400 and "对话测评" in d["msg"], d
 
-    # 手动下发功能用例到功能机 → 放行
+    # 手动下发功能用例到「正在跑功能 runner」的机 → 放行
     d2 = client.post("/api/exec-queue/enqueue-cases", json={
-        "project_id": 100, "runner": "func-only", "test_case_ids": [1],
+        "project_id": 100, "runner": "func-run", "test_case_ids": [1],
     }).json()
     assert d2["code"] == 0, d2
 
-    # 手动下发测评到只功能的机器 → _check_eval_capability 抛 ValueError
-    from app.api.eval_task import _check_eval_capability
-    try:
-        _check_eval_capability(_s, "func-only")
-        assert False, "只功能设备应拒绝测评下发"
-    except ValueError as e:
-        assert "对话测评" in str(e), e
-    _check_eval_capability(_s, "eval-only")   # 测评机放行(不抛)
-    _check_eval_capability(_s, "ghost-xx")    # 未登记设备放行(向后兼容)
-
-    # 未登记 runner:功能手动下发也放行(向后兼容旧 runner)
+    # 手动下发功能用例到「空闲」机 → 放行(不拦,用户可能随后启动功能 runner)
     d3 = client.post("/api/exec-queue/enqueue-cases", json={
-        "project_id": 100, "runner": "ghost-xx", "test_case_ids": [1],
+        "project_id": 100, "runner": "idle-dev", "test_case_ids": [1],
     }).json()
     assert d3["code"] == 0, d3
+
+    # 手动下发测评到「正在跑功能 runner」的机 → _check_eval_capability 抛 ValueError
+    from app.api.eval_task import _check_eval_capability
+    try:
+        _check_eval_capability(_s, "func-run")
+        assert False, "在跑功能 runner 的机应拒绝测评下发"
+    except ValueError as e:
+        assert "功能测试" in str(e), e
+    _check_eval_capability(_s, "eval-run")   # 在跑测评 runner:放行(不抛)
+    _check_eval_capability(_s, "idle-dev")   # 空闲:放行
+    _check_eval_capability(_s, "ghost-xx")   # 未登记:放行(向后兼容)
+
+    # 未登记 runner:功能手动下发也放行(向后兼容旧共享 token runner)
+    d4 = client.post("/api/exec-queue/enqueue-cases", json={
+        "project_id": 100, "runner": "ghost-xx", "test_case_ids": [1],
+    }).json()
+    assert d4["code"] == 0, d4
 
     _s.query(ExecRun).delete()
     _s.query(RunnerDevice).delete()
     _s.commit()
-    print("OK capability filter")
+    print("OK runtime kind filter")
 
 
 def main():
@@ -260,7 +278,7 @@ def main():
     test_enqueue_auto()
     test_reassign()
     test_shared_token_heartbeat()
-    test_capability_filter()
+    test_runtime_kind_filter()
     print("OK test_dispatcher")
 
 

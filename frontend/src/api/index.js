@@ -323,7 +323,7 @@ export const startProbe = (body) => http.post('/probe', body)
 export const getProbe = (id) => http.get(`/probe/${id}`)
 
 export const listMyDevices = () => http.get('/devices')
-export const registerDevice = (runner_id, name, platform = 'web', capabilities = 'func,eval') => http.post('/devices', { runner_id, name, platform, capabilities })
+export const registerDevice = (runner_id, name, platform = 'web') => http.post('/devices', { runner_id, name, platform })
 export const updateDevice = (id, patch) => http.patch(`/devices/${id}`, patch)
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
 export const deleteDevice = (id) => http.delete(`/devices/${id}`)

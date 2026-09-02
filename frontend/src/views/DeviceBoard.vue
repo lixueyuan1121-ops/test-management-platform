@@ -65,8 +65,9 @@
             <span class="seen">{{ d.online ? '在线' : lastSeenText(d.last_seen_at) }}</span>
           </div>
 
-          <!-- 能力标识:这台机被允许承接哪类下发(func/eval),区别于上方「正在跑什么」的 kind-tag -->
-          <div class="caps">
+          <!-- 当前 runner:这台机此刻实际在跑哪类 runner(func/eval)——运行时感知,后端 active_kinds。
+               与上方 kind-tag(正在执行的具体任务)呼应;空闲(没启动 runner)时不显示。 -->
+          <div v-if="devCaps(d).length" class="caps">
             <span v-for="c in devCaps(d)" :key="c" class="cap-tag" :class="'cap-' + c">{{ CAP_LABEL[c] || c }}</span>
           </div>
 
@@ -123,11 +124,11 @@ const KIND_SHORT = { func: '功能', eval: '测评' }
 const runKinds = (d) => [...new Set((d.active_runs || []).map((r) => r.kind || 'func'))]
 // 设备能力(逗号串 → 有序数组):这台机被允许承接的任务类型,缺省视为全能力(与后端 default 一致)
 const CAP_ORDER = ['func', 'eval']
-// 能力文案与「我的设备」页 CAP_LABEL 对齐(独立于 KIND_LABEL:后者指「正在跑的任务」,eval 叫「测评任务」;
-// 能力语境下 eval 用正式名「对话测评」,两页术语统一)。
+// 当前 runner 文案(与「我的设备」页对齐;独立于 KIND_LABEL——后者指正在执行的具体任务,eval 叫「测评任务」)
 const CAP_LABEL = { func: '功能测试', eval: '对话测评' }
+// 设备当前在跑哪类 runner:后端 active_kinds(运行时感知,已是有序 func/eval 数组);做一层兜底过滤/排序
 const devCaps = (d) => {
-  const set = new Set(String(d.capabilities || 'func,eval').split(',').map((x) => x.trim()).filter((x) => CAP_ORDER.includes(x)))
+  const set = new Set((d.active_kinds || []).filter((x) => CAP_ORDER.includes(x)))
   return CAP_ORDER.filter((c) => set.has(c))
 }
 
@@ -285,7 +286,7 @@ onUnmounted(() => {
 .pip-eval { background: #7a4fd0; }
 .meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: #8b98a9; }
 .meta .seen { font-family: 'JetBrains Mono', monospace; color: #9aa5b1; }
-/* 能力标识(静态:可接哪类任务),弱于 kind-tag(正在跑什么)——描边淡底,不抢眼 */
+/* 当前 runner 标识(运行时:此刻在跑哪类 runner),弱于 kind-tag(正在执行的具体任务)——描边淡底,不抢眼 */
 .caps { display: flex; gap: 6px; margin-top: 6px; }
 .cap-tag { font-size: 10px; padding: 1px 8px; border-radius: 4px; border: 1px solid; letter-spacing: .3px; }
 .cap-func { color: #2f7dd1; border-color: #bcd9f5; background: #f4f9fe; }

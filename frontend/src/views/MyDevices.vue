@@ -11,8 +11,8 @@
       <el-alert type="info" :closable="false" show-icon class="intro">
         在自己的电脑上部署 runner,把这里生成的 <b>专属 token</b> 填进 runner 的 <code>.env</code>(RUNNER_TOKEN)与
         <code>RUNNER_ID</code>(填设备的 runner_id)。之后在用例库/任务清单下发时选中该设备,用例就会到你这台机器上执行。
-        <br><b>能力</b>决定这台机能接哪类下发:功能测试(run.sh)与对话测评(run-eval.sh)抢同一个客户端,不能在一台机上同时跑,
-        请按这台实际启动的 runner 勾选,平台据此精准派单、避免错派。
+        <br>这台机<b>当前在跑哪类 runner</b>(功能 <code>run.sh</code> / 测评 <code>run-eval.sh</code>)由平台<b>自动感知</b>——
+        跑哪个就接哪类任务,无需手动配置(两套 runner 抢同一客户端,不能在一台机上同时跑)。
       </el-alert>
 
       <el-table :data="devices" v-loading="loading" size="small" border stripe empty-text="还没有登记设备,点右上角『注册设备』">
@@ -23,12 +23,12 @@
             <el-tag :type="PLATFORM_TYPE[row.platform || 'web']" size="small" effect="plain">{{ PLATFORM_LABEL[row.platform || 'web'] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="能力" width="150" align="center">
+        <el-table-column label="当前 runner" width="130" align="center">
           <template #default="{ row }">
-            <template v-for="c in parseCaps(row.capabilities)" :key="c">
-              <el-tag :type="CAP_TYPE[c]" size="small" effect="light" style="margin: 0 2px">{{ CAP_LABEL[c] }}</el-tag>
+            <template v-for="c in (row.active_kinds || [])" :key="c">
+              <el-tag :type="CAP_TYPE[c]" size="small" effect="light" style="margin: 0 2px">{{ CAP_LABEL[c] || c }}</el-tag>
             </template>
-            <span v-if="!parseCaps(row.capabilities).length" class="mono">—</span>
+            <span v-if="!(row.active_kinds || []).length" class="mono idle">未启动</span>
           </template>
         </el-table-column>
         <el-table-column label="token" min-width="130">
@@ -66,12 +66,8 @@
           </el-radio-group>
           <div class="form-hint">决定该设备能执行哪类用例（web=PC端 GUI/E2E）</div>
         </el-form-item>
-        <el-form-item label="能力" required>
-          <el-checkbox-group v-model="dialog.capabilities">
-            <el-checkbox value="func" border>功能测试</el-checkbox>
-            <el-checkbox value="eval" border>对话测评</el-checkbox>
-          </el-checkbox-group>
-          <div class="form-hint">这台机启动的是 <code>run.sh</code>(功能)还是 <code>run-eval.sh</code>(测评)?按实际勾选,决定平台派哪类任务给它</div>
+        <el-form-item>
+          <div class="form-hint">提示:这台机接功能还是测评任务,由它实际启动的 runner(<code>run.sh</code>/<code>run-eval.sh</code>)自动决定,无需在此配置。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -102,21 +98,14 @@ import { listMyDevices, registerDevice, updateDevice, resetDeviceToken, deleteDe
 
 const PLATFORM_LABEL = { web: 'PC/Web', android: 'Android', ios: 'iOS' }
 const PLATFORM_TYPE = { web: '', android: 'success', ios: 'warning' }
-// 能力标识:func=功能测试 / eval=对话测评。与后端 DeviceCapability、看板 kind 同源。
+// 当前 runner 类型标识:func=功能测试 / eval=对话测评(运行时感知,后端 active_kinds 返回)
 const CAP_LABEL = { func: '功能测试', eval: '对话测评' }
 const CAP_TYPE = { func: 'primary', eval: 'warning' }
-const CAP_ORDER = ['func', 'eval']
-
-// 逗号串 → 有序合法能力数组(过滤空/非法,按 CAP_ORDER 稳定排序)
-function parseCaps(s) {
-  const set = new Set(String(s || '').split(',').map((x) => x.trim()).filter((x) => CAP_ORDER.includes(x)))
-  return CAP_ORDER.filter((c) => set.has(c))
-}
 
 const devices = ref([])
 const loading = ref(false)
-// dialog 兼注册/编辑:id 为空=注册,非空=编辑该设备。
-const dialog = reactive({ visible: false, id: null, runner_id: '', name: '', platform: 'web', capabilities: ['func', 'eval'], saving: false })
+// dialog 兼注册/编辑:id 为空=注册,非空=编辑该设备。能力不再配置(运行时感知)。
+const dialog = reactive({ visible: false, id: null, runner_id: '', name: '', platform: 'web', saving: false })
 const tokenDlg = reactive({ visible: false, token: '' })
 
 async function load() {
@@ -126,34 +115,30 @@ async function load() {
 onMounted(load)
 
 function openRegister() {
-  Object.assign(dialog, { id: null, runner_id: '', name: '', platform: 'web', capabilities: ['func', 'eval'] })
+  Object.assign(dialog, { id: null, runner_id: '', name: '', platform: 'web' })
   dialog.visible = true
 }
 
 function openEdit(row) {
-  const caps = parseCaps(row.capabilities)
   Object.assign(dialog, {
     id: row.id,
     runner_id: row.runner_id,
     name: row.name,
     platform: row.platform || 'web',
-    capabilities: caps.length ? caps : ['func', 'eval'],
   })
   dialog.visible = true
 }
 
 async function doSave() {
   if (!dialog.runner_id.trim() || !dialog.name.trim()) { ElMessage.warning('请填写 runner_id 与设备名'); return }
-  if (!dialog.capabilities.length) { ElMessage.warning('请至少勾选一项能力'); return }
   dialog.saving = true
   try {
-    const caps = parseCaps(dialog.capabilities.join(',')).join(',')
     if (dialog.id) {
-      await updateDevice(dialog.id, { name: dialog.name.trim(), platform: dialog.platform, capabilities: caps })
+      await updateDevice(dialog.id, { name: dialog.name.trim(), platform: dialog.platform })
       dialog.visible = false
       ElMessage.success('已保存')
     } else {
-      const d = await registerDevice(dialog.runner_id.trim(), dialog.name.trim(), dialog.platform, caps)
+      const d = await registerDevice(dialog.runner_id.trim(), dialog.name.trim(), dialog.platform)
       dialog.visible = false
       showToken(d.token)
     }
@@ -207,4 +192,5 @@ function fmtTime(s) {
 .token-box { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #f5f7fa; border-radius: 6px; }
 .token-text { word-break: break-all; flex: 1; }
 .form-hint { font-size: 12px; color: #909399; margin-top: 4px; }
+.idle { color: #a8b0bb; }
 </style>

@@ -237,22 +237,22 @@ def _resolve_runners(db: Session, runner: str | None, runners: list[str] | None)
 
 
 def _check_eval_capability(db: Session, runner_id: str) -> None:
-    """手动指定的执行机须具备 eval 能力,否则抛 ValueError(上层转 400 / 定时 job 跳过)。
+    """手动指定的执行机当前若在跑【功能 runner】则抛 ValueError(上层转 400 / 定时 job 跳过)。
 
-    - 未登记设备(查无 RunnerDevice)→ 不阻塞(旧 runner/外部 runner 兼容);
-    - capabilities 为空 → 视为全能力、不阻塞(迁移前老行兜底);
-    - 明确不含 eval(如只勾了 func 的功能测试机)→ 拒绝,避免测评任务错派到跑不了的机器。
-    同名 runner_id 跨 owner 多台时取任一登记行判定(与看板/调度按 runner_id 聚合口径一致)。
+    运行时感知:一台机同时刻只能跑一类 runner。若目标机此刻在跑功能 runner(在拉 exec-queue),
+    给它下发测评任务它拉不到、必卡住 → 拦截。
+    - 未登记设备 → 不阻塞(旧 runner 兼容);
+    - 空闲(没启动任何 runner)→ 不阻塞(用户可能随后启动测评 runner);
+    - 正在跑测评 runner → 放行。
+    判据见 dispatcher.device_conflicts_kind(据 last_exec_at/last_eval_at + running 运行时判断)。
     """
-    from app.core.enums import DeviceCapability, parse_capabilities
     from app.models import RunnerDevice
+    from app.services.dispatcher import device_conflicts_kind
 
-    dev = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).first()
-    if dev is None:
-        return
-    caps = parse_capabilities(dev.capabilities)
-    if caps and DeviceCapability.eval.value not in caps:
-        raise ValueError(f"执行机「{dev.name}」未开启『对话测评』能力,不能下发测评任务,请改选测评执行机")
+    if device_conflicts_kind(db, runner_id, "eval"):
+        dev = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).first()
+        raise ValueError(f"执行机「{dev.name if dev else runner_id}」当前在跑『功能测试』runner,"
+                         f"不能下发测评任务(一台机同时刻只能跑一类),请改选测评执行机或等它切回")
 
 
 def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,

@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.enums import DeviceCapability, parse_capabilities
 from app.models import ExecRun, RunnerDevice
 
 logger = logging.getLogger("test_platform")
@@ -20,25 +19,77 @@ logger = logging.getLogger("test_platform")
 AUTO_RUNNER = "auto"   # enqueue 传这个值即触发自动挑设备
 
 
-def _has_cap(dev: RunnerDevice, cap: str) -> bool:
-    """设备是否具备某能力(func/eval)。
+def _exec_running_runners(db: Session) -> set[str]:
+    """当前有 running 功能测试(exec_run)的 runner 集合。执行期设备不轮询队列,
+    last_exec_at 会滞后,用 running 补偿:正在跑功能用例的机必然在跑功能 runner。"""
+    return {r for (r,) in db.query(ExecRun.runner)
+            .filter(ExecRun.status == "running").distinct().all()}
 
-    未标注(capabilities 为空)→ 视为全能力、不阻塞:兼容迁移前的行、异常空值,
-    与 DB server_default='func,eval' 及「存量默认全能力」口径一致(fail-open)。
+
+def _eval_running_runners(db: Session) -> set[str]:
+    """当前有 running 对话测评(eval_run)的 runner 集合(补偿测评执行期心跳滞后)。"""
+    from app.core.enums import EvalRunStatus
+    from app.models import EvalRun
+    return {r for (r,) in db.query(EvalRun.runner)
+            .filter(EvalRun.status == EvalRunStatus.running).distinct().all()}
+
+
+def current_kind(d: RunnerDevice, cutoff: datetime,
+                 exec_running: set, eval_running: set) -> str | None:
+    """设备此刻在跑哪类 runner:'func'(功能)/ 'eval'(测评)/ None(未启动任何 runner)。
+
+    一台机同时刻只能跑一类(抢同一客户端不能并行),故返回【单一】类型:
+    - 功能 runner 轮询 exec-queue 刷 last_exec_at、测评 runner 轮询 eval-queue 刷 last_eval_at;
+    - 两个时间戳都在在线窗口内(切换 runner 的重叠瞬间)→ 取【更晚】的那个 = 当前真正在跑的,
+      使切换后立即反映最新(而非 3 分钟内两类都显示,困惑用户);
+    - 都过期 → running 补偿(执行期不轮询、心跳滞后,有 running 必在跑对应 runner);
+    - 全无 → None(空闲)。看板/派单/手动拦截统一据此,口径一致。
     """
-    caps = parse_capabilities(getattr(dev, "capabilities", None))
-    if not caps:
-        return True
-    return cap in caps
+    exec_fresh = bool(d.last_exec_at and d.last_exec_at >= cutoff)
+    eval_fresh = bool(d.last_eval_at and d.last_eval_at >= cutoff)
+    if exec_fresh and eval_fresh:
+        return "eval" if d.last_eval_at >= d.last_exec_at else "func"
+    if exec_fresh:
+        return "func"
+    if eval_fresh:
+        return "eval"
+    if d.runner_id in exec_running:
+        return "func"
+    if d.runner_id in eval_running:
+        return "eval"
+    return None
 
 
-def touch_runner_heartbeat(db: Session, runner_id: str | None) -> int:
-    """共享 token 拉取时,按 runner_id 反查登记设备并刷新 last_seen_at。返回刷新条数。
+def device_conflicts_kind(db: Session, runner_id: str, needed_kind: str) -> bool:
+    """手动下发拦截判据:目标设备当前在跑的 runner 与 needed_kind 冲突(在跑另一类)。
+
+    needed_kind: 'exec'(功能)/ 'eval'(测评)。一台机同时刻只能跑一类;若它此刻在跑另一类
+    runner,下发本类任务它拉不到、必卡住 → 拦截(True)。
+    - 未登记设备 → False(不拦,兼容旧共享 token runner);
+    - 空闲(没启动任何 runner)→ False(不拦,用户可能随后启动对应 runner);
+    - 正在跑本类 → False(不拦)。
+    """
+    dev = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).first()
+    if dev is None:
+        return False   # 未登记,不拦
+    from app.api.devices import ONLINE_WINDOW_SEC
+    cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
+    cur = current_kind(dev, cutoff, _exec_running_runners(db), _eval_running_runners(db))
+    want = "func" if needed_kind == "exec" else "eval"
+    return cur is not None and cur != want
+
+
+def touch_runner_heartbeat(db: Session, runner_id: str | None, kind: str | None = None) -> int:
+    """共享 token 拉取时,按 runner_id 反查登记设备并刷新心跳。返回刷新条数。
 
     根因修复:心跳原本只在设备 token 分支(ctx.device 直接刷)更新,共享 token 拉取
     从不更新任何设备心跳。于是「用共享 token 正常工作的设备」在调度眼里永远离线——
     pick_runner 不选它、reassign 误判它离线抢走 pending、离线巡检误报、看板误显示离线。
     统一口径:任何 token 的拉取都代表「该 runner_id 的机器活着」,据字符串反查刷心跳。
+
+    kind:本次拉取来自哪类队列 —— 'exec'(功能 runner 拉 exec-queue)刷 last_exec_at、
+    'eval'(测评 runner 拉 eval-queue)刷 last_eval_at,None(如 perf)只刷 last_seen_at。
+    据此运行时感知「该机当前在跑哪类 runner」(看板显示/精准派单/手动拦截)。
 
     - 未登记(纯老 runner,无 RunnerDevice 行)→ 反查为空、无副作用,行为完全不变;
     - 同名 runner_id 跨 owner 多台 → 全部刷新(与看板/调度按 runner_id 聚合的既有口径一致,
@@ -53,56 +104,56 @@ def touch_runner_heartbeat(db: Session, runner_id: str | None) -> int:
     now = datetime.utcnow()
     for d in devices:
         d.last_seen_at = now
+        if kind == "exec":
+            d.last_exec_at = now
+        elif kind == "eval":
+            d.last_eval_at = now
     db.commit()
     return len(devices)
 
 
 def online_eval_runners(db: Session) -> list[str]:
-    """在线的对话测评执行机 runner_id 列表(测评分片下发用)。
+    """在线且【当前在跑测评 runner】的执行机 runner_id 列表(测评分片下发用)。
 
-    与 exec 侧 _online_devices 同「在线」口径(ONLINE_WINDOW_SEC 内有心跳),但:
-    - 不按 platform 过滤(对话测评是桌面客户端,无移动端平台之分);
-    - 「忙=在线」用 EvalRun 的 running(不是 ExecRun),因为测评执行期设备也不轮询队列、
-      心跳会滞后,正在跑测评的设备必然活着,与设备看板 eval 计数同源。
+    运行时感知:一台机同时刻只能跑一类 runner(功能/测评抢同一客户端不能并行),故「能接测评」
+    = 它此刻正跑测评 runner —— 判据:last_eval_at 在在线窗口内(测评 runner 每 5s 轮询 eval-queue),
+    或有 running 的 eval_run(执行期不轮询、心跳滞后,用 running 补偿)。这样测评任务只会派到
+    真正在跑测评 runner 的机,从根上杜绝「派到只跑功能测试的机器」。
     返回按 runner_id 升序(稳定),供轮转分片时确定性分配。
     """
     from app.api.devices import ONLINE_WINDOW_SEC
-    from app.core.enums import EvalRunStatus
-    from app.models import EvalRun
 
     devices = db.query(RunnerDevice).all()
     if not devices:
         return []
-    # 只保留具备 eval 能力的设备:堵住「测评任务被分配到只跑功能测试的机器」的根。
-    devices = [d for d in devices if _has_cap(d, DeviceCapability.eval.value)]
-    if not devices:
-        return []
     cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
-    busy = {r for (r,) in db.query(EvalRun.runner)
-            .filter(EvalRun.status == EvalRunStatus.running).distinct().all()}
+    exec_running = _exec_running_runners(db)
+    eval_running = _eval_running_runners(db)   # 执行期心跳滞后补偿:正在跑测评的机必然在跑测评 runner
     online = [d.runner_id for d in devices
-              if (d.last_seen_at and d.last_seen_at >= cutoff) or d.runner_id in busy]
+              if current_kind(d, cutoff, exec_running, eval_running) == "eval"]
     return sorted(set(online))
 
 
 def _online_devices(db: Session, platform: str | None = None) -> list[RunnerDevice]:
-    """在线设备列表(与看板同口径:窗口内有心跳,或有 running)。platform 传入时精确匹配。
+    """在线且【当前在跑功能 runner】的设备列表(功能测试点 exec_run 派单/改派专用)。
 
-    只返回具备 func 能力的设备:功能测试点(exec_run)派单专用,避免落到「只跑测评」的机器。
+    运行时感知:功能 runner 每 5s 轮询 exec-queue 刷 last_exec_at;当前在跑类型 = current_kind
+    (切换重叠期取更晚的时间戳,执行期用 running 补偿)。只挑当前在跑功能 runner 的机,避免落到
+    「此刻在跑测评 runner」或「没启动任何 runner」的机器。platform 传入时按被测端平台精确匹配。
     """
     from app.api.devices import ONLINE_WINDOW_SEC
 
     q = db.query(RunnerDevice)
     if platform:
         q = q.filter(RunnerDevice.platform == platform)
-    devices = [d for d in q.all() if _has_cap(d, DeviceCapability.func.value)]
+    devices = q.all()
     if not devices:
         return []
     cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
-    busy_runners = {r for (r,) in db.query(ExecRun.runner)
-                    .filter(ExecRun.status == "running").distinct().all()}
+    exec_running = _exec_running_runners(db)
+    eval_running = _eval_running_runners(db)
     return [d for d in devices
-            if (d.last_seen_at and d.last_seen_at >= cutoff) or d.runner_id in busy_runners]
+            if current_kind(d, cutoff, exec_running, eval_running) == "func"]
 
 
 def _load_of(db: Session, runner_ids: list[str]) -> dict[str, int]:

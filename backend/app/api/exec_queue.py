@@ -336,28 +336,23 @@ def _check_platform(runner_id: str, tc_platform: str, db: Session, owner_id: int
 
 
 def _check_capability(runner_id: str, db: Session, owner_id: int | None = None) -> None:
-    """手动下发功能测试前校验:目标设备须具备 func 能力,否则 400 拒绝。
+    """手动下发功能测试前校验:目标设备当前若在跑【测评 runner】则 400 拒绝(运行时感知)。
 
-    - 未登记设备(查无 RunnerDevice)→ 不阻塞(旧 runner/外部 runner 向后兼容,同 _check_platform);
-    - capabilities 为空 → 视为全能力、不阻塞(迁移前老行兜底);
-    - 明确不含 func(如只勾了 eval 的测评专用机)→ 400,避免功能用例落到跑不了的机器。
-    优先按 (runner_id, owner_id) 取当前用户的设备;owner_id 未传时全局首条兜底。
+    一台机同时刻只能跑一类 runner(功能/测评抢同一客户端不能并行)。若目标机此刻在跑测评
+    runner(在拉 eval-queue),给它下发功能用例它根本拉不到、必卡 pending → 拦截。
+    - 未登记设备 → 不阻塞(旧 runner 向后兼容);
+    - 空闲(没启动任何 runner)→ 不阻塞(用户可能随后启动功能 runner);
+    - 正在跑功能 runner → 放行。
+    判据见 dispatcher.device_conflicts_kind(据 last_exec_at/last_eval_at + running 运行时判断)。
     """
-    from app.core.enums import DeviceCapability, parse_capabilities
+    from app.services.dispatcher import device_conflicts_kind
 
-    q = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id)
-    dev = None
-    if owner_id is not None:
-        dev = q.filter(RunnerDevice.owner_id == owner_id).first()
-    if dev is None:
-        dev = q.first()
-    if dev is None:
-        return   # 未登记设备,不阻塞
-    caps = parse_capabilities(dev.capabilities)
-    if caps and DeviceCapability.func.value not in caps:
+    if device_conflicts_kind(db, runner_id, "exec"):
+        dev = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner_id).first()
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            detail=f"执行机「{dev.name}」未开启『功能测试』能力,不能下发功能用例,请改选功能测试执行机",
+            detail=f"执行机「{dev.name if dev else runner_id}」当前在跑『对话测评』runner,"
+                   f"不能下发功能用例(一台机同时刻只能跑一类),请改选功能测试执行机或等它切回",
         )
 
 
@@ -655,13 +650,16 @@ def list_pending(
 ):
     # 设备 token:runner 锁定为该设备的 runner_id(忽略 query,防拿他人 token 冒充别的设备);
     # 共享 token(兜底):沿用 query 的 runner,并按 runner_id 反查登记设备刷心跳(在线判定统一口径)。
+    # 本端点被功能 runner(run.sh)轮询 → 刷 last_exec_at 记「该机当前在跑功能 runner」(运行时类型感知)。
     if ctx.device is not None:
         runner = ctx.device.runner_id
-        ctx.device.last_seen_at = datetime.utcnow()   # 记录设备活跃
+        now = datetime.utcnow()
+        ctx.device.last_seen_at = now          # 记录设备活跃
+        ctx.device.last_exec_at = now          # 记录「当前在跑功能 runner」
         db.commit()
     else:
         from app.services.dispatcher import touch_runner_heartbeat
-        touch_runner_heartbeat(db, runner)
+        touch_runner_heartbeat(db, runner, kind="exec")
     rows = (
         db.query(ExecRun)
         .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner)
