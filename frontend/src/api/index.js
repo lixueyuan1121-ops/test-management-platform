@@ -474,6 +474,10 @@ export async function pollAiJob(jobId, { interval = 2000, signal, onTick } = {})
   }
 }
 
+// 取消 AI 任务:仅 pending 可被后端取消(条件 UPDATE 释放队列位);running/终态 → 409(交调用方处理)。
+// silent:让拦截器不弹 409 错,由调用方按「排队已取消 / 执行中无法中断」分别提示。
+export const cancelAiJob = (jobId) => http.post(`/ai-jobs/${jobId}/cancel`, null, { silent: true })
+
 // AI 失败归因:入队拿 job_id → 轮询取结果。结果 = {kind,confidence,reason,suggestion,provider,at,run_id}。
 // 前置校验错误(404/400/503)由 POST 直接抛(silent 交调用方提示);onTick 供展示排队/进行中。
 export async function triageExecRun(run_id, provider, { onTick } = {}) {

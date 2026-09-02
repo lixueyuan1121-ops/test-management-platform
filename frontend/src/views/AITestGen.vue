@@ -185,13 +185,16 @@
     <!-- 生成过程反馈 -->
     <el-card v-if="running" class="stream-card">
       <div class="running-head">
-        <span class="pulse-dot" />
+        <span class="pulse-dot" :class="{ queued: jobStatus === 'pending' }" />
+        <el-tag v-if="jobStatus" :type="jobStatus === 'pending' ? 'warning' : 'success'" size="small" effect="light">
+          {{ jobStatus === 'pending' ? '排队中' : '执行中' }}
+        </el-tag>
         <span class="running-text">{{ phaseText }}</span>
         <span class="elapsed mono">{{ (elapsed / 1000).toFixed(1) }}s</span>
       </div>
       <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" color="#00b386" />
       <pre v-if="rawStream" class="raw-stream">{{ rawStream }}</pre>
-      <div v-else class="raw-hint">Claude 正在阅读需求并设计测试点，通常需要 30–60 秒，请稍候…</div>
+      <div v-else class="raw-hint">{{ statusHint }}</div>
     </el-card>
 
     <!-- 结果区 -->
@@ -286,6 +289,7 @@ import { ElMessage } from 'element-plus'
 import { MagicStick, UploadFilled, Document, Connection } from '@element-plus/icons-vue'
 import {
   listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
+  cancelAiJob,
   extractUrl, extractFile, getApiContract, listSelectors,
 } from '@/api'
 import { useAppStore } from '@/store/app'
@@ -305,6 +309,10 @@ const ENGINE_META = {
 }
 const engineMeta = (id) => ENGINE_META[id] || { label: id, dot: '#94a3b8' }
 const PHASES = ['正在拆解需求要点…', '主流程 / 边界 / 异常 / 场景组合 多路并行生成中…', '合并去重、校验脚本…', '评估优先级并成稿…']
+// 前端轮询兜底阈值(告别无限转圈):后端单次生成硬上限 900s=15min,
+// running 超 16min 必是执行卡死;总时长(含排队)超 30min 兜底停等,不武断判失败。
+const RUNNING_TIMEOUT_MS = 16 * 60 * 1000
+const TOTAL_TIMEOUT_MS = 30 * 60 * 1000
 const MODES = [
   { k: 'text', label: '粘贴文本' },
   { k: 'url', label: '需求链接' },
@@ -355,8 +363,14 @@ const apiLines = computed(() =>
 
 const running = ref(false)
 const rawStream = ref('')
-const elapsed = ref(0)          // 毫秒
+const elapsed = ref(0)          // 毫秒(总耗时:从提交开始)
 const phaseIdx = ref(0)
+// 真实任务状态(后端 /ai-jobs/{id} 轮询回传):pending=排队 / running=执行中;queuePos=排队位次
+const jobStatus = ref('')
+const queuePos = ref(0)
+const currentJobId = ref(null)  // 当前 job id,供「取消」调后端释放队列位
+const runningSince = ref(0)     // 进入 running 的时刻(ms),做执行超时判定 + PHASES 动画基准
+const abortReason = ref('')     // 中断原因:'user'(主动取消)/'timeout'(前端兜底停等),区分提示文案
 const cases = ref([])
 const meta = ref(null)
 const history = ref([])
@@ -372,7 +386,22 @@ let timer = null
 let ctrl = null
 
 const adoptedCount = computed(() => cases.value.filter((c) => (c.review_status || (c.adopted ? 'adopted' : 'pending')) === 'adopted').length)
-const phaseText = computed(() => PHASES[Math.min(phaseIdx.value, PHASES.length - 1)])
+// 进度文案:真实状态驱动(不再是纯时间假动画)。pending 显示排队位次,running 显示多路生成动态文案。
+const phaseText = computed(() => {
+  if (jobStatus.value === 'pending') {
+    return queuePos.value > 0 ? `排队中 · 前面还有 ${queuePos.value} 个任务` : '即将开始…'
+  }
+  if (jobStatus.value === 'running') {
+    return PHASES[Math.min(phaseIdx.value, PHASES.length - 1)]
+  }
+  return '提交中…'
+})
+// 进度卡辅助说明:随状态给合理预期(替换原「30–60 秒」死文案)
+const statusHint = computed(() => {
+  if (jobStatus.value === 'pending') return '任务已提交，正在排队等待空闲执行槽…'
+  if (jobStatus.value === 'running') return 'AI 正在多路并行生成，通常 1–3 分钟，长需求或高峰期更久，请稍候…'
+  return '正在提交任务…'
+})
 const reqPlaceholder = computed(() => PLACEHOLDERS[inputType.value] || PLACEHOLDERS.text)
 
 onMounted(async () => {
@@ -535,12 +564,19 @@ function generate() {
   rawStream.value = ''
   elapsed.value = 0
   phaseIdx.value = 0
+  jobStatus.value = ''
+  queuePos.value = 0
+  currentJobId.value = null
+  runningSince.value = 0
+  abortReason.value = ''
   running.value = true
 
   const startedAt = Date.now()
   timer = setInterval(() => {
     elapsed.value = Date.now() - startedAt
-    phaseIdx.value = Math.floor(elapsed.value / 12000)  // 每 ~12s 推进一档文案
+    // PHASES 动画只在进入 running 后推进(排队再久也不该把文案顶到最后一档)
+    if (runningSince.value) phaseIdx.value = Math.floor((Date.now() - runningSince.value) / 12000)
+    checkTimeout()
   }, 100)
 
   ctrl = new AbortController()
@@ -549,7 +585,13 @@ function generate() {
       requirement_url: sourceUrl.value || undefined, requirement_title: sourceInfo.value?.label || undefined },
     {
       signal: ctrl.signal,
-      onDelta: (t) => { rawStream.value += t },
+      // 轮询回传真实状态:排队位次 / 执行中;记录进入 running 的时刻供超时判定
+      onTick: (job) => {
+        jobStatus.value = job.status || ''
+        queuePos.value = job.queue_position || 0
+        if (job.id) currentJobId.value = job.id
+        if (job.status === 'running' && !runningSince.value) runningSince.value = Date.now()
+      },
       onDone: (evt) => {
         cases.value = evt.cases || []
         meta.value = evt.meta || null
@@ -563,19 +605,57 @@ function generate() {
         }
         stop()
       },
-      onError: (msg) => { ElMessage.error(msg || '生成失败'); stop() },
+      // 中断原因分流:主动取消 / 超时停等(均已各自提示过)不再重复弹错,只有真实失败才报错
+      onError: (msg) => {
+        if (!abortReason.value) ElMessage.error(msg || '生成失败')
+        stop()
+      },
     },
   )
+}
+
+// 前端超时兜底:running 超 16min(后端单次硬上限 15min,超了必是卡死)或总时长超 30min → 停止等待。
+// 不武断判「失败」——running 的后端 job 即使前端不看了,worker 仍会跑完落库,故提示去历史查看/重试。
+function checkTimeout() {
+  if (!running.value || abortReason.value) return
+  const now = Date.now()
+  if (runningSince.value && now - runningSince.value > RUNNING_TIMEOUT_MS) {
+    abortReason.value = 'timeout'
+    ElMessage.warning({ message: '生成执行已超过 16 分钟仍未完成，疑似卡死。已停止等待——任务可能仍在后台完成，请稍后在「查看历史生成」中查看结果，或重试。', duration: 0, showClose: true })
+    ctrl?.abort()
+    return
+  }
+  if (elapsed.value > TOTAL_TIMEOUT_MS) {
+    abortReason.value = 'timeout'
+    ElMessage.warning({ message: '生成等待已超过 30 分钟仍未完成，已停止等待。可稍后在「查看历史生成」中查看结果，或重试。', duration: 0, showClose: true })
+    ctrl?.abort()
+  }
 }
 
 function stop() {
   running.value = false
   if (timer) { clearInterval(timer); timer = null }
   ctrl = null
+  jobStatus.value = ''
+  queuePos.value = 0
   if (pid.value) listAiTasks(pid.value, 20).then((h) => { history.value = h })
 }
 
-function cancel() { ctrl?.abort() }
+// 取消:排队中(pending)调后端取消并释放队列位;执行中(running)后端无法中断(409),仅停止前端等待。
+async function cancel() {
+  abortReason.value = 'user'
+  const jid = currentJobId.value
+  ctrl?.abort()   // 先停前端轮询(pollAiJob 下一轮检测 aborted 抛出 → onError,abortReason 已置不再弹错)
+  if (jid) {
+    try {
+      await cancelAiJob(jid)
+      ElMessage.info('已取消排队任务，队列位已释放')
+    } catch {
+      // 409=running 无法远程中断:后台仍会完成,前端仅停止等待
+      ElMessage.info('任务执行中无法中断，已停止等待（后台仍会完成，可稍后在历史中查看）')
+    }
+  }
+}
 
 async function onViewHistory(id) {
   if (!id) { cases.value = []; meta.value = null; return }
@@ -742,10 +822,20 @@ function fmtTime(s) {
   width: 10px; height: 10px; border-radius: 50%; background: #00b386;
   box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.6); animation: pulse 1.4s infinite;
 }
+/* 排队态:琥珀色脉冲,与「执行中」绿色一眼区分 */
+.pulse-dot.queued {
+  background: #e6a23c;
+  box-shadow: 0 0 0 0 rgba(230, 162, 60, 0.6); animation: pulse-queued 1.4s infinite;
+}
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.5); }
   70% { box-shadow: 0 0 0 10px rgba(0, 179, 134, 0); }
   100% { box-shadow: 0 0 0 0 rgba(0, 179, 134, 0); }
+}
+@keyframes pulse-queued {
+  0% { box-shadow: 0 0 0 0 rgba(230, 162, 60, 0.5); }
+  70% { box-shadow: 0 0 0 10px rgba(230, 162, 60, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(230, 162, 60, 0); }
 }
 .raw-stream {
   margin-top: 12px; max-height: 220px; overflow: auto;
