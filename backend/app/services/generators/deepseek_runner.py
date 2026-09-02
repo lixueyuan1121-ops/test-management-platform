@@ -44,8 +44,9 @@ from app.services.claude_runner import (  # noqa: F401
 
 logger = logging.getLogger("test_platform")
 
-# 全局并发闸：与 claude 侧独立计数（两引擎成本/负载分开控）
-_slots = threading.BoundedSemaphore(max(1, settings.AI_MAX_CONCURRENCY))
+# 全局并发闸：DeepSeek 用独立且更小的并发——HTTP 直调易撞网关分钟级 token/请求配额,
+# 与 claude(本地进程无网关限流)分开控。分片各占一槽,超限排队等待而非并发轰网关撞 429。
+_slots = threading.BoundedSemaphore(max(1, settings.DEEPSEEK_MAX_CONCURRENCY))
 # 超限「排队等待」而非拒绝(方案2 P3a);复用 claude_runner 的 _acquire_slot(同一策略/配置)
 from app.services.claude_runner import _acquire_slot  # noqa: E402
 
@@ -85,6 +86,57 @@ def _body(prompt: str, stream: bool, system_prompt: str | None = None) -> dict:
     }
 
 
+# 429(限流)退避重试:多分片并发易撞网关分钟级 token/请求配额。撞到就等待重试而非直接失败。
+_RETRY_STATUSES = {429, 503}
+_MAX_RETRIES = 4          # 首次 + 最多 4 次重试
+_BACKOFF_BASE = 5.0       # 退避基数(秒):5, 10, 20, 40 —— 跨过分钟级配额窗口
+
+
+def _retry_after_seconds(resp, attempt: int) -> float:
+    """优先用响应头 Retry-After(秒或 HTTP-date 忽略后回退);否则指数退避。上限 60s。"""
+    ra = resp.headers.get("Retry-After") if resp is not None else None
+    if ra:
+        try:
+            return min(60.0, max(1.0, float(ra)))
+        except (TypeError, ValueError):
+            pass
+    return min(60.0, _BACKOFF_BASE * (2 ** attempt))
+
+
+def _post_with_retry(*, stream: bool, json_body: dict, timeout, sleep=time.sleep):
+    """POST 到 DeepSeek 端点,遇 429/503 按退避重试。返回 (resp, err_msg)。
+
+    err_msg 非空表示重试用尽或不可重试错误(调用方据此 yield/return error)。
+    sleep 参数供自测注入(免真等)。仍持有 _slots 槽期间调用——退避占槽是有意的:
+    既是重试等待,也顺带压低对网关的并发压力。
+    """
+    last_detail = ""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = requests.post(_endpoint(), headers=_headers(), json=json_body,
+                                 stream=stream, timeout=(10, timeout))
+        except requests.Timeout:
+            return None, f"DeepSeek 生成超时（>{timeout}s）"
+        except requests.RequestException as e:
+            logger.exception("DeepSeek 请求失败")
+            return None, f"DeepSeek 请求失败：{e}"
+        if resp.status_code == 200:
+            return resp, None
+        if resp.status_code in _RETRY_STATUSES and attempt < _MAX_RETRIES:
+            wait = _retry_after_seconds(resp, attempt)
+            last_detail = (resp.text or "")[:200]
+            resp.close()
+            logger.warning("DeepSeek %s 限流,第 %d 次退避 %.0fs 后重试", resp.status_code, attempt + 1, wait)
+            sleep(wait)
+            continue
+        detail = (resp.text or last_detail or "")[:200]
+        code = resp.status_code
+        resp.close()
+        hint = "（限流,已重试多次仍失败,请降低并发或稍后再试）" if code in _RETRY_STATUSES else ""
+        return None, f"DeepSeek 端点返回 {code}{hint}：{detail}"
+    return None, "DeepSeek 请求失败：重试用尽"
+
+
 def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None) -> Iterator[dict]:
     """流式生成测试点。yield delta/result/error/heartbeat，契约与 claude_runner 对齐。
 
@@ -110,13 +162,11 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     finish_reason = None
     last_beat = time.monotonic()
     try:
-        resp = requests.post(
-            _endpoint(), headers=_headers(), json=_body(prompt, stream=True, system_prompt=system_prompt),
-            stream=True, timeout=(10, timeout),
-        )
-        if resp.status_code != 200:
-            detail = (resp.text or "")[:200]
-            yield {"type": "error", "msg": f"DeepSeek 端点返回 {resp.status_code}：{detail}"}
+        resp, err = _post_with_retry(
+            stream=True, json_body=_body(prompt, stream=True, system_prompt=system_prompt),
+            timeout=timeout)
+        if err:
+            yield {"type": "error", "msg": err}
             return
         for line in resp.iter_lines(decode_unicode=True):
             if line is None:
@@ -182,22 +232,20 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
 
     prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
     try:
-        resp = requests.post(_endpoint(), headers=_headers(),
-                             json=_body(prompt, stream=False), timeout=(10, timeout))
-    except requests.Timeout:
-        return [], f"生成超时（>{timeout}s）"
-    except requests.RequestException as e:
-        return [], f"DeepSeek 请求失败：{e}"
+        resp, err = _post_with_retry(
+            stream=False, json_body=_body(prompt, stream=False), timeout=timeout)
+        if err:
+            return [], err
     finally:
         _slots.release()
 
-    if resp.status_code != 200:
-        return [], f"DeepSeek 端点返回 {resp.status_code}：{(resp.text or '')[:200]}"
     try:
         data = resp.json()
         text = (data["choices"][0]["message"].get("content") or "")
     except (KeyError, IndexError, ValueError, TypeError):
         return [], "DeepSeek 响应解析失败"
+    finally:
+        resp.close()
 
     m = _FENCE_RE.search(text)
     blob = m.group(1) if m else None
