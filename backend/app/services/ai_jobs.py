@@ -108,36 +108,65 @@ def _ensure_handlers() -> None:
         import app.api.eval_task  # noqa: F401  (import 时 register eval_summary handler)
 
 
+def _fail_job_isolated(session_factory, job_id: int, kind: str, err: str) -> None:
+    """用**独立新 session** 把 job 落 failed。
+
+    handler 执行期间若 DB 断连(2013 Lost connection),原 session 已进入 rollback 态、
+    其对象全部 expired——在它上面再读/写任何属性都会触发 lazy-load 二次崩溃(PendingRollbackError),
+    failed 状态落不下去 → job 永久僵死 running(诊断文档 P0)。故这里全程只用新 session、
+    直连 UPDATE,不碰任何旧的 ORM 对象。新 session 自身再失败也吞掉(reaper 兜底收口)。
+    """
+    try:
+        s2 = session_factory()
+        try:
+            s2.execute(
+                update(AiJob).where(AiJob.id == job_id,
+                                    AiJob.status.notin_(["done", "cancelled"]))
+                .values(status="failed", error=(err or "执行失败")[:2000])
+            )
+            s2.commit()
+        finally:
+            s2.close()
+    except Exception:  # noqa: BLE001  连落 failed 都失败(DB 仍不可用)→ 交给启动/定时 reaper 兜底
+        logger.exception("落 failed 失败(独立 session) job_id=%s kind=%s", job_id, kind)
+
+
 def run_job(session_factory, job_id: int) -> None:
     """另开 session 跑一条 job:查 handler → 执行 → 成功 done+result / 失败 failed+error。
 
     handler 负责写域表(TestCase/ExecRun.triage/…)并返回 result dict;失败(抛异常)时
     **不覆盖域数据**(handler 内在解析失败前不写域表)。异常全捕获——worker 线程不能抛。
     session_factory 供测试注入(=SessionLocal)。
+
+    连接管理(诊断文档):handler(含 claude 生成的百秒级耗时)期间不应持有 DB 连接,否则连接
+    空闲被中间层掐断、写库时 2013 Lost connection。生成/写库的分段由 handler 自己负责
+    (见 run_testcase_gen_job);本函数只保证异常兜底用**独立 session**,不复用已损坏的 s。
     """
     _ensure_handlers()
     s = session_factory()
+    kind = None
     try:
         job = s.get(AiJob, job_id)
         if job is None:
             return
-        handler = _HANDLERS.get(job.kind)
+        kind = job.kind   # 缓存:session 健康时取出,异常日志/落 failed 都不再回读 ORM 属性
+        handler = _HANDLERS.get(kind)
         if handler is None:
             job.status = "failed"
-            job.error = f"未知的 AI 任务类型:{job.kind}"
+            job.error = f"未知的 AI 任务类型:{kind}"
             s.commit()
             return
         t0 = datetime.now()
         try:
             result = handler(s, job) or {}
         except Exception as e:  # noqa: BLE001
-            logger.exception("AI job 执行失败 id=%s kind=%s", job_id, job.kind)
-            s.rollback()
-            job2 = s.get(AiJob, job_id)
-            if job2 is not None:
-                job2.status = "failed"
-                job2.error = str(e)[:2000]
-                s.commit()
+            logger.exception("AI job 执行失败 id=%s kind=%s", job_id, kind)
+            try:
+                s.rollback()
+            except Exception:  # noqa: BLE001  断连时 rollback 本身也可能抛,忽略
+                pass
+            # 用独立新 session 落 failed(旧 s 可能已断连/expired,复用会二次崩溃 → 永久僵死)
+            _fail_job_isolated(session_factory, job_id, kind, str(e))
             return
         job.status = "done"
         job.result = json.dumps(result, ensure_ascii=False)
@@ -145,6 +174,13 @@ def run_job(session_factory, job_id: int) -> None:
             job.output_raw = result.get("output_raw")
         job.duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
         s.commit()
+    except Exception as e:  # noqa: BLE001  成功路径的 commit 等也可能断连,同样用独立 session 兜底
+        logger.exception("AI job 收尾失败 id=%s kind=%s", job_id, kind)
+        try:
+            s.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        _fail_job_isolated(session_factory, job_id, kind or "", str(e))
     finally:
         s.close()
 

@@ -12,7 +12,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.core.deps import assert_project_role, get_current_user
@@ -681,6 +681,37 @@ def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str]
     return raw, meta, err
 
 
+def _persist_with_retry(persist_fn, session_factory, retries: int = 2) -> tuple[list, str | None]:
+    """写库短重试(P2):生成结果已到手,落库偶发 2013/OperationalError 断连时重连重放一次。
+
+    persist_fn(session)→(objs, fail_detail),每次用 session_factory() 造**全新 session**
+    (断连后旧 session 已死,重试即重连)。session_factory 由调用方按传入 db 的 bind 派生
+    (见 run_testcase_gen_job),既连同一库、又不复用可能已断连的原 session;测试注入其内存库。
+    2013 Lost connection / OperationalError 视为可重试;其他异常(数据校验失败等)不重试直接上抛。
+    """
+    from sqlalchemy.exc import OperationalError
+
+    last_err: Exception | None = None
+    for attempt in range(retries + 1):
+        s = session_factory()
+        try:
+            return persist_fn(s)
+        except OperationalError as e:
+            last_err = e
+            logger.warning("写库断连(第 %d 次),重连重试: %s", attempt + 1, str(e)[:200])
+            try:
+                s.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            if attempt < retries:
+                time.sleep(1 + attempt)   # 退避 1s/2s,给连接池/中间层恢复窗口
+                continue
+            raise
+        finally:
+            s.close()
+    raise last_err if last_err else RuntimeError("写库失败")
+
+
 def run_testcase_gen_job(db: Session, job) -> dict:
     """AI 任务队列的测试点生成 handler(方案2 P3b):跑引擎→解析→落 TestCase→更新 AiTask。
 
@@ -708,6 +739,10 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     at = db.get(AiTask, ai_task_id)
     if at is None:
         raise ValueError("生成任务记录丢失")
+    # P1 根治(诊断文档):读完输入快照立即 commit,把 DB 连接还回池——避免生成的百秒级耗时里
+    # 一直借着连接空闲、被 4963 端口中间层掐断,写库时 2013 Lost connection。生成引擎(plan_shards/
+    # _load_api_contract/_load_selector_keys)全自开独立 SessionLocal,不用传入 db,故生成期零连接持有。
+    db.commit()
 
     t0 = _time.monotonic()
     if scenario_only:
@@ -729,39 +764,53 @@ def run_testcase_gen_job(db: Session, job) -> dict:
         logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
                     ai_task_id, len(shards), res["shard_stats"], res["dropped_dup"])
 
-    if meta:
-        at.duration_ms = meta.get("duration_ms") or int((_time.monotonic() - t0) * 1000)
-        at.cost_usd = meta.get("cost_usd")
-        at.output_tokens = meta.get("output_tokens")
-    at.output_raw = raw or None
+    duration_ms = (meta.get("duration_ms") if meta else None) or int((_time.monotonic() - t0) * 1000)
+    cost_usd = meta.get("cost_usd") if meta else None
+    output_tokens = meta.get("output_tokens") if meta else None
 
-    if not cases:
-        at.status = AiTaskStatus.failed
-        detail = err or ("未检测到有效测试点:引擎无任何输出(可能被网关/超时切断)" if not raw
-                         else f"未检测到有效测试点:输出 {len(raw)} 字但未解析出用例数组(尾部:…{raw[-200:]})")
-        at.error = detail[:2000]
-        db.commit()   # 已 commit 的 failed 状态在 run_job 回滚时保留
-        raise ValueError(detail)
+    # ---- 写库(P1:此处才重新取连接;P2:短重试兜偶发断连,不丢已生成的结果)----
+    def _persist(s):
+        """在给定 session 上把生成结果落库。整段是一个事务,断连重试时整体重放。"""
+        at2 = s.get(AiTask, ai_task_id)
+        if at2 is None:
+            raise ValueError("生成任务记录丢失")
+        at2.duration_ms = duration_ms
+        at2.cost_usd = cost_usd
+        at2.output_tokens = output_tokens
+        at2.output_raw = raw or None
+        if not cases:
+            at2.status = AiTaskStatus.failed
+            detail = err or ("未检测到有效测试点:引擎无任何输出(可能被网关/超时切断)" if not raw
+                             else f"未检测到有效测试点:输出 {len(raw)} 字但未解析出用例数组(尾部:…{raw[-200:]})")
+            at2.error = detail[:2000]
+            s.commit()
+            return [], detail
+        new_objs = []
+        for c in cases:
+            tc = TestCase(
+                ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
+                requirement_id=requirement_id,
+                category=c["category"] or None, title=c["title"], steps=c["steps"] or None,
+                expected=c["expected"] or None, priority=c["priority"] or None,
+                exec_kind=c.get("kind") or "manual", kind_reason=c.get("kind_reason") or None,
+                script=c.get("script") or None,
+                page=c.get("page") or (",".join(pages) if pages else None),
+            )
+            s.add(tc); new_objs.append(tc)
+        at2.status = AiTaskStatus.done
+        at2.case_count = len(cases)
+        at2.error = ("部分分片未产出:" + "；".join(part_errors))[:2000] if part_errors else None
+        s.commit()
+        for tc in new_objs:
+            s.refresh(tc)
+        return new_objs, None
 
-    objs = []
-    for c in cases:
-        tc = TestCase(
-            ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
-            requirement_id=requirement_id,
-            category=c["category"] or None, title=c["title"], steps=c["steps"] or None,
-            expected=c["expected"] or None, priority=c["priority"] or None,
-            exec_kind=c.get("kind") or "manual", kind_reason=c.get("kind_reason") or None,
-            script=c.get("script") or None,
-            page=c.get("page") or (",".join(pages) if pages else None),
-        )
-        db.add(tc); objs.append(tc)
-    at.status = AiTaskStatus.done
-    at.case_count = len(cases)
-    # 部分分片失败:用例照常落库,但把失败片记下来(前端可提示"某维度未产出")
-    at.error = ("部分分片未产出:" + "；".join(part_errors))[:2000] if part_errors else None
-    db.commit()
-    for tc in objs:
-        db.refresh(tc)
+    objs, fail_detail = _persist_with_retry(
+        _persist, sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False))
+
+    if fail_detail is not None:   # 无有效用例:已落 AiTask=failed,抛错让 run_job 置 job failed
+        raise ValueError(fail_detail)
+
     return {"ai_task_id": ai_task_id, "status": "done", "case_count": len(cases),
             "partial_errors": part_errors,
             "cases": [_to_case_out(tc) for tc in objs]}
