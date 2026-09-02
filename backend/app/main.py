@@ -145,6 +145,11 @@ def create_app() -> FastAPI:
                 ai_jobs.reap_stale_ai_jobs_on_startup(db2)
             finally:
                 db2.close()
+            # ai_task 启动收口:须在 ai_job 收口之后——重启残留的 running ai_task,其对应 job 此时
+            # 要么刚被收成 failed(上一步)、要么仍 pending(将被 worker 重跑自愈)。max_age=0 立即收,
+            # 但「无活跃 job」判据保证只收真僵尸、放过 pending 的自愈任务(补全库唯独 ai_task 无 reap)。
+            from app.services.scheduler import reap_stale_ai_tasks
+            reap_stale_ai_tasks(max_age_minutes=0)
             ai_jobs.start_pool()
         except Exception:
             logger.exception("启动 AI 任务队列/worker 池失败（不影响主服务）")

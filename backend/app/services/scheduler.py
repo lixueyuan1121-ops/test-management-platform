@@ -22,6 +22,8 @@ logger = logging.getLogger("test_platform")
 
 # 超龄收口阈值（小时）：exec_run 超此时长仍 running 即收口为 failed
 EXEC_STALE_HOURS = 2
+# 超龄收口阈值（分钟）：ai_task 滞留 running 超此时长即收口(> 引擎 900s + 抢槽 600s ≈ 25min，取 30)
+AITASK_STALE_MINUTES = 30
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -227,6 +229,56 @@ def reap_stale_exec_runs(session_factory=None) -> int:
     return reaped
 
 
+def reap_stale_ai_tasks(session_factory=None, max_age_minutes: int = AITASK_STALE_MINUTES) -> int:
+    """周期收口:滞留 running 且已无活跃对应 ai_job 的 ai_task → failed。补全库唯独 ai_task 缺失的 reap。
+
+    ai_task 入队即建为 running(无 pending 态):排队中(对应 ai_job=pending)、执行中(ai_job=running)、
+    僵尸,三者都表现为 running。只按时长收会误杀队头阻塞里合理排队的正常任务,故判据叠加
+    **无活跃对应 ai_job**(ai_job.ref_kind='ai_task' 且 ref_id=本 task、状态 pending/running):
+    - 正在排队/执行 → 有活跃 job,一律不动;
+    - 真僵尸 → 对应 job 已 failed/done(根因:①a running 期间重启,对应 job 被启动收口成 failed;
+      ①b handler 置终态前抛异常,run_job 的 rollback 连 AiTask 内存改动一起回滚、只落 AiJob=failed),
+      或无 job(极老数据)→ 无活跃 job,精准命中。
+
+    created_at 用 DB 时钟(_db_now)作基准,避免生产 MySQL(东八区)与进程 utcnow 时区错配漏收
+    (ai_task 无 updated_at,按 created_at)。max_age_minutes=0 供启动收口(重启即收,不等阈值;
+    仍受「无活跃 job」保护,不误杀 pending 的自愈任务)。session_factory 供自测注入内存库。
+    """
+    from datetime import timedelta
+
+    from app.core.enums import AiTaskStatus
+    from app.db.session import SessionLocal
+    from app.models import AiJob, AiTask
+
+    sf = session_factory or SessionLocal
+    db = sf()
+    reaped = 0
+    try:
+        cutoff = _db_now(db) - timedelta(minutes=max_age_minutes)
+        # 仍有活跃(pending/running)对应 ai_job 的 task —— 正常在途(排队/执行),不收(内存过滤,量小且免 NOT IN NULL 坑)
+        active_ids = {rid for (rid,) in
+                      db.query(AiJob.ref_id)
+                      .filter(AiJob.ref_kind == "ai_task",
+                              AiJob.ref_id.isnot(None),
+                              AiJob.status.in_(["pending", "running"])).all()}
+        rows = [t for t in db.query(AiTask)
+                .filter(AiTask.status == AiTaskStatus.running, AiTask.created_at < cutoff).all()
+                if t.id not in active_ids]
+        for t in rows:
+            t.status = AiTaskStatus.failed
+            t.error = "自动收口:生成任务滞留 running(疑似执行中断/服务重启),请重试"
+            reaped += 1
+        if rows:
+            db.commit()
+            logger.info("自动收口 %d 条滞留 running 的 ai_task", reaped)
+    except Exception:
+        logger.exception("自动收口超龄 ai_task 失败")
+        db.rollback()
+    finally:
+        db.close()
+    return reaped
+
+
 def _now_sh() -> datetime:
     """当前 Asia/Shanghai 时间(调度器时区),供"今天"判定。"""
     from datetime import timezone
@@ -413,6 +465,11 @@ def start_scheduler() -> None:
     # 固定周期 job:自动收口超龄 running 的 exec_run(每 30 分钟,与 eval 同频)
     _scheduler.add_job(
         reap_stale_exec_runs, trigger=IntervalTrigger(minutes=30), id="execrun-reaper",
+        replace_existing=True, misfire_grace_time=600,
+    )
+    # 固定周期 job:自动收口滞留 running 的 ai_task(每 30 分钟;补全库唯独缺失的 reap,治「永久生成中」)
+    _scheduler.add_job(
+        reap_stale_ai_tasks, trigger=IntervalTrigger(minutes=30), id="aitask-reaper",
         replace_existing=True, misfire_grace_time=600,
     )
     # 固定周期 job:设备离线巡检(每 5 分钟;pending 堆积但设备掉线才发告警)
