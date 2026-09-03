@@ -17,6 +17,7 @@
 - **最小字段稳妥**：只传 sub_id/type_id/title/mkd_content。优先级等自定义字段(cf_*)因各项目
   字段规范不同、盲传会 400，故降级为把严重度写进正文，保证最小可用不因字段规范失败。
 """
+import html as _html
 import json
 import logging
 import shutil
@@ -106,14 +107,22 @@ def _post_matter_add(sub_id: int, title: str, mkd_content: str,
     token = get_app_token()
     url = f"{settings.GEELIB_API_URL.rstrip('/')}/openapi/Matter/add"
     # content（富文本）和 mkd_content（markdown）均传，极库云要求 content 非空
+    # mkd_content 是多段 markdown：逐行转 HTML 段落（转义防特殊字符破坏富文本），
+    # 链接行让其保持可点击。
+    def _line_html(line: str) -> str:
+        esc = _html.escape(line)
+        return f"<p>{esc}</p>" if line.strip() else "<br/>"
+    html_content = "".join(_line_html(l) for l in mkd_content.splitlines()) \
+        or f"<p>{_html.escape(mkd_content)}</p>"
     body = {
         "sub_id": sub_id,
         "type_id": settings.GEELIB_DEFECT_TYPE,
         "title": title[:255],
-        "content": f"<p>{mkd_content}</p>",
+        "content": html_content,
         "mkd_content": mkd_content,
         "data": [
             {"cf_name": "状态", "cf_value": "新建"},
+            {"cf_name": "优先级", "cf_value": "P2"},
         ],
     }
     if executor_mail:
@@ -143,29 +152,40 @@ _SEVERITY_LABEL = {"blocker": "阻断", "critical": "严重", "major": "主要",
 
 
 def build_defect_body(description: str | None, severity: str | None,
-                      platform_url: str | None = None, extra: list[str] | None = None) -> str:
-    """把平台侧信息拼成极库云缺陷正文（markdown）。"""
+                      platform_url: str | None = None, extra: list[str] | None = None,
+                      share_link: str | None = None) -> str:
+    """把平台侧信息拼成极库云缺陷正文（markdown）。
+
+    description 直接写入正文，保留其完整内容（含来源链路自动生成的失败原因/证据/会话等各段）。
+    share_link 是对话分享链接（eval_run.share_link），单独追加在末尾便于快速跳转复核。
+    """
     lines = []
     if severity:
         lines.append(f"**严重度**：{_SEVERITY_LABEL.get(severity, severity)}")
     for e in (extra or []):
         lines.append(e)
     lines.append("")
+    # 完整写入描述（通常由自动草稿链路组装，含失败原因、执行机、批次、证据截图等）
     lines.append(description or "(无详细描述)")
+    if share_link:
+        lines.append("")
+        lines.append(f"**对话分享链接**：{share_link}")
     if platform_url:
         lines.append("")
-        lines.append(f"来源：测试管理平台 {platform_url}")
+        lines.append(f"**来源**：测试管理平台 {platform_url}")
     return "\n".join(lines)
 
 
 def report_defect(sub_id: int, title: str, description: str | None = None,
                   severity: str | None = None, platform_url: str | None = None,
                   extra: list[str] | None = None,
-                  executor_mail: str | None = None) -> dict:
+                  executor_mail: str | None = None,
+                  share_link: str | None = None) -> dict:
     """上报一条缺陷到极库云。返回 {ok, matter_id, ref, reason}。
 
     executor_mail：执行人邮箱（极库云「缺陷」类型的必填字段）。传 None 时回退到
     GEELIB_DEFAULT_EXECUTOR 环境变量；两者均空则由极库云侧报 3000。
+    share_link：对话分享链接（来自 eval_run.share_link），写进缺陷正文便于跳转复核。
 
     未开通道 → ok=False+reason（不抛）。其余失败抛 GeelibError（调用方决定吞/抛）。
     ref 是回填 RemainingIssue.external_ref 的字符串（形如 "geelib#<id>"）。
@@ -174,7 +194,7 @@ def report_defect(sub_id: int, title: str, description: str | None = None,
         return {"ok": False, "reason": "极库云上报通道未启用（GEELIB_ENABLED=false）"}
     if not sub_id:
         return {"ok": False, "reason": "未配置该项目的极库云 sub_id（Project.geelib_sub_id 或 GEELIB_SUB_MAP）"}
-    content = build_defect_body(description, severity, platform_url, extra)
+    content = build_defect_body(description, severity, platform_url, extra, share_link=share_link)
     data = _post_matter_add(sub_id, title, content, executor_mail=executor_mail)
     matter_id = data.get("id") or data.get("matter_id") or data.get("Id")
     ref = f"geelib#{matter_id}" if matter_id else "geelib#?"

@@ -148,12 +148,20 @@ def report_issue_to_geelib(
         if u and u.email:
             executor_mail = u.email
             break
+    # 对话分享链接：优先取 eval_run.share_link，其次 exec_run 无分享链接故不取
+    share_link = None
+    if it.eval_run_id:
+        from app.models.ai_eval import EvalRun
+        er = db.get(EvalRun, it.eval_run_id)
+        if er:
+            share_link = er.share_link
     try:
         res = geelib.report_defect(
             sub_id=sub_id, title=it.title, description=it.description,
             severity=it.severity.value, platform_url=platform_url,
             extra=[f"平台遗留问题 #{it.id}"],
             executor_mail=executor_mail,
+            share_link=share_link,
         )
     except geelib.GeelibError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"极库云上报失败：{e}")

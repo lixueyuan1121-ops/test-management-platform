@@ -281,11 +281,19 @@ def _auto_report_geelib(db: Session, issues: list) -> int:
             continue
         # 执行人（极库云必填）：自动上报无操作人，用问题 owner 邮箱，无则回退 GEELIB_DEFAULT_EXECUTOR
         owner = db.get(User, it.owner) if it.owner else None
+        # 对话分享链接：仅测评来源的草稿有（exec 回归无会话概念）
+        share_link = None
+        if it.eval_run_id:
+            from app.models.ai_eval import EvalRun
+            er = db.get(EvalRun, it.eval_run_id)
+            if er:
+                share_link = er.share_link
         try:
             res = geelib.report_defect(
                 sub_id=sub_id, title=it.title, description=it.description,
                 severity=it.severity.value, extra=[f"平台遗留问题 #{it.id}", "自动回归失败自动上报"],
                 executor_mail=owner.email if owner and owner.email else None,
+                share_link=share_link,
             )
             if res.get("ok"):
                 it.external_ref = res["ref"]
