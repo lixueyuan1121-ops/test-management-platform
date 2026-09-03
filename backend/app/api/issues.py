@@ -88,11 +88,17 @@ def update_issue(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """状态流转：open↔resolved、改 owner / external_ref。仅项目 admin。"""
+    """状态流转：open↔resolved、改 owner / external_ref。仅项目 admin。
+
+    标记已解决时，若该问题已上报极库云（external_ref=geelib#<id>），联动把极库云缺陷
+    流转到「已验证」。联动失败只随响应带 geelib_sync 提示，不阻断平台侧解决操作
+    （极库云单可能已被人工流转/删除，平台状态不应被外部系统卡死）。
+    """
     it = db.get(RemainingIssue, iid)
     if not it:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="遗留问题不存在")
     assert_project_role(db, user, it.project_id, (ProjectRole.admin,))
+    resolving = body.status == IssueStatus.resolved and it.status != IssueStatus.resolved
     if body.status is not None:
         it.status = body.status
         if body.status == IssueStatus.resolved:
@@ -104,7 +110,26 @@ def update_issue(
         it.external_ref = body.external_ref
     db.commit()
     db.refresh(it)
-    return ok(_to_out(db, it))
+
+    # 联动极库云：仅「首次流转到已解决」且已上报过才触发
+    geelib_sync = None
+    if resolving and it.external_ref and str(it.external_ref).startswith("geelib#"):
+        from app.services import geelib
+        proj = db.get(Project, it.project_id)
+        sub_id = geelib.resolve_sub_id(proj.code if proj else None,
+                                       getattr(proj, "geelib_sub_id", None))
+        if sub_id:
+            try:
+                res = geelib.mark_verified(sub_id, it.external_ref)
+                geelib_sync = {"ok": res["ok"], "msg": res.get("reason") or "极库云缺陷已流转「已验证」"}
+            except geelib.GeelibError as e:
+                geelib_sync = {"ok": False, "msg": f"极库云状态联动失败：{e}"}
+        else:
+            geelib_sync = {"ok": False, "msg": "该项目未映射极库云 sub_id，跳过状态联动"}
+    out = _to_out(db, it)
+    if geelib_sync is not None:
+        out["geelib_sync"] = geelib_sync
+    return ok(out)
 
 
 @router.post("/{iid}/report-geelib")

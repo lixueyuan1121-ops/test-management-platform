@@ -98,7 +98,18 @@ async function load() {
 
 function sevType(s) { return { blocker: 'danger', major: 'warning', minor: 'info' }[s] || '' }
 
-async function resolve(row) { await updateIssue(row.id, { status: 'resolved' }); ElMessage.success('已标记解决'); await load() }
+async function resolve(row) {
+  const res = await updateIssue(row.id, { status: 'resolved' })
+  // 已上报极库云的问题，后端会联动把缺陷流转「已验证」，结果在 geelib_sync 里
+  const sync = res?.geelib_sync
+  if (sync) {
+    if (sync.ok) ElMessage.success(`已标记解决，${sync.msg}`)
+    else ElMessage.warning(`已标记解决，但${sync.msg}`)
+  } else {
+    ElMessage.success('已标记解决')
+  }
+  await load()
+}
 async function reopen(row) { await updateIssue(row.id, { status: 'open' }); ElMessage.success('已重开'); await load() }
 
 async function reportGeelib(row) {

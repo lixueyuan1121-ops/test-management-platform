@@ -36,7 +36,14 @@ _token_cache: dict = {"token": None, "exp": 0.0}
 
 
 class GeelibError(Exception):
-    """上报失败的显式异常（供手动端点转成 4xx/5xx 给前端；自动闭环侧应捕获吞掉）。"""
+    """上报失败的显式异常（供手动端点转成 4xx/5xx 给前端；自动闭环侧应捕获吞掉）。
+
+    errno 是极库云响应里的错误码（如 5001=状态机拒绝流转），网络/解析类失败为 None。
+    """
+
+    def __init__(self, msg: str, errno: int | None = None):
+        super().__init__(msg)
+        self.errno = errno
 
 
 def is_enabled() -> bool:
@@ -139,12 +146,76 @@ def _post_matter_add(sub_id: int, title: str, mkd_content: str,
     except ValueError:
         raise GeelibError(f"极库云返回非 JSON（HTTP {resp.status_code}）")
     if data.get("errno") != 2000:
-        raise GeelibError(f"极库云建缺陷失败(errno={data.get('errno')})：{data.get('errmsg') or '未知'}")
+        raise GeelibError(f"极库云建缺陷失败(errno={data.get('errno')})：{data.get('errmsg') or '未知'}",
+                          errno=data.get("errno"))
     # 成功时 data 直接是工作项 id 的字符串（实测 "1012069"），统一包成 dict
     payload = data.get("data")
     if isinstance(payload, (str, int)):
         return {"id": payload}
     return payload or {}
+
+
+def _post_matter_edit_status(sub_id: int, matter_id: int, status_name: str) -> None:
+    """编辑工作项状态（POST /openapi/Matter/add 带 id = 编辑语义，与 skill edit.ts 同源）。
+
+    data 编辑时只支持单个 dict（不是数组）。errno!=2000 抛 GeelibError（带 errno）。
+    """
+    token = get_app_token()
+    url = f"{settings.GEELIB_API_URL.rstrip('/')}/openapi/Matter/add"
+    body = {
+        "sub_id": sub_id,
+        "id": matter_id,
+        "type_id": settings.GEELIB_DEFECT_TYPE,
+        "data": {"cf_name": "状态", "cf_value": status_name},
+    }
+    try:
+        resp = requests.post(url, json=body, headers={"X-Agent-Auth": f"Bearer {token}"},
+                             timeout=_TIMEOUT)
+    except requests.RequestException as e:
+        raise GeelibError(f"极库云改状态网络异常：{e}")
+    try:
+        data = resp.json() if resp.content else {}
+    except ValueError:
+        raise GeelibError(f"极库云返回非 JSON（HTTP {resp.status_code}）")
+    if data.get("errno") != 2000:
+        raise GeelibError(f"极库云改状态失败(errno={data.get('errno')})：{data.get('errmsg') or '未知'}",
+                          errno=data.get("errno"))
+
+
+# 状态机拒绝流转的极库云错误码（「无法流转到此状态」）
+_ERRNO_ILLEGAL_TRANSITION = 5001
+
+
+def mark_verified(sub_id: int, external_ref: str | None) -> dict:
+    """把已上报的缺陷流转到「已验证」（平台侧遗留问题标记已解决时的联动）。
+    返回 {ok, matter_id, reason}。
+
+    external_ref 形如 "geelib#<matter_id>"（report_defect 回填的格式）；未上报/格式非法/
+    通道未启用返回 ok=False+reason（不抛——调用方是状态流转主流程，联动失败不该阻断）。
+    真正的极库云调用失败抛 GeelibError，由调用方决定吞/抛。
+
+    缺陷状态机不允许「新建 → 已验证」直跳（实测 errno=5001），但允许
+    「新建 → 已修复」与「修复中/已修复 → 已验证」。策略：先直设「已验证」，
+    被状态机拒（5001）则先过渡「已修复」再设「已验证」。
+    """
+    if not is_enabled():
+        return {"ok": False, "reason": "极库云上报通道未启用（GEELIB_ENABLED=false）"}
+    if not external_ref or not str(external_ref).startswith("geelib#"):
+        return {"ok": False, "reason": "该问题未上报过极库云（external_ref 非 geelib# 格式）"}
+    raw = str(external_ref)[len("geelib#"):]
+    if not raw.isdigit():
+        return {"ok": False, "reason": f"external_ref 中的工作项 id 非法：{raw!r}"}
+    matter_id = int(raw)
+    try:
+        _post_matter_edit_status(sub_id, matter_id, "已验证")
+    except GeelibError as e:
+        if e.errno != _ERRNO_ILLEGAL_TRANSITION:
+            raise
+        # 状态机不许直跳（如还在「新建」）：先过渡「已修复」再「已验证」
+        _post_matter_edit_status(sub_id, matter_id, "已修复")
+        _post_matter_edit_status(sub_id, matter_id, "已验证")
+    logger.info("极库云缺陷已流转已验证 sub_id=%s matter=%s", sub_id, matter_id)
+    return {"ok": True, "matter_id": matter_id, "reason": None}
 
 
 # 平台严重度 → 中文标签（写进正文，避免盲传 cf 字段触发字段规范 400）
