@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, exists, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -475,15 +475,26 @@ def ai_funnel(
                              TestCase.exec_kind != "manual"),
                        TestCase.created_at).scalar() or 0
 
+    # 执行阶段按「用例」去重:窗口内生成的可自动化用例中,有多少条真被执行过/通过过(EXISTS)。
+    # 与前三级同为用例维度,保证漏斗严格单调递减、转化率≤100%。
+    # (旧实现按 ExecRun 次数,同一用例回归多跑就让后级>前级、漏斗破形、转化率>100%。)
+    def _executed_case(*run_flt):
+        return _win(_tc_q(
+            TestCase.review_status == ReviewStatus.adopted,
+            TestCase.exec_kind != "manual",
+            exists().where(and_(ExecRun.test_case_id == TestCase.id, *run_flt)),
+        ), TestCase.created_at).scalar() or 0
+
+    executed = _executed_case(ExecRun.status.in_(["passed", "failed", "blocked"]))
+    passed = _executed_case(ExecRun.status == "passed")
+
+    # 执行次数/真 bug 仍按 ExecRun 计数(次数维度,非漏斗级;省时按次数折算)。
     def _run_q(*flt):
-        # 漏斗的执行阶段只统计 AI 用例的执行(test_case_id 非空)——
-        # 排除反馈回归/清单直挂等非 AI 链路,否则后级会大于前级、漏斗破形。
         return db.query(func.count(ExecRun.id)).filter(
             ExecRun.project_id.in_(pids), ExecRun.test_case_id.isnot(None), *flt)
 
-    executed = _win(_run_q(ExecRun.status.in_(["passed", "failed", "blocked"])),
-                    ExecRun.created_at).scalar() or 0
-    passed = _win(_run_q(ExecRun.status == "passed"), ExecRun.created_at).scalar() or 0
+    exec_runs = _win(_run_q(ExecRun.status.in_(["passed", "failed", "blocked"])),
+                     ExecRun.created_at).scalar() or 0
     bugs_found = _win(_run_q(ExecRun.fail_kind == "business"), ExecRun.created_at).scalar() or 0
 
     selector_pending = _tc_q(
@@ -501,7 +512,8 @@ def ai_funnel(
             {"stage": "passed", "label": "执行通过", "count": passed},
         ],
         "adopt_rate": round(adopted / generated * 100, 1) if generated else 0.0,
+        "exec_runs": exec_runs,
         "bugs_found": bugs_found,
         "selector_pending": selector_pending,
-        "saved_hours": round(executed * 5 / 60, 1),
+        "saved_hours": round(exec_runs * 5 / 60, 1),
     })
