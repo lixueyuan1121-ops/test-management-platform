@@ -95,16 +95,31 @@ def resolve_sub_id(project_code: str | None, geelib_sub_id: int | None = None) -
     return None
 
 
-def _post_matter_add(sub_id: int, title: str, mkd_content: str) -> dict:
-    """POST /openapi/Matter/add 建缺陷；errno!=2000 抛 GeelibError。返回 data(含工作项 id)。"""
+def _post_matter_add(sub_id: int, title: str, mkd_content: str,
+                     executor_mail: str | None = None) -> dict:
+    """POST /openapi/Matter/add 建缺陷；errno!=2000 抛 GeelibError。返回 data(含工作项 id)。
+
+    executor_mail：执行人邮箱。极库云「缺陷」类型把「执行人」列为必填，
+    不传会返回 errno=3000。同时接口要求 content（富文本）非空，
+    mkd_content 虽也支持但不能替代 content，因此两者均传。
+    """
     token = get_app_token()
     url = f"{settings.GEELIB_API_URL.rstrip('/')}/openapi/Matter/add"
+    # content（富文本）和 mkd_content（markdown）均传，极库云要求 content 非空
     body = {
         "sub_id": sub_id,
         "type_id": settings.GEELIB_DEFECT_TYPE,
         "title": title[:255],
+        "content": f"<p>{mkd_content}</p>",
         "mkd_content": mkd_content,
+        "data": [
+            {"cf_name": "状态", "cf_value": "新建"},
+        ],
     }
+    if executor_mail:
+        body["data"].append({"cf_name": "执行人", "cf_value": executor_mail})
+    elif settings.GEELIB_DEFAULT_EXECUTOR:
+        body["data"].append({"cf_name": "执行人", "cf_value": settings.GEELIB_DEFAULT_EXECUTOR})
     try:
         resp = requests.post(url, json=body, headers={"X-Agent-Auth": f"Bearer {token}"},
                              timeout=_TIMEOUT)
@@ -116,7 +131,11 @@ def _post_matter_add(sub_id: int, title: str, mkd_content: str) -> dict:
         raise GeelibError(f"极库云返回非 JSON（HTTP {resp.status_code}）")
     if data.get("errno") != 2000:
         raise GeelibError(f"极库云建缺陷失败(errno={data.get('errno')})：{data.get('errmsg') or '未知'}")
-    return data.get("data") or {}
+    # 成功时 data 直接是工作项 id 的字符串（实测 "1012069"），统一包成 dict
+    payload = data.get("data")
+    if isinstance(payload, (str, int)):
+        return {"id": payload}
+    return payload or {}
 
 
 # 平台严重度 → 中文标签（写进正文，避免盲传 cf 字段触发字段规范 400）
@@ -141,8 +160,12 @@ def build_defect_body(description: str | None, severity: str | None,
 
 def report_defect(sub_id: int, title: str, description: str | None = None,
                   severity: str | None = None, platform_url: str | None = None,
-                  extra: list[str] | None = None) -> dict:
+                  extra: list[str] | None = None,
+                  executor_mail: str | None = None) -> dict:
     """上报一条缺陷到极库云。返回 {ok, matter_id, ref, reason}。
+
+    executor_mail：执行人邮箱（极库云「缺陷」类型的必填字段）。传 None 时回退到
+    GEELIB_DEFAULT_EXECUTOR 环境变量；两者均空则由极库云侧报 3000。
 
     未开通道 → ok=False+reason（不抛）。其余失败抛 GeelibError（调用方决定吞/抛）。
     ref 是回填 RemainingIssue.external_ref 的字符串（形如 "geelib#<id>"）。
@@ -152,7 +175,7 @@ def report_defect(sub_id: int, title: str, description: str | None = None,
     if not sub_id:
         return {"ok": False, "reason": "未配置该项目的极库云 sub_id（Project.geelib_sub_id 或 GEELIB_SUB_MAP）"}
     content = build_defect_body(description, severity, platform_url, extra)
-    data = _post_matter_add(sub_id, title, content)
+    data = _post_matter_add(sub_id, title, content, executor_mail=executor_mail)
     matter_id = data.get("id") or data.get("matter_id") or data.get("Id")
     ref = f"geelib#{matter_id}" if matter_id else "geelib#?"
     logger.info("极库云缺陷已创建 sub_id=%s matter=%s title=%s", sub_id, matter_id, title[:40])

@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     GEELIB_SSO_APP: str = "geelib"      # qihoo-sso-cli -app 值
     GEELIB_SSO_TOOL: str = "sso-geelib-project-skill"  # qihoo-sso-cli -tool 值（授权登记用）
     GEELIB_DEFECT_TYPE: str = "缺陷"     # /openapi/Matter/add 的 type_id（工作项类型名）
+    # 极库云「缺陷」类型把「执行人」列为必填(errno=3000 缺少参数)。上报时优先用
+    # 调用方传入的执行人邮箱(如问题 owner 的 email)，否则回退到这里的兜底邮箱。
+    # 两者均空时极库云会拒单，故启用通道时务必配一个(如测试负责人)。
+    GEELIB_DEFAULT_EXECUTOR: str = ""
     # 平台项目→极库云项目(sub_id)的映射，形如 "nw:419,other:512"。也可在 Project.geelib_sub_id 单配。
     GEELIB_SUB_MAP: str = ""
     # auto/ci 批次失败自动上报开关（默认关：先建本地草稿供人复核，人确认后再上报，避免误报污染极库云）。

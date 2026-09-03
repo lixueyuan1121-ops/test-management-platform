@@ -141,11 +141,19 @@ def report_issue_to_geelib(
     platform_url = None
     if settings.PLATFORM_BASE_URL:
         platform_url = f"{settings.PLATFORM_BASE_URL.rstrip('/')}/issues?project_id={it.project_id}"
+    # 执行人（极库云必填）：优先问题 owner 的邮箱，无则用当前操作人的，再无则兜底配置
+    executor_mail = None
+    for uid in (it.owner, user.id):
+        u = db.get(User, uid) if uid else None
+        if u and u.email:
+            executor_mail = u.email
+            break
     try:
         res = geelib.report_defect(
             sub_id=sub_id, title=it.title, description=it.description,
             severity=it.severity.value, platform_url=platform_url,
             extra=[f"平台遗留问题 #{it.id}"],
+            executor_mail=executor_mail,
         )
     except geelib.GeelibError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"极库云上报失败：{e}")

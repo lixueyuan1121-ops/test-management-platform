@@ -268,7 +268,7 @@ def _auto_report_geelib(db: Session, issues: list) -> int:
     from app.services import geelib
     if not geelib.is_enabled():
         return 0
-    from app.models import Project
+    from app.models import Project, User
 
     reported = 0
     for it in issues:
@@ -279,10 +279,13 @@ def _auto_report_geelib(db: Session, issues: list) -> int:
                                        getattr(proj, "geelib_sub_id", None))
         if not sub_id:
             continue
+        # 执行人（极库云必填）：自动上报无操作人，用问题 owner 邮箱，无则回退 GEELIB_DEFAULT_EXECUTOR
+        owner = db.get(User, it.owner) if it.owner else None
         try:
             res = geelib.report_defect(
                 sub_id=sub_id, title=it.title, description=it.description,
                 severity=it.severity.value, extra=[f"平台遗留问题 #{it.id}", "自动回归失败自动上报"],
+                executor_mail=owner.email if owner and owner.email else None,
             )
             if res.get("ok"):
                 it.external_ref = res["ref"]
