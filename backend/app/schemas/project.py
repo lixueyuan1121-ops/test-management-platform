@@ -17,6 +17,7 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     status: str | None = None  # active / archived
     platform_type: str | None = None  # pc / app / None(未分类)
+    geelib_sub_id: int | None = None   # 极库云项目 ID；正整数=映射，None=解除(回退 GEELIB_SUB_MAP)
 
 
 class ProjectOut(BaseModel):
@@ -25,6 +26,7 @@ class ProjectOut(BaseModel):
     code: str
     description: str | None = None
     platform_type: str | None = None
+    geelib_sub_id: int | None = None
     status: str
     created_at: datetime
 

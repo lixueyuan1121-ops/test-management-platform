@@ -14,6 +14,12 @@
           <template #default="{ row }">{{ platformLabel(row.platform_type) }}</template>
         </el-table-column>
         <el-table-column prop="description" label="描述" />
+        <el-table-column label="极库云" width="90">
+          <template #default="{ row }">
+            <span v-if="row.geelib_sub_id">#{{ row.geelib_sub_id }}</span>
+            <span v-else style="color:#c0c4cc">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="100" />
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
@@ -34,6 +40,10 @@
             <el-option label="PC端" value="pc" />
             <el-option label="APP端" value="app" />
           </el-select>
+        </el-form-item>
+        <el-form-item v-if="dialog.id" label="极库云ID">
+          <el-input-number v-model="form.geelib_sub_id" :min="1" :controls="false" :value-on-clear="null" placeholder="极库云项目 sub_id" style="width:100%" />
+          <div class="hint">缺陷上报时把本项目缺陷写进对应极库云项目。留空则回退用 .env 的 GEELIB_SUB_MAP；配了此项即时生效、无需重启。</div>
         </el-form-item>
         <el-form-item v-if="dialog.id" label="状态">
           <el-select v-model="form.status" style="width:100%">
@@ -60,7 +70,7 @@ const app = useAppStore()
 const projects = ref([])
 const loading = ref(false)
 const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ name: '', code: '', description: '', status: 'active', platform_type: '' })
+const form = reactive({ name: '', code: '', description: '', status: 'active', platform_type: '', geelib_sub_id: null })
 
 // 平台类型展示：pc→PC端 / app→APP端 / 空→—
 function platformLabel(v) { return { pc: 'PC端', app: 'APP端' }[v] || '—' }
@@ -74,12 +84,12 @@ onMounted(load)
 
 function openCreate() {
   dialog.id = null
-  Object.assign(form, { name: '', code: '', description: '', status: 'active', platform_type: '' })
+  Object.assign(form, { name: '', code: '', description: '', status: 'active', platform_type: '', geelib_sub_id: null })
   dialog.visible = true
 }
 function openEdit(row) {
   dialog.id = row.id
-  Object.assign(form, { name: row.name, code: row.code, description: row.description || '', status: row.status, platform_type: row.platform_type || '' })
+  Object.assign(form, { name: row.name, code: row.code, description: row.description || '', status: row.status, platform_type: row.platform_type || '', geelib_sub_id: row.geelib_sub_id ?? null })
   dialog.visible = true
 }
 async function submit() {
@@ -87,7 +97,7 @@ async function submit() {
   dialog.saving = true
   try {
     if (dialog.id) {
-      await updateProject(dialog.id, { name: form.name, description: form.description, status: form.status, platform_type: form.platform_type || null })
+      await updateProject(dialog.id, { name: form.name, description: form.description, status: form.status, platform_type: form.platform_type || null, geelib_sub_id: form.geelib_sub_id ?? null })
       app.invalidateProjects()
     } else {
       await createProject({ name: form.name, code: form.code, description: form.description, platform_type: form.platform_type || null })
@@ -101,4 +111,5 @@ async function submit() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
+.hint { color: #999; font-size: 12px; line-height: 1.4; margin-top: 2px; }
 </style>

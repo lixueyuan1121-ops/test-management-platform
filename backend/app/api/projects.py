@@ -91,5 +91,9 @@ def update_project(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="非法状态")
     if "platform_type" in body.model_fields_set:
         p.platform_type = _norm_platform(body.platform_type)
+    if "geelib_sub_id" in body.model_fields_set:
+        if body.geelib_sub_id is not None and body.geelib_sub_id <= 0:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="极库云 sub_id 必须为正整数")
+        p.geelib_sub_id = body.geelib_sub_id
     db.commit()
     return ok(ProjectOut.model_validate(p).model_dump())
