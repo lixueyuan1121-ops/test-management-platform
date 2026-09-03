@@ -95,12 +95,16 @@ def main():
     assert stages["generated"] == 5, stages     # 窗口内 5(90 天前那条不计)
     assert stages["adopted"] == 3, stages
     assert stages["automatable"] == 2, stages   # gui+api,manual 不算
-    assert stages["executed"] == 4, stages      # passed2+failed1+blocked1(running/窗外不计)
-    assert stages["passed"] == 2, stages
+    assert stages["executed"] == 1, stages      # 【真漏斗】4 次执行全在 aid 一条用例上→去重到用例=1(不再是次数4)
+    assert stages["passed"] == 1, stages         # aid 有 passed 记录→通过的用例=1(不再是次数2)
+    assert d["exec_runs"] == 4, d                 # 执行次数单独保留(passed2+failed1+blocked1;running/窗外/非AI 不计)
     assert d["bugs_found"] == 1, d
     assert d["selector_pending"] == 1, d        # 不限窗的存量卡点
     assert d["adopt_rate"] == 60.0, d           # 3/5
-    assert d["saved_hours"] == round(4 * 5 / 60, 1), d
+    assert d["saved_hours"] == round(4 * 5 / 60, 1), d   # 省时仍按执行次数(exec_runs)
+    # 真漏斗:各级严格单调递减(用例维度,不再被执行次数顶破)
+    counts = [s["count"] for s in d["funnel"]]
+    assert counts == sorted(counts, reverse=True) and counts[0] == 5, counts
     # 漏斗 label 齐全(前端直接渲染)
     assert [s["label"] for s in d["funnel"]] == ["AI 生成", "已采纳", "可自动化", "已执行", "执行通过"]
 

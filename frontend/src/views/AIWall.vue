@@ -120,7 +120,7 @@
                 <div v-for="(s, i) in funnel.funnel" :key="s.stage" class="fp-step"
                      :style="{ width: stepWidth(i), background: STEP_COLORS[i] }">
                   <div class="fp-num">{{ s.count }}</div>
-                  <div class="fp-lbl">{{ s.label }}<span v-if="i > 0" class="fp-rate">{{ convRate(i) }}%</span></div>
+                  <div class="fp-lbl">{{ s.label }}<span v-if="i > 0" class="fp-rate">{{ convRate(i) }}%</span><span v-if="s.stage === 'executed' && funnel.exec_runs" class="fp-runs">共 {{ funnel.exec_runs.toLocaleString() }} 次</span></div>
                 </div>
               </div>
               <div class="fp-side">
@@ -285,7 +285,7 @@ const range = ref('30d')            // '7d'|'30d'|'90d'|'mtd'|'custom'
 const customRange = ref([])
 
 // 价值漏斗（/stats/ai-funnel，按 days 窗口；随范围选择联动）
-const funnel = ref({ funnel: [], bugs_found: 0, selector_pending: 0, saved_hours: 0, from: '', to: '' })
+const funnel = ref({ funnel: [], bugs_found: 0, selector_pending: 0, saved_hours: 0, exec_runs: 0, from: '', to: '' })
 const STEP_COLORS = ['#2a78d6', '#3f8fc9', '#31a3ab', '#19b394', '#00b386']
 
 function stepWidth(i) {
@@ -622,6 +622,7 @@ const tv = computed(() => {
 .fp-num { font-family:var(--mono); font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1; }
 .fp-lbl { font-size:12px; opacity:.92; display:flex; align-items:center; gap:8px; }
 .fp-rate { font-family:var(--mono); font-size:11px; background:rgba(255,255,255,.22); border-radius:4px; padding:1px 6px; }
+.fp-runs { font-family:var(--mono); font-size:11px; color:rgba(255,255,255,.82); letter-spacing:.2px; }
 .fp-side { display:flex; flex-direction:column; gap:10px; }
 .fp-card { background:var(--surface-2); border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
 .fp-n { font-family:var(--mono); font-size:26px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
