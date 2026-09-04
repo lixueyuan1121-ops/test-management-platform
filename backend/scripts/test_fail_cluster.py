@@ -54,10 +54,96 @@ def test_fingerprint_and_cluster():
     assert sorted(sel["requirement_ids"]) == [10, 12]
 
 
+def test_parse_naming():
+    raw = '```json\n{"root_cause_title":"支付接口500","summary":"网关异常","severity":"critical","confidence":0.9}\n```'
+    d = fc.parse_naming(raw)
+    assert d["root_cause_title"] == "支付接口500"
+    assert d["severity"] == "critical"
+    assert 0.0 <= d["confidence"] <= 1.0
+    # 非法严重度回落 major
+    d2 = fc.parse_naming('{"root_cause_title":"x","severity":"nonsense","confidence":2}')
+    assert d2["severity"] == "major"
+    assert d2["confidence"] == 1.0
+    # 无 JSON → error
+    assert fc.parse_naming("没有json").get("error")
+
+
+def test_collect_failed_runs():
+    # 建版本→需求→用例→失败执行 的完整链，验证双路径回溯
+    from datetime import date
+    from app.db.session import SessionLocal
+    from app.models import Project, AiTask, TestCase, ExecRun, ReleaseRecord, Requirement
+    from app.core.enums import ExecStatus, ExecKind
+    db = SessionLocal()
+    pj = Project(name="P-fc", code="P-FC"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v9", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    req = Requirement(project_id=pj.id, title="需求A", release_id=rel.id); db.add(req); db.flush()
+    # TestCase.ai_task_id NOT NULL：先建 AiTask 再引用（种子约定，见报告）
+    _at = AiTask(project_id=pj.id, user_id=1, kind="testcase_gen", input_ref="r"); db.add(_at); db.flush()
+    tc = TestCase(ai_task_id=_at.id, project_id=pj.id, title="用例1", requirement_id=req.id, exec_kind="gui"); db.add(tc); db.flush()
+    # 链路径失败（挂用例，用例→需求→版本）
+    r1 = ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed,
+                 test_case_id=tc.id, reason="接口 500", triage_kind="environment")
+    # 直路径失败（直接挂 release_id，无用例）
+    r2 = ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.blocked,
+                 release_id=rel.id, reason="超时", triage_kind="environment")
+    # 非本版本失败（不该纳入）
+    r3 = ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed, reason="无关")
+    db.add_all([r1, r2, r3]); db.commit()
+    runs = fc.collect_failed_runs(db, release_id=rel.id)
+    ids = {r["id"] for r in runs}
+    assert r1.id in ids and r2.id in ids, ids
+    assert r3.id not in ids, "无关失败不应纳入"
+    # 链路径的执行能回溯到 requirement_id
+    row1 = next(r for r in runs if r["id"] == r1.id)
+    assert row1["requirement_id"] == req.id
+    db.close()
+
+
+def test_handler_one_call_per_cluster():
+    import types, json as _json
+    from app.db.session import SessionLocal
+    from app.models import Project, ExecRun, FailCluster
+    from app.core.enums import ExecStatus
+    from app.services import generators
+    db = SessionLocal()
+    pj = Project(name="P-h", code="P-H"); db.add(pj); db.flush()
+    # 3 条失败：2 条同根因(env 500) + 1 条(selector) → 2 簇
+    for reason, tk in [("接口 500", "environment"), ("接口 500", "environment"), ("元素未现", "selector")]:
+        db.add(ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed,
+                       release_id=None, reason=reason, triage_kind=tk))
+    db.commit()
+    # 直接喂 runs 走 rule_cluster + 命名，避免依赖真实回溯（此处校验调用计数）
+    calls = {"n": 0}
+
+    class _Fake:
+        def is_available(self): return True
+        def stream_generate(self, *a, **k):
+            calls["n"] += 1
+            yield {"type": "result", "text": '{"root_cause_title":"根因X","severity":"major","confidence":0.8}'}
+
+    orig = generators.get_provider
+    generators.get_provider = lambda name: _Fake()
+    try:
+        runs = [{"id": i + 1, "triage_kind": tk, "reason": r, "fail_kind": None, "report": None, "requirement_id": None}
+                for i, (r, tk) in enumerate([("接口 500", "environment"), ("接口 500", "environment"), ("元素未现", "selector")])]
+        clusters = fc.rule_cluster(runs)
+        for c in clusters:
+            fc._name_one(_Fake(), c)
+        assert len(clusters) == 2, clusters
+        assert calls["n"] == 2, f"应一簇一次调用，实际 {calls['n']}"
+    finally:
+        generators.get_provider = orig
+    db.close()
+
+
 def main():
     test_table_created()
     test_normalize_reason()
     test_fingerprint_and_cluster()
+    test_parse_naming()
+    test_collect_failed_runs()
+    test_handler_one_call_per_cluster()
     print("OK test_fail_cluster")
 
 
