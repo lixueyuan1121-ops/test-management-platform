@@ -37,6 +37,7 @@ const routes = [
       { path: 'stats', name: 'stats', component: () => import('@/views/DailyStats.vue') },
       { path: 'workload', name: 'workload', component: () => import('@/views/WorkloadStats.vue') },
       { path: 'ai-wall', name: 'ai-wall', component: () => import('@/views/AIWall.vue'), meta: { title: 'AI 战绩墙' } },
+      { path: 'fail-clusters', name: 'fail-clusters', component: () => import('@/views/FailClusters.vue'), meta: { title: '版本质量聚焦', platformAdmin: true } },
       { path: 'issues', name: 'issues', component: () => import('@/views/Issues.vue') },
       { path: 'tool-plaza', name: 'tool-plaza', component: () => import('@/views/ToolPlaza.vue') },
       { path: 'tool-admin', name: 'tool-admin', component: () => import('@/views/ToolAdmin.vue'), meta: { platformAdmin: true } },

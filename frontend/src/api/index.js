@@ -485,3 +485,9 @@ export async function triageExecRun(run_id, provider, { onTick } = {}) {
     { params: provider ? { provider } : {}, silent: true })
   return pollAiJob(job_id, { onTick })
 }
+
+// 失败聚类去噪（版本质量聚焦）
+export const failClusterScope = (release_id) => http.get('/fail-clusters/scope', { params: { release_id } })
+export const analyzeFailClusters = (data) => http.post('/fail-clusters/analyze', data)
+export const listFailClusters = (release_id) => http.get('/fail-clusters', { params: { release_id } })
+export const createIssueFromCluster = (id) => http.post(`/fail-clusters/${id}/create-issue`, {})
