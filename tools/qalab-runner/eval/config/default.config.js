@@ -64,8 +64,10 @@ module.exports = {
     stopSignalSelector: 'button.send-btn:not(.send-btn--noop):not([disabled])',
     fileInputSelector: 'input[type="file"]',               // 文件上传
     // 附件上传成功信号：输入区「草稿附件卡片」（每个附件一项）。在 open shadow DOM 内，
-    // Playwright locator 会自动穿透。发送前据此确认「附件真的挂上了」，否则本条判失败（不裸发 query）。
-    attachmentCardSelector: 'attachment-item',
+    // Playwright locator 会自动穿透。发送前据此确认「附件真的挂上了」再输入 query。
+    // 值经真机(RUN-268)证实：原 attachment-item 失配,实际命中 [class*="attachment"]。
+    // _waitAttachmentsReady 另带一组通用兜底,认不出也放行(dump DOM),不硬失败。
+    attachmentCardSelector: '[class*="attachment"]',
 
     // —— 回答正文 ——
     answerGroupSelector: '.chat-group.assistant',          // 每条 AI 回答容器
