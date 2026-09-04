@@ -16,6 +16,7 @@
 
 const workFrame = require('./work-frame');
 const { typeQuestionVerified } = require('./type-question-verified');
+const { pickReadyAttachment } = require('./attachment-ready');
 
 class DesktopRunner {
   constructor(context, page, platformConfig, executionConfig, logger, diag) {
@@ -203,20 +204,46 @@ class DesktopRunner {
     await dr.waitForGenerationStart();          // 确认已进入生成，再返回（下一条才去新建）
   }
 
-  // 等附件真正「挂上输入区」：轮询草稿附件卡片出现（数量≥期望）。卡片在 shadow DOM，
-  // Playwright locator 会自动穿透 open shadow root，故直接 count 即可。超时未出现视为上传失败（抛错）。
+  // 等附件真正「挂上输入区」：多候选选择器轮询草稿附件卡片(数量≥期望即算挂上)。
+  // 卡片在 open shadow DOM，Playwright locator 会自动穿透。真实卡片 DOM 未知,故除配置的
+  // attachmentCardSelector 外再带一组通用兜底(附件/上传/图片缩略图类)。
+  // ⚠️ setInputFiles 未抛错即视为上传已发起;这里的卡片校验只为「尽量确认」,超时不再硬失败——
+  // 而是 dump 输入区真实 DOM 到日志(供定位真实选择器)后放行,由后续 typeQuestionVerified 读回校验兜底。
+  // (旧实现超时即抛错,在选择器失配时会 100% 误杀带附件用例——已被真机 RUN-267 证实。)
   async _waitAttachmentsReady(ctx, expectN) {
-    const sel = this.platform.attachmentCardSelector;
-    if (!sel) { await this._sleep(2000); return; } // 未配校验选择器：退回固定等待（不阻断，保持旧行为）
+    const primary = this.platform.attachmentCardSelector;
+    const candidates = [
+      primary,
+      'attachment-item', 'attachment-card', '[class*="attachment"]',
+      '[class*="upload-item"]', '[class*="file-item"]', '[class*="preview"] img',
+    ].filter((s, i, a) => s && a.indexOf(s) === i);   // 去重去空,配置优先
     const timeoutMs = this.execution.attachmentUploadTimeout || 60000;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const n = await ctx.locator(sel).count().catch(() => 0);
-      if (n >= expectN) return;
+      const results = [];
+      for (const sel of candidates) {
+        results.push({ sel, n: await ctx.locator(sel).count().catch(() => 0) });
+      }
+      const r = pickReadyAttachment(results, expectN);
+      if (r.ready) {
+        if (r.via !== primary) this._log(`   附件卡片经兜底选择器命中:${r.via}(建议把它设为 attachmentCardSelector)`);
+        return;
+      }
       await this._sleep(500);
     }
-    const got = await ctx.locator(sel).count().catch(() => 0);
-    throw new Error(`附件上传未完成（等待 ${(timeoutMs / 1000).toFixed(0)}s 后仅 ${got}/${expectN} 个附件卡片出现）`);
+    // 超时:不硬失败(误杀),dump 真实 DOM 供定位后放行
+    const counts = [];
+    for (const sel of candidates) counts.push(`${sel}=${await ctx.locator(sel).count().catch(() => 0)}`);
+    let domSnippet = '';
+    try {
+      domSnippet = await ctx.locator(this.platform.inputSelector).first()
+        .evaluate((el) => {
+          const region = el.closest('[class*="compose"],[class*="input"],[class*="editor"]') || el.parentElement || el;
+          return (region.outerHTML || '').slice(0, 1500);
+        }).catch(() => '');
+    } catch (_) {}
+    this._warn(`   附件卡片未按已知选择器识别(${(timeoutMs / 1000).toFixed(0)}s 后 ${counts.join(', ')});` +
+      `附件多半已上传,放行继续输入 query。输入区 DOM 片段(供补 attachmentCardSelector):\n${domSnippet}`);
   }
 
   // 切换到某任务对话：优先用缓存 index 直达并校验，失配则全表扫描按「首个提问≈用例 query」定位。
