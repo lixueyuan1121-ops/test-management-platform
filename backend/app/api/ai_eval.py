@@ -10,7 +10,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import AiTaskStatus, ProjectRole
@@ -101,6 +101,7 @@ def run_eval_query_gen_job(db: Session, job) -> dict:
     (AiTask 已由端点建为 running)。无有效 query → AiTask=failed+commit 后抛错(job failed)。
     """
     import time as _time
+    from app.services.ai_jobs import _persist_with_retry
     inp = json.loads(job.input or "{}")
     ai_task_id = inp["ai_task_id"]
     project_id = inp["project_id"]
@@ -114,6 +115,9 @@ def run_eval_query_gen_job(db: Session, job) -> dict:
     at = db.get(AiTask, ai_task_id)
     if at is None:
         raise ValueError("生成任务记录丢失")
+    # P1(诊断文档):读完输入快照即 commit 释放 DB 连接——生成的几十秒里不持有连接,免其空闲被
+    # 中间层/wait_timeout 掐断致写库 2013(972105f4 已为 testcase_gen 立此范式,本 handler 补齐)。
+    db.commit()
 
     raw = ""
     meta = None
@@ -133,54 +137,73 @@ def run_eval_query_gen_job(db: Session, job) -> dict:
                 raw = evt["text"]
         elif et == "error":
             err = evt.get("msg")
-    if meta:
-        at.duration_ms = meta.get("duration_ms") or int((_time.monotonic() - t0) * 1000)
-        at.cost_usd = meta.get("cost_usd")
-        at.output_tokens = meta.get("output_tokens")
-    at.output_raw = raw or None
+    duration_ms = (meta.get("duration_ms") if meta else None) or int((_time.monotonic() - t0) * 1000)
+    cost_usd = meta.get("cost_usd") if meta else None
+    output_tokens = meta.get("output_tokens") if meta else None
 
     queries = claude_runner.parse_eval_queries(raw)
-    if not queries:
-        at.status = AiTaskStatus.failed
-        detail = err or ("未生成有效 query：引擎无任何输出(可能被网关/超时切断)" if not raw
-                         else f"未生成有效 query：输出 {len(raw)} 字但未解析出 query 数组(尾部:…{raw[-200:]})")
-        at.error = detail[:2000]
-        db.commit()
-        raise ValueError(detail)
 
-    objs = []
-    for i, c in enumerate(queries):
-        cg = c["conversation_group"] or f"g{ai_task_id}_{i}"
-        q = EvalQuery(
-            ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
-            title=c["title"], prompt=c["prompt"], dimension=c.get("dimension"),
-            expected=c.get("expected"),
-            attachments=json.dumps(c["attachments"], ensure_ascii=False) if c.get("attachments") else None,
-            conversation_group=cg, turn_index=c.get("turn_index") or 0,
-        )
-        db.add(q); objs.append(q)
-    at.status = AiTaskStatus.done
-    at.case_count = len(queries)
-    db.commit()
-    for q in objs:
-        db.refresh(q)
+    # ---- 写库(P1:此处才重取连接;P2:短重试兜偶发断连,不丢已生成结果)----
+    box: dict = {"attached": 0, "queries": []}
 
-    attached = 0
-    if eval_task_id is not None:
-        try:
-            et2 = db.get(EvalTask, eval_task_id)
-            if et2 is not None:
-                qids = json.loads(et2.query_ids) if et2.query_ids else []
-                merged = list(dict.fromkeys(qids + [q.id for q in objs]))
-                et2.query_ids = json.dumps(merged, ensure_ascii=False)
-                db.commit()
-                attached = len(merged) - len(qids)
-        except Exception:
-            logger.exception("挂载测评任务失败 eval_task_id=%s", eval_task_id)
-            db.rollback()
+    def _persist(s):
+        """在全新 session 上落库(整段一个事务,断连重试时整体重放)。重放幂等:先清本 ai_task 半成品。"""
+        at2 = s.get(AiTask, ai_task_id)
+        if at2 is None:
+            raise ValueError("生成任务记录丢失")
+        if meta:
+            at2.duration_ms = duration_ms
+            at2.cost_usd = cost_usd
+            at2.output_tokens = output_tokens
+        at2.output_raw = raw or None
+        if not queries:
+            at2.status = AiTaskStatus.failed
+            detail = err or ("未生成有效 query:引擎无任何输出(可能被网关/超时切断)" if not raw
+                             else f"未生成有效 query:输出 {len(raw)} 字但未解析出 query 数组(尾部:…{raw[-200:]})")
+            at2.error = detail[:2000]
+            s.commit()
+            return [], detail
+        # 半成功重放幂等:首次 commit 若服务端已落、客户端才断连,重放前须清掉本 ai_task 已插入的 query
+        s.query(EvalQuery).filter_by(ai_task_id=ai_task_id).delete()
+        objs = []
+        for i, c in enumerate(queries):
+            cg = c["conversation_group"] or f"g{ai_task_id}_{i}"
+            q = EvalQuery(
+                ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
+                title=c["title"], prompt=c["prompt"], dimension=c.get("dimension"),
+                expected=c.get("expected"),
+                attachments=json.dumps(c["attachments"], ensure_ascii=False) if c.get("attachments") else None,
+                conversation_group=cg, turn_index=c.get("turn_index") or 0,
+            )
+            s.add(q); objs.append(q)
+        at2.status = AiTaskStatus.done
+        at2.case_count = len(queries)
+        # 挂测评任务(与 query 同一事务,一并幂等重放)。挂载异常不拖垮主结果:吞掉、query 仍落库。
+        if eval_task_id is not None:
+            try:
+                et2 = s.get(EvalTask, eval_task_id)
+                if et2 is not None:
+                    s.flush()   # 取新 query 的 id
+                    qids = json.loads(et2.query_ids) if et2.query_ids else []
+                    merged = list(dict.fromkeys(qids + [q.id for q in objs]))
+                    et2.query_ids = json.dumps(merged, ensure_ascii=False)
+                    box["attached"] = len(merged) - len(qids)
+            except Exception:  # noqa: BLE001
+                logger.exception("挂载测评任务失败 eval_task_id=%s", eval_task_id)
+        s.commit()
+        for q in objs:
+            s.refresh(q)
+        box["queries"] = [_to_query_out(q) for q in objs]
+        return objs, None
+
+    objs, fail_detail = _persist_with_retry(
+        _persist, sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False))
+    if fail_detail is not None:   # 无有效 query:已落 AiTask=failed,抛错让 run_job 置 job failed
+        raise ValueError(fail_detail)
+
     return {"ai_task_id": ai_task_id, "status": "done", "eval_task_id": eval_task_id,
-            "attached": attached, "case_count": len(queries),
-            "queries": [_to_query_out(q) for q in objs]}
+            "attached": box["attached"], "case_count": len(queries),
+            "queries": box["queries"]}
 
 
 from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402

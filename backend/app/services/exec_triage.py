@@ -17,7 +17,7 @@ import logging
 import re
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.services import generators
 
@@ -158,6 +158,7 @@ def run_triage_job(db: Session, job) -> dict:
     """
     from app.core.enums import ExecStatus
     from app.models import ExecRun
+    from app.services.ai_jobs import _persist_with_retry
 
     inp = json.loads(job.input or "{}")
     run_id = inp.get("run_id")
@@ -185,6 +186,9 @@ def run_triage_job(db: Session, job) -> dict:
     prompt = build_triage_prompt(payload, run.reason, run.fail_kind, report)
     system = _SYSTEM_PROMPT
     title = payload.get("title") or "失败归因"
+    # P1:读完 run 快照即 commit 释放 DB 连接——归因 LLM 调用期间不持有连接,免其空闲被中间层掐断
+    # 致写库 2013(972105f4 为 testcase_gen 立此范式,本 handler 补齐)。后续不再碰 run(值已取齐)。
+    db.commit()
 
     raw = ""
     err = None
@@ -208,9 +212,18 @@ def run_triage_job(db: Session, job) -> dict:
         raise ValueError(parsed["error"])
     parsed["provider"] = provider_id
     parsed["at"] = datetime.utcnow().isoformat()
-    run.triage_kind = parsed["kind"]
-    run.triage = json.dumps(parsed, ensure_ascii=False)
-    db.commit()
+
+    # ---- 写库(P1:此处才重取连接;P2:短重试兜断连)。UPDATE 覆盖写,重放天然幂等 ----
+    def _persist(s):
+        r2 = s.get(ExecRun, run_id)
+        if r2 is None:
+            raise ValueError(f"执行项不存在:{run_id}")
+        r2.triage_kind = parsed["kind"]
+        r2.triage = json.dumps(parsed, ensure_ascii=False)
+        s.commit()
+        return [r2], None
+
+    _persist_with_retry(_persist, sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False))
     return {"run_id": run_id, **parsed}
 
 

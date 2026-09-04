@@ -11,6 +11,7 @@
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 
 from sqlalchemy import update
@@ -108,6 +109,41 @@ def _ensure_handlers() -> None:
         import app.api.eval_task  # noqa: F401  (import 时 register eval_summary handler)
     if "fail_cluster" not in _HANDLERS:
         import app.services.fail_cluster  # noqa: F401  (import 时 register fail_cluster handler)
+
+
+def _persist_with_retry(persist_fn, session_factory, retries: int = 2) -> tuple[list, str | None]:
+    """写库短重试(P2):生成结果已到手,落库偶发 2013/OperationalError 断连时重连重放一次。
+
+    公共韧性件:各 AI job handler(测试点/对话 query/归因/判定/失败聚类)在长跑 LLM 后写库,
+    连接常已被中间层空闲掐断——都应经此函数用**全新 session** 落库,首次断连即重连重放。
+    persist_fn(session)→(objs, fail_detail),每次用 session_factory() 造全新 session
+    (断连后旧 session 已死,重试即重连)。session_factory 由调用方按 db 的 bind 派生
+    (sessionmaker(bind=db.get_bind())),既连同一库、又不复用可能已断连的原 session;测试注入其内存库。
+    2013 Lost connection / OperationalError 视为可重试;其他异常(数据校验失败等)不重试直接上抛。
+    persist_fn 须**幂等**(整段重放):首次 commit 若服务端已落、客户端才断连,重放会重复写——
+    故凡插入新行的 persist_fn 都应在开头按业务键清掉本次半成品(见各 handler)。
+    """
+    from sqlalchemy.exc import OperationalError
+
+    last_err: Exception | None = None
+    for attempt in range(retries + 1):
+        s = session_factory()
+        try:
+            return persist_fn(s)
+        except OperationalError as e:
+            last_err = e
+            logger.warning("写库断连(第 %d 次),重连重试: %s", attempt + 1, str(e)[:200])
+            try:
+                s.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            if attempt < retries:
+                time.sleep(1 + attempt)   # 退避 1s/2s,给连接池/中间层恢复窗口
+                continue
+            raise
+        finally:
+            s.close()
+    raise last_err if last_err else RuntimeError("写库失败")
 
 
 def _fail_job_isolated(session_factory, job_id: int, kind: str, err: str) -> None:

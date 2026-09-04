@@ -120,12 +120,22 @@ def test_p1_persist_non_db_error_no_retry():
     print("✓ P1:非 DB 异常不重试,直接上抛")
 
 
+def test_persist_with_retry_lives_in_ai_jobs():
+    """_persist_with_retry 是公共写库韧性件,应落在 services 层(ai_jobs),供各 handler 共用——
+    而非埋在 api/ai.py 里(service 反向 import api 层会绕圈)。ai.py 仍再导出以兼容旧引用。"""
+    from app.services.ai_jobs import _persist_with_retry as from_jobs
+    from app.api.ai import _persist_with_retry as from_ai
+    assert from_jobs is from_ai, "ai.py 的 _persist_with_retry 应就是 ai_jobs 的那一个(再导出)"
+    print("✓ 重构:_persist_with_retry 提取到 ai_jobs 公共层,ai.py 兼容再导出")
+
+
 def main():
     test_p0_handler_exception_lands_failed_via_isolated_session()
     test_p0_isolated_fail_survives_broken_original_session()
     test_p0_isolated_fail_not_overwrite_done()
     test_p1_persist_retry_recovers_from_disconnect()
     test_p1_persist_non_db_error_no_retry()
+    test_persist_with_retry_lives_in_ai_jobs()
     print("\n✅ AI job 写库断连自愈 全部通过")
 
 

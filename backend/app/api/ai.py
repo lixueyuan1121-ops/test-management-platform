@@ -654,6 +654,7 @@ def run_script_gen_job(db: Session, job) -> dict:
 
 # 注册为队列 handler(ai_jobs 惰性 import 本模块时触发)
 from app.services import ai_jobs as _ai_jobs_reg  # noqa: E402
+from app.services.ai_jobs import _persist_with_retry  # noqa: E402  再导出:公共韧性件已移至 ai_jobs,兼容旧引用
 _ai_jobs_reg.register_handler("script_gen", run_script_gen_job)
 
 
@@ -679,37 +680,6 @@ def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str]
         elif et == "error":
             err = evt.get("msg")
     return raw, meta, err
-
-
-def _persist_with_retry(persist_fn, session_factory, retries: int = 2) -> tuple[list, str | None]:
-    """写库短重试(P2):生成结果已到手,落库偶发 2013/OperationalError 断连时重连重放一次。
-
-    persist_fn(session)→(objs, fail_detail),每次用 session_factory() 造**全新 session**
-    (断连后旧 session 已死,重试即重连)。session_factory 由调用方按传入 db 的 bind 派生
-    (见 run_testcase_gen_job),既连同一库、又不复用可能已断连的原 session;测试注入其内存库。
-    2013 Lost connection / OperationalError 视为可重试;其他异常(数据校验失败等)不重试直接上抛。
-    """
-    from sqlalchemy.exc import OperationalError
-
-    last_err: Exception | None = None
-    for attempt in range(retries + 1):
-        s = session_factory()
-        try:
-            return persist_fn(s)
-        except OperationalError as e:
-            last_err = e
-            logger.warning("写库断连(第 %d 次),重连重试: %s", attempt + 1, str(e)[:200])
-            try:
-                s.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-            if attempt < retries:
-                time.sleep(1 + attempt)   # 退避 1s/2s,给连接池/中间层恢复窗口
-                continue
-            raise
-        finally:
-            s.close()
-    raise last_err if last_err else RuntimeError("写库失败")
 
 
 def run_testcase_gen_job(db: Session, job) -> dict:

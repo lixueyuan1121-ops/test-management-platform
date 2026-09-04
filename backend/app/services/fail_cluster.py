@@ -87,7 +87,7 @@ def rule_cluster(runs: list[dict]) -> list[dict]:
 import logging
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.services import generators
 
@@ -214,12 +214,14 @@ def run_fail_cluster_job(db: Session, job) -> dict:
     重跑：同 batch_key 先删旧簇；按 fingerprint 从上一批迁移已建缺陷的 issue_id。
     """
     from app.models import FailCluster
+    from app.services.ai_jobs import _persist_with_retry
 
     inp = json.loads(job.input or "{}")
     release_id = inp.get("release_id")
     if not release_id:
         raise ValueError("fail_cluster job 缺 release_id")
     batch_key = inp.get("batch_key") or f"rel{release_id}-{job.id}"
+    project_id = job.project_id
     provider_id = _pick_provider(inp.get("provider"))
     engine = generators.get_provider(provider_id)
     if not engine.is_available():
@@ -227,29 +229,38 @@ def run_fail_cluster_job(db: Session, job) -> dict:
 
     runs = collect_failed_runs(db, release_id, inp.get("requirement_ids"), inp.get("task_ids"))
     clusters = rule_cluster(runs)
-
-    # 迁移旧批次已建缺陷（按 fingerprint）
-    prev = {c.fingerprint: c.issue_id for c in
-            db.query(FailCluster).filter(FailCluster.release_id == release_id,
-                                         FailCluster.issue_id.isnot(None)).all()}
-    # 清本 batch_key 旧行（幂等重跑）
-    db.query(FailCluster).filter(FailCluster.batch_key == batch_key).delete()
-
-    out = []
-    for c in clusters:
-        naming = _name_one(engine, c)
-        fcrow = FailCluster(
-            project_id=job.project_id, release_id=release_id,
-            root_cause_title=naming.get("root_cause_title") or f"未命名根因（{c['triage_kind'] or '未知'}）",
-            summary=naming.get("summary"), triage_kind=c["triage_kind"],
-            fingerprint=c["fingerprint"], run_ids=json.dumps(c["run_ids"]),
-            requirement_ids=json.dumps(c["requirement_ids"]), member_count=c["member_count"],
-            severity=naming.get("severity"), confidence=naming.get("confidence"),
-            issue_id=prev.get(c["fingerprint"]), batch_key=batch_key,
-        )
-        db.add(fcrow)
-        out.append({"fingerprint": c["fingerprint"], "member_count": c["member_count"]})
+    # P1:粗聚(读)完成即 commit 释放 DB 连接——逐簇 LLM 命名的几十秒里不持有连接,免其空闲被
+    # 中间层掐断致写库 2013(972105f4 为 testcase_gen 立此范式,本 handler 补齐)。
     db.commit()
+
+    # 逐簇 AI 命名(纯引擎调用,零 DB 连接);命名结果与簇配对暂存,稍后一次性落库。
+    named = [(c, _name_one(engine, c)) for c in clusters]
+
+    # ---- 写库(P1:此处才重取连接;P2:短重试兜断连)。重放幂等:清本 batch_key 旧行后再插 ----
+    def _persist(s):
+        # 迁移旧批次已建缺陷(按 fingerprint)
+        prev = {c.fingerprint: c.issue_id for c in
+                s.query(FailCluster).filter(FailCluster.release_id == release_id,
+                                            FailCluster.issue_id.isnot(None)).all()}
+        # 清本 batch_key 旧行(幂等重跑 / 断连重放都靠它去重)
+        s.query(FailCluster).filter(FailCluster.batch_key == batch_key).delete()
+        rows = []
+        for c, naming in named:
+            fcrow = FailCluster(
+                project_id=project_id, release_id=release_id,
+                root_cause_title=naming.get("root_cause_title") or f"未命名根因（{c['triage_kind'] or '未知'}）",
+                summary=naming.get("summary"), triage_kind=c["triage_kind"],
+                fingerprint=c["fingerprint"], run_ids=json.dumps(c["run_ids"]),
+                requirement_ids=json.dumps(c["requirement_ids"]), member_count=c["member_count"],
+                severity=naming.get("severity"), confidence=naming.get("confidence"),
+                issue_id=prev.get(c["fingerprint"]), batch_key=batch_key,
+            )
+            s.add(fcrow); rows.append(fcrow)
+        s.commit()
+        return rows, None
+
+    _persist_with_retry(_persist, sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False))
+    out = [{"fingerprint": c["fingerprint"], "member_count": c["member_count"]} for c, _ in named]
     return {"release_id": release_id, "batch_key": batch_key,
             "fail_count": len(runs), "cluster_count": len(clusters), "clusters": out}
 
