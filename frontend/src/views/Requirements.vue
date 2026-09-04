@@ -191,7 +191,7 @@ async function onProjectChange() {
   if (!projectId.value) return
   setLastProjectId(projectId.value)
   filterRelease.value = null
-  try { releases.value = await listReleases({ project_id: projectId.value }) } catch { releases.value = [] }
+  try { releases.value = (await listReleases({ project_id: projectId.value })).items || [] } catch { releases.value = [] }
   await reload()
 }
 

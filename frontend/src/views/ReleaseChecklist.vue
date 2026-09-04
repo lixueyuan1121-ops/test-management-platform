@@ -94,7 +94,7 @@ async function onProjectChange() {
   if (!pid.value) { rows.value = []; return }
   setLastProjectId(pid.value)
   releaseId.value = null
-  try { releases.value = await listReleases({ project_id: pid.value }) } catch { releases.value = [] }
+  try { releases.value = (await listReleases({ project_id: pid.value })).items || [] } catch { releases.value = [] }
   await reload()
 }
 
