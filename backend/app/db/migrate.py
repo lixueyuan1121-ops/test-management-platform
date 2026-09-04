@@ -452,6 +452,14 @@ def ensure_api_env_table(engine=None) -> None:
     ApiEnv.__table__.create(bind=eng, checkfirst=True)
 
 
+def ensure_fail_cluster_table(engine=None) -> None:
+    """建 fail_cluster 表(幂等)。老库无需依赖模型 import 时机即可补出。"""
+    from app.db.session import engine as _default_engine
+    from app.models.fail_cluster import FailCluster
+    eng = engine if engine is not None else _default_engine
+    FailCluster.__table__.create(bind=eng, checkfirst=True)
+
+
 def ensure_eval_query_dimension() -> None:
     """eval_query 补 dimension 列(对话测评题主考维度)。老库已建表故走 ALTER;新库 create_all 已含,探到即跳过(幂等)。"""
     if not _columns("eval_query"):

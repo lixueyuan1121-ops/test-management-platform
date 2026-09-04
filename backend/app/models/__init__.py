@@ -23,6 +23,7 @@ from app.models.feedback import (
 from app.models.release_checklist import ReleaseChecklistItem
 from app.models.test_plan import TestPlan, TestPlanCase, TestPlanRun
 from app.models.requirement import Requirement
+from app.models.fail_cluster import FailCluster
 
 __all__ = [
     "User",
@@ -65,4 +66,5 @@ __all__ = [
     "TestPlanCase",
     "TestPlanRun",
     "Requirement",
+    "FailCluster",
 ]

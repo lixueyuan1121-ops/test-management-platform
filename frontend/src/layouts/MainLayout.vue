@@ -76,6 +76,7 @@
           <el-menu-item index="/stats"><el-icon><DataAnalysis /></el-icon><span>日报统计</span></el-menu-item>
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
+          <el-menu-item index="/fail-clusters"><el-icon><Filter /></el-icon><span>版本质量聚焦</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 我的:个人相关(避免与顶层"工作台"撞名) -->
@@ -137,7 +138,7 @@ import { useAuthStore } from '@/store/auth'
 import {
   Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
   DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked, Tickets, Calendar, Link,
+  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked, Tickets, Calendar, Link, Filter,
 } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 

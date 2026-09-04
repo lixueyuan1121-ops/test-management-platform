@@ -841,3 +841,28 @@ CREATE TABLE `ai_job` (
   KEY `idx_aijob_project` (`project_id`),
   KEY `idx_aijob_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 失败聚类去噪：一次版本失败聚类的「根因簇」（规则粗聚 + AI 命名） ----------
+CREATE TABLE IF NOT EXISTS `fail_cluster` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `release_id` BIGINT DEFAULT NULL,
+  `root_cause_title` VARCHAR(255) NOT NULL,
+  `summary` TEXT,
+  `triage_kind` VARCHAR(16) DEFAULT NULL,
+  `fingerprint` VARCHAR(255) NOT NULL,
+  `run_ids` TEXT,
+  `requirement_ids` TEXT,
+  `member_count` INT NOT NULL DEFAULT 0,
+  `severity` VARCHAR(16) DEFAULT NULL,
+  `confidence` FLOAT DEFAULT NULL,
+  `issue_id` BIGINT DEFAULT NULL,
+  `batch_key` VARCHAR(64) DEFAULT NULL,
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fc_project` (`project_id`),
+  KEY `idx_fc_release` (`release_id`),
+  KEY `idx_fc_fingerprint` (`fingerprint`),
+  KEY `idx_fc_batch` (`batch_key`),
+  KEY `idx_fc_issue` (`issue_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
