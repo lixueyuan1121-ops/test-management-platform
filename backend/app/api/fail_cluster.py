@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ExecStatus, ProjectRole
 from app.db.session import get_db
-from app.models import ExecRun, FailCluster, Project, Requirement, TestCase, User
+from app.models import ExecRun, FailCluster, Requirement, TestCase, User
 from app.models.issue import RemainingIssue
 from app.schemas.common import ok
-from app.services import ai_jobs, fail_cluster as fcsvc
+from app.services import ai_jobs
 
 router = APIRouter(prefix="/api/fail-clusters", tags=["fail-clusters"])
 
@@ -95,7 +95,14 @@ def create_issue(cid: int, db: Session = Depends(get_db), user: User = Depends(g
 
 def _severity_enum(sev: str | None):
     from app.core.enums import IssueSeverity
-    try:
-        return IssueSeverity(sev) if sev else IssueSeverity.major
-    except ValueError:
-        return IssueSeverity.major
+    # fail_cluster.severity 取值域(AI产)有 blocker/critical/major/minor/trivial 5 值,
+    # 但 IssueSeverity 只有 blocker/major/minor 3 值。做「最近桶」映射,不欠告警也不抬噪:
+    # critical 向上取 blocker(绝不低估严重根因),trivial 向下取 minor(别把最低级抬成 major)。
+    mapping = {
+        "blocker": IssueSeverity.blocker,
+        "critical": IssueSeverity.blocker,
+        "major": IssueSeverity.major,
+        "minor": IssueSeverity.minor,
+        "trivial": IssueSeverity.minor,
+    }
+    return mapping.get((sev or "").strip().lower(), IssueSeverity.major)

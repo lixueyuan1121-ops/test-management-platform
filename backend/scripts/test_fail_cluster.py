@@ -250,6 +250,50 @@ def test_endpoints():
     app.dependency_overrides.clear()
 
 
+def test_severity_mapping():
+    """create-issue 的 severity 最近桶映射：critical→blocker、trivial→minor（锁死不回退 major）。"""
+    from types import SimpleNamespace
+    from datetime import date
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.deps import get_current_user
+    from app.db.session import SessionLocal
+    from app.models import Project, ReleaseRecord, FailCluster
+    from app.models.issue import RemainingIssue
+    from app.core.enums import IssueSeverity
+    import json as _j
+
+    db = SessionLocal()
+    pj = Project(name="P-sev", code="P-SEV"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-sev", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    crit = FailCluster(project_id=pj.id, release_id=rel.id, root_cause_title="严重根因",
+                       triage_kind="bug", fingerprint="bug-crit", run_ids=_j.dumps([]),
+                       requirement_ids=_j.dumps([]), member_count=1, severity="critical",
+                       confidence=0.9, batch_key="bsev")
+    triv = FailCluster(project_id=pj.id, release_id=rel.id, root_cause_title="琐碎根因",
+                       triage_kind="bug", fingerprint="bug-triv", run_ids=_j.dumps([]),
+                       requirement_ids=_j.dumps([]), member_count=1, severity="trivial",
+                       confidence=0.5, batch_key="bsev")
+    db.add_all([crit, triv]); db.commit()
+    crit_id, triv_id = crit.id, triv.id
+    db.close()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
+    client = TestClient(app)
+    rc = client.post(f"/api/fail-clusters/{crit_id}/create-issue", json={})
+    assert rc.json()["code"] == 0, rc.text
+    rt = client.post(f"/api/fail-clusters/{triv_id}/create-issue", json={})
+    assert rt.json()["code"] == 0, rt.text
+    app.dependency_overrides.clear()
+
+    db = SessionLocal()
+    crit_issue = db.get(RemainingIssue, rc.json()["data"]["issue_id"])
+    triv_issue = db.get(RemainingIssue, rt.json()["data"]["issue_id"])
+    assert crit_issue.severity == IssueSeverity.blocker, ("critical→blocker", crit_issue.severity)
+    assert triv_issue.severity == IssueSeverity.minor, ("trivial→minor", triv_issue.severity)
+    db.close()
+
+
 def main():
     test_table_created()
     test_normalize_reason()
@@ -259,6 +303,7 @@ def main():
     test_handler_one_call_per_cluster()
     test_handler_end_to_end()
     test_endpoints()
+    test_severity_mapping()
     print("OK test_fail_cluster")
 
 
