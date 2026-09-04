@@ -197,6 +197,59 @@ def test_handler_end_to_end():
     db.close()
 
 
+def test_endpoints():
+    from types import SimpleNamespace
+    from datetime import date
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.deps import get_current_user
+    from app.db.session import get_db, SessionLocal
+    from app.models import Project, AiTask, ExecRun, ReleaseRecord, Requirement, TestCase, FailCluster
+    from app.core.enums import ExecStatus
+
+    db = SessionLocal()
+    pj = Project(name="P-ep", code="P-EP"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-ep", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    req = Requirement(project_id=pj.id, title="需求EP", release_id=rel.id); db.add(req); db.flush()
+    # TestCase.ai_task_id NOT NULL：先建 AiTask 再引用（种子约定，见报告）
+    _at = AiTask(project_id=pj.id, user_id=1, kind="testcase_gen", input_ref="r"); db.add(_at); db.flush()
+    tc = TestCase(ai_task_id=_at.id, project_id=pj.id, title="用例EP", requirement_id=req.id, exec_kind="gui"); db.add(tc); db.flush()
+    run = ExecRun(project_id=pj.id, runner="m", payload='{"title":"用例EP"}', status=ExecStatus.failed,
+                  test_case_id=tc.id, reason="接口 500", triage_kind="environment")
+    db.add(run); db.commit()
+    pid, rel_id, req_id, run_id = pj.id, rel.id, req.id, run.id
+    db.close()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
+    client = TestClient(app)
+
+    # scope：列出该版本需求 + 失败数
+    r = client.get("/api/fail-clusters/scope", params={"release_id": rel_id})
+    assert r.json()["code"] == 0, r.text
+    reqs = r.json()["data"]["requirements"]
+    assert any(x["id"] == req_id and x["fail_count"] >= 1 for x in reqs), reqs
+
+    # 手动落一条 cluster（跳过真实 AI），测 list + create-issue
+    db = SessionLocal()
+    import json as _j
+    fcrow = FailCluster(project_id=pid, release_id=rel_id, root_cause_title="支付500",
+                        triage_kind="environment", fingerprint="environment-abc",
+                        run_ids=_j.dumps([run_id]), requirement_ids=_j.dumps([req_id]),
+                        member_count=1, severity="critical", confidence=0.9, batch_key="b1")
+    db.add(fcrow); db.commit(); cid = fcrow.id; db.close()
+
+    rl = client.get("/api/fail-clusters", params={"release_id": rel_id})
+    assert rl.json()["code"] == 0 and rl.json()["data"]["cluster_count"] >= 1, rl.text
+
+    # create-issue：建缺陷 + 回填，幂等
+    ci = client.post(f"/api/fail-clusters/{cid}/create-issue", json={})
+    assert ci.json()["code"] == 0 and ci.json()["data"]["issue_id"], ci.text
+    iid = ci.json()["data"]["issue_id"]
+    ci2 = client.post(f"/api/fail-clusters/{cid}/create-issue", json={})
+    assert ci2.json()["data"]["issue_id"] == iid and ci2.json()["data"]["already"] is True, "应幂等"
+    app.dependency_overrides.clear()
+
+
 def main():
     test_table_created()
     test_normalize_reason()
@@ -205,6 +258,7 @@ def main():
     test_collect_failed_runs()
     test_handler_one_call_per_cluster()
     test_handler_end_to_end()
+    test_endpoints()
     print("OK test_fail_cluster")
 
 
