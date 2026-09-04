@@ -10,6 +10,7 @@ const TaskWatcher = require('../src/task-watcher');
 const DesktopPool = require('../src/desktop-pool');
 const DesktopRunner = require('../src/desktop-runner');
 const { groupIntoConversations } = require('../src/conversation-group');
+const { downloadAttachments } = require('../src/attachment-downloader');
 const ResultReporter = require('../src/reporter');
 const DiagnosticReporter = require('../src/diagnostic-reporter');
 const Logger = require('../src/logger');
@@ -878,13 +879,24 @@ program
           curRunner = new DesktopRunner(pool.getContext(), pool.getMainPage(), config.platform, config.execution, logger);
           curWsTrace = pool.getWsTrace();
         }
-        // 修复#2:附件下载在平台模式尚未支持。带附件的题裸跑会产生"无附件的假成功"污染判定;
-        // 多轮里更甚(缺附件的一轮会连累整段上下文)。故整组任一轮带附件→整组 fail-closed,不静默裸跑。
+        // 附件:平台附件为公开 CDN url,执行前逐轮下到本地、挂到 it._attachmentPaths 供桌面执行器上传。
+        // 任一附件下载失败→整组 fail-closed 标记 failed,绝不「缺附件裸跑」污染判定(多轮里缺一轮附件更会连累整段上下文)。
         const attTurns = conv.filter(it => Array.isArray((it.payload || {}).attachments) && (it.payload || {}).attachments.length > 0);
         if (attTurns.length > 0) {
-          logger.warn(`会话(首轮 run ${head.run_id})含 ${attTurns.length} 轮带附件,平台模式暂不支持附件下载,整组跳过(标记 failed)`);
-          await failWholeGroup(conv, '平台模式暂不支持附件下载,未执行(避免无附件裸跑污染判定)');
-          continue;
+          const totalAtt = attTurns.reduce((n, it) => n + it.payload.attachments.length, 0);
+          logger.info(`会话(首轮 run ${head.run_id})含 ${attTurns.length} 轮带附件(${totalAtt} 个),下载中...`);
+          try {
+            for (const it of conv) {
+              const atts = (it.payload || {}).attachments || [];
+              it._attachmentPaths = atts.length > 0
+                ? await downloadAttachments(atts, path.resolve('./output/_attachments', String(it.run_id)), { logger })
+                : [];
+            }
+          } catch (e) {
+            logger.warn(`会话(首轮 run ${head.run_id})附件下载失败,fail-closed 整组标记 failed: ${e.message}`);
+            await failWholeGroup(conv, `附件下载失败: ${e.message}`);
+            continue;
+          }
         }
         // 修复#3:应用本会话下发时快照的对话选项(模型/对话模式/深度思考)——同组共享一对话,用组首轮快照,整段统一。
         // ⚠️ 必须【就地改属性】config.execution.dialogOptions:DesktopRunner 及内部 DialogRunner 以引用持有
@@ -907,7 +919,7 @@ program
           const p = it.payload || {};
           return {
             caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
-            attachments: p.attachments || [], attachmentPaths: [],
+            attachments: p.attachments || [], attachmentPaths: it._attachmentPaths || [],
             conversationId: p.conversation_group || `__run_${it.run_id}`, turnIndex: p.turn_index || 0,
             account: 'desktop',
           };
