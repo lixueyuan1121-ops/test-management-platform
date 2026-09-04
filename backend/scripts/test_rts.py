@@ -56,6 +56,9 @@ def test_history_signals_and_rank():
     # c1 两次失败一次通过
     for st in (ExecStatus.failed, ExecStatus.failed, ExecStatus.passed):
         db.add(ExecRun(project_id=pj.id, runner="m", payload="{}", status=st, test_case_id=c1.id))
+    # c2 一条 flaky + bug 的执行记录(端到端验证聚合分支 flaky/had_bug/last_days)
+    db.add(ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed,
+                   test_case_id=c2.id, flaky=True, triage_kind="bug"))
     db.commit()
     cases, in_rel = rts.cases_for_release(db, rel.id)
     ids = {c["id"] for c in cases}
@@ -63,6 +66,9 @@ def test_history_signals_and_rank():
     assert c1.id in in_rel and c2.id not in in_rel, "属本版本判定"
     sig = rts.exec_history_signals(db, [c1.id, c2.id])
     assert sig[c1.id]["runs"] == 3 and sig[c1.id]["fails"] == 2, sig[c1.id]
+    # 聚合分支端到端断言：flaky/had_bug 布尔、last_days 为 >=0 整数
+    assert sig[c2.id]["flaky"] is True and sig[c2.id]["had_bug"] is True, sig[c2.id]
+    assert isinstance(sig[c2.id]["last_days"], int) and sig[c2.id]["last_days"] >= 0, sig[c2.id]
     ranked = rts.rank_candidates(db, rel.id)
     assert [r["risk_score"] for r in ranked] == sorted([r["risk_score"] for r in ranked], reverse=True), "降序"
     # c1(属本版本+有失败历史+P1) 应排在 c2(不属+无历史+P2) 前

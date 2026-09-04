@@ -34,18 +34,11 @@ def _db_now(db) -> datetime:
     收口比较的 created_at/updated_at 是数据库用 func.now() 生成的,其时区随 DB 服务器
     (生产内网 MySQL 5.6 很可能是东八区,非 UTC)。若用进程 utcnow() 作基准,两端时区错配会把
     cutoff 整体推偏(东八区差 8h),超龄 run 被误判"还很新"永远收不了口。用同一口时钟消除该错配。
+
+    实现已抽到公共 app.db.clock.db_now(rts 等模块共用),此处保留薄封装维持既有调用点。
     """
-    from sqlalchemy import func, select
-    try:
-        val = db.execute(select(func.now())).scalar()
-        if isinstance(val, datetime):
-            return val
-        if isinstance(val, str) and val:
-            # SQLite 的 func.now() 返回 "YYYY-MM-DD HH:MM:SS" 字符串,parse 回 datetime
-            return datetime.fromisoformat(val)
-    except Exception:
-        logger.exception("取数据库时钟失败,回退进程 utcnow")
-    return datetime.utcnow()
+    from app.db.clock import db_now
+    return db_now(db)
 
 
 def _job_id(set_id: int) -> str:

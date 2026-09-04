@@ -2,8 +2,6 @@
 
 风险分由可解释加权信号组成，免 token、可单测。候选池=adopted+非manual 用例。
 """
-from datetime import datetime
-
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -63,7 +61,8 @@ def exec_history_signals(db: Session, case_ids: list[int]) -> dict:
             )
             .filter(ExecRun.test_case_id.in_(case_ids))
             .group_by(ExecRun.test_case_id).all())
-    now = datetime.utcnow()
+    from app.db.clock import db_now
+    now = db_now(db)
     for cid, runs, fails, flaky, had_bug, last_at in rows:
         d = out[cid]
         d["runs"] = int(runs or 0)
