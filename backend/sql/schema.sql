@@ -866,3 +866,21 @@ CREATE TABLE IF NOT EXISTS `fail_cluster` (
   KEY `idx_fc_batch` (`batch_key`),
   KEY `idx_fc_issue` (`issue_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- RTS 回归智选：一次 AI 叙事产物（风险分现算不存，按 release 取最新，重跑覆盖） ----------
+CREATE TABLE IF NOT EXISTS `rts_recommendation` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `release_id` BIGINT DEFAULT NULL,
+  `overall_risk` VARCHAR(16) DEFAULT NULL,
+  `summary` TEXT,
+  `rationale` TEXT,
+  `focus_points` TEXT,
+  `candidate_count` INT NOT NULL DEFAULT 0,
+  `recommended_count` INT NOT NULL DEFAULT 0,
+  `provider` VARCHAR(32) DEFAULT NULL,
+  `generated_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_rts_project` (`project_id`),
+  KEY `idx_rts_release` (`release_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
