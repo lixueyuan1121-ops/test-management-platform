@@ -117,7 +117,10 @@ async function runAnalyze() {
     await pollAiJob(job_id)
     await loadClusters()
     ElMessage.success('聚类完成')
-  } catch (e) { /* 拦截器已提示 */ } finally { running.value = false }
+  } catch (e) {
+    // pollAiJob 是 silent（不经 http 拦截器弹错）且抛普通 Error → 必须自己提示，否则聚类失败零反馈
+    ElMessage.error('聚类失败：' + (e?.message || '请稍后重试'))
+  } finally { running.value = false }
 }
 async function mkIssue(c) {
   issuing.value = c.id
