@@ -15,6 +15,7 @@
 // 切到哪个任务，就用它操作/诊断哪个任务。
 
 const workFrame = require('./work-frame');
+const { typeQuestionVerified } = require('./type-question-verified');
 
 class DesktopRunner {
   constructor(context, page, platformConfig, executionConfig, logger, diag) {
@@ -176,8 +177,26 @@ class DesktopRunner {
 
     const input = ctx.locator(this.platform.inputSelector).first();
     await input.waitFor({ timeout: 10000 });
-    await input.click();
-    await dr._typeQuestion(input, testCase.question);
+    // 输入 query 并读回校验:附件 setInputFiles 后 ProseMirror 常失焦致 pressSequentially 静默不进字符,
+    // 校验为空则重聚焦重试,仍空显式抛错(不发空 query)。type() 每次先聚焦+清空,保证重试不堆字。
+    await typeQuestionVerified({
+      type: async () => {
+        await input.click();
+        await input.evaluate((el) => {                 // 清空 ProseMirror,避免重试把字符叠加
+          el.focus();
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          sel.removeAllRanges(); sel.addRange(range);
+        }).catch(() => {});
+        await this.page.keyboard.press('Delete').catch(() => {});
+        await dr._typeQuestion(input, testCase.question);
+      },
+      readText: async () => (await input.innerText().catch(() => '')) || '',
+      question: testCase.question,
+      sleep: (ms) => this._sleep(ms),
+      warn: (m) => this._warn(`   [${testCase.caseId}] ${m}`),
+    });
     await this._sleep(300);
     await ctx.locator(this.platform.sendBtnSelector).first().click();
     await dr._dismissConfirmDialogs();        // 发送刚点下可能弹「消耗算力/是否继续」确认
