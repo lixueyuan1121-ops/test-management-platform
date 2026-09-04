@@ -863,5 +863,6 @@ CREATE TABLE IF NOT EXISTS `fail_cluster` (
   KEY `idx_fc_project` (`project_id`),
   KEY `idx_fc_release` (`release_id`),
   KEY `idx_fc_fingerprint` (`fingerprint`),
-  KEY `idx_fc_batch` (`batch_key`)
+  KEY `idx_fc_batch` (`batch_key`),
+  KEY `idx_fc_issue` (`issue_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
