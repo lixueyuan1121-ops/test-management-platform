@@ -137,6 +137,66 @@ def test_handler_one_call_per_cluster():
     db.close()
 
 
+def test_handler_end_to_end():
+    # 真正走 run_fail_cluster_job 本体：真回溯 + 真落库 + 重跑幂等 + issue_id 迁移
+    import json as _j
+    from datetime import date
+    from types import SimpleNamespace
+    from app.db.session import SessionLocal
+    from app.models import Project, AiTask, ExecRun, ReleaseRecord, Requirement, TestCase, FailCluster
+    from app.core.enums import ExecStatus
+    from app.services import generators, fail_cluster as _fc
+
+    db = SessionLocal()
+    pj = Project(name="P-e2e", code="P-E2E"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-e2e", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    req = Requirement(project_id=pj.id, title="需求E2E", release_id=rel.id); db.add(req); db.flush()
+    # TestCase.ai_task_id NOT NULL：先建 AiTask 再引用（种子约定，见报告）
+    _at = AiTask(project_id=pj.id, user_id=1, kind="testcase_gen", input_ref="r"); db.add(_at); db.flush()
+    tc = TestCase(ai_task_id=_at.id, project_id=pj.id, title="用例E2E", requirement_id=req.id, exec_kind="gui"); db.add(tc); db.flush()
+    # 2 条同根因失败（挂用例，链路径回溯 用例→需求→版本）
+    for reason in ("接口 500", "接口 500"):
+        db.add(ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed,
+                       test_case_id=tc.id, reason=reason, triage_kind="environment"))
+    db.commit()
+    rel_id = rel.id
+
+    class _Fake:
+        def is_available(self): return True
+        def stream_generate(self, *a, **k):
+            yield {"type": "result", "text": '{"root_cause_title":"支付500","severity":"critical","confidence":0.9}'}
+
+    orig = generators.get_provider
+    generators.get_provider = lambda name: _Fake()
+    try:
+        job = SimpleNamespace(id=999, project_id=pj.id,
+                              input=_j.dumps({"release_id": rel_id, "batch_key": f"rel{rel_id}"}))
+        # 首跑：真回溯 → 粗聚 → AI 命名 → 落库
+        res = _fc.run_fail_cluster_job(db, job)
+        assert res["cluster_count"] == 1, res
+        assert res["fail_count"] == 2, res
+        rows = db.query(FailCluster).filter(FailCluster.release_id == rel_id).all()
+        assert len(rows) == 1 and rows[0].member_count == 2, [(r.fingerprint, r.member_count) for r in rows]
+        assert rows[0].root_cause_title == "支付500" and rows[0].severity == "critical", \
+            (rows[0].root_cause_title, rows[0].severity)
+        # 重跑同 batch_key 不重复堆积
+        _fc.run_fail_cluster_job(db, job)
+        rows2 = db.query(FailCluster).filter(FailCluster.release_id == rel_id).all()
+        assert len(rows2) == 1, f"重跑应覆盖不堆积，实际 {len(rows2)}"
+        # issue_id 迁移：给现有簇挂缺陷 → 重跑后按 fingerprint 迁移保留
+        fp = rows2[0].fingerprint
+        rows2[0].issue_id = 42
+        db.commit()
+        _fc.run_fail_cluster_job(db, job)
+        rows3 = db.query(FailCluster).filter(FailCluster.release_id == rel_id).all()
+        assert len(rows3) == 1, f"重跑仍应恰 1 行，实际 {len(rows3)}"
+        assert rows3[0].fingerprint == fp, (rows3[0].fingerprint, fp)
+        assert rows3[0].issue_id == 42, f"issue_id 应按 fingerprint 迁移保留，实际 {rows3[0].issue_id}"
+    finally:
+        generators.get_provider = orig
+    db.close()
+
+
 def main():
     test_table_created()
     test_normalize_reason()
@@ -144,6 +204,7 @@ def main():
     test_parse_naming()
     test_collect_failed_runs()
     test_handler_one_call_per_cluster()
+    test_handler_end_to_end()
     print("OK test_fail_cluster")
 
 
