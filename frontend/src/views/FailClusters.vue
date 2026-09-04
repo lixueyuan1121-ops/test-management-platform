@@ -125,7 +125,7 @@ async function mkIssue(c) {
     const r = await createIssueFromCluster(c.id)
     c.issue_id = r.issue_id
     ElMessage.success(r.already ? '该根因已建过缺陷' : `已建缺陷草稿 #${r.issue_id}`)
-  } finally { issuing.value = null }
+  } catch (e) { /* 拦截器已提示 */ } finally { issuing.value = null }
 }
 init()
 </script>
