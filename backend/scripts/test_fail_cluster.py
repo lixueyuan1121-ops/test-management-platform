@@ -294,6 +294,129 @@ def test_severity_mapping():
     db.close()
 
 
+def test_handler_registered_in_prod_path():
+    """C1 锁死：模拟生产启动路径(只 import app.main，从不直接 import app.services.fail_cluster)，
+    handler 必须已注册。因本测试文件顶部第 12 行已 import fail_cluster(会提前触发注册)，
+    单进程内无法真正模拟「未 import」——故隔离到干净子进程执行断言，检查退出码 0。"""
+    import subprocess
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import app.main; from app.services import ai_jobs; "
+            "ai_jobs._ensure_handlers(); "
+            "assert 'fail_cluster' in ai_jobs._HANDLERS, 'handler 未注册,worker 会拒跑 fail_cluster job'")
+    env = {**os.environ, "DATABASE_URL": "sqlite:///:memory:", "PYTHONPATH": backend_dir}
+    r = subprocess.run([sys.executable, "-c", code], cwd=backend_dir,
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, (
+        f"生产启动路径未注册 fail_cluster handler(退出码 {r.returncode})\n"
+        f"STDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}")
+
+
+def test_first_fail_step_uses_real_fields():
+    """I1 锁死：runner 落库的 report 步 check 结构是 {actual,expected,mode,negate}——无 key。
+    旧 _first_fail_step 读 check.key(恒空)→ 同 triage+同 action 的不同根因被误合并成一簇。
+    修后按真实存在字段(优先 check.expected,其次 error/desc)区分。"""
+    tk, reason, fk = "assertion", None, None  # reason=None 逼 build_fingerprint 用首失败步
+    rep_a = [{"no": 1, "action": "assert_visible", "ok": False,
+              "check": {"expected": "登录按钮可见", "actual": "元素未找到"}}]
+    rep_b = [{"no": 1, "action": "assert_visible", "ok": False,
+              "check": {"expected": "购物车图标可见", "actual": "元素未找到"}}]
+    fp_a = fc.build_fingerprint(tk, reason, fk, rep_a)
+    fp_b = fc.build_fingerprint(tk, reason, fk, rep_b)
+    assert fp_a != fp_b, f"同 action 不同 expected 应产不同指纹(旧代码读不存在的 check.key 会误合并)：{fp_a} == {fp_b}"
+    # 相同判据(expected 相同、仅 actual 不同)→ 同指纹(锁死键控在 expected 而非易变的 actual)
+    rep_a2 = [{"no": 1, "action": "assert_visible", "ok": False,
+               "check": {"expected": "登录按钮可见", "actual": "另一种运行时噪声"}}]
+    fp_a2 = fc.build_fingerprint(tk, reason, fk, rep_a2)
+    assert fp_a == fp_a2, f"相同 expected 应同指纹：{fp_a} != {fp_a2}"
+
+
+def test_orphan_included_despite_requirement_filter():
+    """I2 锁死：前端 runAnalyze 恒传 requirement_ids。旧直路径仅在 not requirement_ids 时执行，
+    致「挂 release_id 但回溯不到需求」的 orphan 失败在 UI 流里被彻底丢弃。修后 orphan 无条件兜底
+    纳入(requirement_id=None)，同时不泄漏未勾选需求的失败。"""
+    from datetime import date
+    from app.db.session import SessionLocal
+    from app.models import Project, AiTask, TestCase, ExecRun, ReleaseRecord, Requirement
+    from app.core.enums import ExecStatus
+    db = SessionLocal()
+    pj = Project(name="P-orph", code="P-ORPH"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-orph", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    req = Requirement(project_id=pj.id, title="选中需求", release_id=rel.id); db.add(req); db.flush()
+    req_other = Requirement(project_id=pj.id, title="未选需求", release_id=rel.id); db.add(req_other); db.flush()
+    _at = AiTask(project_id=pj.id, user_id=1, kind="testcase_gen", input_ref="r"); db.add(_at); db.flush()
+    tc = TestCase(ai_task_id=_at.id, project_id=pj.id, title="用例-选中", requirement_id=req.id, exec_kind="gui"); db.add(tc); db.flush()
+    tc_o = TestCase(ai_task_id=_at.id, project_id=pj.id, title="用例-未选", requirement_id=req_other.id, exec_kind="gui"); db.add(tc_o); db.flush()
+    # 链路径失败：挂「选中需求」
+    r_chain = ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed,
+                      test_case_id=tc.id, reason="链失败", triage_kind="environment")
+    # orphan：只挂 release_id、无需求归属(test_case_id=None)——回溯不到需求
+    r_orphan = ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.blocked,
+                       release_id=rel.id, reason="orphan失败", triage_kind="environment")
+    # 未勾选需求的失败：不得泄漏
+    r_other = ExecRun(project_id=pj.id, runner="m", payload="{}", status=ExecStatus.failed,
+                      test_case_id=tc_o.id, reason="未选失败", triage_kind="environment")
+    db.add_all([r_chain, r_orphan, r_other]); db.commit()
+    # 模拟前端传了 requirement_ids(只勾了 req)
+    runs = fc.collect_failed_runs(db, release_id=rel.id, requirement_ids=[req.id])
+    ids = {r["id"] for r in runs}
+    assert r_orphan.id in ids, "orphan 失败必须兜底纳入(不受 requirement 勾选门控)"
+    assert r_chain.id in ids, "选中需求的链路径失败应在"
+    assert r_other.id not in ids, "未勾选需求的失败不应泄漏"
+    orphan_row = next(r for r in runs if r["id"] == r_orphan.id)
+    assert orphan_row["requirement_id"] is None, f"orphan 的 requirement_id 应为 None，实际 {orphan_row['requirement_id']}"
+    db.close()
+
+
+def test_analyze_dedup_pending():
+    """I3 锁死：worker 池 2 线程，同 release 两个 analyze job 并发会各删各插→簇翻倍。
+    修：analyze 入队前查该 release 有无 pending/running 的 fail_cluster job，有则复用其 id。
+    (测试环境不启 worker 池，首条 job 恒 pending。)"""
+    from types import SimpleNamespace
+    from datetime import date
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.deps import get_current_user
+    from app.db.session import SessionLocal
+    from app.models import Project, ReleaseRecord, AiJob
+    db = SessionLocal()
+    pj = Project(name="P-dedup", code="P-DEDUP"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-dedup", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    pid, rel_id = pj.id, rel.id
+    db.commit(); db.close()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
+    client = TestClient(app)
+    body = {"project_id": pid, "release_id": rel_id, "requirement_ids": []}
+    r1 = client.post("/api/fail-clusters/analyze", json=body)
+    assert r1.json()["code"] == 0, r1.text
+    jid1 = r1.json()["data"]["job_id"]
+    r2 = client.post("/api/fail-clusters/analyze", json=body)
+    assert r2.json()["code"] == 0, r2.text
+    jid2 = r2.json()["data"]["job_id"]
+    assert jid1 == jid2, f"并发同 release 应复用 pending job,不重复入队：{jid1} != {jid2}"
+    app.dependency_overrides.clear()
+
+    db = SessionLocal()
+    n = (db.query(AiJob).filter(AiJob.kind == "fail_cluster", AiJob.ref_kind == "release",
+                                AiJob.ref_id == rel_id, AiJob.status == "pending").count())
+    db.close()
+    assert n == 1, f"该 release 的 fail_cluster pending job 应恰 1 条，实际 {n}"
+
+
+def test_pick_provider_prefers_available():
+    """M1 锁死：analyze 从不传 provider。旧 handler 硬 normalize_provider(None)=claude，
+    生产 claude CLI 不可用时 job 直接失败。修后不传时选一个当前 available 的引擎；显式传仍用显式。"""
+    from app.services import generators
+    orig = generators.available_providers
+    generators.available_providers = lambda: [
+        {"id": "claude", "available": False}, {"id": "deepseek", "available": True}]
+    try:
+        assert fc._pick_provider(None) == "deepseek", "不传 provider 应选中当前可用引擎,不硬用不可用的 claude"
+        assert fc._pick_provider("claude") == "claude", "显式传 claude 仍用 claude"
+    finally:
+        generators.available_providers = orig
+
+
 def main():
     test_table_created()
     test_normalize_reason()
@@ -304,6 +427,12 @@ def main():
     test_handler_end_to_end()
     test_endpoints()
     test_severity_mapping()
+    # ── 最终 review 锁死测试(C1/I1/I2/I3/M1) ──
+    test_handler_registered_in_prod_path()
+    test_first_fail_step_uses_real_fields()
+    test_orphan_included_despite_requirement_filter()
+    test_analyze_dedup_pending()
+    test_pick_provider_prefers_available()
     print("OK test_fail_cluster")
 
 

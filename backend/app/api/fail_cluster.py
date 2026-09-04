@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ExecStatus, ProjectRole
 from app.db.session import get_db
-from app.models import ExecRun, FailCluster, Requirement, TestCase, User
+from app.models import AiJob, ExecRun, FailCluster, Requirement, TestCase, User
 from app.models.issue import RemainingIssue
 from app.schemas.common import ok
 from app.services import ai_jobs
@@ -49,8 +49,20 @@ def scope(release_id: int, db: Session = Depends(get_db), user: User = Depends(g
 
 @router.post("/analyze")
 def analyze(body: AnalyzeBody, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """入队一次聚类。返回 job_id，前端走 pollAiJob。"""
+    """入队一次聚类。返回 job_id，前端走 pollAiJob。
+
+    去重：worker 池多线程时，同 release 并发两次 analyze 会各自 delete-before-insert 跨 session
+    非原子 → 两批簇翻倍。故入队前查该 release 有无未完成（pending/running）的 fail_cluster job，
+    有则直接复用其 id，不重复入队。
+    """
     assert_project_role(db, user, body.project_id, (ProjectRole.admin,))
+    existing = (db.query(AiJob)
+                .filter(AiJob.kind == "fail_cluster", AiJob.ref_kind == "release",
+                        AiJob.ref_id == body.release_id,
+                        AiJob.status.in_(("pending", "running")))
+                .order_by(AiJob.id.asc()).first())
+    if existing:
+        return ok({"job_id": existing.id})
     batch_key = f"rel{body.release_id}"
     job = ai_jobs.enqueue(db, "fail_cluster", project_id=body.project_id, user_id=user.id,
                           input={"release_id": body.release_id,

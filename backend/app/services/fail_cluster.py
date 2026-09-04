@@ -26,16 +26,22 @@ def normalize_reason(reason: str | None) -> str:
 
 
 def _first_fail_step(report) -> str:
-    """从逐步报告取首个失败步的 action+选择器 key（UI 失败最稳的指纹源）。"""
+    """从逐步报告取首个失败步的区分特征 = action + 归一化判据文本（UI 失败最稳的指纹源）。
+
+    runner 落库的步 `check` 结构是 {actual, expected, mode, negate}——**没有 key**（参照
+    exec_triage 只读 expected/actual/negate）。故用真实存在的字段构造区分特征：优先 check.expected，
+    其次 step.error，再次 step.desc，均经 normalize_reason 抹掉易变量。
+    """
     if not isinstance(report, list):
         return ""
     for s in report:
         if isinstance(s, dict) and not s.get("ok"):
-            key = ""
             ck = s.get("check")
+            detail = ""
             if isinstance(ck, dict):
-                key = str(ck.get("key") or "")
-            return f"{s.get('action', '')}:{key}".strip(":")
+                detail = str(ck.get("expected") or "")
+            detail = detail or str(s.get("error") or "") or str(s.get("desc") or "")
+            return f"{s.get('action', '')}:{normalize_reason(detail)}".strip(":")
     return ""
 
 
@@ -143,9 +149,14 @@ def collect_failed_runs(db: Session, release_id: int,
                         requirement_ids: list[int] | None = None,
                         task_ids: list[int] | None = None) -> list[dict]:
     """回溯该版本内 failed/blocked 执行。双路径并集：
-    ①ExecRun.release_id==release_id ②用例→需求.release_id==release_id。
-    可选按 requirement_ids/task_ids 收窄（勾选）。返回带 requirement_id 的 dict 列表。
+    ①链路径：用例→需求.release_id==release_id（受 requirement_ids/task_ids 勾选收窄）。
+    ②直路径（兜底）：ExecRun.release_id==release_id 且**回溯不到需求**的 orphan 失败——
+      无条件纳入（requirement_id=None），不受勾选门控（spec「兜底不丢数据」）。
+    直路径**只塞 orphan**：有需求归属的 run 一律走链路径，否则被过滤掉的需求 run 会经直路径泄漏回来。
+    返回带 requirement_id 的 dict 列表。
     """
+    from sqlalchemy import or_
+
     from app.core.enums import ExecStatus
     from app.models import ExecRun, TestCase, Requirement
 
@@ -163,11 +174,16 @@ def collect_failed_runs(db: Session, release_id: int,
     seen: dict[int, dict] = {}
     for run, req_id in q_chain.all():
         seen[run.id] = _run_to_dict(run, req_id)
-    # 直路径：执行直接挂 release_id（无需求勾选时才纳入，勾选时以链路径为准）
-    if not requirement_ids and not task_ids:
-        for run in (db.query(ExecRun)
-                    .filter(ExecRun.release_id == release_id, ExecRun.status.in_(fail_status)).all()):
-            seen.setdefault(run.id, _run_to_dict(run, None))
+    # 直路径：执行直接挂 release_id 但无需求归属（test_case_id 为空，或其用例无 requirement）。
+    # 这些是真正「回溯不到需求」的 orphan——永远兜底纳入，不随 requirement_ids/task_ids 门控。
+    orphan_q = (db.query(ExecRun)
+                .outerjoin(TestCase, ExecRun.test_case_id == TestCase.id)
+                .filter(ExecRun.release_id == release_id,
+                        ExecRun.status.in_(fail_status),
+                        or_(ExecRun.test_case_id.is_(None),
+                            TestCase.requirement_id.is_(None))))
+    for run in orphan_q.all():
+        seen.setdefault(run.id, _run_to_dict(run, None))
     return list(seen.values())
 
 
@@ -178,6 +194,17 @@ def _run_to_dict(run, requirement_id) -> dict:
         report = None
     return {"id": run.id, "triage_kind": run.triage_kind, "reason": run.reason,
             "fail_kind": run.fail_kind, "report": report, "requirement_id": requirement_id}
+
+
+def _pick_provider(explicit: str | None) -> str:
+    """选命名引擎：显式传了就用显式的（规整成合法 id）；否则挑一个**当前 available** 的
+    provider（内网常以 deepseek 为零依赖路径，claude CLI 未必可用）；都不可用才回落默认。"""
+    if explicit:
+        return generators.normalize_provider(explicit)
+    for p in generators.available_providers():
+        if p.get("available"):
+            return p["id"]
+    return generators.DEFAULT_PROVIDER
 
 
 def run_fail_cluster_job(db: Session, job) -> dict:
@@ -193,7 +220,7 @@ def run_fail_cluster_job(db: Session, job) -> dict:
     if not release_id:
         raise ValueError("fail_cluster job 缺 release_id")
     batch_key = inp.get("batch_key") or f"rel{release_id}-{job.id}"
-    provider_id = generators.normalize_provider(inp.get("provider"))
+    provider_id = _pick_provider(inp.get("provider"))
     engine = generators.get_provider(provider_id)
     if not engine.is_available():
         raise ValueError(f"命名引擎「{provider_id}」未启用或不可用")
