@@ -497,6 +497,29 @@ def ensure_eval_task_status_enum() -> None:
         conn.execute(text("UPDATE eval_task SET status='stopped' WHERE status='' OR status IS NULL"))
 
 
+def ensure_eval_run_status_enum() -> None:
+    """eval_run.status 放宽 ENUM 含 judging/judged/cancelled,并把已被写坏的 '' 行修回。
+
+    同 eval_task 的坑:原 ENUM 只含建表时的值,后加的 cancelled(停止任务收口)等未同步 MySQL 列定义,
+    被静默截成 '' → 详情页「执行」列渲染成空方框。
+    - MySQL:MODIFY 放宽为含全部 7 值;- SQLite:非原生 ENUM 无需 DDL,坏行修复同样执行(幂等)。
+    坏行按 verdict 精细修:判过(有 verdict)→judged;其余→cancelled(停止收口最常见来源)。
+    """
+    if not _columns("eval_run"):
+        return  # 表尚未建,交给 create_all
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "mysql":
+            conn.execute(text(
+                "ALTER TABLE eval_run MODIFY COLUMN `status` "
+                "ENUM('pending','running','done','judging','judged','failed','cancelled') "
+                "NOT NULL DEFAULT 'pending'"
+            ))
+        conn.execute(text("UPDATE eval_run SET status='judged' "
+                          "WHERE (status='' OR status IS NULL) AND verdict IN ('pass','fail','error')"))
+        conn.execute(text("UPDATE eval_run SET status='cancelled' WHERE status='' OR status IS NULL"))
+
+
 def ensure_eval_query_dimension() -> None:
     """eval_query 补 dimension 列(对话测评题主考维度)。老库已建表故走 ALTER;新库 create_all 已含,探到即跳过(幂等)。"""
     if not _columns("eval_query"):

@@ -193,7 +193,7 @@
         </el-table-column>
         <el-table-column label="执行" width="96" align="center">
           <template #default="{ row }">
-            <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ STATUS_LABEL[row.status] || row.status }}</el-tag>
+            <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ STATUS_LABEL[row.status] || row.status || '—' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="判定" width="96" align="center">
