@@ -154,12 +154,24 @@ def reap_stale_running_on_startup(db: Session) -> dict:
     return {"summary": n_sum, "pipeline": n_pipe}
 
 
+def _fmt_dur(ms) -> str:
+    """毫秒→紧凑耗时,与前端 fmtDur 同口径:秒<60→Ns;否则 MmSs(整分省秒);**不进位小时**(故 269m41s)。"""
+    if not ms:
+        return "—"
+    s = round(ms / 1000)
+    if s < 60:
+        return f"{s}s"
+    m, r = divmod(s, 60)
+    return f"{m}m{r}s" if r else f"{m}m"
+
+
 def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
-    """收尾摘要指标:通过/失败/异常/均分 + A/B 胜率(若有对比组)。"""
+    """收尾摘要指标:通过/失败/异常/均分 + A/B 胜率(若有对比组)+ 逐条明细 items(标题/结果/评分/耗时)。"""
     import json
 
     rows = (db.query(EvalRun)
-            .filter(EvalRun.eval_task_id == task_id, EvalRun.batch_id == batch_id).all())
+            .filter(EvalRun.eval_task_id == task_id, EvalRun.batch_id == batch_id)
+            .order_by(EvalRun.id).all())
     # 只统计可评的(排除 cancelled)
     rows = [r for r in rows if getattr(r.status, "value", r.status) != "cancelled"]
     total = len(rows)
@@ -169,14 +181,19 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
     abnormal = sum(1 for r in rows if r.is_abnormal)
     scores = [r.score for r in rows if r.score is not None]
     avg_score = round(sum(scores) / len(scores), 2) if scores else None
-    # A/B 胜率:按 compare_group 统计各组 pass 率(payload 里的 compare_group)
+    # A/B 胜率:按 compare_group 统计各组 pass 率(payload 里的 compare_group);同时收集逐条明细
     ab = {"A": [0, 0], "B": [0, 0]}   # group -> [pass, total]
     has_ab = False
+    items = []
     for r in rows:
         try:
             p = json.loads(r.payload) if r.payload else {}
         except (ValueError, TypeError):
             p = {}
+        items.append({
+            "title": (p.get("title") or p.get("prompt") or f"query#{r.eval_query_id}"),
+            "verdict": r.verdict, "score": r.score, "duration_ms": r.duration_ms,
+        })
         g = p.get("compare_group")
         if g in ab:
             has_ab = True
@@ -189,7 +206,7 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
             return f"{round(100 * x[0] / x[1])}%" if x[1] else "—"
         ab_line = f"A 组通过率 {_rate(ab['A'])}（{ab['A'][0]}/{ab['A'][1]}）｜B 组通过率 {_rate(ab['B'])}（{ab['B'][0]}/{ab['B'][1]}）"
     return {"total": total, "passed": passed, "failed": failed, "abnormal": abnormal,
-            "errored": errored, "avg_score": avg_score, "ab_line": ab_line}
+            "errored": errored, "avg_score": avg_score, "ab_line": ab_line, "items": items}
 
 
 # 测评失败严重度：执行异常(abnormal)比单纯判定不过(fail)更严重。
@@ -401,6 +418,20 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
             lines.append(f"**A/B 对比**:{s['ab_line']}")
         if s.get("errored"):
             lines.append(f"⚠️ {s['errored']} 条判定失败/无法定论，需到测评结果页重判。")
+        # 逐条结果明细(标题/结果/评分/耗时);耗时口径同前端详情(duration_ms)。条数多时截断,余量提示见平台。
+        _ICON = {"pass": "✅", "fail": "❌", "error": "⚠️"}
+        detail = []
+        for it in s.get("items", []):
+            icon = _ICON.get(it["verdict"], "⏳")
+            sc = f" {it['score']}分" if it["score"] is not None else ""
+            title = (it["title"] or "").strip().replace("\n", " ")[:24]
+            detail.append(f"{icon} {title}{sc} · ⏱{_fmt_dur(it['duration_ms'])}")
+        if detail:
+            _MAX = 50
+            lines.append(f"**逐条明细**（{len(detail)} 条）：")
+            lines.extend(detail[:_MAX])
+            if len(detail) > _MAX:
+                lines.append(f"…余 {len(detail) - _MAX} 条见平台测评任务页")
         if drafts:
             lines.append(f"已自动生成 {drafts} 条缺陷草稿,请复核后上报极库云。")
         if share_url:
