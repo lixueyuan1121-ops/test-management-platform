@@ -255,6 +255,29 @@ def _check_eval_capability(db: Session, runner_id: str) -> None:
                          f"不能下发测评任务(一台机同时刻只能跑一类),请改选测评执行机或等它切回")
 
 
+def assign_groups_balanced(group_weights: list[tuple[str, int]], runners: list[str]) -> dict[str, str]:
+    """把「会话组」按 run 数(权重)分配给执行机,最小化各机 run 数差(LPT 贪心)。
+
+    group_weights: [(group_key, run_count)],按出现顺序传入(同权重时的 tiebreak,保证可复现)。
+    多轮组权重=轮数(每轮一条 run),单轮组=1。大组优先分给当前累计 run 数最少的机——
+    比原「按组数轮转」更均衡(轮转下多轮大组会把一台压满,见真机「两台一多一少」)。
+    同一 group_key 只映射到一台(多轮整组同机,上下文不断)。返回 group_key -> runner。
+    """
+    # 权重降序;同权重按出现顺序(索引升序)——确定、可复现
+    order = sorted(range(len(group_weights)), key=lambda i: (-group_weights[i][1], i))
+    load = {r: 0 for r in runners}
+    assign: dict[str, str] = {}
+    for i in order:
+        gk, w = group_weights[i]
+        if gk in assign:   # 同组已分配(理论上 group_weights 已按组聚合,防御性)
+            continue
+        # 选当前负载最小的机;并列取 runners 列表靠前者(确定)
+        best = min(runners, key=lambda r: (load[r], runners.index(r)))
+        assign[gk] = best
+        load[best] += w
+    return assign
+
+
 def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
                        target_device: str | None, opts: dict, opts_b: dict | None,
                        user_id: int | None) -> tuple[list[int], str]:
@@ -295,17 +318,11 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
     # 同一对话,不区分则 A/B 两套会混进一个会话串上下文。
     variants = [("A", opts), ("B", opts_b)] if opts_b is not None else [(None, opts)]
 
-    # 会话组 → 分配到的 runner。轮转分片:同一「最终会话组」的所有轮落同一台(多轮上下文不断);
-    # 组间按出现顺序轮流分到 runner_list,负载(会话组数)天然均衡且确定(可复现)。
-    group_runner: dict[str, str] = {}
-    next_idx = 0
-
-    def _assign(group_key: str) -> str:
-        nonlocal next_idx
-        if group_key not in group_runner:
-            group_runner[group_key] = runner_list[next_idx % len(runner_list)]
-            next_idx += 1
-        return group_runner[group_key]
+    # 会话组 → 分配到的 runner。先算好每题每 variant 的 (group_key, payload) 并统计每组 run 数,
+    # 再按 run 数 LPT 均衡分配(大组优先给最闲的机),最后建 run——比「按组数轮转」更均衡。
+    planned: list[tuple[str, dict, object]] = []   # [(group_key, payload, q)],保持出现顺序
+    group_weight: dict[str, int] = {}          # group_key -> run 数(轮数)
+    group_order: list[str] = []                # group_key 出现顺序(LPT tiebreak,可复现)
 
     for qid in qids:
         q = found[qid]
@@ -318,18 +335,27 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
             # 分片键=最终会话组:多轮用(带 #A/#B 的)conversation_group 整组同机;
             # 单轮无组则用 qid+tag 各自独立成组(可分散到不同设备)。
             group_key = payload.get("conversation_group") or f"q{qid}#{tag or ''}"
-            assigned = _assign(group_key)
-            row = EvalRun(
-                eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
-                eval_task_id=task.id,
-                runner=assigned, target_engine=target_engine,
-                target_device=target_device,
-                device_kind=EvalDeviceKind.desktop,
-                status=EvalRunStatus.pending,
-                payload=json.dumps(payload, ensure_ascii=False),
-                enqueued_by=user_id,
-            )
-            db.add(row); db.flush(); created.append(row.id)
+            planned.append((group_key, payload, q))
+            if group_key not in group_weight:
+                group_weight[group_key] = 0
+                group_order.append(group_key)
+            group_weight[group_key] += 1
+
+    group_runner = assign_groups_balanced([(gk, group_weight[gk]) for gk in group_order], runner_list)
+
+    for group_key, payload, q in planned:
+        assigned = group_runner[group_key]
+        row = EvalRun(
+            eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
+            eval_task_id=task.id,
+            runner=assigned, target_engine=target_engine,
+            target_device=target_device,
+            device_kind=EvalDeviceKind.desktop,
+            status=EvalRunStatus.pending,
+            payload=json.dumps(payload, ensure_ascii=False),
+            enqueued_by=user_id,
+        )
+        db.add(row); db.flush(); created.append(row.id)
     task.last_batch_id = batch_id
     task.status = EvalTaskStatus.running
     # 换批执行后旧综合评价作废(针对旧批次)
