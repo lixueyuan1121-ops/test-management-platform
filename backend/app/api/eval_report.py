@@ -85,8 +85,11 @@ _PAGE_TMPL = """<!DOCTYPE html>
 </html>"""
 
 
-def render_report_page(task: EvalTask) -> str:
-    """把任务的 summary_html(已消毒片段)包成一张完整网页。summary 未就绪 → 提示页。"""
+def render_report_page(task: EvalTask, db: Session | None = None) -> str:
+    """把任务的 summary_html(已消毒片段)包成一张完整网页,并在评价后追加逐条执行明细表(含耗时)。
+
+    summary 未就绪 → 提示页。db 为 None 时(向后兼容)只渲染评价片段,不查明细。
+    """
     title = _html.escape(f"测评综合评价 · {task.name or ''}".strip(" ·"))
     if task.summary_status != "done" or not task.summary_html:
         tip = {
@@ -96,10 +99,68 @@ def render_report_page(task: EvalTask) -> str:
         content = f'<div class="tip">{_html.escape(tip)}</div>'
         meta = ""
     else:
-        content = task.summary_html  # 已经过 _sanitize_html,可安全内联
+        content = task.summary_html + _detail_table_html(db, task)  # 已消毒片段 + 自生成(已 escape)明细表
         at = task.summary_at.isoformat(sep=" ", timespec="seconds") if task.summary_at else ""
         meta = _html.escape(f"生成时间 {at} · 引擎 {task.summary_provider or ''}".strip(" ·"))
     return _PAGE_TMPL.format(title=title, meta=meta, content=content)
+
+
+def _fmt_dur(ms) -> str:
+    """毫秒→紧凑耗时,与前端 fmtDur 同口径:秒<60→Ns;否则 MmSs(整分省秒);不进位小时(故 269m41s)。"""
+    if not ms:
+        return "—"
+    s = round(ms / 1000)
+    if s < 60:
+        return f"{s}s"
+    m, r = divmod(s, 60)
+    return f"{m}m{r}s" if r else f"{m}m"
+
+
+_VERDICT_LABEL = {"pass": "通过", "fail": "不通过", "error": "判定出错"}
+
+
+def _detail_table_html(db: Session | None, task: EvalTask) -> str:
+    """任务最新批次的逐条执行明细表(#/用例/维度/结果/评分/耗时)。无 db / 无批次 / 无 run → 空串。
+
+    内容全部经 _html.escape(明细由本函数生成,非 AI 输出);与 summary_html 拼接安全。
+    """
+    import json
+
+    from app.models import EvalQuery, EvalRun
+
+    if db is None or not task.last_batch_id:
+        return ""
+    rows = (db.query(EvalRun)
+            .filter(EvalRun.eval_task_id == task.id, EvalRun.batch_id == task.last_batch_id)
+            .order_by(EvalRun.id).all())
+    rows = [r for r in rows if getattr(r.status, "value", r.status) != "cancelled"]
+    if not rows:
+        return ""
+    qmap = {}
+    qids = [r.eval_query_id for r in rows if r.eval_query_id]
+    if qids:
+        for q in db.query(EvalQuery.id, EvalQuery.title, EvalQuery.dimension).filter(EvalQuery.id.in_(qids)).all():
+            qmap[q.id] = q
+    e = _html.escape
+    trs = []
+    for i, r in enumerate(rows, 1):
+        try:
+            p = json.loads(r.payload) if r.payload else {}
+        except (ValueError, TypeError):
+            p = {}
+        q = qmap.get(r.eval_query_id)
+        title = p.get("title") or (q.title if q else f"run#{r.id}")
+        dim = p.get("dimension") or (q.dimension if q else "") or "—"
+        verdict = _VERDICT_LABEL.get(r.verdict, "—")
+        score = r.score if r.score is not None else "—"
+        trs.append(
+            f"<tr><td>{i}</td><td>{e(str(title))}</td><td>{e(str(dim))}</td>"
+            f"<td>{e(verdict)}</td><td>{e(str(score))}</td><td>{e(_fmt_dur(r.duration_ms))}</td></tr>")
+    return (
+        '<h2>逐条执行明细</h2>'
+        '<table><thead><tr><th>#</th><th>用例</th><th>维度</th><th>结果</th><th>评分</th><th>耗时</th></tr></thead>'
+        '<tbody>' + "".join(trs) + '</tbody></table>'
+    )
 
 
 @router.get("/r/{code}", response_class=HTMLResponse, include_in_schema=False)
@@ -115,6 +176,6 @@ def view_shared_report(code: str):
                 _PAGE_TMPL.format(title="报告不存在", meta="",
                                   content='<div class="tip">链接无效或报告已被删除。</div>'),
                 status_code=404)
-        return HTMLResponse(render_report_page(task))
+        return HTMLResponse(render_report_page(task, db))
     finally:
         db.close()
