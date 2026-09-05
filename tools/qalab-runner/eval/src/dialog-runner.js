@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const workFrame = require('./work-frame');
 const { ensureAllSelected } = require('./share-select');
+const { pickShareUrl } = require('./share-url');
 
 // 分享链接经系统剪贴板传递，并发下多个标签会互相覆盖剪贴板，故这一步需串行化
 let _shareLock = Promise.resolve();
@@ -1117,14 +1118,34 @@ class DialogRunner {
           }
 
           await this._clipSentinel();
-          await gen.click({ timeout: 5000 }).catch(() => {});      // 生成链接
-          const link = await this._pollClipboardUrl(10000);        // 读剪贴板回填
+          await gen.click({ timeout: 5000 }).catch(() => {});      // 点「生成/复制链接」
+
+          // ① 优先直读面板 DOM 的链接(不碰剪贴板,不受失焦/权限/并发污染)。链接异步生成,轮询 12s。
+          const panelSel = this.platform.sharePanelSelector || '.chat-share-panel';
+          const directDeadline = Date.now() + 12000;
+          let link = '';
+          while (Date.now() < directDeadline) {
+            link = await this._readShareUrlFromPanel(panelSel);
+            if (link) break;
+            await this.page.waitForTimeout(600);
+          }
           if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
-          lastReason = '生成链接后剪贴板未出现 URL(生成失败或剪贴板读取受限)';
+
+          // ② 直读拿不到 → 剪贴板兜底(gen 点击多已复制;失焦/受限时才会走到这)
+          link = await this._pollClipboardUrl(10000);
+          if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
+
+          lastReason = '直读面板与剪贴板均未取到 URL(链接未生成或面板结构未知)';
           await this.page.keyboard.press('Escape').catch(() => {});
           await this.page.waitForTimeout(500);
         }
-        this._warnShare(`${lastReason}(重试 3 轮仍空)`);   // 失败不再静默:记原因供真机定位
+        // 失败:dump 面板 DOM 供定位真实的链接元素(下次可精确直读/补选择器)
+        let dump = '';
+        try {
+          dump = await this._liveFrame().locator(this.platform.sharePanelSelector || '.chat-share-panel').first()
+            .evaluate((el) => (el.outerHTML || '').slice(0, 1200)).catch(() => '');
+        } catch (_) {}
+        this._warnShare(`${lastReason}(重试 3 轮仍空)。分享面板 DOM 片段(供补链接选择器):\n${dump}`);
         return '';
       } catch (e) {
         this._warnShare(`抓取异常: ${(e.message || '').split('\n')[0]}`);
@@ -1140,6 +1161,24 @@ class DialogRunner {
   // 会话分享链接抓取失败时打一条 warn(带任务标识)。原实现双重静默吞错,真机无从定位「有些没链接」。
   _warnShare(msg) {
     if (this.logger) this.logger.warn(`       ↳ [${this.label}] 会话分享链接未抓到:${msg}`);
+  }
+
+  // 直读分享面板 DOM 里已生成的链接(不碰剪贴板):扫描面板内 input/textarea value、a[href]、可见文本,
+  // 交 pickShareUrl 按优先级挑首个 http URL。彻底避开剪贴板失焦/权限/并发污染(真机 run-300 的坑)。
+  async _readShareUrlFromPanel(panelSel) {
+    try {
+      const cands = await this._liveFrame().evaluate((sel) => {
+        const root = document.querySelector(sel) || document.body;
+        return {
+          inputs: [...root.querySelectorAll('input, textarea')].map(e => e.value || ''),
+          hrefs: [...root.querySelectorAll('a[href]')].map(a => a.getAttribute('href') || ''),
+          text: root.innerText || '',
+        };
+      }, panelSel);
+      return pickShareUrl(cands);
+    } catch {
+      return '';
+    }
   }
 
   // D 产物分享链接：打开预览（产物卡片 或 顶栏「预览」按钮）→点「分享」→在分享弹窗「分享文件」抓永久链接。

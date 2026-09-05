@@ -77,11 +77,12 @@ module.exports = {
     // 留空 = 关闭「点复制取正文」增强，回填仍用 DOM innerText。可用 execution.copyAnswer=false 全局关闭。
     answerCopyBtnSelector: 'ui-tooltip[content="复制"] .chat-group-actions__item',
 
-    // —— 对话分享链接 → C 列（点“分享”→勾“全选”→“生成链接”，链接经系统剪贴板）——
+    // —— 对话分享链接 → C 列（点“分享”→勾“全选”→“生成链接”；优先直读面板 DOM 链接，剪贴板兜底）——
     shareBtnSelector: 'button.topbar-chat-share-btn',          // 顶栏分享按钮
     shareSelectAllSelector: '.chat-share-panel__select-all',   // 面板“全选”
     shareCheckboxSelector: '.chat-share-panel__checkbox',      // 单项复选框（判断是否已全选）
-    shareGenerateSelector: '.chat-share-panel__copy-link-btn', // 面板“生成链接”
+    shareGenerateSelector: '.chat-share-panel__copy-link-btn', // 面板“生成/复制链接”
+    sharePanelSelector: '.chat-share-panel',                   // 面板容器（直读已生成链接，避开剪贴板不稳）
 
     // —— 产物分享链接 → D 列（打开预览→「分享」→在分享弹窗「分享文件」抓永久链接）——
     // 打开预览有两条途径：① 点正文里的产物卡片；② 点顶栏「预览」按钮（有的产物不以卡片呈现、只能靠顶栏预览）。
