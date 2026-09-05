@@ -1068,6 +1068,7 @@ class DialogRunner {
     if (!btnSel || !genSel) return '';
     const ctx = this._ctx();
     const run = async () => {
+      let lastReason = '未知';
       try {
         // 先清理可能开着的产物预览/弹窗，避免挡住顶栏分享按钮
         await this.page.keyboard.press('Escape').catch(() => {});
@@ -1082,12 +1083,15 @@ class DialogRunner {
         // 打开面板→确保全选→生成链接→读剪贴板；面板偶发打不开/不复制，失败就重开重试
         for (let round = 0; round < 3; round++) {
           const btn = ctx.locator(btnSel).first();
-          if (await btn.count() === 0) return '';
+          if (await btn.count() === 0) {
+            lastReason = `分享按钮未找到(${btnSel})`;
+            this._warnShare(lastReason); return '';   // 按钮都没有,重试无益,直接返回
+          }
           await btn.click({ timeout: 5000 }).catch(() => {});
 
           const gen = ctx.locator(genSel).first();
           try { await gen.waitFor({ state: 'visible', timeout: 5000 }); }
-          catch { await this.page.waitForTimeout(500); continue; } // 面板没开，重试
+          catch { lastReason = `分享面板未打开(${genSel} 不可见)`; await this.page.waitForTimeout(500); continue; } // 面板没开，重试
 
           // 确保所有内容都是“对勾”态再生成链接：逐个检查复选框，未勾选的补点一下
           // （选中项含 <path> 勾；直接补勾比依赖“全选”toggle 更可靠，避免把已选的反选掉）
@@ -1109,11 +1113,14 @@ class DialogRunner {
           await gen.click({ timeout: 5000 }).catch(() => {});
           const link = await this._pollClipboardUrl(10000);
           if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
+          lastReason = '生成链接后剪贴板未出现 URL(生成失败或剪贴板读取受限)';
           await this.page.keyboard.press('Escape').catch(() => {});
           await this.page.waitForTimeout(500);
         }
+        this._warnShare(`${lastReason}(重试 3 轮仍空)`);   // 失败不再静默:记原因供真机定位
         return '';
-      } catch {
+      } catch (e) {
+        this._warnShare(`抓取异常: ${(e.message || '').split('\n')[0]}`);
         await this.page.keyboard.press('Escape').catch(() => {});
         return '';
       }
@@ -1121,6 +1128,11 @@ class DialogRunner {
     const p = _shareLock.then(run, run);
     _shareLock = p.catch(() => {});
     return p;
+  }
+
+  // 会话分享链接抓取失败时打一条 warn(带任务标识)。原实现双重静默吞错,真机无从定位「有些没链接」。
+  _warnShare(msg) {
+    if (this.logger) this.logger.warn(`       ↳ [${this.label}] 会话分享链接未抓到:${msg}`);
   }
 
   // D 产物分享链接：打开预览（产物卡片 或 顶栏「预览」按钮）→点「分享」→在分享弹窗「分享文件」抓永久链接。
