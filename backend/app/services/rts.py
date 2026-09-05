@@ -3,7 +3,7 @@
 风险分由可解释加权信号组成，免 token、可单测。候选池=adopted+非manual 用例。
 """
 from sqlalchemy import case, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 # 各信号权重（占满分 100 的分配）；具名常量便于校准，理由里透出贡献。
 RTS_WEIGHTS = {
@@ -183,8 +183,14 @@ def run_rts_job(db: Session, job) -> dict:
     """queue handler：算候选风险分 → AI 叙事 → 落 rts_recommendation(按 release 覆盖)。
 
     job.input = {release_id, provider?}。
+
+    连接管理(与 fail_cluster 同范式):候选风险分(读)算完即 commit 释放 DB 连接,AI 叙事的
+    几十秒里不持有连接(免其空闲被中间层掐断致写库 2013 Lost connection);写库用**全新
+    session** 走 _persist_with_retry,首次断连即重连重放。
     """
     from app.models import ReleaseRecord, RtsRecommendation
+    from app.services.ai_jobs import _persist_with_retry
+
     inp = json.loads(job.input or "{}")
     release_id = inp.get("release_id")
     if not release_id:
@@ -196,7 +202,14 @@ def run_rts_job(db: Session, job) -> dict:
     if not engine.is_available():
         raise ValueError(f"叙事引擎「{pid}」不可用")
     ranked = rank_candidates(db, release_id)
-    prompt = build_rts_prompt({"version": rel.version}, ranked)
+    # 读阶段完成:先把后续要用的 rel 字段/归属 project 取成本地量,再 commit 释放连接——
+    # commit 后不再回读已 expire 的 rel ORM / 原 db 会话(AI 叙事与写库都不碰 db)。
+    rel_version = rel.version
+    project_id = job.project_id or rel.project_id
+    db.commit()
+
+    # AI 叙事(纯引擎调用,零 DB 连接);结果暂存本地变量,稍后用新 session 落库。
+    prompt = build_rts_prompt({"version": rel_version}, ranked)
     raw, err = "", None
     try:
         for evt in engine.stream_generate("回归风险研判", prompt_builder=lambda: prompt, system_prompt=_SYSTEM_PROMPT):
@@ -215,15 +228,22 @@ def run_rts_job(db: Session, job) -> dict:
     parsed = parse_rts(raw)
     if parsed.get("error"):
         raise ValueError(parsed["error"])
-    # 覆盖旧推荐(按 release)
-    db.query(RtsRecommendation).filter(RtsRecommendation.release_id == release_id).delete()
-    row = RtsRecommendation(
-        project_id=job.project_id or rel.project_id, release_id=release_id,
-        overall_risk=parsed["overall_risk"], summary=parsed["summary"], rationale=parsed["rationale"],
-        focus_points=json.dumps(parsed["focus_points"], ensure_ascii=False),
-        candidate_count=len(ranked), recommended_count=parsed["recommended_count"], provider=pid)
-    db.add(row)
-    db.commit()
+
+    # ---- 写库(P1:此处才重取连接;P2:短重试兜断连)。按 release 覆盖:delete 旧 + insert 新在
+    # 同一新 session 内,幂等重放(断连整段重放)也靠它去重不堆积。delete 必在 parse 成功之后
+    # (AI 失败早已 raise,此刻旧数据尚未删——保持"失败不动旧推荐")。 ----
+    def _persist(s):
+        s.query(RtsRecommendation).filter(RtsRecommendation.release_id == release_id).delete()
+        row = RtsRecommendation(
+            project_id=project_id, release_id=release_id,
+            overall_risk=parsed["overall_risk"], summary=parsed["summary"], rationale=parsed["rationale"],
+            focus_points=json.dumps(parsed["focus_points"], ensure_ascii=False),
+            candidate_count=len(ranked), recommended_count=parsed["recommended_count"], provider=pid)
+        s.add(row)
+        s.commit()
+        return [row], None
+
+    _persist_with_retry(_persist, sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False))
     return {"release_id": release_id, "candidate_count": len(ranked), **parsed}
 
 
