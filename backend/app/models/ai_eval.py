@@ -182,3 +182,46 @@ class EvalClientDevice(Base):
     last_report_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (UniqueConstraint("runner", "vm_id", name="uk_eval_device_runner_vm"),)
+
+
+class EvalRunHistory(Base):
+    """一次测评执行的结果快照(重跑前归档)。eval_run 原地复位重跑会覆盖旧结果,
+    复位前把当前结果存进本表(attempt 递增),历史页据此展示历次执行。
+
+    只存「重跑会被清空」的结果/判定字段;下发字段(payload/eval_query_id/batch_id 等)复位不变,
+    需要时经 eval_run_id 回查主表。run 删则历史级联删(CASCADE)。
+    """
+
+    __tablename__ = "eval_run_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    eval_run_id: Mapped[int] = mapped_column(
+        ForeignKey("eval_run.id", ondelete="CASCADE"), index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # 第几次执行(1 起)
+    # 归档时的终态(done/failed 等)与那次跑在哪台(排障用)
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    runner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_device: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # —— 抓回的会话数据 ——
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    share_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    artifact_share_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reported_duration: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bean_cost: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tokens: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # —— 判定 ——
+    verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verdict_dims: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verdict_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judged_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_abnormal: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    review_mark: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # —— 通用 ——
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    archived_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

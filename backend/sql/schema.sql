@@ -884,3 +884,35 @@ CREATE TABLE IF NOT EXISTS `rts_recommendation` (
   KEY `idx_rts_project` (`project_id`),
   KEY `idx_rts_release` (`release_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 测评 run 重跑前的结果快照(保留历次执行);run 删则级联删
+CREATE TABLE IF NOT EXISTS `eval_run_history` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `eval_run_id` BIGINT NOT NULL,
+  `attempt` INT NOT NULL DEFAULT 1,
+  `status` VARCHAR(16) DEFAULT NULL,
+  `runner` VARCHAR(64) DEFAULT NULL,
+  `target_device` VARCHAR(64) DEFAULT NULL,
+  `session_id` VARCHAR(64) DEFAULT NULL,
+  `share_link` VARCHAR(512) DEFAULT NULL,
+  `artifact_share_link` VARCHAR(512) DEFAULT NULL,
+  `answer` TEXT,
+  `trace` TEXT,
+  `reported_duration` VARCHAR(32) DEFAULT NULL,
+  `bean_cost` VARCHAR(32) DEFAULT NULL,
+  `tokens` VARCHAR(32) DEFAULT NULL,
+  `verdict` VARCHAR(16) DEFAULT NULL,
+  `score` INT DEFAULT NULL,
+  `verdict_dims` TEXT,
+  `verdict_reason` TEXT,
+  `judged_by` VARCHAR(16) DEFAULT NULL,
+  `is_abnormal` TINYINT(1) NOT NULL DEFAULT 0,
+  `review_mark` VARCHAR(16) DEFAULT NULL,
+  `review_note` TEXT,
+  `reason` TEXT,
+  `duration_ms` INT DEFAULT NULL,
+  `archived_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_erh_run` (`eval_run_id`),
+  CONSTRAINT `fk_erh_run` FOREIGN KEY (`eval_run_id`) REFERENCES `eval_run` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

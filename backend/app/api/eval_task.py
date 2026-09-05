@@ -488,7 +488,7 @@ def retry_run(task_id: int, run_id: int, db: Session = Depends(get_db), user: Us
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在或不属于该任务")
     if getattr(r.status, "value", r.status) != "failed":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
-    reset_run_for_retry(r)
+    reset_run_for_retry(db, r)
     # 任务若已收口(done)则拉回 running,详情页状态与实际一致
     if task.status == EvalTaskStatus.done:
         task.status = EvalTaskStatus.running

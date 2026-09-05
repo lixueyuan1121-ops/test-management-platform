@@ -231,7 +231,7 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="96" align="center">
+        <el-table-column label="操作" width="140" align="center">
           <template #default="{ row }">
             <el-popconfirm v-if="!row.isGroup && row.status === 'failed'"
               title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryOne(row)">
@@ -245,6 +245,7 @@
               @click="judgeOne(row)"
             >{{ row.verdict ? '重判' : '判定' }}</el-button>
             <span v-else class="dim-muted">逐轮判</span>
+            <el-button v-if="!row.isGroup" size="small" text @click="openHistory(row)">历史</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -265,6 +266,42 @@
         <el-button @click="exportDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="exporting" @click="doExportFeishu">导出</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="historyVisible" :title="`执行历史 · RUN-${historyRunId ?? ''}`" width="760px">
+      <div v-loading="historyLoading">
+        <el-alert v-if="!historyLoading && historyRows.length <= 1" type="info" :closable="false"
+          title="该用例仅执行过一次，暂无重跑历史" style="margin-bottom:8px" />
+        <el-table :data="historyRows" size="small" border>
+          <el-table-column label="第几次" width="88" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.current" type="success" size="small">当前 #{{ row.attempt }}</el-tag>
+              <span v-else>#{{ row.attempt }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="执行" width="76" align="center">
+            <template #default="{ row }"><span class="dim-muted">{{ row.status || '—' }}</span></template>
+          </el-table-column>
+          <el-table-column label="判定" width="70" align="center">
+            <template #default="{ row }"><span>{{ row.verdict || '—' }}</span></template>
+          </el-table-column>
+          <el-table-column label="评分" width="60" align="center">
+            <template #default="{ row }"><span>{{ row.score ?? '—' }}</span></template>
+          </el-table-column>
+          <el-table-column label="判定理由" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }"><span>{{ row.verdict_reason || row.reason || '—' }}</span></template>
+          </el-table-column>
+          <el-table-column label="会话" width="60" align="center">
+            <template #default="{ row }">
+              <el-link v-if="safeUrl(row.share_link)" type="primary" :href="safeUrl(row.share_link)" target="_blank" rel="noopener noreferrer">打开</el-link>
+              <span v-else class="dim-muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="150" align="center">
+            <template #default="{ row }"><span class="dim-muted">{{ row.archived_at || '—' }}</span></template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-dialog>
 
     <!-- A/B 并排对比(LMArena 式):同一题两套配置的答辩+判定并列,胜因一目了然 -->
@@ -302,7 +339,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns, getEvalRunHistory } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -579,6 +616,32 @@ async function retryOne(row) {
       review_mark: res.review_mark, review_note: res.review_note })
     ElMessage.success(`run ${row.run_id} 已复位待执行，执行机将重新拉走`)
   } catch { /* 拦截器已提示 */ }
+}
+
+// 执行历史:拉某 run 的历次执行(current 当前 + history 重跑前快照),弹窗按 attempt 倒序展示。
+const historyVisible = ref(false)
+const historyLoading = ref(false)
+const historyRunId = ref(null)
+const historyRows = ref([])   // [{attempt, status, score, verdict, reason, share_link, answer, duration_ms, archived_at, current?}]
+
+async function openHistory(row) {
+  historyRunId.value = row.run_id
+  historyVisible.value = true
+  historyLoading.value = true
+  historyRows.value = []
+  try {
+    const res = await getEvalRunHistory(row.run_id)
+    const cur = res.current || {}
+    // 当前一次置顶(attempt = 历史数+1),其后接历次快照(已按 attempt 降序)
+    const curAttempt = (res.attempts || (res.history?.length || 0) + 1)
+    historyRows.value = [
+      { ...cur, attempt: curAttempt, current: true,
+        share_link: cur.share_link, archived_at: cur.updated_at || cur.created_at || null },
+      ...(res.history || []),
+    ]
+  } catch { /* 拦截器已提示 */ } finally {
+    historyLoading.value = false
+  }
 }
 
 // 人工复核:点已选中的标记 = 无操作;新标记弹备注框(可空);mark=null 清除。就地更新该行。
