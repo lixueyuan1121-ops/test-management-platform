@@ -44,7 +44,7 @@
         </el-table-column>
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
-            <el-tag :type="TS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ TS_LABEL[row.status] || row.status }}</el-tag>
+            <el-tag :type="TS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ TS_LABEL[row.status] || row.status || '—' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="最近执行" width="150" align="center">
@@ -244,7 +244,7 @@
     <el-drawer v-model="detailVisible" :title="detail?.task?.name || '任务详情'" size="72%" destroy-on-close>
       <div v-if="detail" class="detail">
         <div class="d-meta">
-          <el-tag :type="TS_TYPE[detail.task.status] || 'info'" effect="plain">{{ TS_LABEL[detail.task.status] || detail.task.status }}</el-tag>
+          <el-tag :type="TS_TYPE[detail.task.status] || 'info'" effect="plain">{{ TS_LABEL[detail.task.status] || detail.task.status || '—' }}</el-tag>
           <template v-if="taskBatches.length > 1">
             <span class="mono">执行历史</span>
             <el-select :model-value="selectedBatchId || detail.task.last_batch_id" size="small" style="width:300px"

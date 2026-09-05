@@ -476,6 +476,27 @@ def ensure_eval_run_history_table(engine=None) -> None:
     EvalRunHistory.__table__.create(bind=eng, checkfirst=True)
 
 
+def ensure_eval_task_status_enum() -> None:
+    """eval_task.status 放宽 ENUM 含 stopped/archived,并把已被写坏的 '' 行修回。
+
+    根因(同 exec_run kind 的坑):status 原 ENUM 只含建表时的值(draft/running/done),
+    后加 stopped/archived 未同步 MySQL 列定义。MySQL 原生 ENUM 遇范围外值**静默存 ''**——
+    停止任务(status=stopped)被写成空串 → 列表状态列渲染成空方框(el-tag 空内容)。
+    - MySQL:MODIFY 放宽为含全部 5 值;- SQLite:非原生 ENUM 无需 DDL,坏行修复同样执行(幂等)。
+    坏行归回 stopped:'' 只可能来自后加的 stopped/archived,archived 无操作路径,故几乎必为 stopped。
+    """
+    if not _columns("eval_task"):
+        return  # 表尚未建,交给 create_all
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "mysql":
+            conn.execute(text(
+                "ALTER TABLE eval_task MODIFY COLUMN `status` "
+                "ENUM('draft','running','done','stopped','archived') NOT NULL DEFAULT 'draft'"
+            ))
+        conn.execute(text("UPDATE eval_task SET status='stopped' WHERE status='' OR status IS NULL"))
+
+
 def ensure_eval_query_dimension() -> None:
     """eval_query 补 dimension 列(对话测评题主考维度)。老库已建表故走 ALTER;新库 create_all 已含,探到即跳过(幂等)。"""
     if not _columns("eval_query"):
