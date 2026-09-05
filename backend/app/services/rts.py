@@ -108,3 +108,124 @@ def rank_candidates(db: Session, release_id: int) -> list[dict]:
                     "risk_score": score, "signals": detail})
     out.sort(key=lambda r: -r["risk_score"])
     return out
+
+
+import json
+import logging
+
+from app.services import generators
+
+logger = logging.getLogger("test_platform")
+_RISKS = ("high", "medium", "low")
+_SYSTEM_PROMPT = ("你是资深测试负责人，为一次发版的回归范围做整体风险研判并解释推荐理由。"
+                  "只输出一个 JSON 对象，不要输出任何其它文字。")
+
+
+def _pick_provider(name: str | None):
+    """选引擎：显式指定则用；否则选第一个 available 的(不硬 claude)。"""
+    pid = generators.normalize_provider(name)
+    eng = generators.get_provider(pid)
+    if name or eng.is_available():
+        return pid, eng
+    for cand in generators.PROVIDERS:
+        e = generators.get_provider(cand)
+        if e.is_available():
+            return cand, e
+    return pid, eng
+
+
+def build_rts_prompt(release_info: dict, ranked: list[dict]) -> str:
+    top = ranked[:30]
+    lines = [
+        f"发版：{release_info.get('version')}，候选回归用例 {len(ranked)} 条。",
+        "下面是按风险分降序的候选（含命中的风险信号明细），请做整体风险研判与推荐。",
+        "",
+    ]
+    for r in top:
+        lines.append(f"- [{r['risk_score']}分] {r['title'][:60]}（P:{r.get('priority') or '?'}）信号:{r['signals']}")
+    lines += [
+        "",
+        '只输出 JSON：{"overall_risk":"high|medium|low","summary":"本次发版风险概述(2-3句)",'
+        '"rationale":"为什么建议跑高分这批、可跳过低分那批的整体理由",'
+        '"focus_points":["风险点1","风险点2"],"recommended_count":建议跑的条数(整数)}',
+    ]
+    return "\n".join(lines)
+
+
+def parse_rts(raw: str) -> dict:
+    if not raw or not raw.strip():
+        return {"error": "引擎无输出"}
+    import re
+    text = re.sub(r"```(?:json)?", "", raw).strip("` \n")
+    s, e = text.find("{"), text.rfind("}")
+    if s < 0 or e <= s:
+        return {"error": "输出无 JSON"}
+    try:
+        obj = json.loads(text[s:e + 1])
+    except (json.JSONDecodeError, ValueError):
+        return {"error": "JSON 解析失败"}
+    risk = str(obj.get("overall_risk") or "").strip().lower()
+    if risk not in _RISKS:
+        risk = "medium"
+    fp = obj.get("focus_points")
+    if not isinstance(fp, list):
+        fp = [str(fp)] if fp else []
+    try:
+        rc = int(obj.get("recommended_count") or 0)
+    except (TypeError, ValueError):
+        rc = 0
+    return {"overall_risk": risk, "summary": str(obj.get("summary") or "")[:1000],
+            "rationale": str(obj.get("rationale") or "")[:2000],
+            "focus_points": [str(x)[:200] for x in fp][:10], "recommended_count": rc}
+
+
+def run_rts_job(db: Session, job) -> dict:
+    """queue handler：算候选风险分 → AI 叙事 → 落 rts_recommendation(按 release 覆盖)。
+
+    job.input = {release_id, provider?}。
+    """
+    from app.models import ReleaseRecord, RtsRecommendation
+    inp = json.loads(job.input or "{}")
+    release_id = inp.get("release_id")
+    if not release_id:
+        raise ValueError("rts job 缺 release_id")
+    rel = db.get(ReleaseRecord, release_id)
+    if rel is None:
+        raise ValueError(f"发版不存在:{release_id}")
+    pid, engine = _pick_provider(inp.get("provider"))
+    if not engine.is_available():
+        raise ValueError(f"叙事引擎「{pid}」不可用")
+    ranked = rank_candidates(db, release_id)
+    prompt = build_rts_prompt({"version": rel.version}, ranked)
+    raw, err = "", None
+    try:
+        for evt in engine.stream_generate("回归风险研判", prompt_builder=lambda: prompt, system_prompt=_SYSTEM_PROMPT):
+            t = evt.get("type")
+            if t == "delta":
+                raw += evt.get("text") or ""
+            elif t == "result" and evt.get("text"):
+                raw = evt["text"]
+            elif t == "error":
+                err = evt.get("msg")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("RTS 引擎异常")
+        err = str(e)
+    if err:
+        raise ValueError(err[:500])
+    parsed = parse_rts(raw)
+    if parsed.get("error"):
+        raise ValueError(parsed["error"])
+    # 覆盖旧推荐(按 release)
+    db.query(RtsRecommendation).filter(RtsRecommendation.release_id == release_id).delete()
+    row = RtsRecommendation(
+        project_id=job.project_id or rel.project_id, release_id=release_id,
+        overall_risk=parsed["overall_risk"], summary=parsed["summary"], rationale=parsed["rationale"],
+        focus_points=json.dumps(parsed["focus_points"], ensure_ascii=False),
+        candidate_count=len(ranked), recommended_count=parsed["recommended_count"], provider=pid)
+    db.add(row)
+    db.commit()
+    return {"release_id": release_id, "candidate_count": len(ranked), **parsed}
+
+
+from app.services import ai_jobs as _ai_jobs  # noqa: E402
+_ai_jobs.register_handler("rts", run_rts_job)

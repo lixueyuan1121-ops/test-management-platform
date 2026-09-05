@@ -76,10 +76,70 @@ def test_history_signals_and_rank():
     db.close()
 
 
+def test_parse_rts():
+    raw = '```json\n{"overall_risk":"high","summary":"支付风险高","rationale":"支付历史失败多","focus_points":["支付模块"],"recommended_count":5}\n```'
+    d = rts.parse_rts(raw)
+    assert d["overall_risk"] == "high" and d["recommended_count"] == 5
+    assert isinstance(d["focus_points"], list)
+    assert rts.parse_rts("非法输出，无json").get("error")
+    # 非法 overall_risk 回落 medium
+    assert rts.parse_rts('{"overall_risk":"weird","summary":"x"}')["overall_risk"] == "medium"
+
+
+def test_rts_handler_registered_subprocess():
+    import subprocess, sys
+    # 干净进程：只走生产 import 路径，不直接 import app.services.rts
+    code = ("import app.main; from app.services import ai_jobs; "
+            "ai_jobs._ensure_handlers(); "
+            "import sys; sys.exit(0 if 'rts' in ai_jobs._HANDLERS else 3)")
+    r = subprocess.run([sys.executable, "-c", code],
+                       cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       env={**os.environ, "DATABASE_URL": "sqlite:///./tmp_test_rts.db"},
+                       capture_output=True)
+    assert r.returncode == 0, f"rts handler 未注册(生产路径),returncode={r.returncode}\n{r.stderr.decode()[:500]}"
+
+
+def test_run_rts_job():
+    import json as _j
+    from types import SimpleNamespace
+    from datetime import date
+    from app.db.session import SessionLocal
+    from app.models import Project, ReleaseRecord, RtsRecommendation
+    from app.services import generators
+    db = SessionLocal()
+    pj = Project(name="P-rtsj", code="P-RTSJ"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-j", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    db.commit()
+    rel_id = pj_id = None; rel_id = rel.id; pj_id = pj.id
+
+    class _Fake:
+        def is_available(self): return True
+        def stream_generate(self, *a, **k):
+            yield {"type": "result", "text": '{"overall_risk":"medium","summary":"s","rationale":"r","focus_points":["f"],"recommended_count":2}'}
+
+    orig = generators.get_provider
+    generators.get_provider = lambda name: _Fake()
+    try:
+        job = SimpleNamespace(id=1, project_id=pj_id, input=_j.dumps({"release_id": rel_id}))
+        res = rts.run_rts_job(db, job)
+        assert res["overall_risk"] == "medium", res
+        rows = db.query(RtsRecommendation).filter(RtsRecommendation.release_id == rel_id).all()
+        assert len(rows) == 1 and rows[0].overall_risk == "medium", rows
+        # 重跑覆盖不堆积
+        rts.run_rts_job(db, job)
+        assert db.query(RtsRecommendation).filter(RtsRecommendation.release_id == rel_id).count() == 1
+    finally:
+        generators.get_provider = orig
+    db.close()
+
+
 def main():
     test_table_created()
     test_score_monotonic()
     test_history_signals_and_rank()
+    test_parse_rts()
+    test_rts_handler_registered_subprocess()
+    test_run_rts_job()
     print("OK test_rts")
 
 
