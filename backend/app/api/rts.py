@@ -7,11 +7,14 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole
 from app.db.session import get_db
-from app.models import RtsRecommendation, User
+from app.models import ReleaseRecord, RtsRecommendation, User
 from app.schemas.common import ok
 from app.services import ai_jobs, rts as rtssvc
 
 router = APIRouter(prefix="/api/rts", tags=["rts"])
+
+# 读端点放行的项目角色(含 guest 只读);写端点(analyze 入队)仅 admin。
+_READ_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 
 
 class AnalyzeBody(BaseModel):
@@ -21,7 +24,14 @@ class AnalyzeBody(BaseModel):
 
 @router.get("/candidates")
 def candidates(release_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """该版本候选回归用例(风险分降序)。风险分现算不落表。"""
+    """该版本候选回归用例(风险分降序)。风险分现算不落表。
+
+    先按 release→项目 鉴权(防 IDOR:任意登录用户不得跨项目拿别人版本的风险画像)。
+    """
+    rel = db.get(ReleaseRecord, release_id)
+    if not rel:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
+    assert_project_role(db, user, rel.project_id, _READ_ROLES)
     ranked = rtssvc.rank_candidates(db, release_id)
     _, in_rel = rtssvc.cases_for_release(db, release_id)
     return ok({"items": ranked, "candidate_count": len(ranked), "in_release_count": len(in_rel)})
@@ -29,8 +39,15 @@ def candidates(release_id: int, db: Session = Depends(get_db), user: User = Depe
 
 @router.post("/analyze")
 def analyze(body: AnalyzeBody, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """入队 AI 风险叙事。pending 去重：同 release 已有未完成 job 则复用。"""
-    assert_project_role(db, user, body.project_id, (ProjectRole.admin,))
+    """入队 AI 风险叙事。pending 去重：同 release 已有未完成 job 则复用。
+
+    防 IDOR:用服务端解析出的 rel.project_id 鉴权,并校验 release 确属客户端声称的 project_id
+    (否则可用「我有权的 project + 别人的 release」绕过)。
+    """
+    rel = db.get(ReleaseRecord, body.release_id)
+    if not rel or rel.project_id != body.project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
+    assert_project_role(db, user, rel.project_id, (ProjectRole.admin,))
     from app.models import AiJob
     existing = (db.query(AiJob)
                 .filter(AiJob.kind == "rts", AiJob.ref_kind == "release",
@@ -46,7 +63,14 @@ def analyze(body: AnalyzeBody, db: Session = Depends(get_db), user: User = Depen
 
 @router.get("/recommendation")
 def recommendation(release_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """读该版本最新 AI 风险叙事；无则 {exists:false}。"""
+    """读该版本最新 AI 风险叙事；无则 {exists:false}。
+
+    先按 release→项目 鉴权;release 不存在直接 404(不泄漏存在性)。
+    """
+    rel = db.get(ReleaseRecord, release_id)
+    if not rel:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
+    assert_project_role(db, user, rel.project_id, _READ_ROLES)
     row = (db.query(RtsRecommendation).filter(RtsRecommendation.release_id == release_id)
            .order_by(RtsRecommendation.id.desc()).first())
     if not row:

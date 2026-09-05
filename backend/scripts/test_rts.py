@@ -173,6 +173,37 @@ def test_endpoints():
     db.commit(); db.close()
     r1 = client.get("/api/rts/recommendation", params={"release_id": rel_id})
     assert r1.json()["data"]["overall_risk"] == "high" and r1.json()["data"]["focus_points"] == ["fp"], r1.text
+
+    # analyze 正例 + 去重锁死（worker 池未在 TestClient 下启动，job 保持 pending）
+    from app.models import AiJob
+    def _rts_jobs():
+        _db = SessionLocal()
+        try:
+            return _db.query(AiJob).filter(AiJob.kind == "rts", AiJob.ref_kind == "release",
+                                           AiJob.ref_id == rel_id).all()
+        finally:
+            _db.close()
+    ra = client.post("/api/rts/analyze", json={"project_id": pid, "release_id": rel_id})
+    assert ra.json()["code"] == 0, ra.text
+    job_id = ra.json()["data"]["job_id"]
+    assert job_id and len(_rts_jobs()) == 1, ra.text
+    ra2 = client.post("/api/rts/analyze", json={"project_id": pid, "release_id": rel_id})
+    assert ra2.json()["data"]["job_id"] == job_id and ra2.json()["data"].get("reused") is True, ra2.text
+    assert len(_rts_jobs()) == 1, "去重：重复 analyze 不新增 job"
+
+    # 不存在的 release_id → 三端点都 404（证明加了 rel 存在性校验）
+    BAD = 10_000_000
+    assert client.get("/api/rts/candidates", params={"release_id": BAD}).json()["code"] == 404
+    assert client.get("/api/rts/recommendation", params={"release_id": BAD}).json()["code"] == 404
+    assert client.post("/api/rts/analyze", json={"project_id": pid, "release_id": BAD}).json()["code"] == 404
+    # analyze：release 存在但不属所传 project_id → 404（防「有权 project + 别人 release」绕过）
+    assert client.post("/api/rts/analyze", json={"project_id": pid + 999999, "release_id": rel_id}).json()["code"] == 404
+
+    # IDOR 越权锁死：换成非平台管理员、非本项目成员的用户（平台管理员会 bypass 一切，故不能用）
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=999999, is_platform_admin=False)
+    assert client.get("/api/rts/candidates", params={"release_id": rel_id}).json()["code"] == 403, "非成员读候选应 403"
+    assert client.get("/api/rts/recommendation", params={"release_id": rel_id}).json()["code"] == 403, "非成员读叙事应 403"
+    assert client.post("/api/rts/analyze", json={"project_id": pid, "release_id": rel_id}).json()["code"] == 403, "非成员触发分析应 403"
     app.dependency_overrides.clear()
 
 
