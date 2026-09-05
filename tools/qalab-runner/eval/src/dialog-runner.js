@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const workFrame = require('./work-frame');
+const { ensureAllSelected } = require('./share-select');
 
 // 分享链接经系统剪贴板传递，并发下多个标签会互相覆盖剪贴板，故这一步需串行化
 let _shareLock = Promise.resolve();
@@ -1093,25 +1094,31 @@ class DialogRunner {
           try { await gen.waitFor({ state: 'visible', timeout: 5000 }); }
           catch { lastReason = `分享面板未打开(${genSel} 不可见)`; await this.page.waitForTimeout(500); continue; } // 面板没开，重试
 
-          // 确保所有内容都是“对勾”态再生成链接：逐个检查复选框，未勾选的补点一下
-          // （选中项含 <path> 勾；直接补勾比依赖“全选”toggle 更可靠，避免把已选的反选掉）
-          const boxes = ctx.locator(boxSel);
-          const nb = await boxes.count().catch(() => 0);
-          for (let i = 0; i < nb; i++) {
-            const box = boxes.nth(i);
-            let checked = true;
-            try { checked = await box.evaluate(el => !!el.querySelector('path')); } catch {}
-            if (!checked) { await box.click({ timeout: 2000 }).catch(() => {}); await this.page.waitForTimeout(150); }
+          // 勾选全部内容再生成链接（用户明确流程）：主动点「全选」，点到全部勾选为止——
+          // 多轮对话一次全选常只到部分选中，需再点一次（ensureAllSelected 自适应单轮 1 次/多轮 2 次）。
+          const selectAllSel = this.platform.shareSelectAllSelector;
+          if (selectAllSel) {
+            await ensureAllSelected({
+              isAllChecked: allChecked,
+              clickSelectAll: () => ctx.locator(selectAllSel).first().click({ timeout: 3000 }).catch(() => {}),
+              sleep: (ms) => this.page.waitForTimeout(ms),
+            });
           }
-          // 兜底：若仍未全勾，用“全选”补一次
-          if (this.platform.shareSelectAllSelector && !(await allChecked())) {
-            await ctx.locator(this.platform.shareSelectAllSelector).first().click({ timeout: 3000 }).catch(() => {});
-            await this.page.waitForTimeout(400);
+          // 兜底：全选后仍有未勾的（无全选按钮/选择器差异），逐个补勾（选中项含 <path> 勾）
+          if (!(await allChecked())) {
+            const boxes = ctx.locator(boxSel);
+            const nb = await boxes.count().catch(() => 0);
+            for (let i = 0; i < nb; i++) {
+              const box = boxes.nth(i);
+              let checked = true;
+              try { checked = await box.evaluate(el => !!el.querySelector('path')); } catch {}
+              if (!checked) { await box.click({ timeout: 2000 }).catch(() => {}); await this.page.waitForTimeout(150); }
+            }
           }
 
           await this._clipSentinel();
-          await gen.click({ timeout: 5000 }).catch(() => {});
-          const link = await this._pollClipboardUrl(10000);
+          await gen.click({ timeout: 5000 }).catch(() => {});      // 生成链接
+          const link = await this._pollClipboardUrl(10000);        // 读剪贴板回填
           if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
           lastReason = '生成链接后剪贴板未出现 URL(生成失败或剪贴板读取受限)';
           await this.page.keyboard.press('Escape').catch(() => {});
