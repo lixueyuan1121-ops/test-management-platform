@@ -133,6 +133,49 @@ def test_run_rts_job():
     db.close()
 
 
+def test_endpoints():
+    from types import SimpleNamespace
+    from datetime import date
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.deps import get_current_user
+    from app.db.session import SessionLocal
+    from app.models import Project, ReleaseRecord, Requirement, TestCase, AiTask, RtsRecommendation
+    from app.core.enums import ReviewStatus
+    db = SessionLocal()
+    pj = Project(name="P-ep", code="P-RTSEP"); db.add(pj); db.flush()
+    rel = ReleaseRecord(project_id=pj.id, version="v-ep", release_date=date(2026, 9, 1)); db.add(rel); db.flush()
+    req = Requirement(project_id=pj.id, title="需求EP", release_id=rel.id); db.add(req); db.flush()
+    at = AiTask(project_id=pj.id, user_id=1, kind="testcase_gen", input_ref="r"); db.add(at); db.flush()
+    tc = TestCase(ai_task_id=at.id, project_id=pj.id, title="用例EP", requirement_id=req.id, exec_kind="gui", review_status=ReviewStatus.adopted, priority="P1")
+    db.add(tc); db.commit()
+    pid, rel_id, tc_id = pj.id, rel.id, tc.id
+    db.close()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
+    client = TestClient(app)
+
+    r = client.get("/api/rts/candidates", params={"release_id": rel_id})
+    assert r.json()["code"] == 0, r.text
+    d = r.json()["data"]
+    assert d["candidate_count"] >= 1 and any(x["case_id"] == tc_id for x in d["items"]), d
+    assert all("risk_score" in x for x in d["items"])
+
+    # recommendation 空
+    r0 = client.get("/api/rts/recommendation", params={"release_id": rel_id})
+    assert r0.json()["data"].get("exists") is False, r0.text
+
+    # 手动落一条 recommendation，测读取
+    db = SessionLocal()
+    import json as _j
+    db.add(RtsRecommendation(project_id=pid, release_id=rel_id, overall_risk="high", summary="s",
+                             rationale="r", focus_points=_j.dumps(["fp"]), candidate_count=1, recommended_count=1))
+    db.commit(); db.close()
+    r1 = client.get("/api/rts/recommendation", params={"release_id": rel_id})
+    assert r1.json()["data"]["overall_risk"] == "high" and r1.json()["data"]["focus_points"] == ["fp"], r1.text
+    app.dependency_overrides.clear()
+
+
 def main():
     test_table_created()
     test_score_monotonic()
@@ -140,6 +183,7 @@ def main():
     test_parse_rts()
     test_rts_handler_registered_subprocess()
     test_run_rts_job()
+    test_endpoints()
     print("OK test_rts")
 
 
