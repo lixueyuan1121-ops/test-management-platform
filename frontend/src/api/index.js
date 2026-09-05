@@ -493,3 +493,8 @@ export const failClusterScope = (release_id) => http.get('/fail-clusters/scope',
 export const analyzeFailClusters = (data) => http.post('/fail-clusters/analyze', data)
 export const listFailClusters = (release_id) => http.get('/fail-clusters', { params: { release_id } })
 export const createIssueFromCluster = (id) => http.post(`/fail-clusters/${id}/create-issue`, {})
+
+// RTS 回归智选
+export const rtsCandidates = (release_id) => http.get('/rts/candidates', { params: { release_id } })
+export const rtsAnalyze = (data) => http.post('/rts/analyze', data)
+export const rtsRecommendation = (release_id) => http.get('/rts/recommendation', { params: { release_id } })

@@ -77,6 +77,7 @@
           <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
           <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
           <el-menu-item index="/fail-clusters"><el-icon><Filter /></el-icon><span>版本质量聚焦</span></el-menu-item>
+          <el-menu-item index="/rts"><el-icon><Aim /></el-icon><span>回归智选</span></el-menu-item>
         </el-sub-menu>
 
         <!-- 我的:个人相关(避免与顶层"工作台"撞名) -->
