@@ -488,7 +488,7 @@ def retry_run(task_id: int, run_id: int, db: Session = Depends(get_db), user: Us
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在或不属于该任务")
     if getattr(r.status, "value", r.status) != "failed":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
-    reset_run_for_retry(db, r)
+    reset_run_for_retry(r)
     # 任务若已收口(done)则拉回 running,详情页状态与实际一致
     if task.status == EvalTaskStatus.done:
         task.status = EvalTaskStatus.running
@@ -563,6 +563,41 @@ def task_runs(task_id: int, batch_id: str | None = Query(None),
         d["dimension"] = (d.get("payload") or {}).get("dimension") or dim_map.get(r.eval_query_id)
         out.append(d)
     return ok({"task": _to_out(task, db), "runs": out})
+
+
+@router.get("/{task_id}/batches")
+def list_task_batches(task_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """任务的「执行批次历史」:每执行一次=一个 batch,聚合成一行(时间/条数/完成/通过率/均分),
+    按时间倒序。前端下拉切换某批 → task_runs?batch_id= 拉那批整组结果。历史粒度是批次,不是单条 run。"""
+    from sqlalchemy import case, func
+
+    task = db.get(EvalTask, task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
+    assert_project_role(db, user, task.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    done_states = ("done", "judged", "failed")
+    rows = (db.query(
+        EvalRun.batch_id,
+        func.min(EvalRun.created_at).label("t0"),
+        func.count(EvalRun.id).label("total"),
+        func.sum(case((EvalRun.status.in_(done_states), 1), else_=0)).label("done"),
+        func.sum(case((EvalRun.verdict == "pass", 1), else_=0)).label("passed"),
+        func.sum(case((EvalRun.verdict == "fail", 1), else_=0)).label("failed"),
+        func.avg(EvalRun.score).label("avg_score"),
+    ).filter(EvalRun.eval_task_id == task.id, EvalRun.batch_id.isnot(None))
+     .group_by(EvalRun.batch_id)
+     .order_by(func.min(EvalRun.created_at).desc()).all())
+    batches = [{
+        "batch_id": r.batch_id,
+        "t0": r.t0.isoformat() if r.t0 else None,
+        "total": r.total or 0,
+        "done": int(r.done or 0),
+        "passed": int(r.passed or 0),
+        "failed": int(r.failed or 0),
+        "avg_score": round(float(r.avg_score), 2) if r.avg_score is not None else None,
+        "is_current": r.batch_id == task.last_batch_id,
+    } for r in rows]
+    return ok({"task_id": task.id, "last_batch_id": task.last_batch_id, "batches": batches})
 
 
 # ─── AI 综合评价(整理评价,HTML) ────────────────────────────────────────────────

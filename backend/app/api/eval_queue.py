@@ -282,32 +282,10 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
     return ok({"trace_url": f"/uploads/{rel}"})
 
 
-def _archive_run_result(db: Session, r: EvalRun) -> None:
-    """复位前把 run 当前结果快照进 eval_run_history(attempt 递增)。从未执行过(无答案/判定/失败原因)
-    的 run 不产生垃圾历史。多次重跑累积多条,历史页据此展示历次执行。"""
-    from app.models import EvalRunHistory
-    # 有任何「执行结果」痕迹才归档(避免刚下发未跑就复位、或空 run 反复复位堆垃圾)
-    if not (r.answer or r.verdict or r.reason or r.share_link or r.session_id or r.trace):
-        return
-    attempt = db.query(EvalRunHistory).filter(EvalRunHistory.eval_run_id == r.id).count() + 1
-    db.add(EvalRunHistory(
-        eval_run_id=r.id, attempt=attempt,
-        status=getattr(r.status, "value", r.status), runner=r.runner, target_device=r.target_device,
-        session_id=r.session_id, share_link=r.share_link, artifact_share_link=r.artifact_share_link,
-        answer=r.answer, trace=r.trace, reported_duration=r.reported_duration,
-        bean_cost=r.bean_cost, tokens=r.tokens,
-        verdict=r.verdict, score=r.score, verdict_dims=r.verdict_dims,
-        verdict_reason=r.verdict_reason, judged_by=r.judged_by, is_abnormal=bool(r.is_abnormal),
-        review_mark=r.review_mark, review_note=r.review_note,
-        reason=r.reason, duration_ms=r.duration_ms,
-    ))
-
-
-def reset_run_for_retry(db: Session, r: EvalRun) -> None:
+def reset_run_for_retry(r: EvalRun) -> None:
     """failed run 原地复位回 pending(重跑公共逻辑,任务端点与通用端点共用):
-    **复位前先把当前结果快照进 eval_run_history**(保留历次执行),再清空全部回填与判定字段;
-    payload 快照保留——仍按下发那一刻的配置重跑。调用方负责 commit。"""
-    _archive_run_result(db, r)
+    清空全部回填与判定字段,payload 快照保留——仍按下发那一刻的配置重跑。调用方负责 commit。
+    (历史按「执行批次」保留:每次执行任务=新 batch,旧批次 run 都留库;见 /eval-tasks/{id}/batches。)"""
     r.status = EvalRunStatus.pending
     r.reason = None
     r.session_id = None; r.share_link = None; r.artifact_share_link = None
@@ -330,7 +308,7 @@ def retry_failed_batch(body: EvalRetryFailedIn, db: Session = Depends(get_db), u
         q = q.filter(EvalRun.batch_id == body.batch_id)
     rows = q.all()
     for r in rows:
-        reset_run_for_retry(db, r)
+        reset_run_for_retry(r)
     db.commit()
     return ok({"retried": len(rows), "run_ids": [r.id for r in rows]})
 
@@ -345,44 +323,9 @@ def retry_run_any(run_id: int, db: Session = Depends(get_db), user: User = Depen
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
     if getattr(r.status, "value", r.status) != "failed":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
-    reset_run_for_retry(db, r)
+    reset_run_for_retry(r)
     db.commit(); db.refresh(r)
     return ok(_to_out(r))
-
-
-def _hist_to_out(h) -> dict:
-    return {
-        "id": h.id, "attempt": h.attempt, "status": h.status,
-        "runner": h.runner, "target_device": h.target_device,
-        "session_id": h.session_id, "share_link": h.share_link,
-        "artifact_share_link": h.artifact_share_link,
-        "answer": h.answer, "trace": h.trace,
-        "reported_duration": h.reported_duration, "bean_cost": h.bean_cost, "tokens": h.tokens,
-        "verdict": h.verdict, "score": h.score,
-        "verdict_dims": json.loads(h.verdict_dims) if h.verdict_dims else None,
-        "verdict_reason": h.verdict_reason, "judged_by": h.judged_by,
-        "is_abnormal": bool(h.is_abnormal),
-        "review_mark": h.review_mark, "review_note": h.review_note,
-        "reason": h.reason, "duration_ms": h.duration_ms,
-        "archived_at": str(h.archived_at) if h.archived_at else None,
-    }
-
-
-@router.get("/{run_id}/history")
-def run_history(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """某 run 的历次执行:current=当前(最新)结果,history=重跑前归档的历次快照(attempt 降序)。
-
-    多次重跑不再覆盖成一条——复位前每次把旧结果快照进 eval_run_history,历史页据此展开看历次。
-    """
-    r = db.get(EvalRun, run_id)
-    if not r:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
-    assert_project_role(db, user, r.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
-    from app.models import EvalRunHistory
-    hist = (db.query(EvalRunHistory).filter(EvalRunHistory.eval_run_id == run_id)
-            .order_by(EvalRunHistory.attempt.desc()).all())
-    return ok({"run_id": run_id, "attempts": len(hist) + 1,
-               "current": _to_out(r), "history": [_hist_to_out(h) for h in hist]})
 
 
 @router.get("/trend")

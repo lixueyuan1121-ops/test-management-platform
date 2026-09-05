@@ -159,11 +159,11 @@ export const markEvalRunFailed = (taskId, runId) => http.post(`/eval-tasks/${tas
 export const retryEvalRun = (taskId, runId) => http.post(`/eval-tasks/${taskId}/runs/${runId}/retry`)
 // 通用单条重跑（不限任务，普通题库下发的 failed run 用这个）
 export const retryEvalRunAny = (runId) => http.post(`/eval-queue/${runId}/retry`)
-// 某 run 的执行历史:current=当前(最新)结果,history=重跑前快照的历次(attempt 降序)
-export const getEvalRunHistory = (runId) => http.get(`/eval-queue/${runId}/history`)
 // 批量重跑失败：{project_id, batch_id?, run_ids?} → {retried, run_ids}
 export const retryFailedEvalRuns = (payload) => http.post('/eval-queue/retry-failed', payload)
 export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
+// 任务的执行批次历史(每次执行=一个批次:时间/条数/完成/通过率/均分,倒序);前端下拉切换查看某批
+export const listEvalTaskBatches = (id) => http.get(`/eval-tasks/${id}/batches`)
 
 export async function streamEvalTaskSummary(taskId, payload, { onDone, onError, signal, onTick } = {}) {
   try {

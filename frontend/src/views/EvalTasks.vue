@@ -245,7 +245,14 @@
       <div v-if="detail" class="detail">
         <div class="d-meta">
           <el-tag :type="TS_TYPE[detail.task.status] || 'info'" effect="plain">{{ TS_LABEL[detail.task.status] || detail.task.status }}</el-tag>
-          <span v-if="detail.task.last_batch_id" class="mono">批次 {{ detail.task.last_batch_id }}</span>
+          <template v-if="taskBatches.length > 1">
+            <span class="mono">执行历史</span>
+            <el-select :model-value="selectedBatchId || detail.task.last_batch_id" size="small" style="width:300px"
+              placeholder="选择执行批次" @change="switchBatch">
+              <el-option v-for="b in taskBatches" :key="b.batch_id" :value="b.batch_id" :label="fmtBatchOption(b)" />
+            </el-select>
+          </template>
+          <span v-else-if="detail.task.last_batch_id" class="mono">批次 {{ detail.task.last_batch_id }}</span>
           <span v-if="avgScore" class="avg-score">均分 {{ avgScore }}/5</span>
           <span v-if="fmtDialogOptions(detail.task.dialog_options)" class="opts">{{ fmtDialogOptions(detail.task.dialog_options) }}</span>
           <span class="muted">{{ detail.task.description || '' }}</span>
@@ -362,7 +369,7 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" align="center">
+          <el-table-column label="操作" width="96" align="center">
             <template #default="{ row }">
               <el-popconfirm v-if="!row.isGroup && (row.status === 'running' || row.status === 'pending')"
                 title="标记为执行失败？(会话未回填/执行中断时用于收口)" width="240" @confirm="markFailed(row)">
@@ -372,8 +379,7 @@
                 title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryRun(row)">
                 <template #reference><el-button size="small" type="success" text>重跑</el-button></template>
               </el-popconfirm>
-              <el-button v-if="!row.isGroup" size="small" text @click="openHistory(row)">历史</el-button>
-              <span v-if="row.isGroup" class="muted">—</span>
+              <span v-else class="muted">—</span>
             </template>
           </el-table-column>
         </el-table>
@@ -394,42 +400,6 @@
         </div>
       </div>
     </el-drawer>
-
-    <el-dialog v-model="historyVisible" :title="`执行历史 · RUN-${historyRunId ?? ''}`" width="760px" append-to-body>
-      <div v-loading="historyLoading">
-        <el-alert v-if="!historyLoading && historyRows.length <= 1" type="info" :closable="false"
-          title="该用例仅执行过一次，暂无重跑历史" style="margin-bottom:8px" />
-        <el-table :data="historyRows" size="small" border>
-          <el-table-column label="第几次" width="92" align="center">
-            <template #default="{ row }">
-              <el-tag v-if="row.current" type="success" size="small">当前 #{{ row.attempt }}</el-tag>
-              <span v-else>#{{ row.attempt }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="执行" width="80" align="center">
-            <template #default="{ row }"><span class="muted">{{ STATUS_LABEL[row.status] || row.status || '—' }}</span></template>
-          </el-table-column>
-          <el-table-column label="判定" width="72" align="center">
-            <template #default="{ row }"><span>{{ VERDICT_LABEL[row.verdict] || '—' }}</span></template>
-          </el-table-column>
-          <el-table-column label="评分" width="58" align="center">
-            <template #default="{ row }"><span>{{ row.score ?? '—' }}</span></template>
-          </el-table-column>
-          <el-table-column label="判定理由" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }"><span>{{ row.verdict_reason || row.reason || '—' }}</span></template>
-          </el-table-column>
-          <el-table-column label="会话" width="60" align="center">
-            <template #default="{ row }">
-              <el-link v-if="safeUrl(row.share_link)" type="primary" :href="safeUrl(row.share_link)" target="_blank" rel="noopener noreferrer">打开</el-link>
-              <span v-else class="muted">—</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="时间" width="150" align="center">
-            <template #default="{ row }"><span class="muted">{{ (row.archived_at || '').replace('T', ' ').slice(0, 19) || '—' }}</span></template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </el-dialog>
   </div>
 </template>
 
@@ -438,9 +408,9 @@ import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Tickets, Plus, Refresh, InfoFilled, Download } from '@element-plus/icons-vue'
 import {
-  listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns,
+  listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns, listEvalTaskBatches,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns, getEvalRunHistory,
+  listEvalDimensions, judgeEvalBatch, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -748,12 +718,42 @@ async function openDetail(row) {
   detailVisible.value = true
   detail.value = null
   summaryStream.value = ''
-  try { detail.value = await listEvalTaskRuns(row.id) } catch { /* 拦截器已提示 */ }
+  selectedBatchId.value = null   // 默认看最新批次
+  taskBatches.value = []
+  try {
+    detail.value = await listEvalTaskRuns(row.id)
+    await loadBatches(row.id)
+  } catch { /* 拦截器已提示 */ }
 }
 
 async function refreshDetail() {
   if (!detail.value?.task) return
-  try { detail.value = await listEvalTaskRuns(detail.value.task.id) } catch { /* 拦截器已提示 */ }
+  const tid = detail.value.task.id
+  try {
+    detail.value = await listEvalTaskRuns(tid, selectedBatchId.value || undefined)  // 保持当前查看的批次
+    await loadBatches(tid)
+  } catch { /* 拦截器已提示 */ }
+}
+
+// 执行批次历史:列该任务历次执行(批次),下拉切换查看任一批的整组结果。
+const selectedBatchId = ref(null)   // null=最新批次
+const taskBatches = ref([])
+
+async function loadBatches(taskId) {
+  try { taskBatches.value = (await listEvalTaskBatches(taskId)).batches || [] } catch { /* 忽略 */ }
+}
+
+async function switchBatch(batchId) {
+  if (!detail.value?.task) return
+  selectedBatchId.value = batchId
+  try { detail.value = await listEvalTaskRuns(detail.value.task.id, batchId) } catch { /* 拦截器已提示 */ }
+}
+
+function fmtBatchOption(b) {
+  const t = (b.t0 || '').replace('T', ' ').slice(5, 16)   // MM-DD HH:mm
+  const pass = `通过 ${b.passed}/${b.total}`
+  const score = b.avg_score != null ? ` · 均分 ${b.avg_score}` : ''
+  return `${t} · ${pass}${score}${b.is_current ? ' ·(最新)' : ''}`
 }
 
 async function judgeAll() {  const runs = judgeableRuns.value
@@ -795,30 +795,6 @@ async function retryRun(row) {
     ElMessage.success(`run ${row.run_id} 已复位待执行，执行机将重新拉走`)
     await refreshDetail()
   } catch { /* 拦截器已提示 */ }
-}
-
-// 执行历史:拉某 run 的历次执行(current 当前 + history 重跑前快照),弹窗按 attempt 倒序展示。
-const historyVisible = ref(false)
-const historyLoading = ref(false)
-const historyRunId = ref(null)
-const historyRows = ref([])
-
-async function openHistory(row) {
-  historyRunId.value = row.run_id
-  historyVisible.value = true
-  historyLoading.value = true
-  historyRows.value = []
-  try {
-    const res = await getEvalRunHistory(row.run_id)
-    const cur = res.current || {}
-    const curAttempt = res.attempts || (res.history?.length || 0) + 1
-    historyRows.value = [
-      { ...cur, attempt: curAttempt, current: true, archived_at: cur.updated_at || cur.created_at || null },
-      ...(res.history || []),
-    ]
-  } catch { /* 拦截器已提示 */ } finally {
-    historyLoading.value = false
-  }
 }
 
 // 批量重跑该批次全部 failed(传 run_ids 精确圈定当前详情里的失败行)
