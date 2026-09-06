@@ -79,7 +79,7 @@
         <el-input v-model="question" type="textarea" :rows="2" resize="none"
                   placeholder="问我一个关于测试/质量的问题，回车发送（Shift+Enter 换行）"
                   @keydown.enter="onEnter" :disabled="loading" />
-        <el-button type="primary" :loading="loading" :disabled="!canSend" @click="send">发送</el-button>
+        <el-button type="primary" :disabled="!canSend" @click="send">发送</el-button>
       </div>
     </el-card>
   </div>
