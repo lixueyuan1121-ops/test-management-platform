@@ -19,6 +19,7 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import User
 from app.schemas.common import ok
+from app.services import ai_jobs
 
 router = APIRouter(prefix="/api/commander", tags=["commander"])
 
@@ -35,16 +36,20 @@ class AskBody(BaseModel):
 
 @router.post("/ask")
 def ask(body: AskBody, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """对话式提问。先校验提问者是该项目成员，再走 commander 两跳编排。
+    """对话式提问 → 入队异步跑（两跳 LLM 数十秒，远超网关/代理超时，故不同步执行）。
 
-    返回 data 为 router.ask 的信封之一：
-      {"type":"answer", ...} / {"type":"clarify","answer":...} / {"type":"draft","intent","draft":...}
+    先校验提问者是该项目成员，再 enqueue kind=commander，返回 {job_id}；前端轮询
+    /ai-jobs/{id} 取 result（result 即 router.ask 的信封 {type:answer|clarify|draft,...}）。
+    与 rts/fail_cluster/judge 同款：慢 AI 一律走 ai_jobs 队列，不占请求连接。
     """
     assert_project_role(db, user, body.project_id, _ASK_ROLES)
-    from app.services.commander.router import ask as commander_ask
-    # 服务端校验过的 project_id 才可信；router.ask 会把它注入 params 覆盖模型给的值。
-    data = commander_ask(db, user, body.project_id, body.question, body.provider, body.context)
-    return ok(data)
+    job = ai_jobs.enqueue(
+        db, "commander", project_id=body.project_id, user_id=user.id,
+        provider=body.provider,
+        input={"project_id": body.project_id, "question": body.question,
+               "provider": body.provider, "context": body.context},
+    )
+    return ok({"job_id": job.id})
 
 
 @router.get("/capabilities")

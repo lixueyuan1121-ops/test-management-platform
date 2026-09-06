@@ -529,68 +529,100 @@ def test_api_ask_non_member_403():
         app.dependency_overrides.clear()
 
 
-def test_api_ask_happy_path():
-    """成员 + 假引擎两跳 → code==0，data.type=='answer'，intent 命中 list_releases，
-    且服务端注入的 project_id 生效（data.data.project_id==本项目）。"""
+def test_api_ask_enqueues_job():
+    """成员 POST /ask → 入队,返回 {job_id}（异步:两跳 LLM 交 worker 池,不占请求连接）。
+    worker 池在 TestClient 下未启动,job 保持 pending。"""
     from types import SimpleNamespace
     from fastapi.testclient import TestClient
     from app.core.deps import get_current_user
     from app.core.enums import ProjectRole
-    pid, _rel, _ver, _cid = _seed_release_with_case("APIHP")
-    uid = _seed_user_member(pid, ProjectRole.member, "cmd-api-hp")
-    fake = _FakeEngine([
-        '{"intent":"list_releases","params":{},"missing":[],"clarify":"","reply_if_none":""}',
-        "## 发版\n该项目共有若干发版记录。",
-    ])
-    restore = _patch_engine(fake)
+    from app.db.session import SessionLocal
+    from app.models import AiJob
+    pid, _rel, _ver, _cid = _seed_release_with_case("APIENQ")
+    uid = _seed_user_member(pid, ProjectRole.member, "cmd-api-enq")
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uid, is_platform_admin=False)
     try:
         client = TestClient(app)
         r = client.post("/api/commander/ask", json={"project_id": pid, "question": "这个项目有哪些发版？"})
         assert r.json()["code"] == 0, r.text
-        data = r.json()["data"]
-        assert data["type"] == "answer" and data["intent"] == "list_releases", data
-        assert data["data"]["project_id"] == pid, data
-        assert fake.calls == 2, f"read 应走两跳(引擎 2 次)，实为 {fake.calls}"
+        job_id = r.json()["data"]["job_id"]
+        assert job_id, r.text
+        # 入队快照带齐 question/project_id/user_id、kind=commander、状态 pending
+        db = SessionLocal()
+        try:
+            job = db.get(AiJob, job_id)
+            assert job.kind == "commander" and job.status == "pending", (job.kind, job.status)
+            assert job.user_id == uid and job.project_id == pid, (job.user_id, job.project_id)
+            import json as _json
+            inp = _json.loads(job.input)
+            assert inp["question"] and inp["project_id"] == pid, inp
+        finally:
+            db.close()
     finally:
         app.dependency_overrides.clear()
+
+
+def test_run_commander_job_two_hop():
+    """run_commander_job:按 job.user_id 复原身份 → ask 两跳 → 返回 answer 信封(供 run_job 落 result)。"""
+    from app.services.commander import router
+    from app.db.session import SessionLocal
+    from app.core.enums import ProjectRole
+    from types import SimpleNamespace
+    pid, _rel, _ver, _cid = _seed_release_with_case("JOBHP")
+    uid = _seed_user_member(pid, ProjectRole.member, "cmd-job-hp")
+    fake = _FakeEngine([
+        '{"intent":"list_releases","params":{},"missing":[],"clarify":"","reply_if_none":""}',
+        "## 发版\n该项目共有若干发版记录。",
+    ])
+    restore = _patch_engine(fake)
+    db = SessionLocal()
+    try:
+        job = SimpleNamespace(input='{"project_id": %d, "question": "有哪些发版"}' % pid,
+                              user_id=uid, project_id=pid)
+        res = router.run_commander_job(db, job)
+        assert res["type"] == "answer" and res["intent"] == "list_releases", res
+        assert res["data"]["project_id"] == pid, res
+        assert fake.calls == 2, fake.calls
+    finally:
+        db.close()
         restore()
 
 
-def test_api_ask_cross_project_idor():
-    """跨项目 IDOR：A 项目成员提问却引用 B 项目的 release_id → 能力内反查鉴权 → 403；
-    引用不存在的 release_id → 404。镜像 test_rts 的越权/BAD 断言范式，且证明越权不进第二跳。"""
-    from types import SimpleNamespace
-    from fastapi.testclient import TestClient
-    from app.core.deps import get_current_user
+def test_run_commander_job_cross_project_idor():
+    """run_commander_job:提问者引用他项目 release_id → runner IDOR 反查 → 抛 403(不进第二跳)。"""
+    from app.services.commander import router
+    from app.db.session import SessionLocal
     from app.core.enums import ProjectRole
-    pidA, _relA, _verA, _cidA = _seed_release_with_case("APIA")
-    pidB, relB, _verB, _cidB = _seed_release_with_case("APIB")
-    uid = _seed_user_member(pidA, ProjectRole.member, "cmd-api-xp")
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uid, is_platform_admin=False)
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    pidA, _relA, _verA, _cidA = _seed_release_with_case("JOBA")
+    pidB, relB, _verB, _cidB = _seed_release_with_case("JOBB")
+    uid = _seed_user_member(pidA, ProjectRole.member, "cmd-job-xp")
+    fake = _FakeEngine(['{"intent":"rts_candidates","params":{"release_id":%d}}' % relB])
+    restore = _patch_engine(fake)
+    db = SessionLocal()
     try:
-        # 引用 B 项目的 release（A 成员对 B 无权）→ runner 反查真实归属 → 403
-        fake = _FakeEngine(['{"intent":"rts_candidates","params":{"release_id":%d}}' % relB])
-        restore = _patch_engine(fake)
+        job = SimpleNamespace(input='{"project_id": %d, "question": "看看回归候选"}' % pidA,
+                              user_id=uid, project_id=pidA)
         try:
-            client = TestClient(app)
-            r = client.post("/api/commander/ask", json={"project_id": pidA, "question": "看看回归候选"})
-            assert r.json()["code"] == 403, r.text
-            assert fake.calls == 1, f"越权应在 runner 反查处即拒，不进第二跳，实为 {fake.calls}"
-        finally:
-            restore()
-        # 引用不存在的 release → 404（不泄漏存在性）
-        BAD = 10_000_000
-        fake2 = _FakeEngine(['{"intent":"rts_candidates","params":{"release_id":%d}}' % BAD])
-        restore2 = _patch_engine(fake2)
-        try:
-            client = TestClient(app)
-            r2 = client.post("/api/commander/ask", json={"project_id": pidA, "question": "看看回归候选"})
-            assert r2.json()["code"] == 404, r2.text
-        finally:
-            restore2()
+            router.run_commander_job(db, job)
+            assert False, "跨项目 release 应被 IDOR 反查拒绝"
+        except HTTPException as e:
+            assert e.status_code == 403, e.status_code
+        assert fake.calls == 1, f"越权应在 runner 反查处即拒,不进第二跳,实为 {fake.calls}"
     finally:
-        app.dependency_overrides.clear()
+        db.close()
+        restore()
+
+
+def test_commander_handler_registered():
+    """干净子进程里 _ensure_handlers 后 'commander' 必在 _HANDLERS（阶段1 C1 教训：
+    靠 import 副作用会在生产漏注册，须进 _ensure_handlers 惰性名单，此测锁死）。"""
+    import subprocess
+    code = ("import app.services.ai_jobs as j; j._ensure_handlers();"
+            "import sys; sys.exit(0 if 'commander' in j._HANDLERS else 3)")
+    r = subprocess.run([sys.executable, "-c", code], cwd=os.getcwd())
+    assert r.returncode == 0, "commander handler 未注册进 _ensure_handlers"
 
 
 def main():
@@ -616,8 +648,10 @@ def main():
     # Task3: API 端点 + 鉴权
     test_api_capabilities()
     test_api_ask_non_member_403()
-    test_api_ask_happy_path()
-    test_api_ask_cross_project_idor()
+    test_api_ask_enqueues_job()
+    test_run_commander_job_two_hop()
+    test_run_commander_job_cross_project_idor()
+    test_commander_handler_registered()
     print("OK test_commander")
 
 

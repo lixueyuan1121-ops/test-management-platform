@@ -181,3 +181,29 @@ def ask(db: Session, user, project_id: int, question: str,
                 "data": data, "provider": pid}
     return {"type": "answer", "intent": intent, "answer": md.strip(),
             "data": data, "provider": pid}
+
+
+def run_commander_job(db: Session, job) -> dict:
+    """queue handler：把一次对话提问放进 ai_jobs 异步跑（两跳 LLM 数十秒，远超网关/代理超时）。
+
+    job.input = {project_id, question, provider?, context?}。鉴权已在入队端点（/ask）做过
+    （提问者须为该项目成员）；此处按 job.user_id 复原提问者身份，供各 read/draft runner 的
+    对象级 IDOR 反查复用。返回 ask 的信封（{type:answer|clarify|draft,...}），run_job 落 job.result，
+    前端轮询 /ai-jobs/{id} 取 result 渲染——与 rts/fail_cluster/judge 同款异步范式。
+    """
+    from app.models import User
+
+    inp = json.loads(job.input or "{}")
+    project_id = inp.get("project_id") or job.project_id
+    question = inp.get("question") or ""
+    if not project_id or not question.strip():
+        raise ValueError("commander job 缺 project_id 或 question")
+    user = db.get(User, job.user_id) if job.user_id else None
+    if user is None:
+        raise ValueError("commander job 缺有效 user")
+    return ask(db, user, int(project_id), question,
+               provider=inp.get("provider"), context=inp.get("context"))
+
+
+from app.services import ai_jobs as _ai_jobs  # noqa: E402
+_ai_jobs.register_handler("commander", run_commander_job)

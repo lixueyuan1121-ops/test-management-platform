@@ -502,7 +502,11 @@ export const rtsRecommendation = (release_id) => http.get('/rts/recommendation',
 // ===== 对话式测试指挥官(Commander) =====
 // ask body: { project_id, question, provider?, context? } → 返回已解包 data，形如
 //   { type:'answer', answer, data?, provider? } / { type:'clarify', answer } / { type:'draft', intent, draft }
-// 指挥官单轮要跑两跳 LLM（意图解析 + 叙事），远超默认 15s，须放宽超时（对齐其它 AI 端点）。
-export const commanderAsk = (body) => http.post('/commander/ask', body, { timeout: 300000 })
+// 指挥官单轮要跑两跳 LLM（意图解析 + 叙事），数十秒远超网关/代理超时 → 走 ai_jobs 异步队列：
+// POST 拿 job_id → 轮询 /ai-jobs/{id} 取 result（result 即后端信封，形如上）。onTick 供展示排队/进行中。
+export async function commanderAsk(body, { onTick } = {}) {
+  const { job_id } = await http.post('/commander/ask', body, { silent: true })
+  return pollAiJob(job_id, { onTick })
+}
 // 能力清单（登录即可看）→ { capabilities:[{name,desc,params,kind}] }
 export const commanderCapabilities = () => http.get('/commander/capabilities')

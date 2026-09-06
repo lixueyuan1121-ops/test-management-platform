@@ -111,6 +111,8 @@ def _ensure_handlers() -> None:
         import app.services.fail_cluster  # noqa: F401  (import 时 register fail_cluster handler)
     if "rts" not in _HANDLERS:
         import app.services.rts  # noqa: F401  (import 时 register rts handler)
+    if "commander" not in _HANDLERS:
+        import app.services.commander.router  # noqa: F401  (import 时 register commander handler)
 
 
 def _persist_with_retry(persist_fn, session_factory, retries: int = 2) -> tuple[list, str | None]:
