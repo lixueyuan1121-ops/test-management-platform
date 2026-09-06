@@ -382,6 +382,127 @@ def test_ask_engine_unavailable_degrades():
         rts._pick_provider = orig
 
 
+# ── Task3: API 端点（/ask + /capabilities）+ 鉴权 自测 ─────────────────────────────
+#
+# 用 FastAPI TestClient 打真实 HTTP 路由（覆盖 router.py 挂载 + 统一信封 + 鉴权网关）：
+#   - GET /capabilities：登录即可，返回非空能力清单。
+#   - POST /ask 非成员 → 403（网关在调引擎前就挡住，无需假引擎）。
+#   - POST /ask 成员 + 假引擎两跳 → code==0、answer。
+#   - POST /ask 跨项目/不存在 release_id → 能力内 IDOR 反查 → 403/404（镜像 test_rts）。
+# get_current_user 走 dependency_overrides（同 test_rts）；引擎走 _patch_engine（同上文 Task2）。
+
+def _seed_user_member(project_id, role, uname):
+    """建一个真实（非平台管理员）用户并登记为某项目指定角色成员，返回 user_id。"""
+    from app.db.session import SessionLocal
+    from app.models import ProjectMember, User
+    db = SessionLocal()
+    try:
+        u = User(username=uname, name=uname, password_hash="x", is_platform_admin=False)
+        db.add(u); db.flush()
+        db.add(ProjectMember(user_id=u.id, project_id=project_id, role=role))
+        db.commit()
+        return u.id
+    finally:
+        db.close()
+
+
+def test_api_capabilities():
+    """GET /api/commander/capabilities：登录即可（无需项目角色），返回非空能力清单。"""
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from app.core.deps import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
+    try:
+        client = TestClient(app)
+        r = client.get("/api/commander/capabilities")
+        assert r.json()["code"] == 0, r.text
+        caps = r.json()["data"]["capabilities"]
+        assert isinstance(caps, list) and len(caps) >= len(EXPECTED_READ), caps
+        assert all(set(c.keys()) == {"name", "desc", "params", "kind"} for c in caps), caps
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_api_ask_non_member_403():
+    """非项目成员 POST /ask → 403（能力网关在调引擎前就挡住越权提问）。"""
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from app.core.deps import get_current_user
+    pid, _rel, _ver, _cid = _seed_release_with_case("APINM")
+    # 非平台管理员、非本项目成员
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=987654, is_platform_admin=False)
+    try:
+        client = TestClient(app)
+        r = client.post("/api/commander/ask", json={"project_id": pid, "question": "发版列表"})
+        assert r.json()["code"] == 403, r.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_api_ask_happy_path():
+    """成员 + 假引擎两跳 → code==0，data.type=='answer'，intent 命中 list_releases，
+    且服务端注入的 project_id 生效（data.data.project_id==本项目）。"""
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from app.core.deps import get_current_user
+    from app.core.enums import ProjectRole
+    pid, _rel, _ver, _cid = _seed_release_with_case("APIHP")
+    uid = _seed_user_member(pid, ProjectRole.member, "cmd-api-hp")
+    fake = _FakeEngine([
+        '{"intent":"list_releases","params":{},"missing":[],"clarify":"","reply_if_none":""}',
+        "## 发版\n该项目共有若干发版记录。",
+    ])
+    restore = _patch_engine(fake)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uid, is_platform_admin=False)
+    try:
+        client = TestClient(app)
+        r = client.post("/api/commander/ask", json={"project_id": pid, "question": "这个项目有哪些发版？"})
+        assert r.json()["code"] == 0, r.text
+        data = r.json()["data"]
+        assert data["type"] == "answer" and data["intent"] == "list_releases", data
+        assert data["data"]["project_id"] == pid, data
+        assert fake.calls == 2, f"read 应走两跳(引擎 2 次)，实为 {fake.calls}"
+    finally:
+        app.dependency_overrides.clear()
+        restore()
+
+
+def test_api_ask_cross_project_idor():
+    """跨项目 IDOR：A 项目成员提问却引用 B 项目的 release_id → 能力内反查鉴权 → 403；
+    引用不存在的 release_id → 404。镜像 test_rts 的越权/BAD 断言范式，且证明越权不进第二跳。"""
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from app.core.deps import get_current_user
+    from app.core.enums import ProjectRole
+    pidA, _relA, _verA, _cidA = _seed_release_with_case("APIA")
+    pidB, relB, _verB, _cidB = _seed_release_with_case("APIB")
+    uid = _seed_user_member(pidA, ProjectRole.member, "cmd-api-xp")
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uid, is_platform_admin=False)
+    try:
+        # 引用 B 项目的 release（A 成员对 B 无权）→ runner 反查真实归属 → 403
+        fake = _FakeEngine(['{"intent":"rts_candidates","params":{"release_id":%d}}' % relB])
+        restore = _patch_engine(fake)
+        try:
+            client = TestClient(app)
+            r = client.post("/api/commander/ask", json={"project_id": pidA, "question": "看看回归候选"})
+            assert r.json()["code"] == 403, r.text
+            assert fake.calls == 1, f"越权应在 runner 反查处即拒，不进第二跳，实为 {fake.calls}"
+        finally:
+            restore()
+        # 引用不存在的 release → 404（不泄漏存在性）
+        BAD = 10_000_000
+        fake2 = _FakeEngine(['{"intent":"rts_candidates","params":{"release_id":%d}}' % BAD])
+        restore2 = _patch_engine(fake2)
+        try:
+            client = TestClient(app)
+            r2 = client.post("/api/commander/ask", json={"project_id": pidA, "question": "看看回归候选"})
+            assert r2.json()["code"] == 404, r2.text
+        finally:
+            restore2()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def main():
     test_import_side_effect_registers()
     test_get_capability_hit_and_miss()
@@ -400,6 +521,11 @@ def main():
     test_ask_injects_server_project_id()
     test_ask_draft_branch_skips_hop2()
     test_ask_engine_unavailable_degrades()
+    # Task3: API 端点 + 鉴权
+    test_api_capabilities()
+    test_api_ask_non_member_403()
+    test_api_ask_happy_path()
+    test_api_ask_cross_project_idor()
     print("OK test_commander")
 
 
