@@ -68,11 +68,14 @@ const sigLabel = (k) => ({ in_release: '属本版本', fail_rate: '失败率', p
 const scoreColor = (s) => s >= 70 ? '#d03b3b' : s >= 50 ? '#fab219' : '#909399'
 
 async function init() {
-  projects.value = await useAppStore().fetchProjects()
+  const app = useAppStore()
+  projects.value = await app.fetchProjects()
   try { devices.value = await listMyDevices() } catch { devices.value = [] }
-  if (projects.value.length) { projectId.value = projects.value[0].id; await onProject() }
+  projectId.value = app.resolveProjectId(projects.value)   // 复原上次选定的项目
+  if (projectId.value) await onProject()
 }
 async function onProject() {
+  useAppStore().setLastProject(projectId.value)   // 记住选择，跨页/下次进页复原
   releases.value = (await listReleases({ project_id: projectId.value })).items || []
   releaseId.value = null; candidates.value = []; reco.value = null
 }

@@ -90,9 +90,11 @@ const reqTitle = (rid) => scopeReqs.value.find((r) => r.id === rid)?.title || `#
 
 async function init() {
   projects.value = await app.fetchProjects()
-  if (projects.value.length) { projectId.value = projects.value[0].id; await onProject() }
+  projectId.value = app.resolveProjectId(projects.value)   // 复原上次选定的项目
+  if (projectId.value) await onProject()
 }
 async function onProject() {
+  app.setLastProject(projectId.value)   // 记住选择，跨页/下次进页复原
   releases.value = (await listReleases({ project_id: projectId.value })).items || []
   releaseId.value = null; clusters.value = []; scopeReqs.value = []
 }

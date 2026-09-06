@@ -107,8 +107,9 @@ const canSend = computed(() => !loading.value && !!question.value.trim() && !!pr
 const prettyJson = (v) => { try { return JSON.stringify(v, null, 2) } catch { return String(v) } }
 
 async function init() {
-  try { projects.value = await useAppStore().fetchProjects() } catch { projects.value = [] }
-  if (projects.value.length) projectId.value = projects.value[0].id
+  const app = useAppStore()
+  try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
+  projectId.value = app.resolveProjectId(projects.value)   // 复原上次选定的项目
   loadCapabilities()
 }
 async function loadCapabilities() {
@@ -119,6 +120,7 @@ async function loadCapabilities() {
   } catch { hints.value = [] }
 }
 function onProject() {
+  useAppStore().setLastProject(projectId.value)   // 记住选择，跨页/下次进页复原
   // 切项目清空对话（避免跨项目上下文串味）；能力清单与项目无关，无需重取
   messages.value = []
 }

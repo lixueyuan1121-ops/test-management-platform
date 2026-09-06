@@ -18,6 +18,9 @@ export const useAppStore = defineStore('app', {
     projects: [],
     _projectsLoaded: false,
     _projectsPromise: null,   // 并发去重:多页同时首拉只发一个请求
+    // 上次选定的项目 id（跨页记忆，持久化到 localStorage）。各带项目选择器的页(指挥官/回归智选/
+    // 版本质量聚焦)进页时用 resolveProjectId 复原它，切换时 setLastProject 记住。
+    lastProjectId: Number(localStorage.getItem('tp_last_project')) || null,
   }),
   actions: {
     start() {
@@ -60,6 +63,24 @@ export const useAppStore = defineStore('app', {
     invalidateProjects() {
       this._projectsLoaded = false
       this._projectsPromise = null
+    },
+
+    /** 记住用户选定的项目（切换项目入口调用），持久化到 localStorage 供下次进页复原。 */
+    setLastProject(id) {
+      this.lastProjectId = id || null
+      if (id) localStorage.setItem('tp_last_project', String(id))
+      else localStorage.removeItem('tp_last_project')
+    },
+
+    /**
+     * 从项目列表里挑一个默认选中项：优先上次选定的（若仍在列表中），否则第一个。
+     * 供各带项目选择器的页进页时统一复原「上次选的项目」。projects 为空返回 null。
+     */
+    resolveProjectId(projects) {
+      const list = projects || this.projects || []
+      if (!list.length) return null
+      const remembered = list.find((p) => p.id === this.lastProjectId)
+      return remembered ? remembered.id : list[0].id
     },
   },
 })
