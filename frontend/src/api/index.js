@@ -498,3 +498,10 @@ export const createIssueFromCluster = (id) => http.post(`/fail-clusters/${id}/cr
 export const rtsCandidates = (release_id) => http.get('/rts/candidates', { params: { release_id } })
 export const rtsAnalyze = (data) => http.post('/rts/analyze', data)
 export const rtsRecommendation = (release_id) => http.get('/rts/recommendation', { params: { release_id } })
+
+// ===== 对话式测试指挥官(Commander) =====
+// ask body: { project_id, question, provider?, context? } → 返回已解包 data，形如
+//   { type:'answer', answer, data?, provider? } / { type:'clarify', answer } / { type:'draft', intent, draft }
+export const commanderAsk = (body) => http.post('/commander/ask', body)
+// 能力清单（登录即可看）→ { capabilities:[{name,desc,params,kind}] }
+export const commanderCapabilities = () => http.get('/commander/capabilities')

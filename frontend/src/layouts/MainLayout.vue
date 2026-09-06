@@ -30,6 +30,9 @@
         <!-- 作战大屏:全平台质量脉搏整合页 -->
         <el-menu-item index="/war-room"><el-icon><DataBoard /></el-icon><span>作战大屏</span></el-menu-item>
 
+        <!-- 测试指挥官:一句话问质量(对话式,全体成员可用) -->
+        <el-menu-item index="/commander"><el-icon><ChatDotRound /></el-icon><span>测试指挥官</span></el-menu-item>
+
         <!-- 功能测试:完整链路(生成 → 用例资产 → 派单 → 结果 → 问题) -->
         <el-sub-menu index="func">
           <template #title><el-icon><MagicStick /></el-icon><span>功能测试</span></template>
