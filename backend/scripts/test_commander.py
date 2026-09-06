@@ -164,6 +164,36 @@ def test_ask_whitelist_rejection():
         restore()
 
 
+def test_resolve_release_by_version_and_bad_id():
+    """回归:用户按版本号(如 3.8.0)指代发版应解析成功;非数字乱码 id 应 404 而非 int() 500。"""
+    from app.services.commander import caps
+    from app.db.session import SessionLocal
+    from fastapi import HTTPException
+    pid, rel_id, ver, _cid = _seed_release_with_case("VER")
+    db = SessionLocal()
+    try:
+        # (a) release_id 传版本号字符串(用户口语) → 在本项目内按 version 命中
+        rel = caps._resolve_release(db, _admin_user(), {"release_id": ver, "project_id": pid})
+        assert rel.id == rel_id, rel
+        # (b) 显式 version 参数亦可
+        rel2 = caps._resolve_release(db, _admin_user(), {"version": ver, "project_id": pid})
+        assert rel2.id == rel_id, rel2
+        # (c) 数字 id 原路径仍通
+        rel3 = caps._resolve_release(db, _admin_user(), {"release_id": rel_id, "project_id": pid})
+        assert rel3.id == rel_id, rel3
+        # (d) 不存在的版本号 → 404(非 500)
+        try:
+            caps._resolve_release(db, _admin_user(), {"release_id": "9.9.9", "project_id": pid})
+            assert False, "不存在版本号应抛 404"
+        except HTTPException as e:
+            assert e.status_code == 404, e.status_code
+        # (e) rts_candidates 端到端按版本号(经 caps runner)不再 int() 500
+        out = caps.rts_candidates(db, _admin_user(), {"release_id": ver, "project_id": pid})
+        assert out["release_id"] == rel_id and out["version"] == ver, out
+    finally:
+        db.close()
+
+
 def test_ask_reply_if_none_and_missing():
     """reply_if_none → answer;missing 非空 → clarify(补充提示)。"""
     from app.services.commander import router
@@ -577,6 +607,7 @@ def main():
     test_draft_enqueue_regression_no_write()
     test_draft_create_issue_no_write()
     test_ask_whitelist_rejection()
+    test_resolve_release_by_version_and_bad_id()
     test_ask_reply_if_none_and_missing()
     test_ask_read_two_hop()
     test_ask_injects_server_project_id()

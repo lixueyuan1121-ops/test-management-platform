@@ -39,15 +39,55 @@ def _require_project_id(params: dict) -> int:
     return int(pid)
 
 
-def _resolve_release(db, user, release_id) -> ReleaseRecord:
-    """IDOR 反查：按 release_id 取真实记录 → 用其真实 project_id 校验读权限。"""
-    if release_id is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 release_id")
-    rel = db.get(ReleaseRecord, int(release_id))
-    if rel is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
-    assert_project_role(db, user, rel.project_id, _READ_ROLES)
-    return rel
+def _as_int(v):
+    """把 v 尽力转成 int；非数字（如版本号 "3.8.0"）返回 None，绝不抛 ValueError。"""
+    if v is None:
+        return None
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_release(db, user, params: dict, roles=_READ_ROLES) -> ReleaseRecord:
+    """把 params 里对「发版」的指代解析成真实 ReleaseRecord 并做鉴权。
+
+    用户口语常给**版本号**（如 "3.8.0"）而非数字主键，故两条解析路径：
+      - 数字 release_id → 主键反查 db.get，用其**真实 owner project** 校验（IDOR 反查，
+        因为数字 id 可能指向别的项目）。
+      - 版本号（release_id 非数字，或 version/release 参数）→ 在**服务端注入的 project_id**
+        范围内按 version 匹配（该项目内鉴权，project_id 由服务端注入不可伪造，无跨项目风险）。
+    解析不出一律 400/404 明确报错——绝不让 int() 抛 ValueError 冒泡成 500。
+    roles 为该能力要求的角色（读=全部角色；写草稿=admin/member，对齐真实端点）。
+    """
+    raw = params.get("release_id")
+    version = params.get("version") or params.get("release")
+    rid = _as_int(raw)
+    # release_id 给了但不是数字 → 当作版本号（用户把 "3.8.0" 填进了 release_id）。
+    if rid is None and raw is not None and version is None:
+        version = str(raw).strip()
+
+    if rid is not None:
+        rel = db.get(ReleaseRecord, rid)
+        if rel is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"发版记录不存在（id={rid}）")
+        assert_project_role(db, user, rel.project_id, roles)
+        return rel
+
+    if version:
+        project_id = _require_project_id(params)          # 服务端注入的 int，安全
+        assert_project_role(db, user, project_id, roles)
+        rel = (
+            db.query(ReleaseRecord)
+            .filter(ReleaseRecord.project_id == project_id, ReleaseRecord.version == version)
+            .order_by(ReleaseRecord.id.desc())
+            .first()
+        )
+        if rel is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"未找到版本「{version}」的发版记录")
+        return rel
+
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 release_id 或版本号")
 
 
 # ── 能力实现 ──────────────────────────────────────────────────────────────────────
@@ -82,7 +122,7 @@ def list_releases(db, user, params: dict) -> dict:
 
 def rts_recommendation(db, user, params: dict) -> dict:
     """读某发版最新一条 RTS 回归智选叙事（无则 exists=False）。"""
-    rel = _resolve_release(db, user, params.get("release_id"))
+    rel = _resolve_release(db, user, params)
     row = (
         db.query(RtsRecommendation)
         .filter(RtsRecommendation.release_id == rel.id)
@@ -112,7 +152,7 @@ def rts_recommendation(db, user, params: dict) -> dict:
 
 def rts_candidates(db, user, params: dict) -> dict:
     """某发版的回归候选风险分（现算，降序取 top N，默认 20）。"""
-    rel = _resolve_release(db, user, params.get("release_id"))
+    rel = _resolve_release(db, user, params)
     try:
         top = min(max(int(params.get("top", 20)), 1), 100)
     except (TypeError, ValueError):
@@ -128,7 +168,7 @@ def rts_candidates(db, user, params: dict) -> dict:
 
 def fail_cluster_list(db, user, params: dict) -> dict:
     """读某发版的失败聚类结果（按 member_count 降序）。"""
-    rel = _resolve_release(db, user, params.get("release_id"))
+    rel = _resolve_release(db, user, params)
     rows = (
         db.query(FailCluster)
         .filter(FailCluster.release_id == rel.id)
@@ -300,10 +340,10 @@ def draft_create_issue(db, user, params: dict) -> dict:
 
     真实端点 `POST /api/fail-clusters/{cid}/create-issue` 无请求体，故 payload 空。
     """
-    cid = params.get("cluster_id")
+    cid = _as_int(params.get("cluster_id"))
     if cid is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 cluster_id")
-    c = db.get(FailCluster, int(cid))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少有效的 cluster_id（须为数字）")
+    c = db.get(FailCluster, cid)
     if c is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="聚类不存在")
     # 建缺陷是 admin-only（与 api/fail_cluster.py::create_issue 一致）。
@@ -323,14 +363,10 @@ def draft_enqueue_regression(db, user, params: dict) -> dict:
     真实端点 `POST /api/exec-queue/enqueue-cases`，body={project_id, runner, test_case_ids, release_id?}。
     未给 case_ids 时用 rts.rank_candidates top-N（默认 20）预填风险最高的一批。
     """
-    rel = db.get(ReleaseRecord, int(params["release_id"])) if params.get("release_id") is not None else None
-    if params.get("release_id") is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 release_id")
-    if rel is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
-    # 下发是写动作 → 对齐真实端点 /api/exec-queue/enqueue-cases 的 _WRITE_ROLES=(admin, member)：
-    # member 本就能经 RTS 页/真端点下发回归，草稿预览不应把这个合法角色挡在门外（不用只读的 guest）。
-    assert_project_role(db, user, rel.project_id, (ProjectRole.admin, ProjectRole.member))
+    # 反查发版（接受数字 id 或版本号如 3.8.0）；下发是写动作 → 对齐真实端点
+    # /api/exec-queue/enqueue-cases 的 _WRITE_ROLES=(admin, member)：member 本就能经 RTS 页/真端点
+    # 下发回归，草稿预览不应把这个合法角色挡在门外（不用只读的 guest）。
+    rel = _resolve_release(db, user, params, roles=(ProjectRole.admin, ProjectRole.member))
 
     case_ids = params.get("case_ids")
     if not case_ids:
@@ -341,7 +377,7 @@ def draft_enqueue_regression(db, user, params: dict) -> dict:
         ranked = rts.rank_candidates(db, rel.id)
         case_ids = [r["case_id"] for r in ranked[:top]]
     else:
-        case_ids = [int(x) for x in case_ids]
+        case_ids = [n for n in (_as_int(x) for x in case_ids) if n is not None]
 
     runner = params.get("runner") or "auto"
     return {
@@ -371,7 +407,7 @@ register(Capability(
 register(Capability(
     name="rts_recommendation",
     desc="读某发版最新一条 RTS 回归智选 AI 叙事（整体风险等级/概述/推荐理由/关注点）。",
-    params={"release_id": "发版 ID"},
+    params={"release_id": "发版 ID 或版本号（如 3.8.0）"},
     kind="read",
     runner=rts_recommendation,
 ))
@@ -379,7 +415,7 @@ register(Capability(
 register(Capability(
     name="rts_candidates",
     desc="某发版的回归候选用例风险分（现算，按风险降序，含命中信号明细），取 top N。",
-    params={"release_id": "发版 ID", "top": "可选，取前 N 条，默认 20"},
+    params={"release_id": "发版 ID 或版本号（如 3.8.0）", "top": "可选，取前 N 条，默认 20"},
     kind="read",
     runner=rts_candidates,
 ))
@@ -387,7 +423,7 @@ register(Capability(
 register(Capability(
     name="fail_cluster_list",
     desc="读某发版的失败聚类结果（根因簇标题/摘要/归因类别/影响条数/严重度），按影响条数降序。",
-    params={"release_id": "发版 ID"},
+    params={"release_id": "发版 ID 或版本号（如 3.8.0）"},
     kind="read",
     runner=fail_cluster_list,
 ))
@@ -419,7 +455,7 @@ register(Capability(
 register(Capability(
     name="draft_enqueue_regression",
     desc="把某发版的回归用例下发到执行队列（返回可执行草稿，需人工二次确认；未指定用例时按风险分取 top N）。",
-    params={"release_id": "发版 ID", "case_ids": "可选，用例 ID 列表；缺省则用风险 top N", "top": "可选，缺省 top N 条数，默认 20"},
+    params={"release_id": "发版 ID 或版本号（如 3.8.0）", "case_ids": "可选，用例 ID 列表；缺省则用风险 top N", "top": "可选，缺省 top N 条数，默认 20"},
     kind="draft",
     runner=draft_enqueue_regression,
 ))
