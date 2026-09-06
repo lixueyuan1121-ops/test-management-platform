@@ -339,6 +339,66 @@ def test_draft_enqueue_regression_role_gate():
         db.close()
 
 
+def test_draft_create_issue_role_gate():
+    """草稿闸对齐真实端点 create-issue 的 admin-only（app/api/fail_cluster.py 用 (ProjectRole.admin,)）：
+    admin 可拿草稿，member/guest 403；反查 cluster 真实 project → 跨项目引用他人簇(IDOR)同样 403。"""
+    from fastapi import HTTPException
+
+    from app.services.commander import caps
+    from app.db.session import SessionLocal
+    from app.models import Project, FailCluster, ProjectMember, User
+    from app.core.enums import ProjectRole
+
+    db = SessionLocal()
+    try:
+        # 项目 A + 一个失败簇
+        pjA = Project(name="P-cmd-ISSA", code="P-CMD-ISSA"); db.add(pjA); db.flush()
+        cA = FailCluster(project_id=pjA.id, root_cause_title="登录超时根因A", fingerprint="fp-issa",
+                         member_count=5, severity="major")
+        db.add(cA); db.flush()
+        # 项目 B + 一个失败簇（供跨项目 IDOR 用）
+        pjB = Project(name="P-cmd-ISSB", code="P-CMD-ISSB"); db.add(pjB); db.flush()
+        cB = FailCluster(project_id=pjB.id, root_cause_title="登录超时根因B", fingerprint="fp-issb",
+                         member_count=3, severity="major")
+        db.add(cB); db.flush()
+        # A 项目三种角色用户（platform_admin=False，走 ProjectMember 判权）
+        u_adm = User(username="iss-adm", name="管理员", password_hash="x", is_platform_admin=False)
+        u_mem = User(username="iss-mem", name="成员", password_hash="x", is_platform_admin=False)
+        u_gst = User(username="iss-gst", name="访客", password_hash="x", is_platform_admin=False)
+        db.add_all([u_adm, u_mem, u_gst]); db.flush()
+        db.add_all([
+            ProjectMember(user_id=u_adm.id, project_id=pjA.id, role=ProjectRole.admin),
+            ProjectMember(user_id=u_mem.id, project_id=pjA.id, role=ProjectRole.member),
+            ProjectMember(user_id=u_gst.id, project_id=pjA.id, role=ProjectRole.guest),
+        ])
+        db.commit()
+        cidA, cidB, adm, mem, gst = cA.id, cB.id, u_adm, u_mem, u_gst
+
+        # (a) admin：合法，拿到草稿（含 endpoint/method/payload/human_summary）
+        d = caps.draft_create_issue(db, adm, {"cluster_id": cidA})
+        assert set(d.keys()) == {"action", "endpoint", "method", "payload", "human_summary"}, d
+        assert d["action"] == "create_issue", d
+        assert d["endpoint"] == f"/api/fail-clusters/{cidA}/create-issue" and d["method"] == "POST", d
+
+        # (b) member / guest：建缺陷 admin-only → 403
+        for bad in (mem, gst):
+            try:
+                caps.draft_create_issue(db, bad, {"cluster_id": cidA})
+                assert False, "member/guest 应被拒绝（create-issue admin-only）"
+            except HTTPException as e:
+                assert e.status_code == 403, e.status_code
+
+        # (c) 跨项目 IDOR：A 的 admin 谎报 project_id=A 去引用 B 的簇；draft 反查簇真实 project=B，
+        #     A-admin 非 B 成员 → 403（服务端不信 params 的 project_id 授权他人对象）。
+        try:
+            caps.draft_create_issue(db, adm, {"cluster_id": cidB, "project_id": pjA.id})
+            assert False, "跨项目引用他人失败簇应被拒绝（IDOR）"
+        except HTTPException as e:
+            assert e.status_code == 403, e.status_code
+    finally:
+        db.close()
+
+
 def test_ask_draft_branch_skips_hop2():
     """draft 意图:runner 产草稿后直接返回,跳过第二跳(引擎仅 1 次),且不写库。"""
     from app.services.commander import router
@@ -513,6 +573,7 @@ def main():
     test_build_prompts_contain_context()
     test_draft_caps_registered()
     test_draft_enqueue_regression_role_gate()
+    test_draft_create_issue_role_gate()
     test_draft_enqueue_regression_no_write()
     test_draft_create_issue_no_write()
     test_ask_whitelist_rejection()

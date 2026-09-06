@@ -125,6 +125,8 @@ async function scrollToEnd() {
 }
 
 function onEnter(e) {
+  // 中文输入法组合期回车用于确认候选词，不应触发发送（否则把半成品拼音发出去）
+  if (e.isComposing || e.keyCode === 229) return
   if (e.shiftKey) return   // Shift+Enter 换行
   e.preventDefault()
   send()

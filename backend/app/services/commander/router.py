@@ -137,6 +137,10 @@ def ask(db: Session, user, project_id: int, question: str,
         return {"type": "answer", "answer": f"叙事引擎「{pid}」暂不可用，请稍后再试。"}
 
     # ── 第一跳：意图解析（无写事务）──
+    # 进第一跳前先释放连接：get_current_user(db.get User) + assert_project_role(ProjectMember SELECT)
+    # 已在共享 session 上开了一个空闲只读事务；若挂着它跑数秒 stream_generate，MySQL 5.6 会以
+    # 2013 Lost connection 掐断（同第二跳叙事前的隐患）。此处无先前状态需保留，cap.runner 后续会重查。
+    db.rollback()
     intent_prompt = build_intent_prompt(question, list_capabilities(), context)
     raw, err = _run_engine(engine, "指挥官意图解析", intent_prompt, _INTENT_SYSTEM)
     if err:
