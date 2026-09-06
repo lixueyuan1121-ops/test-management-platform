@@ -289,6 +289,74 @@ def stats_ai_funnel(db, user, params: dict) -> dict:
     }
 
 
+# ── draft 能力（只造草稿，绝不写库/绝不调真实端点）───────────────────────────────────
+#
+# draft runner 只**构造**一份 {action, endpoint, method, payload, human_summary}，交前端
+# 二次确认后再由前端调真实端点执行。runner 内**不得** db.add/commit，也不调既有端点函数。
+# 写类动作(建缺陷/下发回归)按真实端点的权限口径校验（admin），且做 IDOR 反查。
+
+def draft_create_issue(db, user, params: dict) -> dict:
+    """由失败簇建遗留问题的草稿。反查 cluster→真实 project 校验 admin（对齐真实端点）。
+
+    真实端点 `POST /api/fail-clusters/{cid}/create-issue` 无请求体，故 payload 空。
+    """
+    cid = params.get("cluster_id")
+    if cid is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 cluster_id")
+    c = db.get(FailCluster, int(cid))
+    if c is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="聚类不存在")
+    # 建缺陷是 admin-only（与 api/fail_cluster.py::create_issue 一致）。
+    assert_project_role(db, user, c.project_id, (ProjectRole.admin,))
+    return {
+        "action": "create_issue",
+        "endpoint": f"/api/fail-clusters/{c.id}/create-issue",
+        "method": "POST",
+        "payload": {},
+        "human_summary": f"将由失败簇「{c.root_cause_title}」创建一张遗留问题（影响 {c.member_count} 条执行）",
+    }
+
+
+def draft_enqueue_regression(db, user, params: dict) -> dict:
+    """下发回归用例到执行队列的草稿。写动作 → 反查 release→真实 project 校验 admin。
+
+    真实端点 `POST /api/exec-queue/enqueue-cases`，body={project_id, runner, test_case_ids, release_id?}。
+    未给 case_ids 时用 rts.rank_candidates top-N（默认 20）预填风险最高的一批。
+    """
+    rel = db.get(ReleaseRecord, int(params["release_id"])) if params.get("release_id") is not None else None
+    if params.get("release_id") is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 release_id")
+    if rel is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
+    # 下发是写动作 → admin（对齐 exec-queue 的写权限，且不用只读角色）。
+    assert_project_role(db, user, rel.project_id, (ProjectRole.admin,))
+
+    case_ids = params.get("case_ids")
+    if not case_ids:
+        try:
+            top = min(max(int(params.get("top", 20)), 1), 100)
+        except (TypeError, ValueError):
+            top = 20
+        ranked = rts.rank_candidates(db, rel.id)
+        case_ids = [r["case_id"] for r in ranked[:top]]
+    else:
+        case_ids = [int(x) for x in case_ids]
+
+    runner = params.get("runner") or "auto"
+    return {
+        "action": "enqueue_regression",
+        "endpoint": "/api/exec-queue/enqueue-cases",
+        "method": "POST",
+        "payload": {
+            "project_id": rel.project_id,
+            "runner": runner,
+            "test_case_ids": case_ids,
+            "release_id": rel.id,
+        },
+        "human_summary": f"将下发 {len(case_ids)} 条回归用例到执行队列（发版「{rel.version}」）",
+    }
+
+
 # ── 注册 ────────────────────────────────────────────────────────────────────────
 
 register(Capability(
@@ -337,4 +405,20 @@ register(Capability(
     params={"project_id": "项目 ID（服务端注入）", "days": "可选，时间窗天数，默认 30"},
     kind="read",
     runner=stats_ai_funnel,
+))
+
+register(Capability(
+    name="draft_create_issue",
+    desc="把一个失败根因簇拟成一张遗留问题（返回可执行草稿，需人工二次确认后才真正创建）。",
+    params={"cluster_id": "失败簇 ID"},
+    kind="draft",
+    runner=draft_create_issue,
+))
+
+register(Capability(
+    name="draft_enqueue_regression",
+    desc="把某发版的回归用例下发到执行队列（返回可执行草稿，需人工二次确认；未指定用例时按风险分取 top N）。",
+    params={"release_id": "发版 ID", "case_ids": "可选，用例 ID 列表；缺省则用风险 top N", "top": "可选，缺省 top N 条数，默认 20"},
+    kind="draft",
+    runner=draft_enqueue_regression,
 ))
