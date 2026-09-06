@@ -152,8 +152,9 @@ async function send() {
       messages.value.push({ role: 'assistant', type: 'clarify', answer: d?.answer || '未识别的回复' })
     }
   } catch (e) {
-    // 拦截器已弹错，这里补一条气泡便于回看
-    messages.value.push({ role: 'assistant', type: 'clarify', answer: '出错了，请重试' })
+    // 拦截器已弹错，这里补一条气泡便于回看（带上真实原因，超时/网络等一目了然）
+    const reason = e?.message || '请求失败'
+    messages.value.push({ role: 'assistant', type: 'clarify', answer: `出错了：${reason}，请重试` })
   } finally {
     loading.value = false
     await scrollToEnd()
