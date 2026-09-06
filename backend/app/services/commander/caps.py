@@ -328,8 +328,9 @@ def draft_enqueue_regression(db, user, params: dict) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 release_id")
     if rel is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
-    # 下发是写动作 → admin（对齐 exec-queue 的写权限，且不用只读角色）。
-    assert_project_role(db, user, rel.project_id, (ProjectRole.admin,))
+    # 下发是写动作 → 对齐真实端点 /api/exec-queue/enqueue-cases 的 _WRITE_ROLES=(admin, member)：
+    # member 本就能经 RTS 页/真端点下发回归，草稿预览不应把这个合法角色挡在门外（不用只读的 guest）。
+    assert_project_role(db, user, rel.project_id, (ProjectRole.admin, ProjectRole.member))
 
     case_ids = params.get("case_ids")
     if not case_ids:

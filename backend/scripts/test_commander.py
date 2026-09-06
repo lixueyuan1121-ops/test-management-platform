@@ -295,6 +295,50 @@ def test_draft_caps_registered():
         assert cap is not None and cap.kind == "draft", (name, cap)
 
 
+def test_draft_enqueue_regression_role_gate():
+    """草稿闸对齐真实端点 _WRITE_ROLES=(admin, member)：member 可拿草稿，guest/非成员 403。"""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.services.commander import caps
+    from app.db.session import SessionLocal
+    from app.models import Project, ReleaseRecord, ProjectMember, User
+    from app.core.enums import ProjectRole
+    from datetime import date
+
+    db = SessionLocal()
+    try:
+        pj = Project(name="P-cmd-ROLE", code="P-CMD-ROLE"); db.add(pj); db.flush()
+        rel = ReleaseRecord(project_id=pj.id, version="v-role", release_date=date(2026, 9, 1))
+        db.add(rel); db.flush()
+        # 三个真实用户 + 三种角色（platform_admin=False，走 ProjectMember 判权）
+        u_mem = User(username="cmd-mem", name="成员", password_hash="x", is_platform_admin=False)
+        u_gst = User(username="cmd-gst", name="访客", password_hash="x", is_platform_admin=False)
+        u_non = User(username="cmd-non", name="路人", password_hash="x", is_platform_admin=False)
+        db.add_all([u_mem, u_gst, u_non]); db.flush()
+        db.add_all([
+            ProjectMember(user_id=u_mem.id, project_id=pj.id, role=ProjectRole.member),
+            ProjectMember(user_id=u_gst.id, project_id=pj.id, role=ProjectRole.guest),
+        ])
+        db.commit()
+        rel_id, mem, gst, non = rel.id, u_mem, u_gst, u_non
+
+        # member：合法，能拿草稿（无 403）
+        d = caps.draft_enqueue_regression(db, mem, {"release_id": rel_id, "case_ids": [1]})
+        assert d["action"] == "enqueue_regression", d
+
+        # guest：只读角色，403
+        for bad in (gst, non):
+            try:
+                caps.draft_enqueue_regression(db, bad, {"release_id": rel_id, "case_ids": [1]})
+                assert False, "guest/非成员应被拒绝"
+            except HTTPException as e:
+                assert e.status_code == 403, e.status_code
+    finally:
+        db.close()
+
+
 def test_ask_draft_branch_skips_hop2():
     """draft 意图:runner 产草稿后直接返回,跳过第二跳(引擎仅 1 次),且不写库。"""
     from app.services.commander import router
@@ -347,6 +391,7 @@ def main():
     test_parse_intent()
     test_build_prompts_contain_context()
     test_draft_caps_registered()
+    test_draft_enqueue_regression_role_gate()
     test_draft_enqueue_regression_no_write()
     test_draft_create_issue_no_write()
     test_ask_whitelist_rejection()
