@@ -17,7 +17,7 @@
       </div>
 
       <!-- 对话流 -->
-      <div ref="scrollRef" class="conv" v-loading="loading" element-loading-text="指挥官思考中…">
+      <div ref="scrollRef" class="conv">
         <div v-if="!messages.length" class="empty">在下面输入你的问题，例如「v2.3 的回归风险如何？」</div>
 
         <div v-for="(m, i) in messages" :key="i" class="row" :class="m.role">
@@ -25,7 +25,7 @@
           <div v-if="m.role === 'user'" class="bubble user-bubble">{{ m.text }}</div>
 
           <!-- 助理气泡 -->
-          <div v-else class="bubble asst-bubble" :class="{ 'clarify-bubble': m.type === 'clarify', 'system-bubble': m.type === 'system' }">
+          <div v-else class="bubble asst-bubble" :class="{ 'clarify-bubble': m.type === 'clarify', 'system-bubble': m.type === 'system', 'status-bubble': m.type === 'status' }">
             <!-- answer：Markdown 叙事 + 可选结构化数据 -->
             <template v-if="m.type === 'answer'">
               <div class="md-body" v-html="renderMarkdown(m.answer)" />
@@ -61,6 +61,11 @@
               </el-card>
             </template>
 
+            <!-- pending/running：轮询期间的实时状态气泡（拿到结果后原地替换成 answer/draft/clarify） -->
+            <template v-else-if="m.type === 'status'">
+              <el-icon class="status-ic is-loading"><Loading /></el-icon><span>{{ m.text }}</span>
+            </template>
+
             <!-- system：执行结果等系统提示 -->
             <template v-else>
               <span>{{ m.text }}</span>
@@ -83,7 +88,7 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { InfoFilled, Warning } from '@element-plus/icons-vue'
+import { InfoFilled, Warning, Loading } from '@element-plus/icons-vue'
 import { commanderAsk, commanderCapabilities } from '@/api'
 import http from '@/api/http'
 import { renderMarkdown } from '@/utils/markdown'
@@ -138,23 +143,36 @@ async function send() {
   messages.value.push({ role: 'user', text: q })
   question.value = ''
   loading.value = true
+  // 先占一条实时状态气泡；轮询 onTick 原地更新其文案，拿到结果后把这条整体替换成答复。
+  const sm = { role: 'assistant', type: 'status', text: '正在排队…' }
+  messages.value.push(sm)
+  const idx = messages.value.length - 1
   await scrollToEnd()
+  const replace = (msg) => { messages.value.splice(idx, 1, { role: 'assistant', ...msg }) }
+  const onTick = (job) => {
+    if (!job) return
+    if (job.status === 'pending') {
+      const n = job.queue_position || 0
+      sm.text = n > 0 ? `正在排队…前面还有 ${n} 个任务` : '正在排队…'
+    } else if (job.status === 'running') {
+      sm.text = '指挥官思考中…（正在解析意图并查数据）'
+    }
+  }
   try {
-    const d = await commanderAsk({ project_id: projectId.value, question: q })
+    const d = await commanderAsk({ project_id: projectId.value, question: q }, { onTick })
     const type = d?.type
     if (type === 'answer') {
-      messages.value.push({ role: 'assistant', type: 'answer', answer: d.answer, data: d.data || null, provider: d.provider || '' })
+      replace({ type: 'answer', answer: d.answer, data: d.data || null, provider: d.provider || '' })
     } else if (type === 'draft') {
-      messages.value.push({ role: 'assistant', type: 'draft', intent: d.intent, draft: d.draft || {}, executing: false, done: false })
+      replace({ type: 'draft', intent: d.intent, draft: d.draft || {}, executing: false, done: false })
     } else if (type === 'clarify') {
-      messages.value.push({ role: 'assistant', type: 'clarify', answer: d.answer })
+      replace({ type: 'clarify', answer: d.answer })
     } else {
-      messages.value.push({ role: 'assistant', type: 'clarify', answer: d?.answer || '未识别的回复' })
+      replace({ type: 'clarify', answer: d?.answer || '未识别的回复' })
     }
   } catch (e) {
-    // 拦截器已弹错，这里补一条气泡便于回看（带上真实原因，超时/网络等一目了然）
-    const reason = e?.message || '请求失败'
-    messages.value.push({ role: 'assistant', type: 'clarify', answer: `出错了：${reason}，请重试` })
+    // 拦截器已弹错，这里把状态气泡替换成带真实原因的提示（超时/网络等一目了然）
+    replace({ type: 'clarify', answer: `出错了：${e?.message || '请求失败'}，请重试` })
   } finally {
     loading.value = false
     await scrollToEnd()
@@ -212,7 +230,11 @@ init()
 .asst-bubble { background: #fff; color: #303133; border: 1px solid #ebeef5; }
 .clarify-bubble { background: #fdf6ec; border-color: #f5dab1; color: #b88230; display: flex; align-items: center; gap: 6px; }
 .system-bubble { background: #f0f9eb; border-color: #e1f3d8; color: #529b2e; }
+.status-bubble { background: #ecf5ff; border-color: #d9ecff; color: #409eff; display: flex; align-items: center; }
 .clarify-ic { color: #e6a23c; }
+.status-ic { color: #409eff; margin-right: 6px; vertical-align: middle; }
+.is-loading { animation: cmd-spin 1s linear infinite; }
+@keyframes cmd-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 .meta { margin-top: 6px; font-size: 12px; color: #c0c4cc; }
 .data-collapse { margin-top: 8px; }
 .data-pre {
