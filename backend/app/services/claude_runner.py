@@ -1196,15 +1196,25 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         thinking = _clip(salvaged_think)
     ws_captured = t.get("ws_captured", True)
     tools = t.get("tool_calls") or []
+    # 工具块:先按「原始工具名」聚合出调用次数(让"同一工具反复调"一眼可见,判定"一次到位 vs 多次
+    # 试错"的关键证据),再按调用顺序逐条展开每次的结果/是否拿到结果。次数>1 标「⚠ 调用N次」提示。
     tool_lines = []
-    for tc in tools:
-        if not isinstance(tc, dict):
-            continue
+    call_counts: dict[str, int] = {}
+    valid_tools = [tc for tc in tools if isinstance(tc, dict)]
+    for tc in valid_tools:
+        key = str(tc.get("original_tool_name") or tc.get("name") or "(未命名)")
+        call_counts[key] = call_counts.get(key, 0) + 1
+    if call_counts:
+        summary_bits = [f"{name} ×{n}" + ("（⚠ 多次调用）" if n > 1 else "") for name, n in call_counts.items()]
+        tool_lines.append("调用统计：" + "；".join(summary_bits))
+        tool_lines.append("按调用顺序逐次明细：")
+    for idx, tc in enumerate(valid_tools, 1):
+        name = str(tc.get("original_tool_name") or tc.get("name") or "(未命名)")
         mcp = " [MCP]" if tc.get("is_mcp") else ""
         reached = "有结果" if tc.get("reached_result") else "未完成/无结果"
+        dup = f"（{name} 第 {sum(1 for p in valid_tools[:idx] if str(p.get('original_tool_name') or p.get('name') or '(未命名)') == name)} 次调用）" if call_counts.get(name, 0) > 1 else ""
         tool_lines.append(
-            f"- {str(tc.get('original_tool_name') or tc.get('name') or '')}{mcp}: "
-            f"{reached};结果摘要={_clip_keep_ends(sanitize_dialog_text(tc.get('result_text')), 500)}"
+            f"{idx}. {name}{mcp}{dup}: {reached};结果摘要={_clip_keep_ends(sanitize_dialog_text(tc.get('result_text')), 500)}"
         )
     tools_block = "\n".join(tool_lines) if tool_lines else "(无工具调用)"
     artifacts = t.get("artifacts") or []
@@ -1234,7 +1244,12 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
 1. 文本里出现「【评测系统截断:…】」或「…(已截断)」字样,是评测系统为控制篇幅做的展示截断,**不是**被测模型输出中断;不得据此判"回答不完整/被截断/论证链缺失"。
 2. 【思考过程】为空 ≠ 没有思考:轨迹经旁路抓取,思考流可能没抓到(ws_captured=false 时尤甚)。思考为空时:若最终答案结构清晰、结论合理、体现了推理,thinking_complete 判 true 并在 note 注明"思考未捕获,按答案质量判定";仅当题目明确要求展示推理过程、且答案本身也无推理痕迹或存在结论跳跃错误时才判 false。
 3. 本题不需要工具时,无工具调用应判 tools_ok=true(note 写"本题无需工具")。
-4. artifact_expected 对照期望判"实质是否达成",不纠结措辞差异;期望未提的附加内容不扣分。
+4. 【工具调用效率(软信号,重要)】关注工具是否「一次到位」还是「反复试错」:参考上方「调用统计」——
+   同一工具被多次调用(标⚠)、或多次「未完成/无结果」后才成功,说明调用不够高效。此项**只影响 score 打分**
+   (效率差酌情降 1 分)并在 tools_ok 的 note 里说明「几次调用、是否一次成功、是否反复试错」;
+   **但只要该调的工具最终调到了、结果被正确使用,tools_ok 仍判 true**——试错但最终达成,不因过程曲折判 fail。
+   仅当反复试错后仍未拿到有效结果、或因此答非所问时,tools_ok 才判 false。
+5. artifact_expected 对照期望判"实质是否达成",不纠结措辞差异;期望未提的附加内容不扣分。
 
 期望(该对话应达到什么):
 {expected or "(未提供明确期望,仅凭合理性判定产物维度)"}
