@@ -132,6 +132,8 @@ export const listEvalQueries = (projectId, filters = {}) =>
 // 判定同步调 AI 引擎，较慢（常 30-60s），单独放宽超时到 90s（覆盖全局 15s 默认）。
 // 对话测评维度注册表(从服务端拉取,避免前后端硬编码漂移)
 export const listEvalDimensions = () => http.get('/ai/eval-dimensions')
+// 被测产品(引擎)注册表:任务编辑时勾选测哪些产品(namiwork/workbuddy)
+export const listEvalEngines = () => http.get('/ai/eval-engines')
 
 // 对话测评用例手工 CRUD
 export const createEvalQueryManual = (payload) => http.post('/ai/eval-queries/manual', payload)
@@ -288,8 +290,8 @@ export const createRelease = (data) => http.post('/releases', data)
 export const updateRelease = (id, data) => http.patch(`/releases/${id}`, data)
 export const deleteRelease = (id) => http.delete(`/releases/${id}`)
 // 对话测评维度通过率(能力画像雷达)
-export const evalDimensionStats = (project_id, days = 30) =>
-  http.get('/eval-judge/dimension-stats', { params: { project_id, days } })
+export const evalDimensionStats = (project_id, days = 30, byEngine = false) =>
+  http.get('/eval-judge/dimension-stats', { params: { project_id, days, ...(byEngine ? { by_engine: true } : {}) } })
 // ===== 选择器注册表（语义选择器单源）=====
 // listSelectors 返回 { shared:[...], by_sub:{ 子产品: [...] } }；每个 key_out 含 candidates(数组)。
 export const listSelectors = (project_id) => http.get('/selectors/manage', { params: { project_id } })
