@@ -350,6 +350,49 @@ module.exports = {
     readyTimeout: 60000        // 等主窗口对话界面就绪超时
   },
 
+  // ========== WorkBuddy 桌面客户端 CDP 连接（独立于纳米 desktop 段；被测引擎 target_engine=workbuddy） ==========
+  // WorkBuddy = 腾讯 Electron 客户端（com.tencent.workbuddy.mac）。与纳米不同：靠环境变量
+  // WORKBUDDY_REMOTE_DEBUGGING_PORT=<port> 开调试端口（非 --remote-debugging-port 命令行参数）。
+  // env 覆盖便于多机/多端口；默认 cdpPort 与纳米 9222 错开，避免同机冲突。
+  workbuddyDesktop: {
+    executablePath: process.env.WORKBUDDY_EXE || '/Applications/WorkBuddy.app/Contents/MacOS/Electron',
+    envPort: 'WORKBUDDY_REMOTE_DEBUGGING_PORT',
+    cdpHost: '127.0.0.1',
+    cdpPort: parseInt(process.env.WORKBUDDY_CDP_PORT, 10) || 9335,
+    launchTimeout: 75000,      // WorkBuddy 首屏偏慢，给足
+    readyTimeout: 30000,
+    killExisting: true,
+  },
+
+  // ========== WorkBuddy 页面选择器段（仿 config.platform；WorkBuddy 单 page 无 iframe） ==========
+  // 全部选择器经 2026-09-07 真机侦察坐实（见 docs/superpowers/specs/2026-09-07-eval-multi-product-workbuddy-design.md §5.3）。
+  workbuddy: {
+    expectedAgentName: 'WorkBuddy',
+    newTaskSelector: 'text=新建任务',                              // 开新对话
+    inputSelector: '[contenteditable="true"][role="textbox"]',    // 输入框
+    sendBtnSelector: 'button.cr-send-button',                     // 发送键（也可输入框内 Enter）
+    // 模型下拉（挨着语音输入 cr-voice-trigger）
+    modelTriggerSelector: 'button.cr-model-selector__trigger',
+    modelOptionSelector: '.cr-model-selector__item',
+    modelOptionNameSelector: '.cr-model-selector__item-info',
+    modelSelectedHint: 'cr-model-selector__item--selected',
+    // 回答正文
+    answerSelector: '.cr-markdown',
+    messageContentSelector: '.cr-message-list__content',
+    // 思考区（cr-collapse 折叠组件；内容懒渲染，抓前需点开 header）
+    thinkingCollapseSelector: 'section.cr-collapse',
+    thinkingHeaderSelector: '.cr-collapse__header',
+    thinkingTitleSelector: '.cr-collapse__title',                 // 「已完成 Ns」耗时来源
+    thinkingContentSelector: '.cr-collapse__content-inner',
+    // 工具证据 = "来源"面板（WorkBuddy 无结构化工具卡）
+    sourcesTriggerSelector: '.artifact-slot-panel__sources',
+    sourcesCountSelector: '.artifact-slot-panel__source-count',
+    sourcesPanelTitleSelector: '.sources-panel__title',          // 「引用来源 (N)」
+    sourcesListSelector: '.sources-panel__list',
+    // 完成/元信息
+    footerSelector: '.conversation-finished-footer',
+  },
+
   // ========== 批量录制账号登录态（bin/record-accounts.js / 批量录制登录态.bat） ==========
   // 从「账号台账表」读 statusCol 列「未录制（否/空）」的账号，逐个用账号密码登录 work.n.cn
   // （风控偶发弹图形验证码时，用离线 ddddocr 自动识别，无需人工），成功后：
