@@ -93,6 +93,8 @@ CLI 仓库 `tools/qalab-runner/eval/`。纳米Work 执行器是 `desktop-pool.js
 
 ### 5.3 WorkBuddy trace 抓取(`workbuddy-dom-trace.js`)
 产出与 `ws-trace.js` **完全同结构**的 JSON(判定层不感知产品差异):
+
+> **2026-09-07 真机 DOM 侦察修正(Task 1 实测,非推测)**:WorkBuddy 的工具调用**不以结构化工具卡呈现**(无 `mcp__server__tool` 工具名/args/result),而是呈现为**"来源"面板**(footer 内「腾讯元宝提供搜索技术支持 / 来源」+ `artifact-slot-panel__sources` 来源网站图标)。**决策(已确认):tool_calls 抓"来源"面板作工具证据**——`name` 记工具类别(如 `web_search`),`result_text` 记来源网站列表,`original_tool_name`/`args` 留空。这能反映"用了搜索、有哪些来源",但拿不到 MCP 工具名/参数,属产品呈现形态的固有差异。判定层 `tools_ok` 维度对此的容忍靠既有"工具未捕获不误判"防护(§7)。另实测:**耗时在消息头「已完成 Ns」**(正则 `/已完成\s*(\d+)\s*s/`),**不在 footer**;回答正文 `.cr-markdown`;消耗+模型在 `.conversation-finished-footer`。
 ```json
 {
   "session_id": null,          // WorkBuddy 无会话 UUID 可用轮次/对话 id 兜底或留空
