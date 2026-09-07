@@ -100,12 +100,15 @@ class Settings(BaseSettings):
     TUITUI_BOT_SECRET: str = ""   # 敏感：只填进 .env
     TUITUI_BOT_GROUP: str = ""    # 目标群 id
     TUITUI_BASE_URL: str = "https://alarm.im.qihoo.net"  # 外网发送改 https://im.live.360.cn:8282/robot
-    # ---- Nami 静态部署(综合评价 HTML → 公网短链)----
-    # 一条龙生成综合评价后,把 HTML 部署到 n.cn 网关换公网短链(zhaomi.cn),经推推推给人。
+    # ---- Nami 静态部署(综合评价 HTML → 公网在线报告)----
+    # 一条龙生成综合评价后,把 HTML 上传 n.cn 网关,得公网直链(…/index.html)经推推推给人。
     # 依赖 nami cookie(与 skill nami-static-deploy 同源);两路径留空则用 skill 默认位置
     # (~/.openclaw/workspace/config/{.cookie.json,cloud_config.json})。cookie 缺失/过期时
     # 自动回落到平台自托管短链 /r/<code>(见 eval_pipeline),不阻断一条龙。
     NAMI_DEPLOY_ENABLED: bool = True
+    # 是否再把直链换成 zhaomi.cn 短链:取短链接口吃 n.cn 登录态(约 7 天过期,过期报 110005),
+    # 默认关——直链已可点开。要恢复短链:刷新 cookie(scripts/refresh_nami_cookie)后置 true。
+    NAMI_SHORTLINK_ENABLED: bool = False
     NAMI_COOKIE_PATH: str = ""         # nami cookie json 路径;空=skill 默认
     NAMI_CLOUD_CONFIG_PATH: str = ""   # cloud_config.json(含 vm_id)路径;空=skill 默认
     # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。

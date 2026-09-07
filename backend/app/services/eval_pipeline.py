@@ -293,16 +293,17 @@ def _summary_with_retry(session_factory, task_id, batch_id):
 
 
 def _summary_share_url(session_factory, task_id) -> str | None:
-    """综合评价在线短链:优先 nami 公网短链(部署整页 HTML),失败/未配则回落自托管 /r/<code>。
+    """综合评价在线链接:优先 nami 公网直链(部署整页 HTML),失败/未配则回落自托管 /r/<code>。
 
-    - nami:把 render_report_page 的完整 HTML 部署到 n.cn → zhaomi.cn 公网短链,任何人可点开
-      (推推群里直接可看)。依赖服务器上的 nami cookie;缺失/过期/网关错都回落,不阻断一条龙。
+    - nami:把 render_report_page 的完整 HTML 上传 n.cn → 公网 …/index.html 直链,任何人可点开
+      (推推群里直接可看;NAMI_SHORTLINK_ENABLED=true 时再换 zhaomi.cn 短链)。
+      依赖服务器上的 nami cookie;缺失/过期/网关错都回落,不阻断一条龙。
     - 自托管回落:PLATFORM_BASE_URL + /r/<code>(需平台可达)。两者都不可用 → None(通知不带链接)。
     """
     from app.core.config import settings
     from app.api.eval_report import share_path, render_report_page
 
-    # 取任务(拿短链码 + 渲染整页 HTML)
+    # 取任务(拿分享码 + 渲染整页 HTML)
     db = session_factory()
     try:
         t = db.get(EvalTask, task_id)
@@ -313,21 +314,22 @@ def _summary_share_url(session_factory, task_id) -> str | None:
     finally:
         db.close()
 
-    # 优先 nami 公网短链
+    # 优先 nami 公网直链
     if settings.NAMI_DEPLOY_ENABLED and page_html:
         try:
             from app.services import nami_deploy
             if nami_deploy.is_configured():
                 url = nami_deploy.deploy_html(page_html)
-                # "/client-up/" 是上传目录 URL 的标志——出现它说明只上传成功、未换到短链
-                # (deploy_html 已就 vm_id 缺失/取短链失败各打 warning 说明原因)。
-                if "/client-up/" in url:
-                    logger.warning("综合评价 nami 仅得目录 URL(非短链) task=%s url=%s", task_id, url)
+                # "/client-up/" 是上传目录直链的标志。默认(短链关)它就是期望形态,正常 info;
+                # 仅当开了 NAMI_SHORTLINK_ENABLED 却仍拿到直链才 warning(说明取短链没成,
+                # deploy_html 已就 vm_id 缺失/取短链失败各打 warning 说明原因)。
+                if settings.NAMI_SHORTLINK_ENABLED and "/client-up/" in url:
+                    logger.warning("综合评价 nami 仅得直链(短链未成) task=%s url=%s", task_id, url)
                 else:
-                    logger.info("综合评价 nami 短链部署成功 task=%s url=%s", task_id, url)
+                    logger.info("综合评价 nami 在线报告部署成功 task=%s url=%s", task_id, url)
                 return url
         except Exception as e:  # noqa: BLE001 nami 失败绝不阻断一条龙,回落自托管
-            logger.warning("综合评价 nami 短链部署失败 task=%s,回落自托管 /r:%s", task_id, e)
+            logger.warning("综合评价 nami 部署失败 task=%s,回落自托管 /r:%s", task_id, e)
 
     # 回落自托管 /r/<code>
     base = (settings.PLATFORM_BASE_URL or "").rstrip("/")
@@ -381,7 +383,7 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
     if summary_res.get("ok"):
         lines = ["综合评价已生成,可在平台查看 HTML 报告。"]
         if share_url:
-            lines.append(f"在线报告:{share_url}")
+            lines.append(f"在线报告: {share_url}")
         notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成综合评价", lines, COLOR_BLUE)
     else:
         why = summary_res.get("reason") or summary_res.get("error") or "未知原因"
@@ -409,7 +411,7 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
         if drafts:
             lines.append(f"已自动生成 {drafts} 条缺陷草稿,请复核后上报极库云。")
         if share_url:
-            lines.append(f"在线报告:{share_url}")
+            lines.append(f"在线报告: {share_url}")
         lines.append("详情与综合评价见平台测评任务页。")
         notify.notify_eval_pipeline(task_name, project_id, "🎉 测评任务执行完毕", lines, COLOR_GREEN)
 

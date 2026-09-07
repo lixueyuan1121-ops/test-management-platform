@@ -62,32 +62,57 @@ def test_signed_headers_windows_safe():
     print("OK 签名头(platform.system,Windows 安全)")
 
 
+def test_default_no_shortlink_direct_index():
+    """缺省 NAMI_SHORTLINK_ENABLED=False:上传后直接出 index.html 直链,完全不调取短链接口。"""
+    nd.settings.NAMI_SHORTLINK_ENABLED = False
+    _posts.clear()
+    _scenario["upload"] = _Resp(200, {"code": 0, "data": {"base_url": "https://ns.chat.360.cn/zhaomi-so/client-up/xyz"}})
+    _scenario["short"] = _Resp(200, {"code": 110005, "msg": "Unauthorized request", "data": None})
+    url = nd.deploy_html("<p>报告</p>")
+    assert url == "https://ns.chat.360.cn/zhaomi-so/client-up/xyz/index.html", url
+    assert all("get_short" not in u for u, _ in _posts), "短链关闭时不应请求 get_short"
+    print("OK 缺省关短链 → 直出 index.html 直链,不调 get_short")
+
+
 def test_deploy_success_short():
+    nd.settings.NAMI_SHORTLINK_ENABLED = True
     _scenario["upload"] = _Resp(200, {"code": 0, "data": {"base_url": "https://x.zhaomi.cn/aaa/"}})
     _scenario["short"] = _Resp(200, {"code": 0, "data": {"shor_url": "https://p8rxf.zhaomi.cn/"}})
     url = nd.deploy_html("<p>报告</p>")
     assert url == "https://p8rxf.zhaomi.cn/", url
-    print("OK 上传+取短链成功 → 短 URL")
+    print("OK 开短链:上传+取短链成功 → 短 URL")
 
 
 def test_short_fail_falls_back_baseurl():
+    nd.settings.NAMI_SHORTLINK_ENABLED = True
     _scenario["upload"] = _Resp(200, {"code": 0, "data": {"base_url": "https://x.zhaomi.cn/bbb/"}})
     _scenario["short"] = _Resp(500, {"msg": "boom"})
     url = nd.deploy_html("<p>报告</p>")
-    assert url == "https://x.zhaomi.cn/bbb/", url  # 取短链失败退回目录 URL
-    print("OK 取短链失败 → 回落目录 base_url")
+    assert url == "https://x.zhaomi.cn/bbb/index.html", url  # 取短链失败退回可直开的 index.html
+    print("OK 开短链但取短链失败 → 回落 base_url/index.html(裸目录 URL 是 404)")
+
+
+def test_short_unauthorized_falls_back_indexurl():
+    # 线上实况:cookie 登录态过期,get_short 返回 code=110005 Unauthorized
+    nd.settings.NAMI_SHORTLINK_ENABLED = True
+    _scenario["upload"] = _Resp(200, {"code": 0, "data": {"base_url": "https://ns.chat.360.cn/zhaomi-so/client-up/abc"}})
+    _scenario["short"] = _Resp(200, {"code": 110005, "msg": "Unauthorized request", "data": None})
+    url = nd.deploy_html("<p>报告</p>")
+    assert url == "https://ns.chat.360.cn/zhaomi-so/client-up/abc/index.html", url
+    print("OK 开短链但 110005(cookie 过期)→ 回落 index.html 直链")
 
 
 def test_no_vmid_returns_baseurl():
+    nd.settings.NAMI_SHORTLINK_ENABLED = True
     orig = nd._read_vm_id
     nd._read_vm_id = lambda: ""
     try:
         _scenario["upload"] = _Resp(200, {"code": 0, "data": {"base_url": "https://x.zhaomi.cn/ccc/"}})
         url = nd.deploy_html("<p>报告</p>")
-        assert url == "https://x.zhaomi.cn/ccc/", url
+        assert url == "https://x.zhaomi.cn/ccc/index.html", url
     finally:
         nd._read_vm_id = orig
-    print("OK 无 vm_id → 直接返回 base_url")
+    print("OK 开短链但无 vm_id → 返回 base_url/index.html")
 
 
 def test_upload_fail_raises():
@@ -122,8 +147,10 @@ def test_empty_html_raises():
 def main():
     test_html_zip_root_index()
     test_signed_headers_windows_safe()
+    test_default_no_shortlink_direct_index()
     test_deploy_success_short()
     test_short_fail_falls_back_baseurl()
+    test_short_unauthorized_falls_back_indexurl()
     test_no_vmid_returns_baseurl()
     test_upload_fail_raises()
     test_upload_http_error_raises()

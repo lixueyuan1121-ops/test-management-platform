@@ -209,30 +209,43 @@ def _get_short(vm_id: str, base_url: str, cookie: str) -> str:
     except ValueError:
         raise NamiDeployError(f"取短链响应非 JSON:{r.text[:200]}")
     if not isinstance(data, dict) or data.get("code") != 0:
-        raise NamiDeployError(f"取短链失败:code={data.get('code') if isinstance(data, dict) else '?'}")
+        code = data.get("code") if isinstance(data, dict) else "?"
+        msg = data.get("msg") if isinstance(data, dict) else ""
+        raise NamiDeployError(f"取短链失败:code={code} msg={msg}")
     short = data.get("data", {}).get("shor_url") if isinstance(data.get("data"), dict) else ""
     if not isinstance(short, str) or not short.strip():
         raise NamiDeployError("取短链响应缺 data.shor_url")
     return short.strip()
 
 
-def deploy_html(html: str) -> str:
-    """把 HTML 部署为公网可访问短链,返回短 URL。失败抛 NamiDeployError(调用方回落自托管)。
+def _dir_index_url(base_url: str) -> str:
+    """目录级 URL 裸访问是 404(网关无目录索引),必须补 /index.html 才可打开。"""
+    u = base_url.rstrip("/")
+    return u if u.endswith("/index.html") else u + "/index.html"
 
-    无 vm_id(cloud_config 缺失)时退回目录级 URL(仍公网可访问,只是不是最短形态)。
+
+def deploy_html(html: str) -> str:
+    """把 HTML 部署为公网可访问链接,返回 URL。失败抛 NamiDeployError(调用方回落自托管)。
+
+    默认返回 <目录URL>/index.html 直链(裸目录 URL 是 404,必须带 index.html 才可点开)。
+    仅当 NAMI_SHORTLINK_ENABLED=true 且有 vm_id 时才尝试换 zhaomi.cn 短链——取短链接口
+    吃 n.cn 登录态(约 7 天过期,过期报 110005 Unauthorized;上传不受影响),失败仍回落直链。
     """
     if not html or not html.strip():
         raise NamiDeployError("HTML 为空,不部署")
     cookie = _read_cookie()
     base_url = _upload(html, cookie)
+    if not settings.NAMI_SHORTLINK_ENABLED:
+        return _dir_index_url(base_url)
     vm_id = _read_vm_id()
     if not vm_id:
-        # vm_id 读不到 → 无法调取短链接口,只能退回目录 URL(不是最短形态)。记因便于排障。
-        logger.warning("nami 取短链跳过:vm_id 读取为空(见 %s),退回目录 URL %s",
-                       _cloud_config_path(), base_url)
-        return base_url
+        # vm_id 读不到 → 无法调取短链接口,退回 index.html 直链。记因便于排障。
+        logger.warning("nami 取短链跳过:vm_id 读取为空(见 %s),退回直链 %s",
+                       _cloud_config_path(), _dir_index_url(base_url))
+        return _dir_index_url(base_url)
     try:
         return _get_short(vm_id, base_url, cookie)
     except NamiDeployError as e:
-        logger.warning("nami 取短链失败,退回目录 URL:%s(url=%s)", e, base_url)
-        return base_url  # 取短链失败退回目录 URL(已公网可访问)
+        logger.warning("nami 取短链失败(%s),回落 index.html 直链;若持续失败请刷新 %s 的登录 cookie",
+                       e, _cookie_path())
+        return _dir_index_url(base_url)
