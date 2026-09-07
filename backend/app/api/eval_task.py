@@ -660,6 +660,7 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
     if qids:
         for q in db.query(EvalQuery).filter(EvalQuery.id.in_(qids)).all():
             qmap[q.id] = q
+    from app.services.eval_engines import EVAL_ENGINES
     items = []
     for r in runs:
         payload = json.loads(r.payload) if r.payload else {}
@@ -668,6 +669,7 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
         items.append({
             "title": (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
             "dimension": payload.get("dimension") or (q.dimension if q else None),
+            "engine": EVAL_ENGINES.get(r.target_engine, {}).get("label") if r.target_engine else None,
             "prompt": payload.get("prompt") or (q.prompt if q else ""),
             "expected": (q.expected if q else "") or "",
             "status": getattr(r.status, "value", r.status),

@@ -1341,7 +1341,9 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
         sc = it.get("score")
         lines.append(
             f"### 用例{i}:{it.get('title') or ''}\n"
-            f"- 维度:{dim} | 执行:{it.get('status') or ''} | 判定:{verdict}"
+            f"- 维度:{dim}"
+            + (f" | 产品:{it.get('engine')}" if it.get('engine') else "")
+            + f" | 执行:{it.get('status') or ''} | 判定:{verdict}"
             + (f" | 评分:{sc}/5" if sc else "") + "\n"
             f"- 提问:{_clip_keep_ends(sanitize_dialog_text(it.get('prompt')), 600)}\n"
             f"- 期望:{_clip_keep_ends(sanitize_dialog_text(it.get('expected')), 400) or '(未填)'}\n"
@@ -1365,6 +1367,9 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
    <h2>总体结论</h2> 一段话给总体质量定性(通过率、主要短板)。
    <h2>分维度表现</h2> 用 <table> 按维度汇总(维度/用例数/通过/不通过/典型问题)。
    <h2>典型问题分析</h2> 挑 2-5 个代表性不通过用例,分析根因(引用用例标题)。
+   <h2>产品横向对比</h2> 【仅当素材含多个「产品」时才输出本节,否则整节省略】用 <table> 按产品汇总
+     (产品/用例数/通过率/均分/优势/短板),并明确给出哪个产品在本任务整体表现更好的结论。
+     注意各产品用的模型可能不同,对比的是产品整体表现,如实说明不臆断。
    <h2>亮点</h2> 值得肯定的表现。
    <h2>改进建议</h2> 面向被测产品团队的可执行建议(有序列表)。
 4. 判定为 error/未判定的用例单独说明,不计入通过率。
