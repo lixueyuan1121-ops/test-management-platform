@@ -319,7 +319,12 @@ def _summary_share_url(session_factory, task_id) -> str | None:
             from app.services import nami_deploy
             if nami_deploy.is_configured():
                 url = nami_deploy.deploy_html(page_html)
-                logger.info("综合评价 nami 短链部署成功 task=%s url=%s", task_id, url)
+                # "/client-up/" 是上传目录 URL 的标志——出现它说明只上传成功、未换到短链
+                # (deploy_html 已就 vm_id 缺失/取短链失败各打 warning 说明原因)。
+                if "/client-up/" in url:
+                    logger.warning("综合评价 nami 仅得目录 URL(非短链) task=%s url=%s", task_id, url)
+                else:
+                    logger.info("综合评价 nami 短链部署成功 task=%s url=%s", task_id, url)
                 return url
         except Exception as e:  # noqa: BLE001 nami 失败绝不阻断一条龙,回落自托管
             logger.warning("综合评价 nami 短链部署失败 task=%s,回落自托管 /r:%s", task_id, e)

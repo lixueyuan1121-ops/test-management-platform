@@ -98,16 +98,25 @@ def _read_cookie() -> str:
 
 
 def _read_vm_id() -> str:
-    """读 vm_id(取短链接口需要);读不到返回空串(调用方退回目录 URL 而非短链)。"""
+    """读 vm_id(取短链接口需要);读不到返回空串(调用方退回目录 URL 而非短链)。
+
+    读空的具体原因打 warning——这是"短链变长目录 URL"最常见的根因(cloud_config 缺失/
+    字段名变了/isProd 非布尔),否则会被静默吞掉无从排障。
+    """
+    path = _cloud_config_path()
     try:
-        data = _read_json(_cloud_config_path())
-    except NamiDeployError:
+        data = _read_json(path)
+    except NamiDeployError as e:
+        logger.warning("nami cloud_config 读取失败(%s):%s", path, e)
         return ""
     if not isinstance(data, dict):
+        logger.warning("nami cloud_config 非对象(%s),无法取 vm_id", path)
         return ""
     raw = data.get("vm_id")
     is_prod = data.get("isProd")
     if not isinstance(raw, str) or not raw.strip() or not isinstance(is_prod, bool):
+        logger.warning("nami cloud_config 缺 vm_id 或 isProd 非布尔(%s):vm_id=%r isProd=%r(类型 %s)",
+                       path, raw, is_prod, type(is_prod).__name__)
         return ""
     return f"{'p' if is_prod else 't'}{raw.strip()}"
 
@@ -218,8 +227,12 @@ def deploy_html(html: str) -> str:
     base_url = _upload(html, cookie)
     vm_id = _read_vm_id()
     if not vm_id:
+        # vm_id 读不到 → 无法调取短链接口,只能退回目录 URL(不是最短形态)。记因便于排障。
+        logger.warning("nami 取短链跳过:vm_id 读取为空(见 %s),退回目录 URL %s",
+                       _cloud_config_path(), base_url)
         return base_url
     try:
         return _get_short(vm_id, base_url, cookie)
-    except NamiDeployError:
+    except NamiDeployError as e:
+        logger.warning("nami 取短链失败,退回目录 URL:%s(url=%s)", e, base_url)
         return base_url  # 取短链失败退回目录 URL(已公网可访问)
