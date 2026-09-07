@@ -9,6 +9,8 @@ const DialogRunner = require('../src/dialog-runner');
 const TaskWatcher = require('../src/task-watcher');
 const DesktopPool = require('../src/desktop-pool');
 const DesktopRunner = require('../src/desktop-runner');
+const { WorkbuddyPool } = require('../src/workbuddy-pool');
+const { WorkbuddyRunner } = require('../src/workbuddy-runner');
 const { groupIntoConversations } = require('../src/conversation-group');
 const { downloadAttachments } = require('../src/attachment-downloader');
 const ResultReporter = require('../src/reporter');
@@ -726,6 +728,63 @@ program
 // report 回写结果 + uploadTrace 上传会话轨迹。飞书模式（run/desktop）完全不受影响。
 // 命名约定（避免撞车）：config.platformApi = 平台对接凭据(baseUrl/token/runnerId/pollMs)；
 //                        config.platform    = work.n.cn 页面选择器段(现有，DesktopRunner/DesktopPool 用)。
+
+// WorkBuddy 批处理:CDP 驱动 WorkBuddy 客户端跑该批 run,复用回写口径(先 uploadTrace 再 report)。
+// 独立 pool/runner,零改动纳米链路。同 conversation_group 整组同一对话顺序连发。
+async function runWorkbuddyBatch(items, client, config, logger) {
+  logger.info(`[workbuddy] 处理 ${items.length} 条`);
+  const wbPool = new WorkbuddyPool(config.workbuddyDesktop, logger);
+  try {
+    await wbPool.init();
+  } catch (e) {
+    logger.error(`[workbuddy] 客户端连接失败,整批 failed: ${e.message}`);
+    for (const it of items) {
+      try { await client.claim(it.run_id); await client.report(it.run_id, { status: 'failed', reason: `WorkBuddy 连接失败: ${e.message}` }); } catch (_) {}
+    }
+    return;
+  }
+  try {
+    const runner = new WorkbuddyRunner(wbPool.getMainPage(), config.workbuddy, config.execution || {}, logger);
+    // 回写一轮 run:先 uploadTrace 落盘,再 report(done)。顺序纪律同纳米(见 reportRun 注释):
+    // report 会让 run 达终态,若是本批最后一条会同步触发一条龙判定,判定读磁盘 trace,故必须先落盘。
+    const reportRun = async (runId, result, trace) => {
+      try {
+        try { await client.uploadTrace(runId, trace); }
+        catch (te) { logger.warn(`[workbuddy] 上传 run ${runId} 轨迹失败(判定退化无轨迹): ${te.message}`); }
+        await client.report(runId, {
+          status: result.success ? 'done' : 'failed',
+          share_link: result.shareLink || null, artifact_share_link: result.artifactShareLink || null,
+          answer: result.answer || null, reported_duration: result.reportedDuration || null,
+          bean_cost: result.beanCost || null, tokens: result.cost || null,
+          session_id: trace.session_id || null,
+          reason: result.success ? null : (result.completeReason || null),
+          duration_ms: result.durationMs || null,
+        });
+        logger.info(`✅ [workbuddy] 回写 run ${runId} (${result.success ? 'done' : 'failed'})`);
+      } catch (e) { logger.error(`[workbuddy] 回写 run ${runId} 失败: ${e.message}`); }
+    };
+    const convs = groupIntoConversations(items);
+    for (const conv of convs) {
+      const head = conv[0]; const headP = head.payload || {};
+      // dialogOptions 就地改(与纳米同纪律):runner 内 _applyDialogOptions 现读 this.execution.dialogOptions。
+      config.execution = config.execution || {};
+      config.execution.dialogOptions = (headP.dialog_options && typeof headP.dialog_options === 'object') ? headP.dialog_options : config.execution.dialogOptions;
+      try { await client.claim(head.run_id); }
+      catch (e) { logger.warn(`[workbuddy] claim 首轮 ${head.run_id} 失败,整组跳过: ${e.message}`); continue; }
+      for (const it of conv.slice(1)) { try { await client.claim(it.run_id); } catch (_) {} }
+      const testCases = conv.map(it => {
+        const p = it.payload || {};
+        return { caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
+          attachments: p.attachments || [], attachmentPaths: [],
+          conversationId: p.conversation_group || `__run_${it.run_id}`, turnIndex: p.turn_index || 0, account: 'workbuddy' };
+      });
+      const onTurnDone = async (result, testCase) => { await reportRun(testCase.run_id, result, runner.getDomTrace().buildTrace(testCase.run_id)); };
+      if (testCases.length === 1) { const r = await runner.runOne(testCases[0]); await onTurnDone(r, testCases[0]); }
+      else { await runner.runConversationTurns(testCases, onTurnDone); }
+    }
+  } finally { await wbPool.close(); }
+}
+
 program
   .command('platform')
   .description('平台模式:从测试管理平台拉对话测评任务,执行并回写(需配 BASE_URL/RUNNER_TOKEN/RUNNER_ID)')
@@ -782,6 +841,15 @@ program
       const pending = await client.fetchPending(parseInt(opts.limit, 10) || 5);
       if (!pending || !pending.length) { logger.info('平台无待执行任务'); return 0; }
       logger.info(`拉到 ${pending.length} 条待执行`);
+      // 按被测引擎拆分：workbuddy 走独立执行器(CDP 驱动 WorkBuddy 客户端)，其余(namiwork/空)走原纳米路径。
+      // 同一 conversation_group 必然同引擎(后端整组同 target_engine)，故按 run 顶层字段直接分。
+      const wbPending = pending.filter(it => (it.target_engine || '').toLowerCase() === 'workbuddy');
+      const namiPending = pending.filter(it => (it.target_engine || '').toLowerCase() !== 'workbuddy');
+      if (wbPending.length) {
+        await runWorkbuddyBatch(wbPending, client, config, logger);
+      }
+      // 无纳米任务则直接返回，避免白建纳米 DesktopPool。
+      if (!namiPending.length) { logger.info('本轮仅 workbuddy 任务，已处理'); return 0; }
       // DesktopPool 构造签名：(desktopConfig, platformConfig=选择器段, logger)。init 后主 page 已挂 attachWsTrace。
       const pool = new DesktopPool(config.desktop, config.platform, logger);
       await pool.init();
@@ -817,7 +885,7 @@ program
       // 单轮(无 group)各自成组。多轮同组各轮将在【同一对话】里顺序连发(轮次0新建、后续轮复用),
       // 而非各自 runOne 新建对话——修正「轮次1 另起新对话、接不上轮次0 上下文」的问题。
       // (后端 list_pending 已保证整组不被 limit 拆到不同批次,见 eval_queue._take_whole_groups。)
-      const conversations = groupIntoConversations(pending);
+      const conversations = groupIntoConversations(namiPending);
       const multiCount = conversations.filter(c => c.length > 1).length;
       if (multiCount > 0) logger.info(`   其中 ${multiCount} 个多轮会话(同组各轮将在同一对话内顺序连发)`);
 
