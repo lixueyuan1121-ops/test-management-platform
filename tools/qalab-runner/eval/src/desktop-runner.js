@@ -333,7 +333,7 @@ class DesktopRunner {
       try { const copied = await dr._withCritical(() => dr.extractAnswerViaCopy()); if (copied && copied.trim()) out.answer = copied.trim(); } catch {}
     }
     if (!this.execution.answerOnly) {
-      if (!skipPanels) { try { const a = await dr._withCritical(() => dr.extractArtifactShareLink()); out.artifactShareLink = a.link; out.hasArtifact = a.hasCard; } catch {} }
+      if (!skipPanels && this.execution.captureArtifact !== false) { try { const a = await dr._withCritical(() => dr.extractArtifactShareLink()); out.artifactShareLink = a.link; out.hasArtifact = a.hasCard; } catch {} }
       try { const c = await dr.extractCost(); out.cost = c.cost; out.costRaw = c.raw; } catch {}
       try { const d = await dr._withCritical(() => dr.extractReportedDuration()); out.reportedDuration = d.value; out.reportedDurationRaw = d.raw; } catch {}
       if (!skipPanels) {

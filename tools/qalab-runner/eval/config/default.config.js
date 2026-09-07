@@ -300,17 +300,25 @@ module.exports = {
     beanCostRetryGapMs: 2500,
     ledgerRowsTimeoutMs: 8000,
 
+    // 是否抓取「产物分享链接(D)」。false=彻底不抓：跳过产物卡片→预览→分享弹窗→读链接这一长串
+    // 最脆弱、最耗时的 UI 操作，且不再因产物缺失触发整条用例重跑（省最多墙钟）。测评判定不读该 URL
+    // （判定只看 trace 的 thinking/tool_calls/answer），关掉不影响判定质量；仅导出 D 列/飞书产物列/
+    // multica 产物字段恒空。抓取代码(extractArtifactShareLink)保留，将来想恢复改回 true 即可。
+    // ⚠️ 关掉时下面 requiredFields/rerunOnMissingFields 也不应含 artifactShareLink，两处需一致。
+    captureArtifact: false,
+
     // ========== 补填机制（“应有却为空”的回填字段，当场重抓）==========
     // 回答完成、对话还开着时，检查这些字段是否“应有却为空”，为空则当场重抓（代价小、无需翻历史）。
-    // artifactShareLink 特殊：仅当确有产物卡片时才算缺失（本来无产物则空是正确的，不补）。
-    requiredFields: ['conversationShareLink', 'artifactShareLink', 'duration', 'beanCost'],
+    // 注：已随 captureArtifact:false 移除 artifactShareLink——不抓产物就不该把它算作“应有却为空”。
+    requiredFields: ['conversationShareLink', 'duration', 'beanCost'],
     refillRounds: 2, // 每条用例内最多重抓几轮（每轮把仍为空的字段各抓一次）
     // 就地补填若干轮后仍缺关键字段时，刷新一次当前对话页再抓（应对「耗时等字段答完后需刷新才渲染」）。
     // 刷新只在本对话内进行、不新建对话；true=开启，false=关闭。
     refillReloadOnce: true,
     // 当场补填仍为空、且属于以下“关键字段”时，才整条重跑（新对话可稳定重生成分享链接）。
     // 耗时/算力豆多为平台侧时序问题，重跑一条数分钟的 Agent 任务收益低，故默认不因它们重跑。
-    rerunOnMissingFields: ['conversationShareLink', 'artifactShareLink']
+    // 已移除 artifactShareLink：产物不抓，自然不因它重跑（消除一整类翻倍耗时的重跑）。
+    rerunOnMissingFields: ['conversationShareLink']
   },
 
   // ========== 输出配置 ==========

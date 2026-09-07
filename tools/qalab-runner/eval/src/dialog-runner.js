@@ -231,7 +231,7 @@ class DialogRunner {
         // 正文、tokens 是纯 DOM 读取，不怕切换，放在临界区外。
         // 多轮中间轮：跳过「开面板」类抓取（产物分享/对话分享/算力豆——开顶栏面板/明细弹窗会
         // 改变对话视图、污染下一轮发送），只留纯 DOM 的 tokens/耗时；末轮再抓全字段。
-        if (!skipPanelExtracts) {
+        if (!skipPanelExtracts && this.execution.captureArtifact !== false) {
           const art = await this._withCritical(() => this.extractArtifactShareLink());
           out.artifactShareLink = art.link; out.hasArtifact = art.hasCard;
         }
