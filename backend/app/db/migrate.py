@@ -538,6 +538,25 @@ def ensure_eval_run_target_engine() -> None:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_engine VARCHAR(32) NULL"))
 
 
+def ensure_eval_task_target_engines() -> None:
+    """eval_task 补 target_engines 列(任务级勾选的被测产品 JSON 数组)。老库 ALTER;新库 create_all 已含,幂等跳过。"""
+    if not _columns("eval_task"):
+        return
+    if "target_engines" not in _columns("eval_task"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_task ADD COLUMN target_engines TEXT NULL"))
+
+
+def ensure_runner_device_eval_engine() -> None:
+    """runner_device 补 eval_engine 列(该机支持哪个被测引擎)。NULL=兼容老机视作 namiwork。"""
+    if not _columns("runner_device"):
+        return
+    if "eval_engine" not in _columns("runner_device"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE runner_device ADD COLUMN eval_engine VARCHAR(32) NULL"))
+    _ensure_index("runner_device", "idx_runnerdev_eval_engine", "eval_engine")
+
+
 def ensure_eval_run_payload() -> None:
     """eval_run 补 payload 列(下发时的题面快照 JSON)。老库已建表走 ALTER;新库 create_all 已含,幂等跳过。"""
     if not _columns("eval_run"):

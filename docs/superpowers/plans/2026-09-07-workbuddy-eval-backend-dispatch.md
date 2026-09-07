@@ -192,7 +192,7 @@ def ensure_runner_device_eval_engine() -> None:
     if "eval_engine" not in _columns("runner_device"):
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE runner_device ADD COLUMN eval_engine VARCHAR(32) NULL"))
-    _ensure_index("runner_device", "idx_runnerdev_eval_engine", ["eval_engine"])
+    _ensure_index("runner_device", "idx_runnerdev_eval_engine", "eval_engine")
 ```
 
 - [ ] **Step 4: main.py 挂载**

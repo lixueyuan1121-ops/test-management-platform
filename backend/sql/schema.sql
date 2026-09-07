@@ -400,6 +400,7 @@ CREATE TABLE `eval_task` (
   `description` TEXT NULL,
   `query_ids` TEXT NULL,
   `dialog_options` TEXT NULL,
+  `target_engines` TEXT NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'draft',
   `last_batch_id` VARCHAR(32) NULL,
   `summary_html` TEXT NULL,
@@ -451,12 +452,14 @@ CREATE TABLE `runner_device` (
   `last_seen_at` DATETIME DEFAULT NULL,
   `last_exec_at` DATETIME DEFAULT NULL,   -- 最近一次功能 runner 拉 exec-queue(运行时类型感知)
   `last_eval_at` DATETIME DEFAULT NULL,   -- 最近一次测评 runner 拉 eval-queue(运行时类型感知)
+  `eval_engine` VARCHAR(32) DEFAULT NULL, -- 该机支持的被测引擎(namiwork/workbuddy);NULL=兼容老机视作 namiwork
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_owner_runner` (`owner_id`,`runner_id`),
   UNIQUE KEY `uk_device_token` (`token`),
   KEY `idx_device_owner` (`owner_id`),
   KEY `idx_runnerdev_platform` (`platform`),
+  KEY `idx_runnerdev_eval_engine` (`eval_engine`),
   CONSTRAINT `fk_device_owner` FOREIGN KEY (`owner_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

@@ -131,6 +131,9 @@ class EvalTask(Base):
     query_ids: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [eval_query_id, ...] 有序
     # 最近一次执行时指定的对话选项 JSON({model?,chatMode?,thinkingDepth?});NULL=默认。列表展示+再执行回填。
     dialog_options: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 任务级勾选的被测产品集合 JSON 数组(如 ["namiwork","workbuddy"]);NULL/空=仅 namiwork(向后兼容)。
+    # 执行/定时回归时对每题按此集合各 fan-out 一条 run(与 A/B 正交)。见 eval_engines.normalize_engines。
+    target_engines: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[EvalTaskStatus] = mapped_column(
         Enum(EvalTaskStatus, length=16), default=EvalTaskStatus.draft, server_default="draft"
     )
