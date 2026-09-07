@@ -100,6 +100,12 @@
         <el-form-item label="说明">
           <el-input v-model="editForm.description" type="textarea" :rows="2" placeholder="这个任务考察什么(会喂给综合评价 AI 做背景)" />
         </el-form-item>
+        <el-form-item v-if="engineList.length > 1" label="被测产品">
+          <el-checkbox-group v-model="editForm.target_engines">
+            <el-checkbox v-for="e in engineList" :key="e.engine" :value="e.engine">{{ e.label }}</el-checkbox>
+          </el-checkbox-group>
+          <div class="muted" style="font-size:12px">勾选多个产品→执行时每题对每个产品各跑一遍，同批横向对比（如 纳米Work vs WorkBuddy）。留空=仅纳米Work。</div>
+        </el-form-item>
         <el-form-item label="用例">
           <div class="qpick">
             <div class="qpick-head">
@@ -411,6 +417,7 @@ import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns, listEvalTaskBatches,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
   listEvalDimensions, judgeEvalBatch, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
+  listEvalEngines,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -446,7 +453,8 @@ const dimLabel = (k) => (DIMENSIONS.value.find((d) => d.k === k)?.label) || k ||
 // 编辑
 const editVisible = ref(false)
 const editing = ref(null)
-const editForm = ref({ name: '', description: '', query_ids: [] })
+const editForm = ref({ name: '', description: '', query_ids: [], target_engines: [] })
+const engineList = ref([])   // 被测产品注册表(listEvalEngines);>1 才显示产品勾选
 const allQueries = ref([])
 const qTable = ref(null)
 const saving = ref(false)
@@ -538,9 +546,10 @@ const canSummarize = computed(() => {
 const canExport = computed(() => !!(detail.value?.runs?.length))
 
 onMounted(async () => {
-  const [projRes, devRes, dimRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices(), listEvalDimensions()])
+  const [projRes, devRes, dimRes, engRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices(), listEvalDimensions(), listEvalEngines()])
   projects.value = projRes.status === 'fulfilled' ? (projRes.value || []) : []
   devices.value = devRes.status === 'fulfilled' ? (devRes.value || []) : []
+  engineList.value = engRes.status === 'fulfilled' ? (engRes.value || []) : []
   DIMENSIONS.value = dimRes.status === 'fulfilled' && dimRes.value?.dimensions?.length
     ? dimRes.value.dimensions.map((d) => ({ k: d.key, label: d.label }))
     : [{ k: 'thinking', label: '思考推理' }, { k: 'workflow', label: '工作流' }, { k: 'clarification', label: '反问澄清' }]
@@ -563,9 +572,11 @@ async function load() {
 // ── 编辑 ──
 async function openEdit(row) {
   editing.value = row
+  // 新建默认勾选全部已知产品(多产品横评是接入 WorkBuddy 的主用途);编辑回填任务已存的
+  const defaultEngines = engineList.value.map(e => e.engine)
   editForm.value = row
-    ? { name: row.name, description: row.description || '', query_ids: [...row.query_ids] }
-    : { name: '', description: '', query_ids: [] }
+    ? { name: row.name, description: row.description || '', query_ids: [...row.query_ids], target_engines: [...(row.target_engines || [])] }
+    : { name: '', description: '', query_ids: [], target_engines: defaultEngines }
   try { allQueries.value = await listEvalQueries(pid.value) || [] } catch { allQueries.value = [] }
   editVisible.value = true
   await nextTick()
@@ -689,7 +700,9 @@ async function doRun() {
   try {
     // auto=后端自动铺到在线执行机;否则传手选的多台(单台=数组含一项,后端一视同仁分片)
     const payload = {
-      target_engine: 'namiwork',
+      // 被测产品:传任务级勾选的 target_engines(多产品横评);为空则后端回落 namiwork。
+      target_engines: (runTask.value.target_engines && runTask.value.target_engines.length)
+        ? runTask.value.target_engines : ['namiwork'],
       // 仅单台时目标设备生效;多台/auto 每机用各自当前设备
       target_device: (!runForm.value.auto && runForm.value.runners.length === 1)
         ? (runForm.value.target_device || null) : null,
