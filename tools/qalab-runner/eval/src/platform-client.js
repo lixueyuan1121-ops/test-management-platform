@@ -8,6 +8,8 @@ class PlatformClient {
     this.baseUrl = (config.baseUrl || process.env.BASE_URL || '').replace(/\/$/, '');
     this.token = config.token || process.env.RUNNER_TOKEN || '';
     this.runnerId = config.runnerId || process.env.RUNNER_ID || 'mac-01';
+    // 本机在跑哪个被测产品(namiwork/workbuddy),随 fetchPending 上报,供平台多产品分机挑机。默认 namiwork。
+    this.engine = config.engine || process.env.EVAL_ENGINE || 'namiwork';
     if (!this.baseUrl) throw new Error('平台模式需配置 BASE_URL(平台地址)');
     if (!this.token) throw new Error('平台模式需配置 RUNNER_TOKEN(在平台「我的设备」注册获取)');
   }
@@ -32,7 +34,7 @@ class PlatformClient {
   }
 
   fetchPending(limit = 5) {
-    return this._api('GET', `/api/eval-queue?runner=${encodeURIComponent(this.runnerId)}&limit=${limit}`);
+    return this._api('GET', `/api/eval-queue?runner=${encodeURIComponent(this.runnerId)}&limit=${limit}&engine=${encodeURIComponent(this.engine)}`);
   }
   claim(runId) {
     return this._api('POST', `/api/eval-queue/${runId}/claim?runner=${encodeURIComponent(this.runnerId)}`);

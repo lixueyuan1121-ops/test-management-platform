@@ -169,13 +169,19 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
 
 @router.get("")
 def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
+                 engine: str | None = Query(None),
                  db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
     # 本端点被测评 runner(run-eval.sh)轮询 → 刷 last_eval_at 记「该机当前在跑测评 runner」(运行时类型感知)。
+    # engine:该机在跑哪个被测产品(namiwork/workbuddy),随轮询上报,供多产品分机挑机(online_eval_runners(engine))。
     if ctx.device is not None:
         runner = ctx.device.runner_id
         now = datetime.utcnow()
         ctx.device.last_seen_at = now
         ctx.device.last_eval_at = now
+        if engine:
+            from app.services.eval_engines import is_valid_engine
+            if is_valid_engine(engine):
+                ctx.device.eval_engine = engine
         db.commit()
     else:
         from app.services.dispatcher import touch_runner_heartbeat
