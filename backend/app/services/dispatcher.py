@@ -112,7 +112,7 @@ def touch_runner_heartbeat(db: Session, runner_id: str | None, kind: str | None 
     return len(devices)
 
 
-def online_eval_runners(db: Session) -> list[str]:
+def online_eval_runners(db: Session, engine: str | None = None) -> list[str]:
     """在线且【当前在跑测评 runner】的执行机 runner_id 列表(测评分片下发用)。
 
     运行时感知:一台机同时刻只能跑一类 runner(功能/测评抢同一客户端不能并行),故「能接测评」
@@ -120,6 +120,9 @@ def online_eval_runners(db: Session) -> list[str]:
     或有 running 的 eval_run(执行期不轮询、心跳滞后,用 running 补偿)。这样测评任务只会派到
     真正在跑测评 runner 的机,从根上杜绝「派到只跑功能测试的机器」。
     返回按 runner_id 升序(稳定),供轮转分片时确定性分配。
+
+    engine 非空时再按被测引擎过滤:只返回声明 eval_engine==engine 的机(NULL 兼容老机视作 namiwork)。
+    多产品分机跑靠此:workbuddy 的 run 只派给声明 workbuddy 的机。engine 为空=不按引擎过滤(旧行为)。
     """
     from app.api.devices import ONLINE_WINDOW_SEC
 
@@ -129,8 +132,14 @@ def online_eval_runners(db: Session) -> list[str]:
     cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
     exec_running = _exec_running_runners(db)
     eval_running = _eval_running_runners(db)   # 执行期心跳滞后补偿:正在跑测评的机必然在跑测评 runner
+
+    def _supports(d) -> bool:
+        if engine is None:
+            return True
+        return (d.eval_engine or "namiwork") == engine   # NULL 兼容老机=namiwork
+
     online = [d.runner_id for d in devices
-              if current_kind(d, cutoff, exec_running, eval_running) == "eval"]
+              if current_kind(d, cutoff, exec_running, eval_running) == "eval" and _supports(d)]
     return sorted(set(online))
 
 
