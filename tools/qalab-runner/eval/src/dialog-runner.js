@@ -1131,9 +1131,11 @@ class DialogRunner {
           }
           if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
 
-          // ② 直读拿不到 → 剪贴板兜底(gen 点击多已复制;失焦/受限时才会走到这)
+          // ② 直读拿不到 → 剪贴板兜底(gen 点击多已复制;失焦/受限时才会走到这)。
+          // 只认对话分享链接(含 /share/):防剪贴板残留产物链接被当分享链接(与 pickShareUrl 同口径)。
           link = await this._pollClipboardUrl(10000);
-          if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
+          if (link && link.includes('/share/')) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
+          if (link) { this._warnShare(`剪贴板取到非分享链接(不含 /share/),丢弃:${link.slice(0, 80)}`); link = ''; }
 
           lastReason = '直读面板与剪贴板均未取到 URL(链接未生成或面板结构未知)';
           await this.page.keyboard.press('Escape').catch(() => {});
