@@ -33,6 +33,7 @@
 - **元信息**:`conversation-finished-footer` = 「共消耗 8.39 / 均衡 (Deepseek-V4-Pro) / 时间」——**消耗、模型、时间都在 DOM**。
 - **⚠️ 对话数据走主进程 HTTP,渲染进程 CDP 截不到**:spike 挂 CDP Network 抓不到任何 `lkeap.cloud.tencent.com/messages` 请求(只有本地 asar JS)。WorkBuddy 的对话请求由主进程(Node 侧)发出经 IPC 回渲染进程。**结论:WorkBuddy 的 trace 必须抓 DOM,不能截流**——这是与纳米Work(渲染进程 WS 帧,CDP 可截)的根本差异。
 - **无 vm/多设备概念**:WorkBuddy 无 `clawDeviceService`,`target_device` 对 WorkBuddy 恒空、切设备逻辑跳过。
+- **模型可配(实测坐实)**:输入工具栏 `cr-input-toolbar` 内,挨着语音输入(`button.cr-voice-trigger`)有模型下拉 `button.cr-model-selector__trigger`(aria-label=`Select model`),选项 `.cr-model-selector__item` 含 快速(0.21x)/均衡(0.65x,默认)/极致(1.20x)/Hy4 preview/Hy3/GLM-5.3 等(带算力倍率)。选择器为稳定业务类名(非哈希)。→ **`dialog_options.model` 对 WorkBuddy 天然适用**,执行器点开 trigger 按 model 选对应 item 即可,无需新字段。
 
 ## 3. 关键决策(已与用户确认)
 
@@ -79,14 +80,14 @@ CLI 仓库 `tools/qalab-runner/eval/`。纳米Work 执行器是 `desktop-pool.js
 |---|---|---|---|
 | CDP 连接骨架 | `desktop-pool.js`(spawn+connectOverCDP+waitPort) | 同套(换 env `WORKBUDDY_REMOTE_DEBUGGING_PORT`+executablePath) | **抽公共基类/工具**,两产品共用 |
 | 设备切换 | `switchTo(vm)` clawDeviceService | 无 vm 概念 | WorkBuddy 跳过 |
-| 对话驱动 | `desktop-runner.js`+`dialog-runner.js` | 新增 `workbuddy-runner.js`(输入框/发送/dialogOptions 选择器不同) | **新写** |
-| trace 抓取 | `ws-trace.js` 截 WS 帧 | 新增 `workbuddy-dom-trace.js` 抓 DOM | **新写**,输出同结构 |
+| 对话驱动 | `desktop-runner.js`+`dialog-runner.js` | 新增 `workbuddy-runner.js`(输入框/发送/dialogOptions 选择器不同) | **新写** || trace 抓取 | `ws-trace.js` 截 WS 帧 | 新增 `workbuddy-dom-trace.js` 抓 DOM | **新写**,输出同结构 |
 | 分流 | `bin/ai-eval.js` platform 命令 | 按 `run.target_engine` 路由到对应 runner | **改** |
 
 ### 5.2 执行器分流(`bin/ai-eval.js`)
 - `runOnce` 拉到 pending run 后,按 `item.target_engine` 分流:`namiwork`→现有 DesktopRunner;`workbuddy`→新 WorkBuddyRunner。
 - 一台执行机**只处理它能跑的 engine**(见 §6 挑机);混到不认识的 engine → fail-closed 回写 failed(reason:该执行机不支持引擎 X),不裸跑。
 - config 抽产品相关项:`chatUrl`/`executablePath`/`expectedAgentName`/env 变量名按 engine 选择(现 `default.config.js` 死绑纳米Work,拆成 per-engine 配置块)。
+- **WorkBuddyRunner 的 `_applyDialogOptions`**:按 `payload.dialog_options.model` 点开 `button.cr-model-selector__trigger` → 选匹配的 `.cr-model-selector__item`(选择器已坐实);未指定则用当前默认档。选中后从 `conversation-finished-footer` 读回实际模型名记进 trace 元信息(供报告标注,亦作选择成功校验)。
 
 ### 5.3 WorkBuddy trace 抓取(`workbuddy-dom-trace.js`)
 产出与 `ws-trace.js` **完全同结构**的 JSON(判定层不感知产品差异):
@@ -150,7 +151,7 @@ CLI 仓库 `tools/qalab-runner/eval/`。纳米Work 执行器是 `desktop-pool.js
 - **风险1(DOM 选择器脆弱)**:WorkBuddy CSS Module 哈希类名随版本变。缓解:语义选择器(role/contenteditable/稳定业务类名如 `conversation-finished-footer`)+ 多候选 + DOM dump 兜底 + 抓不到 fail-closed 记 warning(沿用纳米Work 附件抓取的既有教训)。
 - **风险2(trace 四块抓全需真机迭代)**:思考/工具/产物 DOM 结构 spike 未覆盖(闲聊没触发)。缓解:实现期发触发型 prompt 真机联调逐块坐实;先 answer+元信息保底(已验证),其余增量补。
 - **风险3(挑机复杂度)**:多了 engine 维度,挑机/会话组隔离要同时正确。缓解:engine 前缀进会话组 key;下发前校验在线机;充分脚本验证 dispatch 分配。
-- **风险4(对比公平性)**:两产品模型/计费不同(WorkBuddy 用 Deepseek-V4-Pro),对比的是"产品整体表现"而非"同模型"。这是产品级横评的固有语义,报告需注明各产品实际用的模型(元信息已抓)。
+- **风险4(对比公平性)**:两产品**模型均可选**(纳米Work 与 WorkBuddy 都经 `dialog_options.model` 配置;WorkBuddy 下拉档位 快速/均衡/极致/Hy4/Hy3/GLM 等已坐实)。因此对比可做两档:①**同档受控对比**(两边都选中档,比"相近算力下谁强");②**默认档对比**(各用产品默认,比"开箱体验")。计费口径不同(WorkBuddy 按算力倍率),报告统一注明各产品实际用的模型(元信息 `conversation-finished-footer` 已抓)。任务下发时 A/B 的 `dialog_options`/`dialog_options_b` 可分别为两产品指定档位。
 - **风险5(登录态维护)**:WorkBuddy 客户端登录态过期需人工续。与纳米Work 同类问题,执行器检测未登录 fail-closed 并告警。
 
 ## 10. 交付清单
