@@ -95,6 +95,7 @@ def _to_out(task: EvalTask, db: Session) -> dict:
         "name": task.name,
         "description": task.description,
         "query_ids": qids,
+        "target_engines": json.loads(task.target_engines) if task.target_engines else [],
         "dialog_options": json.loads(task.dialog_options) if task.dialog_options else None,
         "status": getattr(task.status, "value", task.status),
         "last_batch_id": task.last_batch_id,
@@ -125,22 +126,26 @@ class EvalTaskCreateIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str | None = None
     query_ids: list[int] = Field(default_factory=list)
+    target_engines: list[str] | None = None    # 勾选的被测产品;空=仅 namiwork
 
 
 class EvalTaskUpdateIn(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=128)
     description: str | None = None
     query_ids: list[int] | None = None
+    target_engines: list[str] | None = None
 
 
 @router.post("")
 def create_task(body: EvalTaskCreateIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    from app.services.eval_engines import normalize_engines
     task = EvalTask(
         project_id=body.project_id,
         name=body.name,
         description=body.description,
         query_ids=json.dumps(list(dict.fromkeys(body.query_ids)), ensure_ascii=False),
+        target_engines=json.dumps(normalize_engines(body.target_engines), ensure_ascii=False),
         status=EvalTaskStatus.draft,
         created_by=user.id,
     )
@@ -176,6 +181,9 @@ def update_task(task_id: int, body: EvalTaskUpdateIn, db: Session = Depends(get_
         task.description = body.description
     if body.query_ids is not None:
         task.query_ids = json.dumps(list(dict.fromkeys(body.query_ids)), ensure_ascii=False)
+    if body.target_engines is not None:
+        from app.services.eval_engines import normalize_engines
+        task.target_engines = json.dumps(normalize_engines(body.target_engines), ensure_ascii=False)
     db.commit(); db.refresh(task)
     return ok(_to_out(task, db))
 
@@ -196,7 +204,8 @@ class EvalTaskRunIn(BaseModel):
     # runner 单台;或 runners 多台分片并行;或 "auto" 自动铺到所有在线执行机。三选一(见 _resolve_runners)。
     runner: str | None = Field(None, max_length=64)
     runners: list[str] | None = Field(None, max_length=32)
-    target_engine: str = Field("namiwork", max_length=32)
+    target_engine: str = Field("namiwork", max_length=32)      # 保留:单产品旧调用
+    target_engines: list[str] | None = None                     # 新:多产品勾选;非空则优先,对每题各 fan-out 一条 run
     target_device: str | None = Field(None, max_length=64)
     # 本次执行统一指定的对话选项 {model?,chatMode?,thinkingDepth?}；None/空=客户端默认
     dialog_options: dict | None = None
@@ -278,29 +287,26 @@ def assign_groups_balanced(group_weights: list[tuple[str, int]], runners: list[s
     return assign
 
 
-def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
+def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list[str],
                        target_device: str | None, opts: dict, opts_b: dict | None,
                        user_id: int | None) -> tuple[list[int], str]:
     """下发任务内全部用例(手动执行端点与定时 job 共用;opts_b is not None 即 A/B 对比)。
 
+    target_engines:被测产品集合(多产品横评)。对每题按 engine × A/B variant 各 fan-out 一条 run。
     runner 参数兼容三态:单个 runner_id 字符串(旧调用)、"auto"、或 runner_id 列表(多台分片)。
-    多台时按「会话组」轮转分片——单轮 query 自成一组、多轮同 conversation_group 整组、A/B 各 variant
-    独立成组(带 #A/#B 后缀),同组必落同一台设备(否则 runner 按组名连发的多轮上下文会断裂)。
-    分片只决定 run.runner 落哪台,批次(batch_id)仍是一个,结果页按批聚合口径不变。
+    - runner=="auto":每个 engine 各自 online_eval_runners(engine) 挑机(分机跑,workbuddy 的 run 只落声明 workbuddy 的机)。
+    - 显式指定 runner/runners:该列表对所有 engine 共用(调用方保证机器能跑对应产品)。
+    多台时按「会话组」LPT 分片,同组必落同一台;会话组分机 key 带 engine 前缀,避免跨产品同名组被误判同机。
+    batch_id 仍是一个(同批横评),结果页按批 + target_engine 聚合。
 
     校验失败抛 ValueError(端点转 400,定时 job 记日志跳过);调用方负责 commit。
     """
     from app.api.eval_queue import _new_batch_id, _payload_of
     from app.core.enums import EvalDeviceKind
+    from app.services.eval_engines import EVAL_ENGINES, normalize_engines
+    from app.services.dispatcher import online_eval_runners
 
-    # 归一执行机列表:允许传入已解析好的 list,或单字符串/"auto"(转 _resolve_runners)。
-    runner_list = runner if isinstance(runner, list) else _resolve_runners(db, runner, None)
-    if not runner_list:
-        raise ValueError("未指定执行机")
-    # 手动指定的执行机须具备 eval 能力(测评跑在桌面客户端,功能测试机跑不了);auto 已在
-    # online_eval_runners 过滤只返回含 eval 的在线设备,此处主要拦手动指定。
-    for rid in runner_list:
-        _check_eval_capability(db, rid)
+    engines = normalize_engines(target_engines)
 
     qids = json.loads(task.query_ids) if task.query_ids else []
     if not qids:
@@ -311,44 +317,64 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engine: str,
     if missing:
         raise ValueError(f"用例 {missing} 已不存在,请编辑任务移除")
 
+    # 每 engine 的候选执行机:显式指定→共用该列表(每台校验 eval 能力);auto→按 engine 挑在线机。
+    explicit = runner if isinstance(runner, list) else (None if runner == AUTO_RUNNER else _resolve_runners(db, runner, None))
+    if explicit is not None:
+        if not explicit:
+            raise ValueError("未指定执行机")
+        for rid in explicit:
+            _check_eval_capability(db, rid)
+
+    def _runners_for(engine: str) -> list[str]:
+        if explicit is not None:
+            return explicit
+        rl = online_eval_runners(db, engine=engine)
+        if not rl:
+            raise ValueError(f"引擎「{EVAL_ENGINES.get(engine, {}).get('label', engine)}」当前无在线执行机")
+        return rl
+
     batch_id = _new_batch_id()
     created = []
     # 对比模式(opts_b 非 None 即启用,B 三项全空=B 用客户端默认也合法):每题下发 A/B 两条 run。
-    # payload 标 compare_group;多轮 conversation_group 加 #A/#B 后缀——runner 按组名把多轮连发进
-    # 同一对话,不区分则 A/B 两套会混进一个会话串上下文。
     variants = [("A", opts), ("B", opts_b)] if opts_b is not None else [(None, opts)]
 
-    # 会话组 → 分配到的 runner。先算好每题每 variant 的 (group_key, payload) 并统计每组 run 数,
-    # 再按 run 数 LPT 均衡分配(大组优先给最闲的机),最后建 run——比「按组数轮转」更均衡。
-    planned: list[tuple[str, dict, object]] = []   # [(group_key, payload, q)],保持出现顺序
-    group_weight: dict[str, int] = {}          # group_key -> run 数(轮数)
-    group_order: list[str] = []                # group_key 出现顺序(LPT tiebreak,可复现)
+    # 按 (engine, 会话组) 规划:group_key 带 engine 前缀作分机 key(payload 内 conversation_group 不含前缀,
+    # 不影响 CLI 分组);每 engine 独立 LPT 分到其候选机。
+    planned: list[tuple[str, str, dict, object]] = []   # [(engine, group_key, payload, q)]
+    group_weight: dict[str, dict[str, int]] = {}        # engine -> {group_key: run 数}
+    group_order: dict[str, list[str]] = {}              # engine -> group_key 出现顺序
 
-    for qid in qids:
-        q = found[qid]
-        for tag, vopts in variants:
-            payload = _payload_of(q, vopts)
-            if tag:
-                payload["compare_group"] = tag
-                if payload.get("conversation_group"):
-                    payload["conversation_group"] = f"{payload['conversation_group']}#{tag}"
-            # 分片键=最终会话组:多轮用(带 #A/#B 的)conversation_group 整组同机;
-            # 单轮无组则用 qid+tag 各自独立成组(可分散到不同设备)。
-            group_key = payload.get("conversation_group") or f"q{qid}#{tag or ''}"
-            planned.append((group_key, payload, q))
-            if group_key not in group_weight:
-                group_weight[group_key] = 0
-                group_order.append(group_key)
-            group_weight[group_key] += 1
+    for engine in engines:
+        group_weight.setdefault(engine, {}); group_order.setdefault(engine, [])
+        for qid in qids:
+            q = found[qid]
+            for tag, vopts in variants:
+                payload = _payload_of(q, vopts)
+                if tag:
+                    payload["compare_group"] = tag
+                    if payload.get("conversation_group"):
+                        payload["conversation_group"] = f"{payload['conversation_group']}#{tag}"
+                base_group = payload.get("conversation_group") or f"q{qid}#{tag or ''}"
+                group_key = f"{engine}::{base_group}"     # engine 前缀:跨产品同名组隔离(仅分机用)
+                planned.append((engine, group_key, payload, q))
+                if group_key not in group_weight[engine]:
+                    group_weight[engine][group_key] = 0
+                    group_order[engine].append(group_key)
+                group_weight[engine][group_key] += 1
 
-    group_runner = assign_groups_balanced([(gk, group_weight[gk]) for gk in group_order], runner_list)
+    # 每 engine 各自按其候选机 LPT 分配
+    group_runner: dict[str, str] = {}
+    for engine in engines:
+        rl = _runners_for(engine)
+        gr = assign_groups_balanced([(gk, group_weight[engine][gk]) for gk in group_order[engine]], rl)
+        group_runner.update(gr)
 
-    for group_key, payload, q in planned:
+    for engine, group_key, payload, q in planned:
         assigned = group_runner[group_key]
         row = EvalRun(
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
             eval_task_id=task.id,
-            runner=assigned, target_engine=target_engine,
+            runner=assigned, target_engine=engine,
             target_device=target_device,
             device_kind=EvalDeviceKind.desktop,
             status=EvalRunStatus.pending,
@@ -380,10 +406,24 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     assert_project_role(db, user, task.project_id, _WRITE_ROLES)
     opts = _clean_dialog_options(body.dialog_options)
     opts_b = _clean_dialog_options(body.dialog_options_b) if body.dialog_options_b is not None else None
+    from app.services.eval_engines import normalize_engines
+    # 优先用本次请求勾选的产品;未传则回落任务级 target_engines;都无则单 target_engine(向后兼容)。
+    if body.target_engines is not None:
+        engines = normalize_engines(body.target_engines)
+    elif task.target_engines:
+        engines = normalize_engines(json.loads(task.target_engines))
+    else:
+        engines = normalize_engines([body.target_engine])
     try:
-        runner_list = _resolve_runners(db, body.runner, body.runners)
+        # auto 且未显式给 runners:透传 "auto" 给 dispatch,由它按每个 engine 各自挑在线机(分机跑)。
+        # 否则(显式单台/多台)先 resolve 成列表,对所有 engine 共用。
+        if not body.runners and (body.runner or "").strip() == AUTO_RUNNER:
+            runner_arg = AUTO_RUNNER
+            runner_list = None
+        else:
+            runner_arg = runner_list = _resolve_runners(db, body.runner, body.runners)
         created, batch_id = dispatch_task_runs(
-            db, task, runner_list, body.target_engine, body.target_device, opts, opts_b, user.id)
+            db, task, runner_arg, engines, body.target_device, opts, opts_b, user.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     # 记录本次执行的对话选项(列表展示+下次执行回填);对比模式把 B 组挂在 compareB 键下。
@@ -396,7 +436,9 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     if body.auto_pipeline is not None:
         task.auto_pipeline = body.auto_pipeline
     db.commit()
-    # 返回实际分片用到的执行机(前端可提示"已分发到 N 台")
+    # 返回实际分片用到的执行机(前端可提示"已分发到 N 台")。auto 时从 created runs 反查真实分到的机。
+    if runner_list is None:
+        runner_list = sorted({r for (r,) in db.query(EvalRun.runner).filter(EvalRun.id.in_(created)).distinct()}) if created else []
     return ok({"run_ids": created, "batch_id": batch_id, "runners": runner_list})
 
 
