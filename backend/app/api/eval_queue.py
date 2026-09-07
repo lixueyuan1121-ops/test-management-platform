@@ -366,6 +366,25 @@ def batch_trend(project_id: int = Query(...), limit: int = Query(30, le=100),
         for tid, name in db.query(EvalTask.id, EvalTask.name).filter(EvalTask.id.in_(task_ids)).all():
             name_map[tid] = name
 
+    # 每批各产品拆线(同批多产品横评):按 (batch_id, target_engine) 二次聚合各产品通过率/均分。
+    batch_ids = [r.batch_id for r in rows]
+    eng_map: dict[str, dict] = {}   # batch_id -> {engine: {pass_rate, avg_score, judged}}
+    if batch_ids:
+        eng_rows = (db.query(
+            EvalRun.batch_id, EvalRun.target_engine,
+            func.sum(case((EvalRun.verdict == "pass", 1), else_=0)).label("passed"),
+            func.sum(case((EvalRun.verdict == "fail", 1), else_=0)).label("failed"),
+            func.avg(EvalRun.score).label("avg_score"))
+            .filter(EvalRun.project_id == project_id, EvalRun.batch_id.in_(batch_ids),
+                    EvalRun.target_engine.isnot(None))
+            .group_by(EvalRun.batch_id, EvalRun.target_engine).all())
+        for er in eng_rows:
+            judged = int(er.passed or 0) + int(er.failed or 0)
+            eng_map.setdefault(er.batch_id, {})[er.target_engine] = {
+                "pass_rate": round(int(er.passed or 0) / judged * 100, 1) if judged else None,
+                "avg_score": round(float(er.avg_score), 2) if er.avg_score is not None else None,
+                "judged": judged}
+
     out = []
     for r in reversed(rows):  # 倒序取最近 N 批 → 回正序(时间升序)供画曲线
         judged = int(r.passed or 0) + int(r.failed or 0)
@@ -379,6 +398,7 @@ def batch_trend(project_id: int = Query(...), limit: int = Query(30, le=100),
             "failed": int(r.failed or 0),
             "pass_rate": round(int(r.passed or 0) / judged * 100, 1) if judged else None,
             "avg_score": round(float(r.avg_score), 2) if r.avg_score is not None else None,
+            "by_engine": eng_map.get(r.batch_id, {}),
         })
     return ok({"batches": out})
 

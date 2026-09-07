@@ -188,8 +188,26 @@ def _result_summary(db: Session, task_id: int, batch_id: str) -> dict:
         def _rate(x):
             return f"{round(100 * x[0] / x[1])}%" if x[1] else "—"
         ab_line = f"A 组通过率 {_rate(ab['A'])}（{ab['A'][0]}/{ab['A'][1]}）｜B 组通过率 {_rate(ab['B'])}（{ab['B'][0]}/{ab['B'][1]}）"
+    # 跨产品胜率:按 target_engine(顶层字段,正交于 A/B)统计各产品 pass 率。≥2 个产品才有对比意义。
+    from app.services.eval_engines import EVAL_ENGINES
+    eng_stat = {}   # engine -> [pass, total]
+    for r in rows:
+        e = r.target_engine
+        if not e:
+            continue
+        eng_stat.setdefault(e, [0, 0])
+        eng_stat[e][1] += 1
+        if r.verdict == "pass":
+            eng_stat[e][0] += 1
+    engine_line = None
+    if len(eng_stat) >= 2:
+        def _erate(x):
+            return f"{round(100 * x[0] / x[1])}%" if x[1] else "—"
+        engine_line = "｜".join(
+            f"{EVAL_ENGINES.get(e, {}).get('label', e)} 通过率 {_erate(v)}（{v[0]}/{v[1]}）"
+            for e, v in sorted(eng_stat.items()))
     return {"total": total, "passed": passed, "failed": failed, "abnormal": abnormal,
-            "errored": errored, "avg_score": avg_score, "ab_line": ab_line}
+            "errored": errored, "avg_score": avg_score, "ab_line": ab_line, "engine_line": engine_line}
 
 
 # 测评失败严重度：执行异常(abnormal)比单纯判定不过(fail)更严重。
@@ -406,6 +424,8 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
         ]
         if s["ab_line"]:
             lines.append(f"**A/B 对比**:{s['ab_line']}")
+        if s.get("engine_line"):
+            lines.append(f"**产品对比**:{s['engine_line']}")
         if s.get("errored"):
             lines.append(f"⚠️ {s['errored']} 条判定失败/无法定论，需到测评结果页重判。")
         if drafts:
