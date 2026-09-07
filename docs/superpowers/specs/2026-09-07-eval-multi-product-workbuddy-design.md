@@ -70,9 +70,11 @@ EVAL_ENGINES = {
 ```
 `GET /api/ai/eval-engines` 下发给前端(仿现有 `/api/ai/eval-dimensions`)。
 
-## 5. 执行层:新增 WorkBuddy 执行器(CLI,最大工程量)
+## 5. 执行层:新增 WorkBuddy 执行器(最大工程量)
 
-CLI 仓库 `tools/qalab-runner/eval/`。纳米Work 执行器是 `desktop-pool.js`(连 Electron)+`desktop-runner.js`(驱动对话)+`ws-trace.js`(截 WS 帧)。WorkBuddy 复用连接骨架,但驱动与抓取要新写。
+> **术语澄清(重要)**:本文"执行器/CLI"一律指**执行机上的 Node 程序** `tools/qalab-runner/eval/bin/ai-eval.js`(由 `run-eval.sh` 启动),它**通过 CDP 连接并驱动被测产品的 Electron 客户端**——纳米Work 与 WorkBuddy 走的都是这条 CDP 路径。**不是**指 WorkBuddy 自带的 `codebuddy` 命令行工具(那条终端 REPL 路径已否决,不采用)。WorkBuddy 接入 = 在这个 Node 程序里新增一个"CDP 驱动 WorkBuddy 客户端"的分支。
+
+CLI 仓库 `tools/qalab-runner/eval/`。纳米Work 执行器是 `desktop-pool.js`(CDP 连 Electron)+`desktop-runner.js`(驱动对话)+`ws-trace.js`(截 WS 帧)。WorkBuddy 复用 CDP 连接骨架(spike 已验证 `WORKBUDDY_REMOTE_DEBUGGING_PORT` attach 可行),但对话驱动与 trace 抓取要新写。
 
 ### 5.1 复用与新增划分
 
