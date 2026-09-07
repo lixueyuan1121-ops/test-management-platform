@@ -231,6 +231,7 @@ def judge_quality(project_id: int = Query(...), db: Session = Depends(get_db),
 def eval_dimension_stats(
     project_id: int = Query(...),
     days: int = 30,
+    by_engine: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -238,6 +239,7 @@ def eval_dimension_stats(
 
     time window: [today-days+1, today];  error/NULL verdict 不计。
     dimension 为空归入"未标注"。dims 按 total 降序。overall_rate 为加权均值。
+    by_engine=True 时额外按 target_engine 分组(多产品横评),each 引擎一份分维通过率。
     """
     from datetime import date, timedelta
     from app.models.ai_eval import EvalQuery, EvalRun
@@ -287,4 +289,46 @@ def eval_dimension_stats(
     total_passed = sum(d["passed"] for d in dims)
     overall_rate = round(total_passed / judged_total * 100, 1) if judged_total else 0.0
 
-    return ok({"days": days, "dims": dims, "judged_total": judged_total, "overall_rate": overall_rate})
+    result = {"days": days, "dims": dims, "judged_total": judged_total, "overall_rate": overall_rate}
+
+    # by_engine:按 target_engine 分组各算一份分维通过率(多产品横评)。仿 judge-quality 的 by_engine。
+    if by_engine:
+        from app.services.eval_engines import EVAL_ENGINES
+        eng_rows = (
+            db.query(EvalRun.target_engine, EvalQuery.dimension, EvalRun.verdict, func.count(EvalRun.id))
+            .join(EvalQuery, EvalQuery.id == EvalRun.eval_query_id)
+            .filter(
+                EvalRun.project_id == project_id,
+                EvalRun.verdict.in_(["pass", "fail"]),
+                EvalRun.target_engine.isnot(None),
+                func.date(EvalRun.created_at) >= d_from,
+                func.date(EvalRun.created_at) <= today,
+            )
+            .group_by(EvalRun.target_engine, EvalQuery.dimension, EvalRun.verdict)
+            .all()
+        )
+        eng_agg: dict[str, dict] = {}   # engine -> {dim: {total, passed}}
+        for eng, dim, verdict, cnt in eng_rows:
+            bucket = eng_agg.setdefault(eng, {}).setdefault(dim or "未标注", {"total": 0, "passed": 0})
+            bucket["total"] += cnt
+            if verdict == "pass":
+                bucket["passed"] += cnt
+        by_engine_out = []
+        for eng, dim_map in eng_agg.items():
+            e_dims = sorted(
+                [{"dimension": k, "total": v["total"], "passed": v["passed"],
+                  "pass_rate": round(v["passed"] / v["total"] * 100, 1) if v["total"] else 0.0}
+                 for k, v in dim_map.items()],
+                key=lambda x: (-x["total"], x["dimension"]),
+            )
+            e_total = sum(v["total"] for v in dim_map.values())
+            e_pass = sum(v["passed"] for v in dim_map.values())
+            by_engine_out.append({
+                "engine": eng, "label": EVAL_ENGINES.get(eng, {}).get("label", eng),
+                "dims": e_dims, "judged_total": e_total,
+                "overall_rate": round(e_pass / e_total * 100, 1) if e_total else 0.0,
+            })
+        by_engine_out.sort(key=lambda e: (-e["judged_total"], e["engine"]))
+        result["by_engine"] = by_engine_out
+
+    return ok(result)
