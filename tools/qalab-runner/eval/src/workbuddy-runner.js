@@ -70,6 +70,41 @@ class WorkbuddyRunner {
     } catch (e) { return { completed: false, reason: 'timeout' }; }
   }
 
+  // 抓对话分享链接:点气泡"分享"按钮 → 分享面板"复制链接"渠道 → 读剪贴板(链接不在 DOM)。
+  // 真机坐实:剪贴板形如「【WorkBuddy】<标题>\nhttps://workbuddy.link/p/xxx?ext2=copy_link」。
+  // 失败(无分享按钮/剪贴板读不到)返回空串,不阻断流程(分享链接非硬性字段)。
+  async _captureShareLink() {
+    const btnSel = this.wb.shareBtnSelector;
+    const chanSel = this.wb.shareChannelSelector;
+    const copyText = this.wb.shareCopyLinkText || '复制链接';
+    if (!btnSel || !chanSel) return '';
+    try {
+      // CDP attach 的页面默认无剪贴板读权限(readText 报 NotAllowedError:Read permission denied),
+      // 而分享链接只在剪贴板(不进 DOM) → 先给本 context 授权(幂等,失败不阻断)。真机坐实:授权后 readText 正常。
+      try { await this.page.context().grantPermissions(['clipboard-read', 'clipboard-write']); } catch (_) {}
+      const share = this.page.locator(btnSel).last();
+      if (!(await share.count())) return '';
+      // 哨兵清剪贴板,便于确认"复制链接"确实写入(区分"没点到"与"链接是旧值")
+      await this.page.evaluate(() => navigator.clipboard.writeText('__WB_SHARE_SENTINEL__')).catch(() => {});
+      await share.click({ timeout: 5000 }).catch(() => {});
+      await this.page.waitForTimeout(1000);
+      const copyBtn = this.page.locator(chanSel, { hasText: copyText }).first();
+      if (!(await copyBtn.count())) { await this.page.keyboard.press('Escape').catch(() => {}); return ''; }
+      await copyBtn.click({ timeout: 5000, force: true }).catch(() => {});
+      // 轮询剪贴板(复制异步,最多 8s)
+      let clip = '__WB_SHARE_SENTINEL__';
+      for (let i = 0; i < 16; i++) {
+        await this.page.waitForTimeout(500);
+        try { clip = await this.page.evaluate(() => navigator.clipboard.readText()); } catch (_) {}
+        if (clip && clip !== '__WB_SHARE_SENTINEL__') break;
+      }
+      await this.page.keyboard.press('Escape').catch(() => {});  // 关分享面板
+      if (!clip || clip === '__WB_SHARE_SENTINEL__') { this._warn('   对话分享链接:点复制链接后剪贴板未更新'); return ''; }
+      const m = String(clip).match(/https?:\/\/[^\s]+/);
+      return m ? m[0] : '';
+    } catch (e) { this._warn(`   抓对话分享链接失败: ${(e.message || '').split('\n')[0]}`); return ''; }
+  }
+
   _buildResult(testCase, trace, meta) {
     const answerText = trace.answer || '';
     const completed = !!meta.completed;
@@ -79,7 +114,7 @@ class WorkbuddyRunner {
       caseId: testCase.caseId, row: testCase.row, account: testCase.account || 'workbuddy',
       conversationId: testCase.conversationId, turnIndex: testCase.turnIndex, question: testCase.question,
       answer: meta.errorMsg ? `[执行失败] ${meta.errorMsg}` : success ? answerText : `[未完成:${meta.completeReason}]`,
-      shareLink: null, artifactShareLink: (trace.artifacts[0] && trace.artifacts[0].share_link) || null,
+      shareLink: trace.share_link || null, artifactShareLink: (trace.artifacts[0] && trace.artifacts[0].share_link) || null,
       hasArtifact: trace.artifacts.length > 0,
       reportedDuration: trace.reported_duration || null, reportedDurationRaw: null,
       beanCost: trace.bean_cost || null, cost: null, costRaw: null,
@@ -99,6 +134,7 @@ class WorkbuddyRunner {
       await this._sendOne(testCase);
       const done = await this._waitComplete(baseline);
       await this.trace.captureTurn(this.page);
+      this.trace.setShareLink(await this._captureShareLink());   // 抓对话分享链接(点分享→复制链接→剪贴板)
       const trace = this.trace.buildTrace(testCase.run_id);
       return this._buildResult(testCase, trace, { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now() });
     } catch (e) {
@@ -124,6 +160,7 @@ class WorkbuddyRunner {
         await this._sendOne(testCase);                 // 后续轮不新建对话，在同一对话追加
         const done = await this._waitComplete(baseline);
         await this.trace.captureTurn(this.page);
+        this.trace.setShareLink(await this._captureShareLink());   // 抓对话分享链接
         const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now() });
         results.push(r); if (onTurnDone) await onTurnDone(r, testCase).catch(() => {});
       } catch (e) {

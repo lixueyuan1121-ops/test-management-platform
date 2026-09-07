@@ -389,6 +389,10 @@ module.exports = {
     sourcesCountSelector: '.artifact-slot-panel__source-count',
     sourcesPanelTitleSelector: '.sources-panel__title',          // 「引用来源 (N)」
     sourcesListSelector: '.sources-panel__list',
+    // 对话分享链接:气泡工具栏分享按钮 → 分享面板"复制链接"渠道 → 链接写入剪贴板(不在 DOM)
+    shareBtnSelector: '[class*="assistantFeedback"] button[aria-label="分享"]',
+    shareCopyLinkText: '复制链接',                               // 分享面板里"复制链接"渠道按钮的文本
+    shareChannelSelector: '.wb-share-channel-btn',               // 渠道按钮(配合 hasText 定位复制链接)
     // 完成/元信息
     footerSelector: '.conversation-finished-footer',
   },

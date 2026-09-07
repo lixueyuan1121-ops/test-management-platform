@@ -49,16 +49,31 @@ const SEL = {
 
 class WorkbuddyDomTrace {
   constructor(sel = {}) { this.sel = { ...SEL, ...sel }; this._data = this._empty(); }
-  _empty() { return { session_id: null, thinking: '', tool_calls: [], artifacts: [], answer: '', beanCost: '', model: '', reportedDuration: '' }; }
+  _empty() { return { session_id: null, thinking: '', tool_calls: [], artifacts: [], answer: '', beanCost: '', model: '', reportedDuration: '', shareLink: '' }; }
   reset() { this._data = this._empty(); }
+  // 对话分享链接由 runner 抓取(点分享→复制链接→读剪贴板)后塞入,buildTrace 一并回写。
+  setShareLink(url) { this._data.shareLink = url || ''; }
 
   // 抓「本轮」DOM。先尝试点开思考折叠、点开来源面板（懒渲染），再读。
   async captureTurn(page) {
     const sel = this.sel;
-    // 1) 展开思考折叠（若存在且折叠）——内容懒渲染，不展开读不到
+    // 0) 等"已完成 Ns"折叠头出现(耗时来源):footer 出现后该折叠头仍可能延迟渲染/定值,
+    //    短轮询最多 5s,避免抓耗时过早拿到空(真机坐实:会话静止后才稳定出 "已完成 Ns")。
+    //    ⚠️ 本轮可能有多个 cr-collapse(如「已完成 15s」+「深度思考」),耗时不一定在最后一个,
+    //    故遍历所有 title、任一匹配即收(不能只看 .last())。
     try {
-      const header = page.locator(sel.thinkingHeader).last();
-      if (await header.count()) { await header.click({ timeout: 2000 }).catch(() => {}); await page.waitForTimeout(500); }
+      for (let i = 0; i < 10; i++) {
+        const titles = await page.locator(sel.thinkingTitle).allInnerTexts().catch(() => []);
+        if (titles.some(t => /已完成\s*\d+\s*s/.test(t || ''))) break;
+        await page.waitForTimeout(500);
+      }
+    } catch (_) {}
+    // 1) 展开思考折叠（若存在且折叠）——内容懒渲染，不展开读不到。多个折叠全部展开,确保思考正文渲染。
+    try {
+      const headers = page.locator(sel.thinkingHeader);
+      const n = await headers.count();
+      for (let i = 0; i < n; i++) { await headers.nth(i).click({ timeout: 1500 }).catch(() => {}); }
+      if (n) await page.waitForTimeout(500);
     } catch (_) {}
     // 2) 展开"来源"面板（若存在）——抓引用来源作工具证据
     let sourcesText = '';
@@ -80,11 +95,20 @@ class WorkbuddyDomTrace {
       const txt = (el) => el ? (el.innerText || '').trim() : '';
       const answers = Array.from(document.querySelectorAll(sel.answer));
       const answer = answers.length ? txt(answers[answers.length - 1]) : '';       // 最后一条 assistant 正文 = 本轮
-      // 思考：最后一个折叠组件的内容 + 头文本（耗时）
+      // 思考：本轮可能有多个折叠(如「已完成 15s」+「深度思考」)。耗时 title 在其中一个、
+      // 不一定是最后一个 → 遍历所有折叠:耗时取首个匹配「已完成 Ns」的 title;思考正文合并所有折叠内容。
       const collapses = Array.from(document.querySelectorAll(sel.thinkingCollapse));
-      const lastCollapse = collapses[collapses.length - 1] || null;
-      const thinking = lastCollapse ? txt(lastCollapse.querySelector(sel.thinkingContent)) : '';
-      const collapseTitle = lastCollapse ? txt(lastCollapse.querySelector(sel.thinkingTitle)) : '';
+      let collapseTitle = '';
+      const thinkParts = [];
+      for (const c of collapses) {
+        const tt = txt(c.querySelector(sel.thinkingTitle));
+        if (!collapseTitle && /已完成\s*\d+\s*s/.test(tt)) collapseTitle = tt;
+        const body = txt(c.querySelector(sel.thinkingContent));
+        if (body) thinkParts.push(body);
+      }
+      // 无「已完成 Ns」时退回最后一个折叠的 title(不至于全空,便于排障)
+      if (!collapseTitle && collapses.length) collapseTitle = txt(collapses[collapses.length - 1].querySelector(sel.thinkingTitle));
+      const thinking = thinkParts.join('\n');
       // 来源计数（用于判断是否用了检索工具）
       const cntEl = document.querySelector(sel.sourcesCount);
       const sourcesCountText = txt(cntEl);
@@ -122,6 +146,7 @@ class WorkbuddyDomTrace {
       artifacts: this._data.artifacts, answer: this._data.answer,
       ws_captured: false, ws_connected: true, dom_captured: true,
       reported_duration: this._data.reportedDuration, bean_cost: this._data.beanCost, model: this._data.model,
+      share_link: this._data.shareLink || null,
     };
   }
 }
