@@ -220,6 +220,13 @@ def list_eval_dimensions(user: User = Depends(get_current_user)):
     return ok({"dimensions": dims})
 
 
+@router.get("/eval-engines")
+def list_eval_engines(user: User = Depends(get_current_user)):
+    """被测产品(引擎)注册表,供前端任务编辑时勾选测哪些产品。仿 eval-dimensions。"""
+    from app.services.eval_engines import EVAL_ENGINES
+    return ok([{"engine": k, **v} for k, v in EVAL_ENGINES.items()])
+
+
 class EvalQueryManualIn(BaseModel):
     """手工录入/编辑一条测评用例(测评任务的「定制用例」入口;ai_task_id 为空区别于 AI 生成)。"""
     project_id: int
