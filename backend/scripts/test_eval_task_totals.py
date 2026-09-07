@@ -35,7 +35,7 @@ def _seed():
         # 旧批次 b1:不计入(last_batch_id 是 b2)
         EvalRun(project_id=1, eval_task_id=1, batch_id="b1", status=EvalRunStatus.judged,
                 reported_duration="999", duration_ms=999000, bean_cost="-99"),
-        # 当前批次 b2:15 + 1418 + 脏值"23m 38s"(取23) + None(0) = 1456
+        # 当前批次 b2:15 + 1418 + "23m 38s"(换算=1418) + None(0) = 2851
         EvalRun(project_id=1, eval_task_id=1, batch_id="b2", status=EvalRunStatus.judged,
                 reported_duration="15", duration_ms=25000, bean_cost="-3"),
         EvalRun(project_id=1, eval_task_id=1, batch_id="b2", status=EvalRunStatus.judged,
@@ -49,12 +49,21 @@ def _seed():
 
 
 def test_parse_seconds():
-    cases = [("1418", 1418), ("15s", 15), ("23m 38s", 23), ("", 0), (None, 0),
-             ("—", 0), ("无", 0), (296, 296)]
+    cases = [
+        # 纯秒(现行 runner 回填):原值不变
+        ("1418", 1418), ("15", 15), (296, 296), ("48", 48),
+        # 分秒/时分秒原文(历史/兜底):换算成总秒 —— 修正老版"取首数字"得 23 的 bug
+        ("23m 38s", 1418), ("2分43秒", 163), ("10m", 600), ("5m 2s", 302),
+        ("1h5m2s", 3902), ("10分21秒", 621), ("1小时", 3600),
+        # hh:mm:ss / mm:ss 冒号格式
+        ("01:05:02", 3902), ("04:56", 296),
+        # 空/无法解析 → 0(聚合用)
+        ("", 0), (None, 0), ("—", 0), ("无", 0),
+    ]
     for inp, exp in cases:
         got = _parse_seconds(inp)
         assert got == exp, f"_parse_seconds({inp!r}) = {got}, 期望 {exp}"
-    print("✓ _parse_seconds 容错正确")
+    print("✓ _parse_seconds 纯秒/分秒/时分秒/hh:mm:ss/脏值 全部同口径")
 
 
 def test_batch_totals_reported():
@@ -62,8 +71,8 @@ def test_batch_totals_reported():
     s = _Session()
     t1 = s.get(EvalTask, 1)
     out = _batch_totals(s, t1)
-    # total_reported_duration_s: 只计 b2 = 15 + 1418 + 23 + 0 = 1456(旧批次 b1 的 999 不计入)
-    assert out["total_reported_duration_s"] == 1456, out
+    # total_reported_duration_s: 只计 b2 = 15 + 1418 + 1418("23m 38s"换算) + 0 = 2851(旧批次 b1 的 999 不计入)
+    assert out["total_reported_duration_s"] == 2851, out
     # 墙钟仍聚合(兼容):25000 + 1500000 + 0 + 0 = 1525000(b1 的 999000 不计入)
     assert out["total_duration_ms"] == 1525000, out
     # 算力豆:-3 + -12 + 5 + 0 = -10

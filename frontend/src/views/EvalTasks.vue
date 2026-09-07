@@ -687,11 +687,30 @@ async function loadClientDevices() {
   try { clientDevices.value = await listEvalDevices(only) || [] } catch { clientDevices.value = [] }
 }
 
-// 上报耗时(reported_duration,纯秒)→ 对齐对话页「已完成 Ns」的呈现:"15s" / "23m 38s" / "1h 5m 2s"。
-// 整分/整时省略下级 0(如 "10m"、"1h")。空/NaN → "—"。入参可为字符串纯秒或数字。
-function fmtReported(sec) {
-  const n = Math.round(Number(sec))
-  if (!n || !isFinite(n) || n <= 0) return '—'
+// 上报耗时值 → 总秒数(容错),与后端 _parse_seconds / runner _durationToSeconds 同口径。
+// 详情表传的是单条 run 原始 reported_duration(现为纯秒,但历史/兜底可能是分秒原文);列表行传的
+// 已是后端算好的纯秒数。纯秒→原值,分秒/时分秒→换算,解析不出→null。
+//   "1418"/1418→1418  "23m 38s"→1418  "2分43秒"→163  "10m"→600  "01:05:02"→3902  ""/null→null
+function durToSeconds(v) {
+  if (v == null) return null
+  if (typeof v === 'number') return isFinite(v) ? Math.round(v) : null
+  const s = String(v).trim()
+  if (!s) return null
+  if (/^\d{1,2}(?::\d{1,2}){1,2}$/.test(s)) return s.split(':').reduce((a, n) => a * 60 + parseInt(n, 10), 0)
+  let total = 0, matched = false
+  const h = s.match(/(\d+(?:\.\d+)?)\s*(?:小时|小時|時|时|h(?![a-z]))/i); if (h) { total += parseFloat(h[1]) * 3600; matched = true }
+  const m = s.match(/(\d+(?:\.\d+)?)\s*(?:分钟|分|m(?![a-z]))/i);        if (m) { total += parseFloat(m[1]) * 60; matched = true }
+  const c = s.match(/(\d+(?:\.\d+)?)\s*(?:秒|s(?![a-z]))/i);            if (c) { total += parseFloat(c[1]); matched = true }
+  if (matched) return Math.round(total)
+  if (/^\d+(?:\.\d+)?$/.test(s)) return Math.round(parseFloat(s))
+  return null
+}
+
+// 上报耗时 → 对齐对话页「已完成 Ns」的呈现:"15s" / "23m 38s" / "1h 5m 2s"。
+// 整分/整时省略下级 0(如 "10m"、"1h")。空/无法解析 → "—"。入参可为纯秒数、分秒原文或数字。
+function fmtReported(val) {
+  const n = durToSeconds(val)
+  if (n == null || n <= 0) return '—'
   const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), s = n % 60
   const parts = []
   if (h) parts.push(h + 'h')

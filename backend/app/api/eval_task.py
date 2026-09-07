@@ -67,12 +67,38 @@ def _parse_bean(raw) -> int:
 
 
 def _parse_seconds(raw) -> int:
-    """上报耗时 reported_duration → 秒(整数,容错)。runner 已统一回填纯秒(如 "1418"),
-    但历史脏值可能是 "23m 38s"/"15s"/""/"—";取首个数字兜底(纯秒场景即原值)。解析不出→0。"""
-    if not raw:
+    """上报耗时 reported_duration → 总秒数(整数,容错)。runner 现统一回填纯秒(如 "1418"),
+    但历史/兜底值可能是分秒/时分秒原文("23m 38s"/"2分43秒"/"10m"/hh:mm:ss);全部换算成秒,
+    与 runner 侧 dialog-runner._durationToSeconds 同口径。解析不出→0(聚合用,不能 None)。
+      "1418"→1418  "23m 38s"→1418  "2分43秒"→163  "10m"→600  "01:05:02"→3902  ""/None/"—"→0
+    """
+    s = ("" if raw is None else str(raw)).strip()
+    if not s:
         return 0
-    m = re.search(r"\d+", str(raw))
-    return int(m.group()) if m else 0
+    # ① hh:mm:ss / mm:ss 冒号格式
+    if re.fullmatch(r"\d{1,2}(?::\d{1,2}){1,2}", s):
+        acc = 0
+        for n in s.split(":"):
+            acc = acc * 60 + int(n)
+        return acc
+    # ② 时/分/秒任意组合(各段可缺省):中文 小时/时·分·秒,英文 h·m·s(如 "5m 2s"/"1h5m2s")。
+    #    英文单位用「后不接字母」lookahead 收尾,避免把 500ms 的 m 误当分钟。
+    total, matched = 0.0, False
+    mh = re.search(r"(\d+(?:\.\d+)?)\s*(?:小时|小時|時|时|h(?![a-z]))", s, re.I)
+    if mh:
+        total += float(mh.group(1)) * 3600; matched = True
+    mm = re.search(r"(\d+(?:\.\d+)?)\s*(?:分钟|分|m(?![a-z]))", s, re.I)
+    if mm:
+        total += float(mm.group(1)) * 60; matched = True
+    ms = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s(?![a-z]))", s, re.I)
+    if ms:
+        total += float(ms.group(1)); matched = True
+    if matched:
+        return round(total)
+    # ③ 纯数字:视为已是秒
+    if re.fullmatch(r"\d+(?:\.\d+)?", s):
+        return round(float(s))
+    return 0
 
 
 def _batch_totals(db: Session, task: EvalTask) -> dict:
