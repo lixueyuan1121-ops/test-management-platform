@@ -90,6 +90,9 @@
               <el-option label="判定出错" value="error" />
               <el-option label="未判定" value="__none__" />
             </el-select>
+            <el-select v-if="engineOptions.length > 1" v-model="engineFilter" placeholder="全部产品" size="small" clearable style="width:120px">
+              <el-option v-for="e in engineOptions" :key="e" :label="ENGINE_LABEL[e] || e" :value="e" />
+            </el-select>
             <el-button size="small" :icon="Refresh" @click="load">刷新</el-button>
             <el-checkbox v-model="robustJudge" size="small" class="robust-ck">
               <el-tooltip content="每条判 3 次取多数票（更稳，但 3 倍耗时）" placement="top"><span>稳健(3票)</span></el-tooltip>
@@ -191,6 +194,12 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="产品" width="96" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="!row.isGroup && row.target_engine" size="small" effect="plain" type="info">{{ ENGINE_LABEL[row.target_engine] || row.target_engine }}</el-tag>
+            <span v-else class="dim-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="执行" width="96" align="center">
           <template #default="{ row }">
             <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ STATUS_LABEL[row.status] || row.status || '—' }}</el-tag>
@@ -223,12 +232,15 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="对比" width="66" align="center">
+        <el-table-column label="对比" width="96" align="center">
           <template #default="{ row }">
             <!-- A/B 对比配对行:点开左右分栏并排看答辩+判定 -->
             <el-button v-if="!row.isGroup && row.payload?.compare_group" size="small" type="warning" text
-              @click="openAbCompare(row)">对比</el-button>
-            <span v-else class="dim-muted">—</span>
+              @click="openAbCompare(row)">A/B</el-button>
+            <!-- 跨产品对比:同题在本批有 ≥2 个产品的 run 时可并排比 -->
+            <el-button v-if="!row.isGroup && hasEngineCompare(row)" size="small" type="primary" text
+              @click="openEngineCompare(row)">产品</el-button>
+            <span v-if="!row.isGroup && !row.payload?.compare_group && !hasEngineCompare(row)" class="dim-muted">—</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="96" align="center">
@@ -295,6 +307,32 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="engineCompareVisible" :title="`产品对比 · ${queryTitle(enginePairList[0])}`" width="920px" top="6vh">
+      <div v-if="enginePairList.length" class="ab-wrap">
+        <div v-for="r in enginePairList" :key="r.run_id" class="ab-col" :class="engineWin(r) ? 'ab-win' : ''">
+          <div class="ab-hd">
+            <span class="ab-tag ab-tag-a">{{ ENGINE_LABEL[r.target_engine] || r.target_engine }}</span>
+            <span class="ab-opts">{{ engineModel(r) }}</span>
+            <span class="ab-verdict">{{ r.verdict ? VERDICT_LABEL[r.verdict] : '未判定' }}</span>
+          </div>
+          <div class="ab-body">
+            <div class="ab-sec">回答</div>
+            <div class="ab-text">{{ r.answer || '—' }}</div>
+            <div class="ab-sec">判定理由</div>
+            <div class="ab-text">{{ r.verdict_reason || '—' }}</div>
+            <div v-if="r.score != null" class="ab-score">评分 {{ r.score }}/5</div>
+            <el-link v-if="safeUrl(r.share_link)" type="primary" :href="safeUrl(r.share_link)" target="_blank" rel="noopener noreferrer">打开会话</el-link>
+          </div>
+        </div>
+        <div class="ab-prompt">
+          <div class="ab-sec">题干 prompt</div>
+          <div class="ab-text">{{ enginePairList[0]?.payload?.prompt || '—' }}</div>
+          <div class="ab-sec">期望 expected</div>
+          <div class="ab-text">{{ enginePairList[0]?.payload?.expected || '—' }}</div>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -358,6 +396,7 @@ const pid = ref(null)
 const rows = ref([])
 const loading = ref(false)
 const verdictFilter = ref(null)
+const engineFilter = ref(null)
 // 批次筛选(选项复用 trend 批次列表,最新在前);清空=全部批次
 const batchFilter = ref(null)
 const batchOptions = computed(() => [...trend.value].reverse())
@@ -381,6 +420,7 @@ const failedCount = computed(() => rows.value.filter((r) => r.status === 'failed
 const judgedCount = computed(() => rows.value.filter((r) => r.verdict).length)
 const abnormalCount = computed(() => rows.value.filter((r) => r.is_abnormal).length)
 const matchFilter = (r) => {
+  if (engineFilter.value && r.target_engine !== engineFilter.value) return false
   if (!verdictFilter.value) return true
   if (verdictFilter.value === '__none__') return !r.verdict
   return r.verdict === verdictFilter.value
@@ -424,6 +464,40 @@ function abWin(side) {
   if (side === 'a') return a === 'pass' && b === 'fail'
   return b === 'pass' && a === 'fail'
 }
+
+// ── 跨产品对比(target_engine 轴,正交于 A/B) ──
+const ENGINE_LABEL = { namiwork: '纳米Work', workbuddy: 'WorkBuddy' }
+const engineCompareVisible = ref(false)
+const enginePairList = ref([])
+// 本次结果里出现过的产品(供筛选下拉;>1 才显示筛选/对比入口)
+const engineOptions = computed(() => [...new Set(rows.value.map(r => r.target_engine).filter(Boolean))])
+// 同题在本批有 ≥2 个不同产品的 run → 可产品对比
+function _enginePeers(row) {
+  return rows.value.filter(r => !r.isGroup && r.batch_id === row.batch_id && r.eval_query_id === row.eval_query_id && r.target_engine)
+}
+function hasEngineCompare(row) {
+  if (!row.target_engine || !row.eval_query_id) return false
+  return new Set(_enginePeers(row).map(r => r.target_engine)).size >= 2
+}
+function openEngineCompare(row) {
+  // 按 target_engine 去重取每产品一条(同产品多条取首条),稳定按产品名排序
+  const seen = new Map()
+  for (const r of _enginePeers(row)) {
+    if (!seen.has(r.target_engine)) seen.set(r.target_engine, r)
+  }
+  enginePairList.value = [...seen.values()].sort((a, b) => (a.target_engine > b.target_engine ? 1 : -1))
+  engineCompareVisible.value = true
+}
+function engineModel(r) {
+  // 实际用的模型:trace 里 WorkBuddy footer 抓的 model,或 dialog_options.model 兜底
+  return r?.trace?.model || r?.payload?.dialog_options?.model || ENGINE_LABEL[r?.target_engine] || '—'
+}
+// 高亮:本产品 pass 且存在别的产品 fail(相对更优)
+function engineWin(r) {
+  if (r.verdict !== 'pass') return false
+  return enginePairList.value.some(o => o !== r && o.verdict === 'fail')
+}
+
 const dimPass = (row, k) => row.verdict_dims?.[k]?.pass
 const dimNote = (row, k) => row.verdict_dims?.[k]?.note
 // 评分(1-5,判定引擎给):组行取各轮均分(1 位小数),真实行取 score
