@@ -59,7 +59,7 @@
         <el-table-column label="耗时/算力豆" width="110" align="center">
           <template #default="{ row }">
             <span v-if="row.last_batch_id" class="mono">
-              ⏱ {{ fmtDur(row.total_duration_ms) }}<br/>
+              ⏱ {{ fmtReported(row.total_reported_duration_s) }}<br/>
               <span :class="{ neg: row.total_bean_cost < 0 }">🫘 {{ row.total_bean_cost }}</span>
             </span>
             <span v-else class="muted">—</span>
@@ -357,7 +357,7 @@
           <el-table-column label="耗时/豆" width="92" align="center">
             <template #default="{ row }">
               <span v-if="!row.isGroup" class="mono">
-                ⏱ {{ fmtDur(row.duration_ms) }}<br/>
+                ⏱ {{ fmtReported(row.reported_duration) }}<br/>
                 <span :class="{ neg: String(row.bean_cost || '').trim().startsWith('-') }">🫘 {{ row.bean_cost || '—' }}</span>
               </span>
               <span v-else class="muted">—</span>
@@ -687,12 +687,17 @@ async function loadClientDevices() {
   try { clientDevices.value = await listEvalDevices(only) || [] } catch { clientDevices.value = [] }
 }
 
-function fmtDur(ms) {
-  if (!ms) return '—'
-  const s = Math.round(ms / 1000)
-  if (s < 60) return s + 's'
-  const m = Math.floor(s / 60), r = s % 60
-  return m + 'm' + (r ? r + 's' : '')
+// 上报耗时(reported_duration,纯秒)→ 对齐对话页「已完成 Ns」的呈现:"15s" / "23m 38s" / "1h 5m 2s"。
+// 整分/整时省略下级 0(如 "10m"、"1h")。空/NaN → "—"。入参可为字符串纯秒或数字。
+function fmtReported(sec) {
+  const n = Math.round(Number(sec))
+  if (!n || !isFinite(n) || n <= 0) return '—'
+  const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), s = n % 60
+  const parts = []
+  if (h) parts.push(h + 'h')
+  if (m) parts.push(m + 'm')
+  if (s || !parts.length) parts.push(s + 's')
+  return parts.join(' ')
 }
 
 async function doRun() {

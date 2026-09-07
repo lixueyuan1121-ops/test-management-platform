@@ -66,16 +66,30 @@ def _parse_bean(raw) -> int:
     return int(m.group()) if m else 0
 
 
+def _parse_seconds(raw) -> int:
+    """上报耗时 reported_duration → 秒(整数,容错)。runner 已统一回填纯秒(如 "1418"),
+    但历史脏值可能是 "23m 38s"/"15s"/""/"—";取首个数字兜底(纯秒场景即原值)。解析不出→0。"""
+    if not raw:
+        return 0
+    m = re.search(r"\d+", str(raw))
+    return int(m.group()) if m else 0
+
+
 def _batch_totals(db: Session, task: EvalTask) -> dict:
-    """任务最近批次的耗时/算力豆聚合(列表页展示)。bean_cost 是字符串,Python 侧容错累加。"""
+    """任务最近批次的耗时/算力豆聚合(列表页展示)。
+    - total_reported_duration_s: 该批次各 run 上报耗时(reported_duration,纯秒)之和 —— 列表页耗时列展示口径,
+      对齐对话页「已完成 Ns」;bean_cost/reported_duration 都是字符串,Python 侧容错累加。
+    - total_duration_ms: 墙钟之和,保留兼容(前端已不展示)。"""
     if not task.last_batch_id:
-        return {"total_duration_ms": 0, "total_bean_cost": 0}
-    rows = (db.query(EvalRun.duration_ms, EvalRun.bean_cost)
+        return {"total_duration_ms": 0, "total_bean_cost": 0, "total_reported_duration_s": 0}
+    rows = (db.query(EvalRun.duration_ms, EvalRun.bean_cost, EvalRun.reported_duration)
             .filter(EvalRun.eval_task_id == task.id,
                     EvalRun.batch_id == task.last_batch_id).all())
-    total_ms = sum((d or 0) for d, _ in rows)
-    total_bean = sum(_parse_bean(b) for _, b in rows)
-    return {"total_duration_ms": total_ms, "total_bean_cost": total_bean}
+    total_ms = sum((d or 0) for d, _, _ in rows)
+    total_bean = sum(_parse_bean(b) for _, b, _ in rows)
+    total_reported_s = sum(_parse_seconds(rd) for _, _, rd in rows)
+    return {"total_duration_ms": total_ms, "total_bean_cost": total_bean,
+            "total_reported_duration_s": total_reported_s}
 
 
 def _to_out(task: EvalTask, db: Session) -> dict:
