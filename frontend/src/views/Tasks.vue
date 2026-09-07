@@ -10,7 +10,7 @@
             </el-select>
             <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
             <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid">复制昨日</el-button>
-            <el-button type="primary" size="small" @click="openCreate" :disabled="!pid">新建任务</el-button>
+            <el-button type="primary" size="small" v-if="canManage" @click="openCreate" :disabled="!pid">新建任务</el-button>
           </div>
         </div>
       </template>
@@ -146,10 +146,9 @@
           </el-select>
         </el-form-item>
         <el-form-item label="指派给" required>
-          <el-select v-model="form.assigned_to" filterable placeholder="选择项目成员" style="width:100%" :disabled="!canManage && !dialog.id">
+          <el-select v-model="form.assigned_to" filterable placeholder="选择项目成员" style="width:100%">
             <el-option v-for="m in members" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
-          <span v-if="!canManage && !dialog.id" class="assign-hint">成员新建任务默认指派给自己,不能派给他人</span>
         </el-form-item>
         <el-form-item label="分配日期" required>
           <el-date-picker v-model="form.assigned_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
@@ -238,9 +237,12 @@ const auth = useAuthStore()
 const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
-// 能否管理任务(编辑/删除/复制/派单等):平台管理员 或 当前项目的 admin。
-// 普通成员只读列表 + 只能用「新建任务」(方便自助加任务)。
-const canManage = computed(() => auth.isPlatformAdmin || auth.roleIn(pid.value) === 'admin')
+// 能否管理任务(编辑/删除/复制/新建/改指派等):平台管理员 或 当前项目的 admin/member。
+// 任务分配已放开到成员——admin/member 均可完整管理;访客(guest)只读列表。
+const canManage = computed(() => {
+  const r = auth.roleIn(pid.value)
+  return auth.isPlatformAdmin || r === 'admin' || r === 'member'
+})
 const date = ref(new Date().toISOString().slice(0, 10))
 const tasks = ref([])
 const members = ref([])
@@ -326,9 +328,8 @@ function fmtExecAt(s) {
 
 function openCreate() {
   dialog.id = null
-  // 普通成员:指派人默认填自己且锁死(不能派给别人);管理员可自由选。
-  const selfId = canManage.value ? null : (auth.user?.id ?? null)
-  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: selfId, assigned_date: date.value, description: '', status: 'pending' })
+  // 新建入口仅 canManage(admin/member)可见,均可自由选指派人,默认不预填。
+  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: date.value, description: '', status: 'pending' })
   dialog.visible = true
 }
 function openEdit(row) {
@@ -393,7 +394,6 @@ async function onCopy() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
-.assign-hint { color: #90a4ae; font-size: 12px; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .status-trigger { cursor: pointer; }
 .cl-prog { display: flex; align-items: center; gap: 8px; }

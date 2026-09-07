@@ -108,16 +108,12 @@ def create_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # 放开到成员:项目 admin/member 都可建任务(方便成员自助加任务)。
-    member = assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
+    # 任务分配已放开到成员：admin/member 均可把任务指派给项目内任意人（不再限本人）。
+    assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
     if not db.get(User, body.assigned_to):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="指派用户不存在")
-    # 成员(非平台管理员、非项目 admin)只能把任务指派给**自己**,不能派给他人;admin 不限。
-    is_admin = user.is_platform_admin or member.role == ProjectRole.admin
-    if not is_admin and body.assigned_to != user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="成员只能把任务指派给自己")
     t = Task(
         project_id=body.project_id,
         assigned_by=user.id,
@@ -164,7 +160,7 @@ def update_task(
     t = db.get(Task, tid)
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
-    assert_project_role(db, user, t.project_id, (ProjectRole.admin,))
+    assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
     # 非 status 字段照常更新（派单同步与人工都可写）
     for f in ("title", "description", "module", "requirement_url", "developer",
               "priority", "assigned_to", "assigned_date"):
@@ -220,7 +216,7 @@ def delete_task(
     t = db.get(Task, tid)
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
-    assert_project_role(db, user, t.project_id, (ProjectRole.admin,))
+    assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
     db.delete(t)
     db.commit()
     return ok({"deleted": tid})
@@ -234,7 +230,7 @@ def copy_yesterday(
     user: User = Depends(get_current_user),
 ):
     """把昨天的任务复制到 target_date（同项目同指派人同标题）。"""
-    assert_project_role(db, user, project_id, (ProjectRole.admin,))
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member))
     yesterday = target_date - timedelta(days=1)
     src = db.query(Task).filter(
         Task.project_id == project_id, Task.assigned_date == yesterday
