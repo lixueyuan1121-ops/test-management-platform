@@ -55,6 +55,14 @@ def test_efficiency_rule_is_soft_signal():
     print("OK 工具效率是软信号(不改 pass/fail)")
 
 
+def test_no_tool_but_good_result_not_penalized():
+    # 结果优先:本可借助工具但没调、结果却达成 → 不因此判 fail 或扣 score,记为高效
+    p = cr.build_eval_judge_prompt(_trace([]), expected="x", dimension=None)
+    assert "不因此扣分" in p, "判定规则应明确:结果达成则不因无工具扣分"
+    assert "记为高效" in p, "无工具而达成应记为高效(基座/推理强)"
+    print("OK 无工具而结果好=不扣分记高效")
+
+
 def test_parse_verdict_dims():
     raw = '{"thinking_complete":{"pass":true,"note":"ok"},"tools_ok":{"pass":true,"note":"调3次才成"},"artifact_expected":{"pass":true,"note":""},"score":3,"summary":"试错但达成"}'
     d = cr.parse_eval_verdict(raw)
@@ -86,6 +94,7 @@ def main():
     test_single_call_not_flagged()
     test_no_tools()
     test_efficiency_rule_is_soft_signal()
+    test_no_tool_but_good_result_not_penalized()
     test_parse_verdict_dims()
     test_parse_verdict_optional_dim()
     print("OK test_eval_judge_prompt")
