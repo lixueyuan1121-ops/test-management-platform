@@ -13,6 +13,11 @@
 //   - 消耗+模型在 .conversation-finished-footer
 const { _isMcp, _mcpServer, sanitizeDialogText } = require('./ws-trace');
 
+// 折叠头「已完成 …」完成标记:「已完成」后跟数字(可隔空格/冒号),兼容「已完成 42s」「已完成 2分43秒」
+// 「已完成 1小时2分3秒」等所有时长形态。检测(轮询/选耗时 title)与解析(parseDuration)统一用它,
+// 避免只认整数秒「\d+s」导致 ≥60s 的复合时长(如「2分43秒」)漏检 → 耗时恒空。
+const DONE_MARKER_RE = /已完成[\s:：]*\d/;
+
 // 解析 conversation-finished-footer 文本：含「共消耗 / <bean> / <model> / <time>」等行。
 // 纯函数，导出供离线单测。footer 各行由 innerText 换行分隔。
 function parseFooter(text) {
@@ -26,11 +31,43 @@ function parseFooter(text) {
   return out;
 }
 
-// 从思考折叠头文本「已完成 17s」抽耗时（秒，字符串）。无完成标记返回空串。纯函数，导出供单测。
+// 从思考折叠头文本「已完成 …」抽耗时,统一换算成纯秒(字符串)。无「已完成」标记返回空串。
+// 纯函数,导出供单测。折叠头 <60s 呈「已完成 42s」、≥60s 呈「已完成 2分43秒」(中文复合,与纳米
+// .chat-thinking-toggle__label 同形),也可能是「1小时2分3秒」/「01:05」/纯秒。口径对齐
+// dialog-runner._durationToSeconds 与后端 _parse_seconds:解析不出返回空(不臆造耗时)。
 function parseDuration(text) {
-  if (!text) return '';
-  const m = text.match(/已完成\s*(\d+)\s*s/);
-  return m ? m[1] : '';
+  const s = ('' + (text || '')).trim();
+  if (!s) return '';
+  // 必须是「已完成」态才有确定耗时(思考中/其他折叠头无耗时);取「已完成」之后到行尾的时长表达。
+  const done = s.match(/已完成[\s:：]*(.+)/);
+  if (!done) return '';
+  const dur = done[1].trim();
+  const sec = _durationToSeconds(dur);
+  return sec != null ? String(sec) : '';
+}
+
+// 把「X小时Y分Z秒」中文 /「5m 2s」「1h5m2s」英文 / hh:mm:ss / 纯秒数 统一换算成总秒数;解析不出返回 null。
+// 与 dialog-runner._durationToSeconds、后端 _parse_seconds 同口径(三处镜像,改一处须同步)。
+function _durationToSeconds(text) {
+  const s = ('' + (text || '')).trim();
+  if (!s) return null;
+  // ① hh:mm:ss / mm:ss 冒号格式
+  if (/^\d{1,2}(?::\d{1,2}){1,2}$/.test(s)) {
+    return s.split(':').reduce((acc, n) => acc * 60 + parseInt(n, 10), 0);
+  }
+  // ② 时/分/秒任意组合(各段可缺省):中文 小时/时·分·秒,英文 h·m·s。
+  //    英文单位用「后不接字母」lookahead 收尾——避免把 500ms 的 m 误当分钟、s 误当秒。
+  let total = 0, matched = false;
+  const h = s.match(/(\d+(?:\.\d+)?)\s*(?:小时|小時|時|时|h(?![a-z]))/i);
+  if (h) { total += parseFloat(h[1]) * 3600; matched = true; }
+  const m = s.match(/(\d+(?:\.\d+)?)\s*(?:分钟|分|m(?![a-z]))/i);
+  if (m) { total += parseFloat(m[1]) * 60; matched = true; }
+  const c = s.match(/(\d+(?:\.\d+)?)\s*(?:秒|s(?![a-z]))/i);
+  if (c) { total += parseFloat(c[1]); matched = true; }
+  if (matched) return Math.round(total);
+  // ③ 纯数字:视为已是秒
+  if (/^\d+(?:\.\d+)?$/.test(s)) return Math.round(parseFloat(s));
+  return null;
 }
 
 // 选择器（Task 1 真机坐实）。构造时可覆盖（走 config.workbuddy）。
@@ -64,7 +101,7 @@ class WorkbuddyDomTrace {
     try {
       for (let i = 0; i < 10; i++) {
         const titles = await page.locator(sel.thinkingTitle).allInnerTexts().catch(() => []);
-        if (titles.some(t => /已完成\s*\d+\s*s/.test(t || ''))) break;
+        if (titles.some(t => DONE_MARKER_RE.test(t || ''))) break;
         await page.waitForTimeout(500);
       }
     } catch (_) {}
@@ -91,22 +128,23 @@ class WorkbuddyDomTrace {
       }
     } catch (_) {}
 
-    const d = await page.evaluate((sel) => {
+    const d = await page.evaluate(({ sel, doneMarkerSrc }) => {
+      const doneRe = new RegExp(doneMarkerSrc);
       const txt = (el) => el ? (el.innerText || '').trim() : '';
       const answers = Array.from(document.querySelectorAll(sel.answer));
       const answer = answers.length ? txt(answers[answers.length - 1]) : '';       // 最后一条 assistant 正文 = 本轮
       // 思考：本轮可能有多个折叠(如「已完成 15s」+「深度思考」)。耗时 title 在其中一个、
-      // 不一定是最后一个 → 遍历所有折叠:耗时取首个匹配「已完成 Ns」的 title;思考正文合并所有折叠内容。
+      // 不一定是最后一个 → 遍历所有折叠:耗时取首个匹配「已完成 …」的 title;思考正文合并所有折叠内容。
       const collapses = Array.from(document.querySelectorAll(sel.thinkingCollapse));
       let collapseTitle = '';
       const thinkParts = [];
       for (const c of collapses) {
         const tt = txt(c.querySelector(sel.thinkingTitle));
-        if (!collapseTitle && /已完成\s*\d+\s*s/.test(tt)) collapseTitle = tt;
+        if (!collapseTitle && doneRe.test(tt)) collapseTitle = tt;
         const body = txt(c.querySelector(sel.thinkingContent));
         if (body) thinkParts.push(body);
       }
-      // 无「已完成 Ns」时退回最后一个折叠的 title(不至于全空,便于排障)
+      // 无「已完成 …」时退回最后一个折叠的 title(不至于全空,便于排障)
       if (!collapseTitle && collapses.length) collapseTitle = txt(collapses[collapses.length - 1].querySelector(sel.thinkingTitle));
       const thinking = thinkParts.join('\n');
       // 来源计数（用于判断是否用了检索工具）
@@ -115,7 +153,7 @@ class WorkbuddyDomTrace {
       const footers = Array.from(document.querySelectorAll(sel.footer));
       const footerText = footers.length ? txt(footers[footers.length - 1]) : '';
       return { answer, thinking, collapseTitle, sourcesCountText, footerText };
-    }, sel);
+    }, { sel, doneMarkerSrc: DONE_MARKER_RE.source });
 
     const footer = parseFooter(d.footerText);
     this._data.answer = sanitizeDialogText(d.answer || '');
