@@ -74,6 +74,44 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
     return ok({"job_ids": job_ids, "count": len(job_ids), "skipped": skipped})
 
 
+class NotifyBatchDoneIn(BaseModel):
+    project_id: int
+    task_id: int | None = None   # 单任务重判传它 → 通知带该任务在线报告链接;跨任务/项目级不传
+    judged: int = 0              # 本批实际判定条数(前端轮询汇总)
+    failed: int = 0              # 判定失败/跳过条数
+
+
+@router.post("/notify-batch-done")
+def notify_batch_done(body: NotifyBatchDoneIn, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """手动批量判定「整批完成」后由前端补推的推推通知(带在线报告链接)。
+
+    批量判定是 N 个异步 job、后端无「整批完成」钩子,故完成时机由前端 pollAiJobs 汇总后回调此端点。
+    有 task_id → 拼该任务在线报告 /r/<code>(实时渲染,含最新判定明细);无则不带链接。
+    通知失败/无开关都不报错(与 notify_eval_pipeline 一致:NOTIFY_EVAL_PIPELINE 关则静默)。
+    """
+    from app.models import EvalTask
+    from app.services import notify
+    from app.core.config import settings
+
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    task_name = "手动批量判定"
+    share_url = None
+    if body.task_id:
+        task = db.get(EvalTask, body.task_id)
+        if task and task.project_id == body.project_id:
+            task_name = task.name
+            base = (settings.PLATFORM_BASE_URL or "").rstrip("/")
+            if base and task.summary_share_code:
+                share_url = f"{base}/r/{task.summary_share_code}"
+    lines = [f"已判定 {body.judged} 条" + (f",其中 {body.failed} 条失败/跳过" if body.failed else "")]
+    if share_url:
+        lines.append(f"在线报告: {share_url}")
+    lines.append("如需按新标准更新报告,请在平台重新生成综合评价。")
+    notify.notify_eval_pipeline(task_name, body.project_id, "✅ 已完成批量判定(手动)", lines, "blue")
+    return ok({"notified": True, "share_url": share_url})
+
+
 def _batch_judge_results(db: Session, project_id: int, run_ids: list[int] | None = None,
                          batch_id: str | None = None, provider: str | None = None,
                          votes: int = 1) -> list[dict]:

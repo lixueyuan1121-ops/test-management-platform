@@ -191,6 +191,9 @@ export const evalJudgeQuality = (projectId) => http.get('/eval-judge/judge-quali
 // 批量判定改入队(方案2 P2):POST 返回 {job_ids,count,skipped},每条 run 一个 job 由 worker 池并发跑。
 // 调用方拿 job_ids 后自行轮询(见 pollAiJobs)。
 export const judgeEvalBatch = (payload) => http.post('/eval-judge/batch', payload, { silent: true })
+// 手动批量判定整批完成后补推推推通知(带在线报告链接)。payload: {project_id, task_id?, judged, failed}。
+// 静默:通知失败不打扰用户(判定本身已成功)。
+export const notifyEvalJudgeBatchDone = (payload) => http.post('/eval-judge/notify-batch-done', payload, { silent: true })
 
 // 批量轮询一组 job 直到全部终态(done/failed/cancelled);onProgress 回传 {done,total}。返回 results 数组。
 export async function pollAiJobs(jobIds, { interval = 2000, onProgress } = {}) {

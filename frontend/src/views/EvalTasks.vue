@@ -416,7 +416,7 @@ import { Tickets, Plus, Refresh, InfoFilled, Download } from '@element-plus/icon
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns, listEvalTaskBatches,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
-  listEvalDimensions, judgeEvalBatch, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
+  listEvalDimensions, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
   listEvalEngines,
 } from '@/api'
 import { useAppStore } from '@/store/app'
@@ -814,6 +814,9 @@ async function judgeAll() {  const runs = judgeableRuns.value
       + (res.skipped?.length || 0)
     if (bad) ElMessage.warning(`已处理 ${res.count} 条，其中 ${bad} 条判定失败/跳过（未回填的会话请重跑后再判）`)
     else ElMessage.success(`已判定 ${res.count} 条`)
+    // 整批判完补推推推通知(带该任务在线报告链接);静默失败,不打扰。
+    notifyEvalJudgeBatchDone({ project_id: taskProjectId, task_id: detail.value?.task?.id,
+      judged: res.count, failed: bad }).catch(() => {})
     await refreshDetail()
   } catch (e) { ElMessage.error(e?.message || '批量判定失败') }
   finally { batchJudging.value = false; batchProgress.value = '' }

@@ -348,7 +348,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
-import { listEvalRuns, judgeEvalRun, judgeEvalBatch, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
+import { listEvalRuns, judgeEvalRun, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
@@ -615,6 +615,11 @@ async function batchJudge() {
     })
     const errs = results.filter((x) => x.error || x.verdict === 'error').length
     ElMessage.success(`已判定 ${res.count} 条${errs ? `（${errs} 条失败）` : ''}`)
+    // 整批判完补推推推通知;仅当这批 run 同属一个测评任务时带 task_id(→带在线报告链接),跨任务则不带。
+    const judgedRows = rows.value.filter((r) => runIds.includes(r.run_id))
+    const taskIds = [...new Set(judgedRows.map((r) => r.eval_task_id).filter(Boolean))]
+    notifyEvalJudgeBatchDone({ project_id: pid.value, task_id: taskIds.length === 1 ? taskIds[0] : null,
+      judged: res.count, failed: errs }).catch(() => {})
     await load()
   } catch (e) { ElMessage.error(e?.message || '批量判定失败') }
   finally { batchJudging.value = false; batchProgress.value = '' }

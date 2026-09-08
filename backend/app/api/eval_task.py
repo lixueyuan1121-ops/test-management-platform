@@ -906,6 +906,19 @@ def run_eval_summary_job(db: Session, job) -> dict:
                                          session_factory=sf)
     if res.get("error"):
         raise ValueError(res["error"])
+    # 手动生成综合评价完成 → 推推通知(带在线报告链接)。仅手动路径经此 handler;一条龙走
+    # generate_task_summary_headless 直连、在 eval_pipeline 里另发,故不会重复。失败不阻断 job。
+    if res.get("ok"):
+        try:
+            from app.services import notify
+            from app.services.eval_pipeline import _summary_share_url
+            share_url = _summary_share_url(sf, task.id)
+            lines = ["综合评价已重新生成,可在平台查看 HTML 报告。"]
+            if share_url:
+                lines.append(f"在线报告: {share_url}")
+            notify.notify_eval_pipeline(task.name, task.project_id, "✅ 已重新生成综合评价", lines, "blue")
+        except Exception:  # noqa: BLE001 通知失败绝不影响评价结果
+            logger.exception("手动综合评价完成通知发送失败 task=%s", task.id)
     return res
 
 
