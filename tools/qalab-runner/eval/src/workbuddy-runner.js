@@ -21,7 +21,7 @@ class WorkbuddyRunner {
   _traceSel() {
     const w = this.wb;
     return {
-      answer: w.answerSelector, thinkingCollapse: w.thinkingCollapseSelector,
+      answer: w.answerSelector, messageContent: w.messageContentSelector, thinkingCollapse: w.thinkingCollapseSelector,
       thinkingHeader: w.thinkingHeaderSelector, thinkingTitle: w.thinkingTitleSelector,
       thinkingContent: w.thinkingContentSelector, sourcesTrigger: w.sourcesTriggerSelector,
       sourcesCount: w.sourcesCountSelector, sourcesPanelTitle: w.sourcesPanelTitleSelector,
@@ -201,6 +201,9 @@ class WorkbuddyRunner {
     const completed = !!meta.completed;
     const incomplete = !meta.errorMsg && (!completed || looksIncomplete(answerText));
     const success = !meta.errorMsg && !incomplete && answerText.trim().length > 0;
+    // 耗时抓取证据(便于真机复验长会话回填):打印解析值 + 原文,一眼看出命中哪种格式/是否落空。
+    if (trace.reported_duration) this._log(`   耗时抓取: ${trace.reported_duration}s (原文「${trace.reported_duration_raw || ''}」)`);
+    else this._warn(`   耗时未抓到: 原文「${trace.reported_duration_raw || '(空)'}」——若非空请核对格式,贴给维护者补规则`);
     return {
       caseId: testCase.caseId, row: testCase.row, account: testCase.account || 'workbuddy',
       conversationId: testCase.conversationId, turnIndex: testCase.turnIndex, question: testCase.question,
@@ -208,7 +211,7 @@ class WorkbuddyRunner {
       rawMessage: meta.rawMessage || null,
       shareLink: trace.share_link || null, artifactShareLink: (trace.artifacts[0] && trace.artifacts[0].share_link) || null,
       hasArtifact: trace.artifacts.length > 0,
-      reportedDuration: trace.reported_duration || null, reportedDurationRaw: null,
+      reportedDuration: trace.reported_duration || null, reportedDurationRaw: trace.reported_duration_raw || null,
       beanCost: trace.bean_cost || null, cost: null, costRaw: null,
       durationMs: (meta.endTime || Date.now()) - (meta.startTime || Date.now()),
       startTime: meta.startTime, endTime: meta.endTime,

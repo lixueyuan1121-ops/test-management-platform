@@ -70,9 +70,28 @@ function _durationToSeconds(text) {
   return null;
 }
 
-// 选择器（Task 1 真机坐实）。构造时可覆盖（走 config.workbuddy）。
+// 从多个候选文本里挑出耗时并换算成纯秒。候选优先级:折叠头 titles(主来源)> messageText(兜底,
+// 用于耗时不在 cr-collapse 的场景——探针 probe-workbuddy-duration.js 待确认)。任一候选能解析出
+// 「已完成 …」耗时即取;返回 { seconds, raw }(raw=命中的原文,供 runner 落日志作证据)。全不命中→seconds=''。
+function pickDurationSeconds({ titles = [], messageText = '' } = {}) {
+  const candidates = [...titles];
+  // messageText 可能整段(含回答正文),只挑含「已完成 …」的那一行,避免把正文塞进 raw。
+  if (messageText) {
+    for (const line of String(messageText).split('\n')) {
+      if (DONE_MARKER_RE.test(line)) candidates.push(line.trim());
+    }
+  }
+  for (const t of candidates) {
+    const s = parseDuration(t);
+    if (s) return { seconds: s, raw: t };
+  }
+  return { seconds: '', raw: candidates.find(Boolean) || '' };
+}
+
+
 const SEL = {
   answer: '.cr-markdown',                          // assistant 回答正文
+  messageContent: '.cr-message-list__content',     // 本轮消息容器(耗时兜底候选来源)
   thinkingCollapse: 'section.cr-collapse',         // 思考折叠组件
   thinkingHeader: '.cr-collapse__header',          // 折叠头（点开用）
   thinkingTitle: '.cr-collapse__title',            // 头文本「已完成 Ns」（耗时来源）
@@ -86,7 +105,7 @@ const SEL = {
 
 class WorkbuddyDomTrace {
   constructor(sel = {}) { this.sel = { ...SEL, ...sel }; this._data = this._empty(); }
-  _empty() { return { session_id: null, thinking: '', tool_calls: [], artifacts: [], answer: '', beanCost: '', model: '', reportedDuration: '', shareLink: '' }; }
+  _empty() { return { session_id: null, thinking: '', tool_calls: [], artifacts: [], answer: '', beanCost: '', model: '', reportedDuration: '', reportedDurationRaw: '', shareLink: '' }; }
   reset() { this._data = this._empty(); }
   // 对话分享链接由 runner 抓取(点分享→复制链接→读剪贴板)后塞入,buildTrace 一并回写。
   setShareLink(url) { this._data.shareLink = url || ''; }
@@ -136,10 +155,12 @@ class WorkbuddyDomTrace {
       // 思考：本轮可能有多个折叠(如「已完成 15s」+「深度思考」)。耗时 title 在其中一个、
       // 不一定是最后一个 → 遍历所有折叠:耗时取首个匹配「已完成 …」的 title;思考正文合并所有折叠内容。
       const collapses = Array.from(document.querySelectorAll(sel.thinkingCollapse));
+      const collapseTitles = [];
       let collapseTitle = '';
       const thinkParts = [];
       for (const c of collapses) {
         const tt = txt(c.querySelector(sel.thinkingTitle));
+        if (tt) collapseTitles.push(tt);
         if (!collapseTitle && doneRe.test(tt)) collapseTitle = tt;
         const body = txt(c.querySelector(sel.thinkingContent));
         if (body) thinkParts.push(body);
@@ -147,12 +168,15 @@ class WorkbuddyDomTrace {
       // 无「已完成 …」时退回最后一个折叠的 title(不至于全空,便于排障)
       if (!collapseTitle && collapses.length) collapseTitle = txt(collapses[collapses.length - 1].querySelector(sel.thinkingTitle));
       const thinking = thinkParts.join('\n');
+      // 本轮整条消息文本:耗时若不在 cr-collapse(真机待确认场景)时的兜底候选来源。
+      const msgEls = sel.messageContent ? Array.from(document.querySelectorAll(sel.messageContent)) : [];
+      const messageText = msgEls.length ? txt(msgEls[msgEls.length - 1]) : '';
       // 来源计数（用于判断是否用了检索工具）
       const cntEl = document.querySelector(sel.sourcesCount);
       const sourcesCountText = txt(cntEl);
       const footers = Array.from(document.querySelectorAll(sel.footer));
       const footerText = footers.length ? txt(footers[footers.length - 1]) : '';
-      return { answer, thinking, collapseTitle, sourcesCountText, footerText };
+      return { answer, thinking, collapseTitle, collapseTitles, messageText, sourcesCountText, footerText };
     }, { sel, doneMarkerSrc: DONE_MARKER_RE.source });
 
     const footer = parseFooter(d.footerText);
@@ -160,7 +184,10 @@ class WorkbuddyDomTrace {
     this._data.thinking = sanitizeDialogText(d.thinking || '');
     this._data.beanCost = footer.beanCost;
     this._data.model = footer.model;
-    this._data.reportedDuration = parseDuration(d.collapseTitle);
+    // 耗时:折叠头 titles 为主来源,整条消息文本兜底(耗时不在 cr-collapse 时);保留 raw 供 runner 落日志作证据。
+    const dur = pickDurationSeconds({ titles: d.collapseTitles || [d.collapseTitle], messageText: d.messageText });
+    this._data.reportedDuration = dur.seconds;
+    this._data.reportedDurationRaw = dur.raw;
     // 工具证据：WorkBuddy 无结构化工具卡，把"来源"面板规整成一条 web_search 工具调用（决策：抓来源作工具证据）。
     // name=web_search，result_text=来源列表/计数；original_tool_name/args 留空（拿不到 MCP 工具名/参数，属产品形态固有差异）。
     this._data.tool_calls = [];
@@ -183,9 +210,10 @@ class WorkbuddyDomTrace {
       thinking: this._data.thinking, tool_calls: this._data.tool_calls,
       artifacts: this._data.artifacts, answer: this._data.answer,
       ws_captured: false, ws_connected: true, dom_captured: true,
-      reported_duration: this._data.reportedDuration, bean_cost: this._data.beanCost, model: this._data.model,
+      reported_duration: this._data.reportedDuration, reported_duration_raw: this._data.reportedDurationRaw,
+      bean_cost: this._data.beanCost, model: this._data.model,
       share_link: this._data.shareLink || null,
     };
   }
 }
-module.exports = { WorkbuddyDomTrace, parseFooter, parseDuration };
+module.exports = { WorkbuddyDomTrace, parseFooter, parseDuration, pickDurationSeconds };
