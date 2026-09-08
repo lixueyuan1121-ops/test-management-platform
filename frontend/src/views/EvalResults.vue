@@ -99,9 +99,9 @@
             </el-checkbox>
             <el-button
               size="small" type="primary" :icon="DataAnalysis" :loading="batchJudging"
-              :disabled="!pid || !doneCount"
+              :disabled="!pid || !judgeableCount"
               @click="batchJudge"
-            >{{ batchJudging && batchProgress ? batchProgress : `批量判定 done（${doneCount}）` }}</el-button>
+            >{{ batchJudging && batchProgress ? batchProgress : `批量判定（${judgeableCount}）` }}</el-button>
             <el-popconfirm v-if="failedCount" :title="`重跑当前列表全部 ${failedCount} 条失败？`" width="240" @confirm="retryAllFailed">
               <template #reference>
                 <el-button size="small" type="success">重跑失败（{{ failedCount }}）</el-button>
@@ -424,6 +424,8 @@ const multicaPending = ref(0)
 
 // done 状态（已执行完待判定）条数：批量判定针对这些
 const doneCount = computed(() => rows.value.filter((r) => r.status === 'done').length)
+// 批量判定的实际范围:done(待判)+ judged(已判,允许按新标准重判);仅排除 pending/running/failed/cancelled。
+const judgeableCount = computed(() => rows.value.filter((r) => r.status === 'done' || r.status === 'judged').length)
 const failedCount = computed(() => rows.value.filter((r) => r.status === 'failed').length)
 const judgedCount = computed(() => rows.value.filter((r) => r.verdict).length)
 const abnormalCount = computed(() => rows.value.filter((r) => r.is_abnormal).length)
@@ -596,10 +598,17 @@ async function judgeOne(row) {
 
 // 批量判定改入队(方案2 P2):后端每条 run 建一个 job,前端轮询这批 job;完成后整表刷新。
 async function batchJudge() {
-  if (!pid.value || !doneCount.value) return
+  if (!pid.value || !judgeableCount.value) return
   batchJudging.value = true
   try {
-    const res = await judgeEvalBatch({ project_id: pid.value, votes: robustJudge.value ? 3 : 1 })
+    // 显式传当前视图里 done/judged 的 run_ids(judged 允许按新标准重判):后端 /batch 传了 run_ids
+    // 就按 id 精确圈定,不走「默认只判 done」的范围(那会漏掉已判过的)。范围=当前批次筛选所见。
+    const runIds = rows.value
+      .filter((r) => (r.status === 'done' || r.status === 'judged') && Number.isInteger(r.run_id))
+      .map((r) => r.run_id)
+    if (!runIds.length) { ElMessage.info('没有可判定的执行项（done/judged 状态）'); return }
+    const res = await judgeEvalBatch({ project_id: pid.value, run_ids: runIds,
+      votes: robustJudge.value ? 3 : 1 })
     if (!res.count) { ElMessage.info('没有可判定的执行项'); return }
     const results = await pollAiJobs(res.job_ids, {
       onProgress: ({ done, total }) => { batchProgress.value = `判定中 ${done}/${total}` },

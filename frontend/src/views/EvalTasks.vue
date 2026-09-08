@@ -800,9 +800,10 @@ async function judgeAll() {  const runs = judgeableRuns.value
     // 只传 done 状态的 run_ids（judged 的也允许重判）；用任务的 project_id 而非全局 pid
     const taskProjectId = detail.value?.task?.project_id || pid.value
     if (!taskProjectId) { ElMessage.warning('缺少项目信息，请刷新页面后重试'); return }
+    // done(待判)与 judged(已判,允许按新标准重判)都纳入;仅排除 pending/running/failed/cancelled。
     // 双保险过滤非法 id：任何 null/undefined 混入都会触发后端 422「参数校验失败」
-    const runIds = runs.filter((r) => r.status === 'done').map((r) => r.run_id).filter((id) => Number.isInteger(id))
-    if (!runIds.length) { ElMessage.warning('没有待判定的用例（done 状态）'); return }
+    const runIds = runs.filter((r) => r.status === 'done' || r.status === 'judged').map((r) => r.run_id).filter((id) => Number.isInteger(id))
+    if (!runIds.length) { ElMessage.warning('没有可判定的用例（done/judged 状态）'); return }
     const res = await judgeEvalBatch({ project_id: taskProjectId, run_ids: runIds, votes: robustJudge.value ? 3 : 1 })
     if (!res.count) { ElMessage.info('没有可判定的用例'); return }
     // 每条 run 一个 job,轮询这批 job(方案2 P2);done 结果里 verdict=error 计失败
