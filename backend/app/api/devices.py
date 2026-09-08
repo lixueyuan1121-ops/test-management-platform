@@ -200,6 +200,8 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
                   "blocked": today.get("blocked", 0)},
         # 当前执行中明细,动效数据源
         "active_runs": active,
+        # 该执行机支持的被测引擎(namiwork / workbuddy);NULL 兼容老机视作 namiwork
+        "eval_engine": d.eval_engine or None,
     }
 
 

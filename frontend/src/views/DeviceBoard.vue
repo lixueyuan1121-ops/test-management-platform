@@ -58,6 +58,7 @@
             <span v-for="k in runKinds(d)" :key="k" class="kind-tag" :class="'k-' + k">{{ KIND_LABEL[k] || k }}</span>
             <div class="runner-id">{{ d.runner_id }}</div>
             <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain" class="plat-tag">{{ d.platform.toUpperCase() }}</el-tag>
+            <el-tag v-if="d.eval_engine === 'workbuddy'" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
           </div>
 
           <div class="meta">
@@ -278,6 +279,7 @@ onUnmounted(() => {
 .dev-name { font-size: 15px; font-weight: 700; color: #1a1d21; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .runner-id { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #7d8a9b; background: #f0f2f5; padding: 2px 7px; border-radius: 5px; flex: none; }
 .plat-tag { margin-left: 4px; flex: none; }
+.wb-tag { margin-left: 4px; flex: none; background: #e8f4ff !important; color: #1677ff !important; border-color: #91caff !important; font-weight: 600; }
 /* 任务类型标识:卡片头全称 tag + 明细行短标。功能=蓝系、测评=紫系;新类型在 KIND_* 与此处补一组即可 */
 .kind-tag { flex: none; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 5px; letter-spacing: .5px; }
 .run-kind { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; letter-spacing: .3px; }
