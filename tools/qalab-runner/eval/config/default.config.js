@@ -399,6 +399,11 @@ module.exports = {
     // <span data-content-block-meta-type="file">,其祖先 [data-contentblock] 的 JSON _meta.blockStatus
     // 由 uploading→completed。runner 用它计数+判就绪(见 workbuddy-runner._pasteAttachments)。
     attachmentPasteReadySelector: '[data-content-block-meta-type="file"]',
+    // 「复制 message」抓原始结构化 JSON(真机坐实 2026-09-08):消息气泡「更多操作」按钮 → 菜单「复制 message」项
+    // → 复制出完整 JSON(requestId/traceId/思维链/modelId 等)到剪贴板,回填 EvalRun.raw_message 供分析。
+    moreActionSelector: '[class*="assistantFeedback"] button[aria-label="更多操作"]',
+    copyMessageItemSelector: '[class*="_item_"]',
+    copyMessageText: '复制 message',
   },
 
   // ========== 批量录制账号登录态（bin/record-accounts.js / 批量录制登录态.bat） ==========

@@ -163,6 +163,39 @@ class WorkbuddyRunner {
     } catch (e) { this._warn(`   抓对话分享链接失败: ${(e.message || '').split('\n')[0]}`); return ''; }
   }
 
+  // 抓「复制 message」原始结构化 JSON:点消息气泡「更多操作」→ 菜单「复制 message」→ 读剪贴板。
+  // 真机坐实(2026-09-08):复制出完整 JSON(requestId/traceId/conversationId/思维链 reasoning/modelId/时间戳),
+  // 价值超过 answer(仅正文),存 EvalRun.raw_message 供后续分析。失败(无按钮/剪贴板未更新)返回空串,不阻断流程。
+  // ⚠️ 菜单靠真实指针:先 hover「更多操作」再 click(纯 click 时有时不弹,同附件级联菜单经验)。
+  async _captureRawMessage() {
+    const moreSel = this.wb.moreActionSelector;
+    const itemSel = this.wb.copyMessageItemSelector;
+    const itemText = this.wb.copyMessageText || '复制 message';
+    if (!moreSel || !itemSel) return '';
+    try {
+      try { await this.page.context().grantPermissions(['clipboard-read', 'clipboard-write']); } catch (_) {}
+      const more = this.page.locator(moreSel).last();   // 最后一条消息的更多操作
+      if (!(await more.count())) return '';
+      await this.page.evaluate(() => navigator.clipboard.writeText('__WB_MSG_SENTINEL__')).catch(() => {});
+      await more.hover().catch(() => {});                // 先 hover(级联菜单靠真实指针)
+      await this.page.waitForTimeout(300);
+      await more.click({ timeout: 5000 }).catch(() => {});
+      await this.page.waitForTimeout(800);
+      const item = this.page.locator(itemSel, { hasText: itemText }).first();
+      if (!(await item.count())) { await this.page.keyboard.press('Escape').catch(() => {}); return ''; }
+      await item.click({ timeout: 5000 }).catch(() => {});
+      let clip = '__WB_MSG_SENTINEL__';
+      for (let i = 0; i < 16; i++) {
+        await this.page.waitForTimeout(500);
+        try { clip = await this.page.evaluate(() => navigator.clipboard.readText()); } catch (_) {}
+        if (clip && clip !== '__WB_MSG_SENTINEL__') break;
+      }
+      await this.page.keyboard.press('Escape').catch(() => {});
+      if (!clip || clip === '__WB_MSG_SENTINEL__') { this._warn('   复制 message:点后剪贴板未更新'); return ''; }
+      return String(clip);
+    } catch (e) { this._warn(`   抓复制 message 失败: ${(e.message || '').split('\n')[0]}`); return ''; }
+  }
+
   _buildResult(testCase, trace, meta) {
     const answerText = trace.answer || '';
     const completed = !!meta.completed;
@@ -172,6 +205,7 @@ class WorkbuddyRunner {
       caseId: testCase.caseId, row: testCase.row, account: testCase.account || 'workbuddy',
       conversationId: testCase.conversationId, turnIndex: testCase.turnIndex, question: testCase.question,
       answer: meta.errorMsg ? `[执行失败] ${meta.errorMsg}` : success ? answerText : `[未完成:${meta.completeReason}]`,
+      rawMessage: meta.rawMessage || null,
       shareLink: trace.share_link || null, artifactShareLink: (trace.artifacts[0] && trace.artifacts[0].share_link) || null,
       hasArtifact: trace.artifacts.length > 0,
       reportedDuration: trace.reported_duration || null, reportedDurationRaw: null,
@@ -192,9 +226,10 @@ class WorkbuddyRunner {
       await this._sendOne(testCase);
       const done = await this._waitComplete(baseline);
       await this.trace.captureTurn(this.page);
+      const rawMessage = await this._captureRawMessage();        // 抓「复制 message」原始 JSON(点更多操作→复制 message→剪贴板)
       this.trace.setShareLink(await this._captureShareLink());   // 抓对话分享链接(点分享→复制链接→剪贴板)
       const trace = this.trace.buildTrace(testCase.run_id);
-      return this._buildResult(testCase, trace, { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now() });
+      return this._buildResult(testCase, trace, { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now(), rawMessage });
     } catch (e) {
       const msg = (e.message || '').split('\n')[0];
       return this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: false, completeReason: 'exception', errorMsg: msg, startTime, endTime: Date.now() });
@@ -218,8 +253,9 @@ class WorkbuddyRunner {
         await this._sendOne(testCase);                 // 后续轮不新建对话，在同一对话追加
         const done = await this._waitComplete(baseline);
         await this.trace.captureTurn(this.page);
+        const rawMessage = await this._captureRawMessage();        // 抓「复制 message」原始 JSON
         this.trace.setShareLink(await this._captureShareLink());   // 抓对话分享链接
-        const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now() });
+        const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now(), rawMessage });
         results.push(r); if (onTurnDone) await onTurnDone(r, testCase).catch(() => {});
       } catch (e) {
         const msg = (e.message || '').split('\n')[0];

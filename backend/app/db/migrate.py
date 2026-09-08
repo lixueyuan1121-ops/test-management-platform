@@ -575,6 +575,15 @@ def ensure_eval_run_target_device() -> None:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_device VARCHAR(64) NULL"))
 
 
+def ensure_eval_run_raw_message_column() -> None:
+    """eval_run 补 raw_message 列(WorkBuddy「复制 message」原始结构化 JSON)。老库 ALTER;新库 create_all 已含。"""
+    if not _columns("eval_run"):
+        return
+    if "raw_message" not in _columns("eval_run"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN raw_message TEXT NULL"))
+
+
 def ensure_eval_task_tables() -> None:
     """建 eval_task 表(幂等) + eval_run 补 eval_task_id 列(测评任务子分类)。
 

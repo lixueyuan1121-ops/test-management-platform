@@ -362,6 +362,7 @@ CREATE TABLE `eval_run` (
   `artifact_share_link` VARCHAR(512) NULL,
   `answer` TEXT NULL,
   `trace` TEXT NULL,
+  `raw_message` TEXT NULL,
   `reported_duration` VARCHAR(32) NULL,
   `bean_cost` VARCHAR(32) NULL,
   `tokens` VARCHAR(32) NULL,

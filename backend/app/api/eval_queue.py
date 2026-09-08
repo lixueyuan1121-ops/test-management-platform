@@ -118,6 +118,7 @@ def _to_out(r: EvalRun) -> dict:
         "artifact_share_link": r.artifact_share_link,
         "answer": r.answer,
         "trace": r.trace,
+        "raw_message": r.raw_message,
         "reported_duration": r.reported_duration,
         "bean_cost": r.bean_cost,
         "tokens": r.tokens,
@@ -225,6 +226,7 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
     r.share_link = body.share_link
     r.artifact_share_link = body.artifact_share_link
     r.answer = body.answer
+    r.raw_message = body.raw_message
     r.reported_duration = body.reported_duration
     r.bean_cost = body.bean_cost
     r.tokens = body.tokens
@@ -295,7 +297,7 @@ def reset_run_for_retry(r: EvalRun) -> None:
     r.status = EvalRunStatus.pending
     r.reason = None
     r.session_id = None; r.share_link = None; r.artifact_share_link = None
-    r.answer = None; r.trace = None
+    r.answer = None; r.trace = None; r.raw_message = None
     r.reported_duration = None; r.bean_cost = None; r.tokens = None; r.duration_ms = None
     r.verdict = None; r.score = None; r.verdict_dims = None; r.verdict_reason = None
     r.judged_by = None; r.is_abnormal = False

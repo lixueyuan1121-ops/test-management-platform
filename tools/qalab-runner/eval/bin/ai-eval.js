@@ -754,7 +754,7 @@ async function runWorkbuddyBatch(items, client, config, logger) {
         await client.report(runId, {
           status: result.success ? 'done' : 'failed',
           share_link: result.shareLink || null, artifact_share_link: result.artifactShareLink || null,
-          answer: result.answer || null, reported_duration: result.reportedDuration || null,
+          answer: result.answer || null, raw_message: result.rawMessage || null, reported_duration: result.reportedDuration || null,
           bean_cost: result.beanCost || null, tokens: result.cost || null,
           session_id: trace.session_id || null,
           reason: result.success ? null : (result.completeReason || null),

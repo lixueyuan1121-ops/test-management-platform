@@ -23,6 +23,7 @@ class EvalReportIn(BaseModel):
     share_link: str | None = None
     artifact_share_link: str | None = None
     answer: str | None = None
+    raw_message: str | None = None  # WorkBuddy「复制 message」原始结构化 JSON（供后续分析）
     reported_duration: str | None = None
     bean_cost: str | None = None
     tokens: str | None = None

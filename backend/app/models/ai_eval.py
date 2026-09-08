@@ -85,6 +85,9 @@ class EvalRun(Base):
     artifact_share_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)  # 最终回答正文
     trace: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: 会话全过程轨迹（见 spec §5.4）
+    # WorkBuddy「更多操作 → 复制 message」复制出的完整结构化 JSON（requestId/traceId/思维链/modelId/时间戳等，
+    # 价值超过 answer 仅最终正文），原样存串供后续分析。其他引擎抓不到则为 NULL。
+    raw_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     reported_duration: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 平台上报耗时（秒）
     bean_cost: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 算力豆变动
     tokens: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 本次 tokens（仅记录）
