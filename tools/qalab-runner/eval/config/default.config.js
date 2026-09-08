@@ -395,6 +395,10 @@ module.exports = {
     shareChannelSelector: '.wb-share-channel-btn',               // 渠道按钮(配合 hasText 定位复制链接)
     // 完成/元信息
     footerSelector: '.conversation-finished-footer',
+    // 附件粘贴就绪标志:粘贴后 Slate 编辑器把文件渲染成 file inline block(真机坐实 2026-09-08)。
+    // <span data-content-block-meta-type="file">,其祖先 [data-contentblock] 的 JSON _meta.blockStatus
+    // 由 uploading→completed。runner 用它计数+判就绪(见 workbuddy-runner._pasteAttachments)。
+    attachmentPasteReadySelector: '[data-content-block-meta-type="file"]',
   },
 
   // ========== 批量录制账号登录态（bin/record-accounts.js / 批量录制登录态.bat） ==========

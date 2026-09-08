@@ -11,7 +11,7 @@ const DesktopPool = require('../src/desktop-pool');
 const DesktopRunner = require('../src/desktop-runner');
 const { WorkbuddyPool } = require('../src/workbuddy-pool');
 const { WorkbuddyRunner } = require('../src/workbuddy-runner');
-const { groupIntoConversations } = require('../src/conversation-group');
+const { groupIntoConversations, convHasAttachments } = require('../src/conversation-group');
 const { downloadAttachments } = require('../src/attachment-downloader');
 const ResultReporter = require('../src/reporter');
 const DiagnosticReporter = require('../src/diagnostic-reporter');
@@ -766,6 +766,31 @@ async function runWorkbuddyBatch(items, client, config, logger) {
     const convs = groupIntoConversations(items);
     for (const conv of convs) {
       const head = conv[0]; const headP = head.payload || {};
+      // 附件:平台附件为公开 CDN url,执行前逐轮下到本地、挂到 it._attachmentPaths 供粘贴上传。
+      // WorkBuddy 附件走原生文件对话框(setInputFiles 不适用),真机坐实方案 = 剪贴板 file-url + Meta+V 粘贴
+      // (见 workbuddy-runner._pasteAttachments)。任一附件下载失败 → 整组 fail-closed 标记 failed,
+      // 绝不「缺附件裸跑」污染判定(多轮里缺一轮附件更会连累整段上下文)。
+      if (convHasAttachments(conv)) {
+        const totalAtt = conv.reduce((n, it) => n + (((it.payload || {}).attachments) || []).length, 0);
+        logger.info(`[workbuddy] 会话(首轮 run ${head.run_id})含附件(${totalAtt} 个),下载中...`);
+        try {
+          for (const it of conv) {
+            const atts = (it.payload || {}).attachments || [];
+            it._attachmentPaths = atts.length > 0
+              ? await downloadAttachments(atts, path.resolve('./output/_attachments', String(it.run_id)), { logger })
+              : [];
+          }
+        } catch (e) {
+          const reason = `附件下载失败: ${(e.message || '').split('\n')[0]}`;
+          logger.warn(`[workbuddy] 会话(首轮 run ${head.run_id})${reason},fail-closed 整组标记 failed`);
+          for (const it of conv) {
+            try { await client.claim(it.run_id); } catch (_) {}
+            try { await client.report(it.run_id, { status: 'failed', reason }); }
+            catch (er) { logger.error(`[workbuddy] report failed 失败 run ${it.run_id}: ${er.message}`); }
+          }
+          continue;
+        }
+      }
       // dialogOptions 就地改(与纳米同纪律):runner 内 _applyDialogOptions 现读 this.execution.dialogOptions。
       config.execution = config.execution || {};
       config.execution.dialogOptions = (headP.dialog_options && typeof headP.dialog_options === 'object') ? headP.dialog_options : config.execution.dialogOptions;
@@ -775,7 +800,7 @@ async function runWorkbuddyBatch(items, client, config, logger) {
       const testCases = conv.map(it => {
         const p = it.payload || {};
         return { caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
-          attachments: p.attachments || [], attachmentPaths: [],
+          attachments: p.attachments || [], attachmentPaths: it._attachmentPaths || [],
           conversationId: p.conversation_group || `__run_${it.run_id}`, turnIndex: p.turn_index || 0, account: 'workbuddy' };
       });
       const onTurnDone = async (result, testCase) => { await reportRun(testCase.run_id, result, runner.getDomTrace().buildTrace(testCase.run_id)); };

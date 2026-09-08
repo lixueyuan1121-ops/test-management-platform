@@ -2,6 +2,7 @@
 // WorkBuddy 对话驱动器：CDP 已连的 page 上开新对话、输入(contenteditable)、选模型档、发送、等完成、抓答案+trace。
 // 对外接口对齐 DesktopRunner（runOne/runConversationTurns/result 形状），使 bin/ai-eval.js 的 reportRun 无缝复用。
 const { WorkbuddyDomTrace } = require('./workbuddy-dom-trace');
+const { setClipboardFiles } = require('./clipboard-file');
 
 function looksIncomplete(answer) {
   const t = (answer || '').trim();
@@ -54,10 +55,65 @@ class WorkbuddyRunner {
   async _sendOne(testCase) {
     await this._applyDialogOptions();
     const input = this.page.locator(this.wb.inputSelector).first();
+    // 附件(如有):必须先粘贴附件、确认「附件卡片挂上」再输 query,绝不「无附件裸发 query」——那样是
+    // 对着没附件的回答评分,污染判定。WorkBuddy 附件走原生文件对话框(setInputFiles 不适用),真机坐实
+    // 可行方案 = 系统剪贴板放 file-url + 聚焦编辑器 + CDP Meta+V 粘贴 → Slate 渲染成 file inline block。
+    const atts = testCase.attachmentPaths || [];
+    if (atts.length > 0) {
+      await this._pasteAttachments(input, atts);   // 未挂上即抛错(本条判失败),不裸发
+    }
     await input.click();
     await input.type(testCase.question, { delay: 12 });
     await this.page.waitForTimeout(300);
     await input.press('Enter');
+  }
+
+  // 把本地附件粘贴进输入框并确认挂上。链路(真机坐实,~1s/附件):
+  //   ① 系统剪贴板写 public.file-url(AppKit NSPasteboard)② 聚焦编辑器 ③ CDP page.keyboard Meta+V
+  //   ④ 轮询等 file inline block([data-content-block-meta-type=file]) 计数达期望且 blockStatus=completed
+  // ⚠️ 必须 CDP 发键(page.keyboard),System Events 发键落不进 Electron 渲染进程(真机验证过)。
+  // 就绪判据取自真机 DOM:粘贴后编辑器出现 <span data-content-block-meta-type="file">,其 data-contentblock
+  // JSON 的 _meta.blockStatus 由 uploading→completed。超时未就绪显式抛错(本条判失败,不裸发 query)。
+  async _pasteAttachments(input, paths) {
+    const sel = this.wb.attachmentPasteReadySelector || '[data-content-block-meta-type="file"]';
+    const timeoutMs = this.execution.attachmentUploadTimeout || 60000;
+    try {
+      setClipboardFiles(paths);   // 一次性把全部附件写进剪贴板(writeObjects 多 URL)
+    } catch (e) {
+      throw new Error(`附件写入剪贴板失败: ${(e.message || '').split('\n')[0]}`);
+    }
+    await input.click();          // 聚焦编辑器,光标落入
+    await this.page.waitForTimeout(200);
+    await this.page.keyboard.press('Meta+v');   // CDP 发键,直达渲染进程
+    // 轮询等附件卡片达期望数量且全部 completed
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const st = await this._attachmentReadyState(sel).catch(() => ({ count: 0, allCompleted: false }));
+      if (st.count >= paths.length && st.allCompleted) {
+        this._log(`   附件已粘贴挂上(${st.count}/${paths.length},completed)`);
+        return;
+      }
+      await this.page.waitForTimeout(500);
+    }
+    // 超时:附件未按期挂上 → 抛错(本条判失败),不裸发 query 污染判定
+    const st = await this._attachmentReadyState(sel).catch(() => ({ count: 0, allCompleted: false }));
+    throw new Error(`附件粘贴后未就绪(${(timeoutMs / 1000).toFixed(0)}s 后 ${st.count}/${paths.length} 卡片,completed=${st.allCompleted})`);
+  }
+
+  // 读附件 inline block 的就绪态:计数 + 是否全部 blockStatus=completed(uploading 期间不算就绪)。
+  async _attachmentReadyState(sel) {
+    return await this.page.evaluate((selector) => {
+      const tags = Array.from(document.querySelectorAll(selector));
+      let completed = 0;
+      for (const t of tags) {
+        // blockStatus 在祖先 [data-contentblock] 的 JSON 里
+        const block = t.closest('[data-contentblock]') || t;
+        let status = '';
+        try { status = JSON.parse(block.getAttribute('data-contentblock'))._meta.blockStatus; } catch (_) {}
+        if (status === 'completed') completed++;
+      }
+      return { count: tags.length, allCompleted: tags.length > 0 && completed === tags.length };
+    }, sel);
   }
 
   // 等本轮完成：footer 数量到达 baseline+1（本轮 footer 出现即收口）。

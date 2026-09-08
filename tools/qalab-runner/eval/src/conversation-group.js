@@ -27,4 +27,14 @@ function groupIntoConversations(pending) {
   return conversations;
 }
 
-module.exports = { groupIntoConversations };
+// 判定一个会话(conv=该会话各轮 item 数组)是否含带附件轮次。
+// 任一轮 payload.attachments 是非空数组即 true。用于止血:真支持做好前,带附件会话不裸跑(fail-closed)。
+// 全程容错(null/缺字段/非数组均判 false 不抛错),因输入来自平台下发数据。
+function convHasAttachments(conv) {
+  return (conv || []).some((it) => {
+    const a = (it && it.payload || {}).attachments;
+    return Array.isArray(a) && a.length > 0;
+  });
+}
+
+module.exports = { groupIntoConversations, convHasAttachments };
