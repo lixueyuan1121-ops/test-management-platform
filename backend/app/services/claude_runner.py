@@ -1327,6 +1327,116 @@ EVAL_TASK_SUMMARY_SYSTEM_PROMPT = (
 )
 
 
+def _extract_process_signals(raw_message, trace) -> dict:
+    """从 WorkBuddy raw_message(结构化 JSON)/ 纳米 trace 提取过程信号,供综合评价归因。
+    纯函数(不读磁盘/网络),容错。优先 raw_message(数据更完整),否则用 trace,都空则 source=none。
+    返回 {thinking_summary, tool_calls[str], tool_call_count, retry_signal, source}。
+    """
+    _MAX_THINK = 1500
+    _ERR_KW = ("error", "Error", "ERROR", "报错", "失败", "Traceback", "traceback", "Exception", "错误")
+
+    def _agg_tools(names):
+        # 按名聚合出现次数,保持首现顺序;返回(展示行列表, 总次数, 多次调用列表)
+        counts, order = {}, []
+        for n in names:
+            n = str(n or "").strip() or "(未命名)"
+            if n not in counts:
+                counts[n] = 0
+                order.append(n)
+            counts[n] += 1
+        lines, multi = [], []
+        for n in order:
+            c = counts[n]
+            lines.append(f"{n} x{c}" + ("（多次调用）" if c > 1 else ""))
+            if c > 1:
+                multi.append((n, c))
+        return lines, sum(counts.values()), multi
+
+    # 来源1: raw_message
+    s = "" if raw_message is None else str(raw_message).strip()
+    if s:
+        try:
+            obj = json.loads(s)
+            think_parts, tool_names, err_hit = [], [], False
+            msgs = obj.get("messages") if isinstance(obj, dict) else None
+            if isinstance(msgs, list):
+                for m in msgs:
+                    if not isinstance(m, dict):
+                        continue
+                    content = m.get("content")
+                    if isinstance(content, list):
+                        for blk in content:
+                            if not isinstance(blk, dict):
+                                continue
+                            btype = str(blk.get("type") or "")
+                            if btype in ("reasoning", "thinking"):
+                                if blk.get("text"):
+                                    think_parts.append(str(blk["text"]))
+                            elif "tool" in btype or "function" in btype:
+                                tool_names.append(blk.get("name") or blk.get("tool_name") or blk.get("original_tool_name"))
+                            rt = blk.get("result") or blk.get("result_text") or blk.get("text") or ""
+                            if btype and ("tool" in btype or "result" in btype) and any(k in str(rt) for k in _ERR_KW):
+                                err_hit = True
+            think = sanitize_dialog_text("\n".join(think_parts))
+            tool_lines, total, multi = _agg_tools(tool_names)
+            retry_bits = [f"{n} 调用 {c} 次" for n, c in multi]
+            if err_hit:
+                retry_bits.append("含报错重试")
+            return {
+                "thinking_summary": _clip_keep_ends(think, _MAX_THINK),
+                "tool_calls": tool_lines,
+                "tool_call_count": total,
+                "retry_signal": "；".join(retry_bits),
+                "source": "raw_message",
+            }
+        except (ValueError, TypeError):
+            return {
+                "thinking_summary": _clip_keep_ends(sanitize_dialog_text(s), _MAX_THINK),
+                "tool_calls": [], "tool_call_count": 0, "retry_signal": "", "source": "raw_message",
+            }
+
+    # 来源2: trace
+    if isinstance(trace, dict) and (trace.get("thinking") or trace.get("tool_calls")):
+        think = sanitize_dialog_text(trace.get("thinking") or "")
+        names, err_hit = [], False
+        for tc in (trace.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            names.append(tc.get("original_tool_name") or tc.get("name"))
+            if any(k in str(tc.get("result_text") or "") for k in _ERR_KW):
+                err_hit = True
+        tool_lines, total, multi = _agg_tools(names)
+        retry_bits = [f"{n} 调用 {c} 次" for n, c in multi]
+        if err_hit:
+            retry_bits.append("含报错重试")
+        return {
+            "thinking_summary": _clip_keep_ends(think, _MAX_THINK),
+            "tool_calls": tool_lines,
+            "tool_call_count": total,
+            "retry_signal": "；".join(retry_bits),
+            "source": "trace",
+        }
+
+    return {"thinking_summary": "", "tool_calls": [], "tool_call_count": 0, "retry_signal": "", "source": "none"}
+
+
+def _render_process(process) -> str:
+    """把过程信号渲染成用例块附加行(供综合评价归因)。无过程数据返回空串。"""
+    if not isinstance(process, dict) or process.get("source") in (None, "none"):
+        return ""
+    parts = []
+    think = process.get("thinking_summary") or ""
+    if think:
+        parts.append(f"\n- 思考过程:{think}")
+    tools = process.get("tool_calls") or []
+    if tools:
+        parts.append(f"\n- 工具调用:{'；'.join(tools)}（共 {process.get('tool_call_count', 0)} 次）")
+    retry = process.get("retry_signal") or ""
+    if retry:
+        parts.append(f"\n- 试错信号:{retry}")
+    return "".join(parts)
+
+
 def build_eval_task_summary_prompt(task_name: str, description: str, items: list[dict]) -> str:
     """构造「测评任务综合评价」prompt:逐条结果 → 一份 HTML 整理评价。
 
@@ -1349,6 +1459,7 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
             f"- 期望:{_clip_keep_ends(sanitize_dialog_text(it.get('expected')), 400) or '(未填)'}\n"
             f"- 判定理由:{_clip_keep_ends(sanitize_dialog_text(it.get('verdict_reason')), 500) or '(无)'}\n"
             f"- 回答:{_clip_keep_ends(sanitize_dialog_text(it.get('answer')), per_max) or '(无/执行失败:' + str(it.get('reason') or '') + ')'}"
+            + _render_process(it.get("process"))
         )
     items_block = "\n\n".join(lines)
     return f"""针对下面这个对话测评任务的一批执行结果,写一份**综合整理评价**。
@@ -1363,18 +1474,25 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
 输出要求:
 1. 只输出一个 HTML 片段(不要 <html>/<head>/<body> 外壳、不要 markdown、不要 ```代码块标记)。
 2. 只准使用这些标签:h2/h3/p/ul/ol/li/table/thead/tbody/tr/th/td/b/strong/em/blockquote/code/pre/span/div。**不要写任何属性**(不要 style/class/onclick,链接可用 <a href="http...">)。
-3. 内容结构建议:
-   <h2>总体结论</h2> 一段话给总体质量定性(通过率、主要短板)。
+3. 每条用例可能带过程数据(思考过程/工具调用/试错信号):部分产品如 WorkBuddy 有完整思考与工具记录可深挖;
+   部分如纳米有工具调用轨迹;缺失过程数据的用例只据结果分析,不臆断。务必用这些过程数据做归因。
+4. 内容结构:
+   <h2>总体结论</h2> 一段话给总体质量定性(通过率、主要短板),让人一眼看懂。
    <h2>分维度表现</h2> 用 <table> 按维度汇总(维度/用例数/通过/不通过/典型问题)。
-   <h2>典型问题分析</h2> 挑 2-5 个代表性不通过用例,分析根因(引用用例标题)。
+   <h2>失败根因深挖</h2> 挑代表性不通过/低分用例,结合思考过程与工具调用分析为何反复试错——
+     是路径/依赖/语法错误反复出现?多轮调参没收敛?工具选择或调用顺序不当?每个根因给出具体可执行的
+     调优建议(该补什么工具、prompt 该怎么改、预设该怎么调)。引用用例标题,给出证据(哪步工具、报错什么)。
+   <h2>工具使用质量</h2> 从工具调用序列看:工具选择是否合理、有无多余或缺失调用、调用顺序是否高效。
+     过程数据不足时明确说明数据有限。
    <h2>产品横向对比</h2> 【仅当素材含多个「产品」时才输出本节,否则整节省略】用 <table> 按产品汇总
-     (产品/用例数/通过率/均分/优势/短板),并明确给出哪个产品在本任务整体表现更好的结论。
-     注意各产品用的模型可能不同,对比的是产品整体表现,如实说明不臆断。
+     (产品/用例数/通过率/均分/优势/短板),明确哪个产品整体更好;并具体分析强者(尤其 WorkBuddy)在
+     思考方式、工具选择、结果组织上好在哪,弱者可以借鉴学习什么(给可操作的借鉴点,不空谈)。
+     各产品模型可能不同,对比整体表现,如实说明不臆断。
    <h2>亮点</h2> 值得肯定的表现。
-   <h2>改进建议</h2> 面向被测产品团队的可执行建议(有序列表)。
-4. 判定为 error/未判定的用例单独说明,不计入通过率。
-5. 文字客观、具体,引用用例时用其标题,不要编造未提供的信息。
-6. 注意:素材里出现「【评测系统截断:…】」是评测系统截断展示,不是被测模型输出中断,不要当缺陷写。"""
+   <h2>改进建议</h2> 面向被测产品团队的可执行建议(有序列表,每条引用具体用例/证据)。
+5. 判定为 error/未判定的用例单独说明,不计入通过率。
+6. 文字客观、具体,引用用例时用其标题,不要编造未提供的信息。
+7. 注意:素材里出现「【评测系统截断:…】」是评测系统截断展示,不是被测模型输出中断,不要当缺陷写。"""
 
 
 def extract_html_fragment(raw: str) -> str:

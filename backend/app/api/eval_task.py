@@ -689,6 +689,14 @@ class EvalTaskSummarizeIn(BaseModel):
     batch_id: str | None = None  # 缺省用 last_batch_id
 
 
+def _load_trace_for_summary(run) -> dict:
+    try:
+        from app.services.eval_judge import _load_trace
+        return _load_trace(run)
+    except Exception:
+        return {}
+
+
 def _summary_items(db: Session, runs: list) -> list[dict]:
     """把一批 run 组装成综合评价素材(SSE 端点与无头一条龙共用,单一实现避免漂移)。
 
@@ -718,6 +726,7 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
             "verdict_reason": r.verdict_reason or "",
             "answer": r.answer or "",
             "reason": r.reason or "",
+            "process": claude_runner._extract_process_signals(r.raw_message, _load_trace_for_summary(r)),
         })
     return items
 
