@@ -68,23 +68,25 @@ class WorkbuddyRunner {
     await input.press('Enter');
   }
 
-  // 把本地附件粘贴进输入框并确认挂上。链路(真机坐实,~1s/附件):
-  //   ① 系统剪贴板写 public.file-url(AppKit NSPasteboard)② 聚焦编辑器 ③ CDP page.keyboard Meta+V
-  //   ④ 轮询等 file inline block([data-content-block-meta-type=file]) 计数达期望且 blockStatus=completed
-  // ⚠️ 必须 CDP 发键(page.keyboard),System Events 发键落不进 Electron 渲染进程(真机验证过)。
+  // 把本地附件粘贴进输入框并确认挂上。链路(mac 真机坐实,~1s/附件;win 同构待真机验证):
+  //   ① 系统剪贴板写文件(mac=NSPasteboard file-url / win=CF_HDROP,见 clipboard-file)② 聚焦编辑器
+  //   ③ CDP page.keyboard 粘贴(mac=Meta+V / win=Control+V)④ 轮询等 file inline block
+  //     ([data-content-block-meta-type=file]) 计数达期望且 blockStatus=completed
+  // ⚠️ 必须 CDP 发键(page.keyboard),System Events 发键落不进 Electron 渲染进程(mac 真机验证过)。
   // 就绪判据取自真机 DOM:粘贴后编辑器出现 <span data-content-block-meta-type="file">,其 data-contentblock
   // JSON 的 _meta.blockStatus 由 uploading→completed。超时未就绪显式抛错(本条判失败,不裸发 query)。
   async _pasteAttachments(input, paths) {
     const sel = this.wb.attachmentPasteReadySelector || '[data-content-block-meta-type="file"]';
     const timeoutMs = this.execution.attachmentUploadTimeout || 60000;
     try {
-      setClipboardFiles(paths);   // 一次性把全部附件写进剪贴板(writeObjects 多 URL)
+      setClipboardFiles(paths);   // 一次性把全部附件写进剪贴板(mac writeObjects 多 URL / win SetFileDropList)
     } catch (e) {
       throw new Error(`附件写入剪贴板失败: ${(e.message || '').split('\n')[0]}`);
     }
     await input.click();          // 聚焦编辑器,光标落入
     await this.page.waitForTimeout(200);
-    await this.page.keyboard.press('Meta+v');   // CDP 发键,直达渲染进程
+    const pasteKey = process.platform === 'win32' ? 'Control+v' : 'Meta+v';   // win 用 Ctrl,mac 用 Cmd
+    await this.page.keyboard.press(pasteKey);   // CDP 发键,直达渲染进程
     // 轮询等附件卡片达期望数量且全部 completed
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
