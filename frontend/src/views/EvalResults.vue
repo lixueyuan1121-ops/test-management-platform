@@ -167,6 +167,14 @@
                 <el-button v-if="row.review_mark" size="small" text @click="doReview(row, null)">清除</el-button>
                 <span v-if="row.review_note" class="review-note">备注：{{ row.review_note }}</span>
               </div>
+              <!-- 原始 message：WorkBuddy「复制 message」抓到的完整结构化 JSON(含思维链/traceId/modelId 等),供分析。 -->
+              <div v-if="!row.isGroup && row.raw_message" class="raw-msg">
+                <el-collapse>
+                  <el-collapse-item :title="`原始 message（复制 message · ${rawMsgSize(row.raw_message)}）`" name="raw">
+                    <pre class="raw-msg-pre">{{ prettyRawMessage(row.raw_message) }}</pre>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -433,6 +441,14 @@ const groupedRows = computed(() => groupEvalRuns(rows.value, matchFilter))
 const queryTitle = (row) => row?.payload?.title || row?.payload?.prompt || `query #${row?.eval_query_id ?? '—'}`
 // 只放行 http(s) 链接（share_link 经 CLI 抓取回写，防 javascript: 等危险 scheme 的 XSS）
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
+const prettyRawMessage = (raw) => {
+  const s = String(raw || '')
+  try { return JSON.stringify(JSON.parse(s), null, 2) } catch { return s }
+}
+const rawMsgSize = (raw) => {
+  const n = String(raw || '').length
+  return n >= 1000 ? ((n / 1000).toFixed(1) + 'k 字符') : (n + ' 字符')
+}
 // A/B 并排对比:同 eval_query_id + compare_mode 配对的 A/B 两条;弹窗左右分栏
 const abCompareVisible = ref(false)
 const abPair = ref({ a: null, b: null })
@@ -869,6 +885,8 @@ onBeforeUnmount(() => {
 .review-bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e4e7ed; flex-wrap: wrap; }
 .review-lbl { font-size: 12px; color: #8a94a6; font-weight: 600; }
 .review-note { font-size: 12px; color: #8a94a6; }
+.raw-msg { margin-top: 10px; }
+.raw-msg-pre { max-height: 360px; overflow: auto; margin: 0; padding: 10px 12px; background: #0d1117; color: #c9d1d9; border-radius: 6px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .review-flag { display: inline-block; margin-left: 4px; font-size: 11px; font-weight: 700; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; cursor: default; }
 .rf-confirmed { background: #e7f7f1; color: #00b386; }
 .rf-false_positive { background: #fdf3e3; color: #d98b00; }
