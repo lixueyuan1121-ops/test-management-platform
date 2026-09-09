@@ -112,8 +112,22 @@
               <span>勾选纳入任务的用例（已选 {{ editForm.query_ids.length }} 条）</span>
               <el-button size="small" type="primary" text :icon="Plus" @click="customVisible = true">新增自定义用例</el-button>
             </div>
-            <el-table :data="allQueries" size="small" border max-height="360" @selection-change="s => editForm.query_ids = s.map(q => q.id)" ref="qTable">
-              <el-table-column type="selection" width="40" />
+            <div class="qpick-filters">
+              <el-select v-model="queryTaskFilter" clearable filterable placeholder="按任务筛选" aria-label="按任务筛选">
+                <el-option v-for="task in tasks" :key="task.id" :label="task.name" :value="task.id" />
+              </el-select>
+              <el-input v-model="queryTitleFilter" clearable placeholder="搜索用例标题" aria-label="搜索用例标题" />
+              <span class="muted">共 {{ filteredQueries.length }} 条</span>
+            </div>
+            <el-table :data="filteredQueries" row-key="id" size="small" border max-height="360">
+              <el-table-column width="40">
+                <template #header>
+                  <el-checkbox aria-label="全选筛选结果" :model-value="allFilteredSelected" :indeterminate="someFilteredSelected && !allFilteredSelected" :disabled="!filteredQueries.length" @change="selectFilteredQueries" />
+                </template>
+                <template #default="{ row }">
+                  <el-checkbox :aria-label="`选择 ${row.title}`" :model-value="editForm.query_ids.includes(row.id)" @change="checked => selectQuery(row.id, checked)" />
+                </template>
+              </el-table-column>
               <el-table-column label="维度" width="104" align="center">
                 <template #default="{ row }"><el-tag size="small" effect="plain" :type="DIM_TAG_TYPE[row.dimension] || 'info'">{{ dimLabel(row.dimension) }}</el-tag></template>
               </el-table-column>
@@ -456,7 +470,29 @@ const editing = ref(null)
 const editForm = ref({ name: '', description: '', query_ids: [], target_engines: [] })
 const engineList = ref([])   // 被测产品注册表(listEvalEngines);>1 才显示产品勾选
 const allQueries = ref([])
-const qTable = ref(null)
+const queryTaskFilter = ref(null)
+const queryTitleFilter = ref('')
+const filteredQueries = computed(() => {
+  const task = tasks.value.find(t => t.id === queryTaskFilter.value)
+  const ids = task ? new Set(task.query_ids) : null
+  const title = queryTitleFilter.value.trim().toLocaleLowerCase()
+  return allQueries.value.filter(q => (!ids || ids.has(q.id)) &&
+    (!title || (q.title || '').toLocaleLowerCase().includes(title)))
+})
+const allFilteredSelected = computed(() => filteredQueries.value.length > 0 && filteredQueries.value.every(q => editForm.value.query_ids.includes(q.id)))
+const someFilteredSelected = computed(() => filteredQueries.value.some(q => editForm.value.query_ids.includes(q.id)))
+function selectQuery(id, checked) {
+  editForm.value.query_ids = checked
+    ? [...new Set([...editForm.value.query_ids, id])]
+    : editForm.value.query_ids.filter(value => value !== id)
+}
+function selectFilteredQueries(checked) {
+  const visible = new Set(filteredQueries.value.map(q => q.id))
+  editForm.value.query_ids = [...new Set([
+    ...editForm.value.query_ids.filter(id => !visible.has(id)),
+    ...(checked ? [...visible] : []),
+  ])]
+}
 const saving = ref(false)
 
 // 自定义用例
@@ -571,6 +607,8 @@ async function load() {
 
 // ── 编辑 ──
 async function openEdit(row) {
+  queryTaskFilter.value = null
+  queryTitleFilter.value = ''
   editing.value = row
   // 新建默认勾选全部已知产品(多产品横评是接入 WorkBuddy 的主用途);编辑回填任务已存的
   const defaultEngines = engineList.value.map(e => e.engine)
@@ -580,9 +618,6 @@ async function openEdit(row) {
   try { allQueries.value = await listEvalQueries(pid.value) || [] } catch { allQueries.value = [] }
   editVisible.value = true
   await nextTick()
-  // 回显勾选
-  const sel = new Set(editForm.value.query_ids)
-  allQueries.value.forEach((q) => { if (sel.has(q.id)) qTable.value?.toggleRowSelection(q, true) })
 }
 
 async function saveTask() {
@@ -607,8 +642,6 @@ async function saveCustom() {
     const q = await createEvalQueryManual({ project_id: pid.value, ...customForm.value })
     allQueries.value = [q, ...allQueries.value]
     editForm.value.query_ids.push(q.id)
-    await nextTick()
-    qTable.value?.toggleRowSelection(allQueries.value[0], true)
     customVisible.value = false
     customForm.value = { title: '', prompt: '', dimension: null, expected: '' }
     ElMessage.success('用例已创建并加入任务')
@@ -969,6 +1002,9 @@ function exportReport() {
 .rf-false_negative { background: #fdeaea; color: #e5565f; }
 /* 用例选择 */
 .qpick { width: 100%; }
+.qpick-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.qpick-filters .el-select { width: 220px; max-width: 100%; }
+.qpick-filters .el-input { flex: 1; min-width: 160px; }
 .qpick-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; color: #5a6b7b; }
 /* 详情 */
 .detail { display: flex; flex-direction: column; gap: 14px; padding: 0 4px; }
