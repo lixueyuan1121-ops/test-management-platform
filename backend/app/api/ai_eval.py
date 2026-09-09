@@ -360,32 +360,30 @@ def import_eval_queries(body: EvalQueryImportIn, db: Session = Depends(get_db), 
 
 
 class EvalQueryExpandIn(BaseModel):
-    """占位符模板展开(promptfoo 式参数化):base 题的 title/prompt/expected 里写 {{变量}},
-    variables 给每个变量的取值列表,笛卡尔积批量生成变体题——同一考点稳定产出 N 个变体。"""
+    """占位符模板展开(promptfoo 式参数化):title/prompt/expected 里写 {{变量}},
+    variables 给每个变量的取值列表,笛卡尔积批量生成变体题——同一考点稳定产出 N 个变体。
+
+    template 覆盖(AI 参数化路径):给了就展开这份模板文本,base 只提供 project_id/dimension、
+    其具体题原文**不被改写**;不给则读 base 自身的 title/prompt/expected(向后兼容老行为)。"""
     base_query_id: int
     variables: dict[str, list[str]]
+    template: dict | None = None   # {title, prompt, expected};None=读 base 原文
 
 
 _VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_一-鿿]+)\s*\}\}")
 _EXPAND_MAX = 50  # 单次展开上限(笛卡尔积爆炸保护)
 
 
-@router.post("/eval-queries/expand")
-def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    base = db.get(EvalQuery, body.base_query_id)
-    if not base:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模板题不存在")
-    assert_project_role(db, user, base.project_id, _WRITE_ROLES)
-
-    texts = {"title": base.title or "", "prompt": base.prompt or "", "expected": base.expected or ""}
-    placeholders = sorted({m for t in texts.values() for m in _VAR_RE.findall(t)})
+def _expand_template_texts(texts: dict, variables: dict) -> list[dict]:
+    """把 {title,prompt,expected} 模板 × variables 笛卡尔积展开成一批具体题 dict(不落库)。
+    校验:必须有 {{占位符}};每个占位符须给非空取值;组合数不超上限。抛 HTTPException 报错。"""
+    placeholders = sorted({m for t in texts.values() for m in _VAR_RE.findall(t or "")})
     if not placeholders:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            detail="该题的标题/提问/期望里没有 {{占位符}},先编辑题目加入如 {{城市}} 再展开")
-    # 每个占位符必须给非空取值列表(清洗空串);多余的键忽略
+                            detail="标题/提问/期望里没有 {{占位符}},先加入如 {{城市}} 再展开")
     values: list[tuple[str, list[str]]] = []
     for name in placeholders:
-        vs = [str(v).strip() for v in (body.variables.get(name) or []) if str(v).strip()]
+        vs = [str(v).strip() for v in (variables.get(name) or []) if str(v).strip()]
         if not vs:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"占位符 {{{{{name}}}}} 未提供取值")
         values.append((name, vs))
@@ -395,19 +393,39 @@ def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), us
     if total > _EXPAND_MAX:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             detail=f"组合数 {total} 超上限 {_EXPAND_MAX},请减少取值")
-
     import itertools
-    created = []
+    out = []
     for combo in itertools.product(*(vs for _, vs in values)):
         mapping = {name: combo[i] for i, (name, _) in enumerate(values)}
         def subst(s: str) -> str:
-            return _VAR_RE.sub(lambda m: mapping.get(m.group(1), m.group(0)), s)
+            return _VAR_RE.sub(lambda m: mapping.get(m.group(1), m.group(0)), s or "")
+        out.append({"title": subst(texts.get("title"))[:512],
+                    "prompt": subst(texts.get("prompt")),
+                    "expected": subst(texts.get("expected")) or None})
+    return out
+
+
+@router.post("/eval-queries/expand")
+def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    base = db.get(EvalQuery, body.base_query_id)
+    if not base:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模板题不存在")
+    assert_project_role(db, user, base.project_id, _WRITE_ROLES)
+
+    # template 覆盖:展开 AI 挖好的模板文本(base 原文不动);否则读 base 自身原文(向后兼容)。
+    if body.template is not None:
+        texts = {"title": str(body.template.get("title") or ""),
+                 "prompt": str(body.template.get("prompt") or ""),
+                 "expected": str(body.template.get("expected") or "")}
+    else:
+        texts = {"title": base.title or "", "prompt": base.prompt or "", "expected": base.expected or ""}
+
+    created = []
+    for row in _expand_template_texts(texts, body.variables):
         q = EvalQuery(
             project_id=base.project_id,
-            title=subst(texts["title"])[:512],
-            prompt=subst(texts["prompt"]),
+            title=row["title"], prompt=row["prompt"], expected=row["expected"],
             dimension=base.dimension,
-            expected=subst(texts["expected"]) or None,
             turn_index=0,  # 变体各自单轮成组(多轮模板展开语义复杂,不支持;组名建完补)
             provider="template",
         )
@@ -416,6 +434,50 @@ def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), us
         created.append(q.id)
     db.commit()
     return ok({"created": created, "count": len(created)})
+
+
+class EvalQueryParameterizeIn(BaseModel):
+    """AI 参数化:把一道具体题挖成 {{变量}} 模板 + 建议取值(供变体展开)。base 具体题不落库改动。"""
+    base_query_id: int
+    provider: str | None = None
+
+
+@router.post("/eval-queries/parameterize")
+def parameterize_eval_query(body: EvalQueryParameterizeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    base = db.get(EvalQuery, body.base_query_id)
+    if not base:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="题不存在")
+    assert_project_role(db, user, base.project_id, _WRITE_ROLES)
+    provider_id = generators.normalize_provider(body.provider)
+    engine = generators.get_provider(provider_id)
+    if not engine.is_available():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI 引擎「{provider_id}」不可用")
+
+    title, prompt, expected = base.title or "", base.prompt or "", base.expected or ""
+    project_id = base.project_id
+    db.commit()  # 读完输入即释放连接(AI 调用期间不持有,免空闲断连),与生成 handler 同范式
+
+    raw = ""
+    err = None
+    for evt in engine.stream_generate(
+        prompt, project_id=project_id,
+        prompt_builder=lambda: claude_runner.build_eval_parameterize_prompt(title, prompt, expected),
+        system_prompt=claude_runner.EVAL_SYSTEM_PROMPT,
+    ):
+        et = evt.get("type")
+        if et == "delta":
+            raw += evt.get("text") or ""
+        elif et == "result":
+            if evt.get("text"):
+                raw = evt["text"]
+        elif et == "error":
+            err = evt.get("msg")
+    tpl = claude_runner.parse_eval_parameterize(raw)
+    if tpl is None:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            detail=err or "AI 未能挖出占位符,请重试或手动编辑题目加 {{变量}}")
+    return ok(tpl)
+
 
 
 @router.patch("/eval-queries/{query_id}")

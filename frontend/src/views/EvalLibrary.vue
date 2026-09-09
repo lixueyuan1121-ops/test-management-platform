@@ -66,8 +66,9 @@
         </el-table-column>
         <el-table-column label="操作" width="72" align="center">
           <template #default="{ row }">
-            <el-tooltip :content="hasPlaceholder(row) ? '按 {{占位符}} 批量生成变体题' : '题目里写 {{变量}} 后可批量生成变体'" placement="left">
-              <el-button size="small" type="primary" text :disabled="!hasPlaceholder(row)" @click="openExpand(row)">变体</el-button>
+            <el-tooltip :content="hasPlaceholder(row) ? '按 {{占位符}} 批量生成变体题' : 'AI 帮你把这题挖成 {{变量}} 模板，再批量生成变体'" placement="left">
+              <el-button size="small" type="primary" text :loading="paramLoadingId === row.id"
+                @click="hasPlaceholder(row) ? openExpand(row) : openParameterize(row)">变体</el-button>
             </el-tooltip>
           </template>
         </el-table-column>
@@ -78,6 +79,17 @@
     <!-- 占位符变体展开:{{变量}} × 取值列表笛卡尔积批量生成 -->
     <el-dialog v-model="expandVisible" title="批量生成变体题" width="560px">
       <div class="exp-base">模板：<b>{{ expandBase?.title }}</b></div>
+      <!-- AI 参数化模式:展示可编辑的模板文本(base 具体题不动);增删 {{变量}} 会实时刷新下方取值输入 -->
+      <template v-if="templateMode">
+        <el-alert type="success" :closable="false" show-icon class="tpl-alert"
+          title="AI 已挖好占位符 + 建议取值，可直接改模板文本或取值，确认无误再生成（base 原题不会被改动）" />
+        <el-form label-position="top">
+          <el-form-item label="标题模板"><el-input v-model="expandTemplate.title" /></el-form-item>
+          <el-form-item label="提问模板（{{变量}} 处会被取值替换）"><el-input v-model="expandTemplate.prompt" type="textarea" :rows="3" /></el-form-item>
+          <el-form-item label="期望模板（可空）"><el-input v-model="expandTemplate.expected" type="textarea" :rows="2" /></el-form-item>
+        </el-form>
+        <div v-if="!expandVars.length" class="exp-hint">模板里还没有 {{ VAR_SAMPLE }}，在上面文本里写一个再填取值。</div>
+      </template>
       <el-form label-position="top">
         <el-form-item v-for="name in expandVars" :key="name" :label="`{{${name}}} 的取值（逗号或换行分隔）`">
           <el-input v-model="expandValues[name]" type="textarea" :rows="2" :placeholder="`如：北京, 上海, 广州`" />
@@ -162,7 +174,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Collection, Upload } from '@element-plus/icons-vue'
-import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, importEvalQueries, listEvalTasks } from '@/api'
+import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions } from '@/utils/dialogOptions'
@@ -350,33 +362,66 @@ async function doImport(dryRun) {
 
 // ── 占位符变体展开(与后端 _VAR_RE 同款正则:{{变量}},变量名支持中英文/数字/下划线) ──
 const VAR_RE = /\{\{\s*([A-Za-z0-9_一-鿿]+)\s*\}\}/g
-const detectVars = (row) => [...new Set(
-  `${row.title || ''}\n${row.prompt || ''}\n${row.expected || ''}`.match(VAR_RE)?.map((m) => m.replace(VAR_RE, '$1')) || []
+const VAR_SAMPLE = '{{变量}}'   // 模板里给用户看的字面示例(mustache 内不能直接写 {{}},故走常量)
+const detectVarsText = (text) => [...new Set(
+  String(text || '').match(VAR_RE)?.map((m) => m.replace(VAR_RE, '$1')) || []
 )]
+const detectVars = (row) => detectVarsText(`${row.title || ''}\n${row.prompt || ''}\n${row.expected || ''}`)
 const hasPlaceholder = (row) => detectVars(row).length > 0
 
 const expandVisible = ref(false)
 const expandBase = ref(null)
-const expandVars = ref([])
 const expandValues = ref({})
 const expanding = ref(false)
+// AI 参数化:把具体题挖成模板。templateMode=true 时展开可编辑的 template 文本(base 原题不动),
+// 占位符从(可编辑的)模板文本实时重识别;否则读 base 自身原文(老直接展开路径)。
+const templateMode = ref(false)
+const expandTemplate = ref({ title: '', prompt: '', expected: '' })
+const paramLoadingId = ref(null)
+
+const expandVars = computed(() => {
+  if (templateMode.value) {
+    const t = expandTemplate.value
+    return detectVarsText(`${t.title || ''}\n${t.prompt || ''}\n${t.expected || ''}`)
+  }
+  return expandBase.value ? detectVars(expandBase.value) : []
+})
 
 const parseVals = (s) => [...new Set(String(s || '').split(/[,，\n]/).map((v) => v.trim()).filter(Boolean))]
 const expandCount = computed(() =>
   expandVars.value.reduce((n, name) => n * parseVals(expandValues.value[name]).length, expandVars.value.length ? 1 : 0))
 
+// base 已含 {{}}:直接展开 base 原文(老路径)
 function openExpand(row) {
   expandBase.value = row
-  expandVars.value = detectVars(row)
-  expandValues.value = Object.fromEntries(expandVars.value.map((n) => [n, '']))
+  templateMode.value = false
+  expandTemplate.value = { title: '', prompt: '', expected: '' }
+  expandValues.value = Object.fromEntries(detectVars(row).map((n) => [n, '']))
   expandVisible.value = true
+}
+
+// base 无 {{}}:先让 AI 挖成模板 + 建议取值,预填进变体框供人确认微调
+async function openParameterize(row) {
+  paramLoadingId.value = row.id
+  try {
+    const res = await parameterizeEvalQuery({ base_query_id: row.id })
+    expandBase.value = row
+    templateMode.value = true
+    expandTemplate.value = { title: res.title || '', prompt: res.prompt || '', expected: res.expected || '' }
+    expandValues.value = Object.fromEntries(
+      Object.entries(res.variables || {}).map(([k, v]) => [k, (v || []).join(', ')]))
+    expandVisible.value = true
+  } catch { /* 拦截器已提示(含 AI 未挖出占位符) */ }
+  finally { paramLoadingId.value = null }
 }
 
 async function doExpand() {
   expanding.value = true
   try {
     const variables = Object.fromEntries(expandVars.value.map((n) => [n, parseVals(expandValues.value[n])]))
-    const res = await expandEvalQuery({ base_query_id: expandBase.value.id, variables })
+    const payload = { base_query_id: expandBase.value.id, variables }
+    if (templateMode.value) payload.template = { ...expandTemplate.value }  // AI 模板文本(base 原题不动)
+    const res = await expandEvalQuery(payload)
     ElMessage.success(`已生成 ${res.count} 道变体题`)
     expandVisible.value = false
     await reload()
@@ -397,6 +442,7 @@ async function doExpand() {
 .filter-bar .spacer { flex: 1; }
 .count-info { color: #8a94a6; font-size: 12px; }
 .tpl-alert { margin-bottom: 8px; }
+.exp-hint { color: #8a94a6; font-size: 12px; margin: 4px 0 8px; }
 .tpl-alert :deep(.el-alert__title) { line-height: 1.7; font-weight: 400; }
 .tpl-actions { margin: 2px 0 10px; }
 .mode-radio { margin-bottom: 10px; }

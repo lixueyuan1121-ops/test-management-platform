@@ -1052,6 +1052,75 @@ def parse_eval_queries(raw: str) -> list[dict]:
     return out
 
 
+# ─── AI 参数化:把一道具体测评题挖成 {{变量}} 模板 + 建议取值(供变体展开)─────────────
+# 占位符正则与 api/ai_eval.py::_VAR_RE、前端 EvalLibrary.vue::VAR_RE 三处同款({{变量}},中英文数字下划线)。
+_PARAM_VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_一-鿿]+)\s*\}\}")
+
+
+def build_eval_parameterize_prompt(title: str, prompt: str, expected: str = "") -> str:
+    """构造「把具体题挖成 {{变量}} 模板」的 prompt。产物是一份模板建议(不落库,给人确认后展开)。
+
+    要点:找出题里可参数化的部分(数值/实体/条件)挖成 {{占位符}},保持原语义与考点不变,
+    并为每个占位符给 2~4 个合理取值建议。半角双花括号。
+    """
+    return f"""你是测评用例参数化专家。下面是一道**具体的**对话测评题。请把它改写成一个**可批量生成变体的模板**:
+找出题面里适合参数化的部分(如具体数值、分辨率/帧率、城市、文件类型、数量、条件等),挖成 `{{{{占位符}}}}`,
+并为每个占位符给出 2~4 个合理的取值建议。
+
+要求:
+1. 占位符用**半角**双花括号 `{{{{变量名}}}}`,变量名用简短中文或英文(如 `{{{{分辨率}}}}`、`{{{{城市}}}}`)。
+2. **只挖真正该变化的参数**,别把整句话都变量化;保持题目的**考点、语义、难度不变**,只是参数可换。
+3. title / prompt / expected 三处出现的**同一参数用同名占位符**,确保替换后仍自洽。
+4. 每个占位符**至少给 2 个**取值建议,取值要具体、彼此有区分度(覆盖典型/边界)。
+5. 至少挖出 1 个占位符;若原题实在无可参数化处,也要挑一个最合理的维度挖。
+
+严格输出一个 JSON 对象(不要数组、不要额外解释文字):
+{{
+  "title": "挖了占位符的标题",
+  "prompt": "挖了占位符的提问正文",
+  "expected": "挖了占位符的期望(原题没有期望则给空字符串)",
+  "variables": {{ "占位符名": ["取值1", "取值2"], "另一个": ["取值1", "取值2", "取值3"] }}
+}}
+
+原题:
+<title>{title or ""}</title>
+<prompt>{prompt or ""}</prompt>
+<expected>{expected or ""}</expected>"""
+
+
+def parse_eval_parameterize(raw: str) -> dict | None:
+    """解析 AI 参数化输出为 {title, prompt, expected, variables}。
+
+    容错:fence/裸对象多重提取(复用 _extract_json_object);variables 值统一成 list[str](标量→单元素);
+    校验:prompt 非空且**含至少一个 {{占位符}}**,否则 None(挖空失败,不返回无意义模板)。
+    """
+    obj = _extract_json_object(raw)
+    if not isinstance(obj, dict):
+        return None
+    prompt = str(obj.get("prompt") or "").strip()
+    title = str(obj.get("title") or "").strip()
+    expected = str(obj.get("expected") or "").strip()
+    # 占位符必须出现在三段文本任一处,否则挖空无效
+    joined = f"{title}\n{prompt}\n{expected}"
+    if not prompt or not _PARAM_VAR_RE.search(joined):
+        return None
+    raw_vars = obj.get("variables")
+    variables: dict[str, list[str]] = {}
+    if isinstance(raw_vars, dict):
+        for name, vals in raw_vars.items():
+            key = str(name).strip()
+            if not key:
+                continue
+            if isinstance(vals, list):
+                lst = [str(v).strip() for v in vals if str(v).strip()]
+            else:  # 标量取值容错成单元素 list
+                v = str(vals).strip()
+                lst = [v] if v else []
+            if lst:
+                variables[key] = lst
+    return {"title": title, "prompt": prompt, "expected": expected, "variables": variables}
+
+
 # 判定输出是单个 JSON 对象(非数组);平行 _extract_cases_array 的多重兜底提取。
 def _extract_json_object(raw: str):
     """从模型输出提取单个 JSON 对象:① ```json fence 内 {..} ② 全文首个 { 到末个 } ③ salvage 第一个。失败 None。"""

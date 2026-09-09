@@ -139,6 +139,8 @@ export const listEvalEngines = () => http.get('/ai/eval-engines')
 export const createEvalQueryManual = (payload) => http.post('/ai/eval-queries/manual', payload)
 // 占位符模板展开:base 题 {{变量}} × 取值列表笛卡尔积,批量生成变体题
 export const expandEvalQuery = (payload) => http.post('/ai/eval-queries/expand', payload)
+// AI 参数化:把一道具体题挖成 {{变量}} 模板 + 建议取值(供变体展开;不落库)
+export const parameterizeEvalQuery = (payload) => http.post('/ai/eval-queries/parameterize', payload)
 // 模板导入(CSV/TSV):{project_id, text?|feishu_url?, eval_task_id?, dry_run?}
 // dry_run=true 仅解析预览(返回 count/skipped/preview,不落库);false 落库返回 count/skipped/attached/queries
 export const importEvalQueries = (payload) => http.post('/ai/eval-queries/import', payload)
