@@ -727,6 +727,7 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
             "answer": r.answer or "",
             "reason": r.reason or "",
             "duration_s": _parse_seconds(r.reported_duration),
+            "attachments": payload.get("attachments") or [],
             "process": claude_runner._extract_process_signals(r.raw_message, _load_trace_for_summary(r)),
         })
     return items

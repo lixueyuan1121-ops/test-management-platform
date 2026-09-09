@@ -1283,7 +1283,7 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         reached = "有结果" if tc.get("reached_result") else "未完成/无结果"
         dup = f"（{name} 第 {sum(1 for p in valid_tools[:idx] if str(p.get('original_tool_name') or p.get('name') or '(未命名)') == name)} 次调用）" if call_counts.get(name, 0) > 1 else ""
         tool_lines.append(
-            f"{idx}. {name}{mcp}{dup}: {reached};结果摘要={_clip_keep_ends(sanitize_dialog_text(tc.get('result_text')), 500)}"
+            f"{idx}. {name}{mcp}{dup}: {reached};参数={_clip_keep_ends(json.dumps(tc.get('args'), ensure_ascii=False), 700)};结果摘要={_clip_keep_ends(sanitize_dialog_text(tc.get('result_text')), 500)}"
         )
     tools_block = "\n".join(tool_lines) if tool_lines else "(无工具调用)"
     artifacts = t.get("artifacts") or []
@@ -1322,6 +1322,11 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
    tools_ok 判 true,**不因此扣分**,并在 note 里**记为高效**(说明它靠基座/推理能力一步到位、省去工具往返)——
    不调工具而结果对,是本事,不是缺陷,不得据此判 fail 或降 score。
 5. artifact_expected 对照期望判"实质是否达成",不纠结措辞差异;期望未提的附加内容不扣分。
+6. 在 tools_ok.note 中记录文件流转及执行重试:已使用的本地上传文件调用 tool/MCP 时又上传、下载、转存;
+   文件路径错误或 bash 乱码/编码错误后重试。引用调用步骤、路径/参数和报错,说明问题、原因、实际恢复动作
+   与是否成功,给出针对性的解决建议。证据不足的原因标为待确认,不得把建议写成已执行的解决动作。
+   必要的远程文件传输、下载新产物、正常多次工具调用不算无效重试;单次报错不能直接推断发生了重试。
+   最终达成也要记录已观察到的过程问题;没有证据不得编造。此规则优先于仅凭次数判断效率的软信号。
 
 期望(该对话应达到什么):
 {expected or "(未提供明确期望,仅凭合理性判定产物维度)"}
@@ -1399,6 +1404,40 @@ EVAL_TASK_SUMMARY_SYSTEM_PROMPT = (
 )
 
 
+def _tool_process_evidence(trace) -> list[str]:
+    """保留有序调用证据,优先保留文件流转/路径/编码线索及相邻恢复步骤。"""
+    if not isinstance(trace, dict) or not isinstance(trace.get("tool_calls"), list):
+        return []
+    calls = [c for c in trace["tool_calls"] if isinstance(c, dict)]
+    focus = re.compile(
+        r"upload|download|上传|下载|bash|shell|path|路径|乱码|encoding|codec|"
+        r"unicode|utf-?8|gbk|no such file|not found|enoent|error|失败|错误", re.I)
+
+    def excerpt(value):
+        s = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value or "")
+        s = sanitize_dialog_text(s)
+        if len(s) <= 900:
+            return s
+        hit = focus.search(s)
+        context = s[max(0, hit.start() - 100):hit.end() + 250] if hit else ""
+        return _clip_keep_ends(s, 500) + (f" [相关片段:{context}]" if context else "")
+
+    rows, relevant = [], set()
+    for i, c in enumerate(calls):
+        name = c.get("original_tool_name") or c.get("name") or "(未命名)"
+        args, result = excerpt(c.get("args")), excerpt(c.get("result_text"))
+        state = {True: "有结果", False: "未完成/无结果"}.get(c.get("reached_result"), "状态未知")
+        row = f"步骤{i + 1} {name} [MCP:{c.get('mcp_server') or c.get('is_mcp') or '未标注'}] {state}; 参数:{args or '(未捕获)'}; 返回:{result or '(未捕获)'}"
+        rows.append(row)
+        if focus.search(row):
+            relevant.update(range(max(0, i - 1), min(len(calls), i + 3)))
+    selected = sorted((sorted(relevant) + [i for i in range(len(rows)) if i not in relevant])[:40])
+    out = [rows[i] for i in selected]
+    if len(rows) > len(out):
+        out.append(f"【评测系统截断:共 {len(rows)} 步,展示 {len(out)} 步,未展示步骤不可据此判断不存在】")
+    return out
+
+
 def _extract_process_signals(raw_message, trace) -> dict:
     """从 WorkBuddy raw_message(结构化 JSON)/ 纳米 trace 提取过程信号,供综合评价归因。
     纯函数(不读磁盘/网络),容错。优先 raw_message(数据更完整),否则用 trace,都空则 source=none。
@@ -1453,18 +1492,20 @@ def _extract_process_signals(raw_message, trace) -> dict:
             tool_lines, total, multi = _agg_tools(tool_names)
             retry_bits = [f"{n} 调用 {c} 次" for n, c in multi]
             if err_hit:
-                retry_bits.append("含报错重试")
+                retry_bits.append("检出报错关键词(是否发生重试需结合后续步骤确认)")
             return {
                 "thinking_summary": _clip_keep_ends(think, _MAX_THINK),
                 "tool_calls": tool_lines,
                 "tool_call_count": total,
                 "retry_signal": "；".join(retry_bits),
                 "source": "raw_message",
+                "tool_evidence": _tool_process_evidence(trace),
             }
         except (ValueError, TypeError):
             return {
                 "thinking_summary": _clip_keep_ends(sanitize_dialog_text(s), _MAX_THINK),
                 "tool_calls": [], "tool_call_count": 0, "retry_signal": "", "source": "raw_message",
+                "tool_evidence": _tool_process_evidence(trace),
             }
 
     # 来源2: trace
@@ -1480,13 +1521,14 @@ def _extract_process_signals(raw_message, trace) -> dict:
         tool_lines, total, multi = _agg_tools(names)
         retry_bits = [f"{n} 调用 {c} 次" for n, c in multi]
         if err_hit:
-            retry_bits.append("含报错重试")
+            retry_bits.append("检出报错关键词(是否发生重试需结合后续步骤确认)")
         return {
             "thinking_summary": _clip_keep_ends(think, _MAX_THINK),
             "tool_calls": tool_lines,
             "tool_call_count": total,
             "retry_signal": "；".join(retry_bits),
             "source": "trace",
+            "tool_evidence": _tool_process_evidence(trace),
         }
 
     return {"thinking_summary": "", "tool_calls": [], "tool_call_count": 0, "retry_signal": "", "source": "none"}
@@ -1506,6 +1548,8 @@ def _render_process(process) -> str:
     retry = process.get("retry_signal") or ""
     if retry:
         parts.append(f"\n- 试错信号:{retry}")
+    if process.get("tool_evidence"):
+        parts.append("\n- 工具参数与返回证据(来自 trace,顺序按原始轨迹):\n" + "\n".join(process["tool_evidence"]))
     return "".join(parts)
 
 
@@ -1534,6 +1578,9 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
             f"- 判定理由:{_clip_keep_ends(sanitize_dialog_text(it.get('verdict_reason')), 500) or '(无)'}\n"
             f"- 回答:{_clip_keep_ends(sanitize_dialog_text(it.get('answer')), per_max) or '(无/执行失败:' + str(it.get('reason') or '') + ')'}"
             + _render_process(it.get("process"))
+            + ("\n- 请求附件(仅证明任务配置,不证明已上传成功):"
+               + _clip_keep_ends(json.dumps(it["attachments"], ensure_ascii=False), 1200)
+               if it.get("attachments") else "")
         )
     items_block = "\n\n".join(lines)
     return f"""针对下面这个对话测评任务的一批执行结果,写一份**综合整理评价**。
@@ -1563,6 +1610,20 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
    <h2>耗时表现</h2> 结合每条用例的「耗时」做分析:多产品时用 <table> 按产品给平均/总耗时,
      **结果质量相当而更快的产品,明确点为优势并说明快在哪**;也点出耗时明显偏长的用例、分析慢的原因
      (是工具往返多?反复试错?还是本身任务重)。单产品时讲整体耗时分布与偏慢用例。缺耗时数据的用例明说不臆断。
+   <h2>文件流转与执行重试</h2> 重点关注纳米Work,有对应轨迹的其他产品按同一标准分析:
+     ① 用户本地上传的文件已经被读取/使用,但调用 tool/MCP 时又要求上传、下载或转存。
+     对照附件名、文件路径、文件ID、URL和调用顺序,说明是哪份文件、在哪一步发生了什么流转。
+     区分远程工具只接收URL/独立沙箱无法访问本地文件等必要传输,与可复用文件却重复搬运的额外成本。
+     请求附件不等于上传成功,下载产物不等于重复下载输入;缺少对应关系时写「待确认」,不可直接判冗余。
+     ② 文件路径引起失败后重试:如文件不存在、工作目录不一致、沙箱路径不互通、空格/中文路径引用不当。
+     ③ bash/终端乱码或编码错误引起重试:区分显示乱码与实际命令/解码失败,不能只因中文输出就判乱码。
+     每项按「出现的问题 → 证据(用例名、步骤、参数/报错、后续重试) → 问题原因 → 解决方法」讲清楚。
+     原因分「已证实」和「可能原因/待验证」;单次报错不等于重试,同工具多次调用不等于无效重试。
+     最终通过的用例也要记录过程问题,写清实际采取的恢复动作、是否恢复成功;未观察到解决动作就明确写未见。
+     建设性建议要对准证据:例如复用已上传文件ID或可访问URL、统一文件映射并在调用前检查路径、
+     正确引用含空格的路径、按实际编码统一终端与子进程编解码;这些是候选方案,不要当作已执行的修复。
+     给出验证办法(重跑同一附件任务,检查是否少了重复传输/同类报错且结果仍正确)。
+     有逐步耗时才量化额外耗时,仅有总耗时不能猜某次重试耗时。无相关证据则简述未观察到或轨迹不足。
    <h2>产品横向对比</h2> 【仅当素材含多个「产品」时才输出本节,否则整节省略】用 <table> 按产品汇总
      (产品/用例数/通过率/均分/平均耗时/优势/短板),明确哪个产品整体更好;具体分析强者(尤其 WorkBuddy)在
      思考方式、工具选择、结果组织上好在哪,弱者可以借鉴学习什么(给可操作的借鉴点,不空谈)。
