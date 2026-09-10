@@ -119,7 +119,8 @@ class Settings(BaseSettings):
     REPORT_REMIND_AT: str = ""
 
     # multica(异常会话详细分析平台)对接。契约待细化,默认 off 不推。
-    MULTICA_MODE: str = "off"          # off / http / cli
+    MULTICA_MODE: str = "off"          # off / skill / http / cli
+    MULTICA_CLI_BIN: str = "multica"   # skill 模式:可指定服务器 CLI 完整路径
     MULTICA_URL: str = ""              # http 模式:创建分析任务的 endpoint
     MULTICA_TOKEN: str = ""            # http 模式:Bearer token(如需)
     MULTICA_CLI_TEMPLATE: str = ""     # cli 模式:命令模板,如 'multica push --link {share_link} --run {run_id}'

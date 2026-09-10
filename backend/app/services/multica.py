@@ -9,12 +9,14 @@ import json
 import re
 import shlex
 import subprocess
+import shutil
 
 import requests
 
 from app.core.config import settings
 
 logger = logging.getLogger("test_platform")
+MULTICA_EVAL_PROJECT = "fe648247-d5b5-43bb-876e-e31afa63d2a6"
 
 
 def _safe_link(u):
@@ -22,7 +24,7 @@ def _safe_link(u):
     return u if isinstance(u, str) and re.match(r"^https?://", u, re.I) else None
 
 
-def _payload(run) -> dict:
+def _payload(run, query=None) -> dict:
     try:
         snapshot = json.loads(getattr(run, "payload", None) or "{}")
     except (ValueError, TypeError):
@@ -37,7 +39,8 @@ def _payload(run) -> dict:
         "session_id": run.session_id,
         "verdict": run.verdict,
         "verdict_reason": run.verdict_reason,
-        "prompt": snapshot.get("prompt"),
+        "prompt": snapshot.get("prompt") or getattr(query, "prompt", None),
+        "expected": snapshot.get("expected") if "expected" in snapshot else getattr(query, "expected", None),
         "turn_index": snapshot.get("turn_index"),
         "conversation_group": snapshot.get("conversation_group"),
         "answer": getattr(run, "answer", None),
@@ -45,12 +48,56 @@ def _payload(run) -> dict:
     }
 
 
-def push_abnormal_run(run) -> str | None:
+def _skill_command(args, description=None):
+    binary = shutil.which(settings.MULTICA_CLI_BIN)
+    if not binary:
+        raise ValueError("未找到 multica CLI,请在后端服务账号下安装或配置 MULTICA_CLI_BIN")
+    try:
+        result = subprocess.run(
+            [binary, *args], input=description, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Multica CLI 超时;若为创建请求,请先在目标项目核对是否已创建再重试") from exc
+    if result.returncode:
+        raise ValueError(f"Multica CLI 失败: {(result.stderr or result.stdout or '')[:400]}")
+    return result.stdout or ""
+
+
+def check_skill_ready():
+    """multica-add-task 的批量前置检查,沿用后端服务账号的登录态。"""
+    _skill_command(["auth", "status"])
+    _skill_command(["workspace", "list"])
+
+
+def _create_skill_task(payload):
+    title = "【测评反馈】" + (payload.get("verdict_reason") or "")
+    description = (
+        f"1.【对话分享链接】{payload.get('share_link') or ''}\n"
+        f"2.【对话提问的prompt】{payload.get('prompt') or ''}\n"
+        f"3.【对话预期expected】{payload.get('expected') or ''}"
+    )
+    raw = _skill_command([
+        "issue", "create", "--title", title, "--project", MULTICA_EVAL_PROJECT,
+        "--description-stdin", "--output", "json",
+    ], description)
+    try:
+        issue = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Multica 未返回有效任务 JSON,请核对目标项目后再重试") from exc
+    if not isinstance(issue, dict) or not isinstance(issue.get("id"), str) or not issue["id"].strip():
+        raise ValueError("Multica 未返回任务 id,未标记推送成功;请核对目标项目")
+    return issue["id"]
+
+
+def push_abnormal_run(run, query=None) -> str | None:
     """推一条异常 run 到 multica。off/未配→None;http/cli 按 config;失败抛异常(端点捕获)。"""
     mode = (settings.MULTICA_MODE or "off").lower()
     if mode == "off":
         return None
-    payload = _payload(run)
+    payload = _payload(run, query)
+    if mode == "skill":
+        return _create_skill_task(payload)
     if mode == "http":
         if not settings.MULTICA_URL:
             raise ValueError("MULTICA_MODE=http 但未配 MULTICA_URL")

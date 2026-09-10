@@ -27,7 +27,7 @@ def main():
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: user
         sent = []
-        def send(run):
+        def send(run, query=None):
             sent.append(multica._payload(run))
             return f'ref-{run.id}'
         try:

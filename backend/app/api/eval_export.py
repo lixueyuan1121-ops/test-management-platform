@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole
 from app.db.session import get_db
-from app.models import EvalRun, User
+from app.models import EvalRun, EvalQuery, User
+from app.core.config import settings
 from app.schemas.common import ok
 from app.schemas.eval_export import EvalExportFeishuIn, EvalPushMulticaIn
 from app.services import feishu, multica
@@ -81,10 +82,16 @@ def push_multica(body: EvalPushMulticaIn, db: Session = Depends(get_db), user: U
     if body.batch_id:
         q = q.filter(EvalRun.batch_id == body.batch_id)
     runs = q.order_by(EvalRun.id).all()
+    if runs and settings.MULTICA_MODE.lower() == "skill":
+        try:
+            multica.check_skill_ready()
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     pushed, results = 0, []
     for r in runs:
         try:
-            ref = multica.push_abnormal_run(r)
+            query = db.get(EvalQuery, r.eval_query_id) if r.eval_query_id else None
+            ref = multica.push_abnormal_run(r, query=query)
             if ref is None:
                 results.append({"run_id": r.id, "skipped": "multica 未配置(MULTICA_MODE=off)"})
                 continue
