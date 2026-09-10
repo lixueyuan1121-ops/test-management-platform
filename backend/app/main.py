@@ -72,6 +72,8 @@ def init_db() -> None:
     ensure_eval_run_payload()
     ensure_eval_run_target_device()
     ensure_eval_run_raw_message_column()
+    from app.db.migrate import ensure_eval_run_scheduling_columns
+    ensure_eval_run_scheduling_columns()
     ensure_eval_task_tables()
     ensure_perf_set_thresholds_column()
     ensure_platform_columns()

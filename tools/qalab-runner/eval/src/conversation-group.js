@@ -9,7 +9,10 @@ function groupIntoConversations(pending) {
   const byGroup = new Map();     // conversation_group -> 该会话的 item 数组(用于往同组追加)
   for (const it of (pending || [])) {
     const p = it.payload || {};
-    const g = p.conversation_group || null; // 空串/缺省 → null(单轮)
+    const g = p.conversation_group ? JSON.stringify([
+      it.project_id || null, it.batch_id || null, it.target_engine || null,
+      it.target_device || null, p.compare_group || null, p.conversation_group,
+    ]) : null;
     if (!g) {
       conversations.push([it]);            // 单轮:自成一个会话,保持其位置
     } else if (byGroup.has(g)) {

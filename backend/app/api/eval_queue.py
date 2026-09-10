@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
@@ -82,22 +83,53 @@ def _take_whole_groups(rows: list[EvalRun], limit: int) -> list[EvalRun]:
     轮次0所在对话在上批结束(pool.close)时已关,轮次1接不上上下文。故一旦纳入某组的任一轮,
     就纳入该组全部轮(可超 limit);单轮 run 各自独立计数。达到 limit 后不再纳入下一组。
     """
-    selected: list[EvalRun] = []
-    seen_groups: set[str] = set()
-    count = 0
+    groups = {}
     for r in rows:
-        if count >= limit:
+        groups.setdefault(_group_key(r), []).append(r)
+    selected: list[EvalRun] = []
+    for group in groups.values():
+        if len(selected) >= limit:
             break
-        g = _conv_group(r)
-        if not g:
-            selected.append(r)
-            count += 1
-        elif g not in seen_groups:
-            group_rows = [x for x in rows if _conv_group(x) == g]  # 该组全部轮(整组不拆)
-            selected.extend(group_rows)
-            seen_groups.add(g)
-            count += len(group_rows)
+        selected.extend(group)
     return selected
+
+
+def _group_key(r: EvalRun) -> tuple:
+    g = _conv_group(r)
+    try:
+        p = json.loads(r.payload or "{}")
+    except (TypeError, ValueError):
+        p = {}
+    if not isinstance(p, dict):
+        p = {}
+    return (r.project_id, r.batch_id, r.target_engine, r.target_device,
+            p.get("compare_group"), g) if g else ("single", r.id)
+
+
+def _group_rows(db: Session, r: EvalRun) -> list[EvalRun]:
+    if not _conv_group(r):
+        return [r]
+    rows = db.query(EvalRun).filter(
+        EvalRun.project_id == r.project_id, EvalRun.batch_id == r.batch_id,
+        EvalRun.target_engine == r.target_engine,
+        EvalRun.target_device == r.target_device).order_by(EvalRun.id).all()
+    return [x for x in rows if _group_key(x) == _group_key(r)]
+
+
+def _can_take(r: EvalRun, runner: str, engine: str | None) -> bool:
+    if r.runner == runner:
+        return True
+    # A pinned VM may not be accessible from another desktop. Do not migrate it.
+    if r.target_device or not engine or (r.target_engine or "namiwork") != engine:
+        return False
+    return runner in json.loads(r.eligible_runners or "[]")
+
+
+def _assert_execution(r: EvalRun, runner: str, token: str | None) -> None:
+    if r.runner != runner:
+        raise HTTPException(403, detail="该执行项未派给此执行机")
+    if r.status != EvalRunStatus.running or r.claim_token != token:
+        raise HTTPException(409, detail="执行已结束或认领凭证已失效")
 
 
 def _to_out(r: EvalRun) -> dict:
@@ -173,6 +205,7 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
 @router.get("")
 def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
                  engine: str | None = Query(None),
+                 dynamic: bool = Query(False),
                  db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
     # 本端点被测评 runner(run-eval.sh)轮询 → 刷 last_eval_at 记「该机当前在跑测评 runner」(运行时类型感知)。
     # engine:该机在跑哪个被测产品(namiwork/workbuddy),随轮询上报,供多产品分机挑机(online_eval_runners(engine))。
@@ -190,32 +223,101 @@ def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
         from app.services.dispatcher import touch_runner_heartbeat
         touch_runner_heartbeat(db, runner, kind="eval")   # 共享 token:按 runner_id 刷心跳(在线判定统一口径)
     # 多轮会话各轮必须同批下发(见 _take_whole_groups),故不能用 SQL .limit() 硬切(会拦腰截断某组)。
+    ownership = EvalRun.runner == runner
+    if dynamic:
+        ownership = or_(ownership, EvalRun.eligible_runners.contains(json.dumps(runner), autoescape=True))
     rows = (db.query(EvalRun)
-            .filter(EvalRun.status == EvalRunStatus.pending, EvalRun.runner == runner)
+            .filter(EvalRun.status == EvalRunStatus.pending, ownership)
             .order_by(EvalRun.id).all())
+    if dynamic:
+        rows = [r for r in rows if _can_take(r, runner, engine)]
+        # Prefer our initial shard, then help other selected machines. Only
+        # entirely unstarted groups may move; a completed first turn pins context.
+        rows.sort(key=lambda r: (r.runner != runner, r.id))
+        batches = {r.batch_id for r in rows}
+        group_members = {}
+        if batches:
+            batch_filter = EvalRun.batch_id.in_([b for b in batches if b is not None])
+            if None in batches:
+                batch_filter = or_(batch_filter, EvalRun.batch_id.is_(None))
+            for member in db.query(EvalRun).filter(batch_filter).all():
+                group_members.setdefault(_group_key(member), []).append(member)
+        checked = {}
+        eligible = []
+        for r in rows:
+            key = _group_key(r)
+            if key not in checked:
+                group = group_members[_group_key(r)]
+                checked[key] = all(x.status == EvalRunStatus.pending and
+                                   x.started_at is None and _can_take(x, runner, engine)
+                                   for x in group)
+            if checked[key]:
+                eligible.append(r)
+        rows = eligible
     return ok([_to_out(r) for r in _take_whole_groups(rows, limit)])
 
 
 @router.post("/{run_id}/claim")
 def claim(run_id: int, runner: str = Query(...), db: Session = Depends(get_db),
+          whole_group: bool = Query(False), engine: str | None = Query(None),
           ctx: RunnerCtx = Depends(require_runner_ctx)):
     if ctx.device is not None:
         runner = ctx.device.runner_id
     r = db.get(EvalRun, run_id)
     if not r or r.status != EvalRunStatus.pending:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项不可认领")
-    if r.runner != runner:
+    if not whole_group and r.runner != runner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
-    r.status = EvalRunStatus.running; db.commit(); db.refresh(r)
-    return ok(_to_out(r))
+    group = _group_rows(db, r) if whole_group else [r]
+    if any(x.status != EvalRunStatus.pending or not _can_take(x, runner, engine) for x in group):
+        raise HTTPException(409, detail="会话已被认领或不在此机器的执行范围内")
+    ids = [x.id for x in group]
+    token = secrets.token_hex(24) if whole_group else None
+    # Conditional update works on MySQL 5.6 as well as SQLite. A partial win
+    # rolls back the entire group, including races with legacy single claims.
+    changed = db.query(EvalRun).filter(
+        EvalRun.id.in_(ids), EvalRun.status == EvalRunStatus.pending,
+        EvalRun.runner.in_({x.runner for x in group}),
+    ).update({EvalRun.status: EvalRunStatus.running, EvalRun.runner: runner,
+              EvalRun.started_at: func.now(), EvalRun.heartbeat_at: func.now(),
+              EvalRun.claim_token: token}, synchronize_session=False)
+    if changed != len(ids):
+        db.rollback()
+        raise HTTPException(409, detail="会话已被其他执行器认领")
+    db.commit()
+    db.expire_all()
+    if whole_group:
+        return ok({"run_ids": ids, "claim_token": token})
+    return ok(_to_out(db.get(EvalRun, run_id)))
+
+
+@router.post("/{run_id}/heartbeat")
+def heartbeat(run_id: int, runner: str = Query(...), claim_token: str = Query(...),
+              db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
+    if ctx.device is not None:
+        runner = ctx.device.runner_id
+        ctx.device.last_seen_at = datetime.utcnow()
+        ctx.device.last_eval_at = datetime.utcnow()
+    else:
+        from app.services.dispatcher import touch_runner_heartbeat
+        touch_runner_heartbeat(db, runner, kind="eval")
+    changed = db.query(EvalRun).filter(
+        EvalRun.id == run_id, EvalRun.runner == runner,
+        EvalRun.claim_token == claim_token, EvalRun.status == EvalRunStatus.running,
+    ).update({EvalRun.heartbeat_at: func.now()}, synchronize_session=False)
+    db.commit()
+    if not changed:
+        raise HTTPException(409, detail="认领已失效")
+    return ok({"alive": True})
 
 
 @router.patch("/{run_id}")
 def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
+           claim_token: str | None = Query(None),
            db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
     if ctx.device is not None:
         runner = ctx.device.runner_id
-    r = db.get(EvalRun, run_id)
+    r = db.query(EvalRun).filter(EvalRun.id == run_id).with_for_update().populate_existing().first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     if r.runner != runner:
@@ -224,6 +326,7 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
     # 必须拒绝,否则会把 cancelled 冲回 done/failed,让作废的结果混入判定/综合评价。
     if getattr(r.status, "value", r.status) == EvalRunStatus.cancelled.value:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项已被停止(测评任务已停止),回写作废")
+    _assert_execution(r, runner, claim_token)
     r.status = EvalRunStatus.done if body.status == "done" else EvalRunStatus.failed
     r.share_link = body.share_link
     r.artifact_share_link = body.artifact_share_link
@@ -255,6 +358,7 @@ _MAX_TRACE_BYTES = 20 * 1024 * 1024
 
 @router.post("/{run_id}/trace")
 async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = Query("mac-01"),
+                       claim_token: str | None = Query(None),
                        db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
     """执行器上传会话轨迹 JSON。存 uploads/eval_traces/{run_id}-<hex>.json,回写 eval_run.trace=URL。
 
@@ -262,11 +366,12 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
     """
     if ctx.device is not None:
         runner = ctx.device.runner_id
-    r = db.get(EvalRun, run_id)
+    r = db.query(EvalRun).filter(EvalRun.id == run_id).with_for_update().populate_existing().first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     if r.runner != runner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+    _assert_execution(r, runner, claim_token)
     data = await file.read()
     if len(data) > _MAX_TRACE_BYTES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"轨迹过大(>{_MAX_TRACE_BYTES//1024//1024}MB)")
@@ -297,6 +402,7 @@ def reset_run_for_retry(r: EvalRun) -> None:
     清空全部回填与判定字段,payload 快照保留——仍按下发那一刻的配置重跑。调用方负责 commit。
     (历史按「执行批次」保留:每次执行任务=新 batch,旧批次 run 都留库;见 /eval-tasks/{id}/batches。)"""
     r.status = EvalRunStatus.pending
+    r.started_at = None; r.heartbeat_at = None; r.claim_token = None
     r.reason = None
     r.session_id = None; r.share_link = None; r.artifact_share_link = None
     r.answer = None; r.trace = None; r.raw_message = None
@@ -304,6 +410,24 @@ def reset_run_for_retry(r: EvalRun) -> None:
     r.verdict = None; r.score = None; r.verdict_dims = None; r.verdict_reason = None
     r.judged_by = None; r.is_abnormal = False
     r.review_mark = None; r.review_note = None
+
+
+def reset_conversation_for_retry(db: Session, r: EvalRun) -> list[EvalRun]:
+    group = _group_rows(db, r)
+    if any(x.status in (EvalRunStatus.running, EvalRunStatus.cancelled) for x in group):
+        raise HTTPException(409, detail="会话仍在执行或已停止,不能重试其中一轮")
+    # A failed later turn cannot resume context in a fresh desktop session.
+    # Retry the complete conversation, including previously completed turns.
+    changed = db.query(EvalRun).filter(
+        EvalRun.id.in_([x.id for x in group]),
+        EvalRun.status.in_([EvalRunStatus.pending, EvalRunStatus.done, EvalRunStatus.failed]),
+    ).update({EvalRun.status: EvalRunStatus.pending}, synchronize_session=False)
+    if changed != len(group):
+        db.rollback()
+        raise HTTPException(409, detail="会话状态已变化,请刷新后重试")
+    for member in group:
+        reset_run_for_retry(member)
+    return group
 
 
 @router.post("/retry-failed")
@@ -317,10 +441,12 @@ def retry_failed_batch(body: EvalRetryFailedIn, db: Session = Depends(get_db), u
     elif body.batch_id:
         q = q.filter(EvalRun.batch_id == body.batch_id)
     rows = q.all()
+    retried = {}
     for r in rows:
-        reset_run_for_retry(r)
+        for member in reset_conversation_for_retry(db, r):
+            retried[member.id] = member
     db.commit()
-    return ok({"retried": len(rows), "run_ids": [r.id for r in rows]})
+    return ok({"retried": len(retried), "run_ids": list(retried)})
 
 
 @router.post("/{run_id}/retry")
@@ -333,7 +459,7 @@ def retry_run_any(run_id: int, db: Session = Depends(get_db), user: User = Depen
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
     if getattr(r.status, "value", r.status) != "failed":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
-    reset_run_for_retry(r)
+    reset_conversation_for_retry(db, r)
     db.commit(); db.refresh(r)
     return ok(_to_out(r))
 

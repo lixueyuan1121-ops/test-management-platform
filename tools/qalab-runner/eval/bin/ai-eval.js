@@ -738,8 +738,11 @@ async function runWorkbuddyBatch(items, client, config, logger) {
     await wbPool.init();
   } catch (e) {
     logger.error(`[workbuddy] 客户端连接失败,整批 failed: ${e.message}`);
-    for (const it of items) {
-      try { await client.claim(it.run_id); await client.report(it.run_id, { status: 'failed', reason: `WorkBuddy 连接失败: ${e.message}` }); } catch (_) {}
+    for (const conv of groupIntoConversations(items)) {
+      try {
+        await client.claimGroup(conv);
+        for (const it of conv) await client.report(it.run_id, { status: 'failed', reason: `WorkBuddy 连接失败: ${e.message}` });
+      } catch (_) {}
     }
     return;
   }
@@ -766,6 +769,8 @@ async function runWorkbuddyBatch(items, client, config, logger) {
     const convs = groupIntoConversations(items);
     for (const conv of convs) {
       const head = conv[0]; const headP = head.payload || {};
+      try { await client.claimGroup(conv); }
+      catch (e) { logger.warn(`[workbuddy] 整组认领失败,跳过: ${e.message}`); continue; }
       // 附件:平台附件为公开 CDN url,执行前逐轮下到本地、挂到 it._attachmentPaths 供粘贴上传。
       // WorkBuddy 附件走原生文件对话框(setInputFiles 不适用),真机坐实方案 = 剪贴板 file-url + Meta+V 粘贴
       // (见 workbuddy-runner._pasteAttachments)。任一附件下载失败 → 整组 fail-closed 标记 failed,
@@ -784,7 +789,6 @@ async function runWorkbuddyBatch(items, client, config, logger) {
           const reason = `附件下载失败: ${(e.message || '').split('\n')[0]}`;
           logger.warn(`[workbuddy] 会话(首轮 run ${head.run_id})${reason},fail-closed 整组标记 failed`);
           for (const it of conv) {
-            try { await client.claim(it.run_id); } catch (_) {}
             try { await client.report(it.run_id, { status: 'failed', reason }); }
             catch (er) { logger.error(`[workbuddy] report failed 失败 run ${it.run_id}: ${er.message}`); }
           }
@@ -794,9 +798,6 @@ async function runWorkbuddyBatch(items, client, config, logger) {
       // dialogOptions 就地改(与纳米同纪律):runner 内 _applyDialogOptions 现读 this.execution.dialogOptions。
       config.execution = config.execution || {};
       config.execution.dialogOptions = (headP.dialog_options && typeof headP.dialog_options === 'object') ? headP.dialog_options : config.execution.dialogOptions;
-      try { await client.claim(head.run_id); }
-      catch (e) { logger.warn(`[workbuddy] claim 首轮 ${head.run_id} 失败,整组跳过: ${e.message}`); continue; }
-      for (const it of conv.slice(1)) { try { await client.claim(it.run_id); } catch (_) {} }
       const testCases = conv.map(it => {
         const p = it.payload || {};
         return { caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
@@ -814,7 +815,7 @@ program
   .command('platform')
   .description('平台模式:从测试管理平台拉对话测评任务,执行并回写(需配 BASE_URL/RUNNER_TOKEN/RUNNER_ID)')
   .option('-c, --config <path>', '配置文件路径', './config/default.config.js')
-  .option('--limit <n>', '每轮拉取任务数', '5')
+  .option('--limit <n>', '每轮拉取任务数(多轮会话不拆分)', '1')
   .option('--once', '只跑一轮(默认常驻轮询)')
   .option('--exe <path>', '纳米Work 客户端 exe 路径(覆盖 config.desktop.executablePath)')
   .option('--cdp-port <port>', 'CDP 调试端口(覆盖 config.desktop.cdpPort)', '')
@@ -863,7 +864,8 @@ program
     await checkSelfUpdate();
 
     const runOnce = async () => {
-      const pending = await client.fetchPending(parseInt(opts.limit, 10) || 5);
+      // Default to one complete conversation so idle desktops can help.
+      const pending = await client.fetchPending(parseInt(opts.limit, 10) || 1);
       if (!pending || !pending.length) { logger.info('平台无待执行任务'); return 0; }
       logger.info(`拉到 ${pending.length} 条待执行`);
       // 按被测引擎拆分：workbuddy 走独立执行器(CDP 驱动 WorkBuddy 客户端)，其余(namiwork/空)走原纳米路径。
@@ -947,7 +949,6 @@ program
       // 整组直接判失败(设备切换失败 / 带附件跳过):claim 后 report failed,不执行。
       const failWholeGroup = async (conv, reason) => {
         for (const it of conv) {
-          try { await client.claim(it.run_id); } catch (_) {}
           try { await client.report(it.run_id, { status: 'failed', reason }); }
           catch (e) { logger.error(`report failed 失败 run ${it.run_id}: ${e.message}`); }
         }
@@ -956,6 +957,8 @@ program
       for (const conv of conversations) {
         const head = conv[0];
         const headP = head.payload || {};
+        try { await client.claimGroup(conv); }
+        catch (e) { logger.warn(`整组认领失败,跳过: ${e.message}`); continue; }
         // Task7-Step2: 切到本会话指定的目标设备(vm)。同组共享一个对话→必然同一设备,用组首轮 target_device 切一次。
         // 空=不切,用当前设备(向后兼容)。切换失败 fail-closed,整组标记 failed。
         const targetDevice = head.target_device || null;
@@ -1000,13 +1003,6 @@ program
         } else {
           config.execution.dialogOptions = baseDialogOptions;
         }
-        // claim:首轮 claim 失败(被他机认领)→整组跳过(不 report,交认领方处理);后续轮 claim 失败仅告警(尽力而为)。
-        try {
-          await client.claim(head.run_id);
-        } catch (e) { logger.warn(`claim 首轮 run ${head.run_id} 失败(可能被他机认领),整组跳过: ${e.message}`); continue; }
-        for (const it of conv.slice(1)) {
-          try { await client.claim(it.run_id); } catch (e) { logger.warn(`claim run ${it.run_id} 失败: ${e.message}`); }
-        }
         // 构造各轮 testCase(带 run_id 供逐轮回写;conversationId/turnIndex 供多轮编排)。
         const testCases = conv.map(it => {
           const p = it.payload || {};
@@ -1040,10 +1036,14 @@ program
       return pending.length;
     };
 
-    if (opts.once) { await runOnce(); return; }
+    const runAndRelease = async () => {
+      try { return await runOnce(); }
+      finally { client.stopHeartbeat(); }
+    };
+    if (opts.once) { await runAndRelease(); return; }
     logger.info('平台模式常驻轮询(Ctrl-C 退出)...');
     for (;;) {
-      try { await runOnce(); } catch (e) { logger.error(`轮询异常: ${e.message}`); }
+      try { await runAndRelease(); } catch (e) { logger.error(`轮询异常: ${e.message}`); }
       // 两轮执行之间检查更新(执行中不查,绝不打断任务);有新版本 → exit 75 重启进新代码
       if (Date.now() - lastUpdateCheck > UPDATE_EVERY_MS) await checkSelfUpdate();
       await new Promise(r => setTimeout(r, pollMs));

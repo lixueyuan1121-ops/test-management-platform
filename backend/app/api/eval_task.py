@@ -404,8 +404,10 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
 
     # 每 engine 各自按其候选机 LPT 分配
     group_runner: dict[str, str] = {}
+    eligible_by_engine: dict[str, list[str]] = {}
     for engine in engines:
         rl = _runners_for(engine)
+        eligible_by_engine[engine] = rl
         gr = assign_groups_balanced([(gk, group_weight[engine][gk]) for gk in group_order[engine]], rl)
         group_runner.update(gr)
 
@@ -415,6 +417,7 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
             eval_task_id=task.id,
             runner=assigned, target_engine=engine,
+            eligible_runners=json.dumps(eligible_by_engine[engine]),
             target_device=target_device,
             device_kind=EvalDeviceKind.desktop,
             status=EvalRunStatus.pending,
@@ -559,7 +562,7 @@ def retry_run(task_id: int, run_id: int, db: Session = Depends(get_db), user: Us
     复位清空全部回填与判定字段(payload 快照保留——仍按下发那一刻的配置重跑)。
     仅 failed 可重跑;判定出错用「重判」,执行中的用「标记失败」先收口。
     """
-    from app.api.eval_queue import _to_out as _run_out, reset_run_for_retry
+    from app.api.eval_queue import _to_out as _run_out, reset_conversation_for_retry
 
     task = db.get(EvalTask, task_id)
     if not task:
@@ -570,7 +573,7 @@ def retry_run(task_id: int, run_id: int, db: Session = Depends(get_db), user: Us
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在或不属于该任务")
     if getattr(r.status, "value", r.status) != "failed":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
-    reset_run_for_retry(r)
+    reset_conversation_for_retry(db, r)
     # 任务若已收口(done)则拉回 running,详情页状态与实际一致
     if task.status == EvalTaskStatus.done:
         task.status = EvalTaskStatus.running

@@ -43,6 +43,7 @@ def _dev(rid, seen_ago_sec=None):
     d = RunnerDevice(owner_id=1, runner_id=rid, name=rid, platform="web", token=f"tk-{rid}")
     if seen_ago_sec is not None:
         d.last_seen_at = datetime.utcnow() - timedelta(seconds=seen_ago_sec)
+        d.last_eval_at = d.last_seen_at
     _s.add(d); _s.commit()
     return d
 
@@ -109,6 +110,7 @@ def test_shard_singletons():
     _s.commit()
     rows = [_s.get(EvalRun, rid) for rid in created]
     assert len(rows) == 4, "总 run 数应=题数"
+    assert all(json.loads(r.eligible_runners) == ["r1", "r2"] for r in rows)
     by_runner = {}
     for r in rows:
         by_runner.setdefault(r.runner, []).append(r)

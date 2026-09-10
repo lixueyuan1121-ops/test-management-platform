@@ -47,6 +47,17 @@ function test_empty_group_treated_as_singleton() {
 }
 
 function main() {
+  const scoped = ['a', 'b'].flatMap(batch_id => [0, 1].map(turn => ({
+    ...item(`${batch_id}-${turn}`, 'same', turn), batch_id,
+  })));
+  assert.deepStrictEqual(groupIntoConversations(scoped).map(c => c.map(x => x.run_id)),
+    [['a-0', 'a-1'], ['b-0', 'b-1']]);
+  for (const field of ['project_id', 'target_engine', 'target_device']) {
+    assert.strictEqual(groupIntoConversations([
+      { ...item(1, 'same', 0), [field]: 'a' },
+      { ...item(2, 'same', 1), [field]: 'b' },
+    ]).length, 2);
+  }
   test_multiturn_grouped_and_sorted();
   test_singletons_each_own_conversation();
   test_mixed_preserves_first_seen_order();

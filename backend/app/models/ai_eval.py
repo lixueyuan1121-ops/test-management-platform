@@ -66,6 +66,10 @@ class EvalRun(Base):
         ForeignKey("eval_task.id", ondelete="SET NULL"), nullable=True, index=True
     )
     runner: Mapped[str] = mapped_column(String(64), default="mac-01", server_default="mac-01", index=True)
+    eligible_runners: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device_kind: Mapped[EvalDeviceKind] = mapped_column(
         Enum(EvalDeviceKind, length=8), default=EvalDeviceKind.web, server_default="web"
     )

@@ -575,6 +575,19 @@ def ensure_eval_run_target_device() -> None:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_device VARCHAR(64) NULL"))
 
 
+def ensure_eval_run_scheduling_columns() -> None:
+    cols = _columns("eval_run")
+    if not cols:
+        return
+    for name, ddl in {
+        "eligible_runners": "TEXT NULL", "started_at": "DATETIME NULL",
+        "heartbeat_at": "DATETIME NULL", "claim_token": "VARCHAR(64) NULL",
+    }.items():
+        if name not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE eval_run ADD COLUMN {name} {ddl}"))
+
+
 def ensure_eval_run_raw_message_column() -> None:
     """eval_run 补 raw_message 列(WorkBuddy「复制 message」原始结构化 JSON)。老库 ALTER;新库 create_all 已含。"""
     if not _columns("eval_run"):

@@ -89,23 +89,33 @@ def reap_stale_eval_runs() -> None:
     执行器单条上限 5 小时(responseTimeout),超 6 小时仍 running 必是执行机中断/回写失败的
     僵尸条目——不收口则设备看板长期显示「执行中」(线上出现过卡 89h 的案例)、任务永远收不了口。
     只收 running 不收 pending:pending 是排队,执行机重新上线仍会拉走执行,不算死。
-    created_at 由数据库 func.now() 生成;基准也取数据库时钟(_db_now)对齐,避免 DB 时区非 UTC 时错配。
+    按执行心跳/认领时间计时,旧记录回退 updated_at,不把排队时间算进执行超时。
     """
     from datetime import timedelta
 
     from app.core.enums import EvalRunStatus
     from app.db.session import SessionLocal
     from app.models import EvalRun
+    from sqlalchemy import func
 
     db = SessionLocal()
     try:
         cutoff = _db_now(db) - timedelta(hours=6)
+        last_active = func.coalesce(EvalRun.heartbeat_at, EvalRun.started_at, EvalRun.updated_at)
         rows = (db.query(EvalRun)
-                .filter(EvalRun.status == EvalRunStatus.running, EvalRun.created_at < cutoff)
+                .filter(EvalRun.status == EvalRunStatus.running, last_active < cutoff)
                 .all())
+        reaped = []
         for r in rows:
-            r.status = EvalRunStatus.failed
-            r.reason = "自动收口:执行超 6 小时未回填(执行机中断),标记失败"
+            changed = db.query(EvalRun).filter(
+                EvalRun.id == r.id, EvalRun.status == EvalRunStatus.running,
+                last_active < cutoff,
+            ).update({EvalRun.status: EvalRunStatus.failed,
+                      EvalRun.reason: "自动收口:执行超 6 小时无活动(执行机中断),标记失败"},
+                     synchronize_session=False)
+            if changed:
+                reaped.append(r)
+        rows = reaped
         if rows:
             db.commit()
             logger.info("自动收口 %d 条超龄 running eval_run: %s", len(rows), [r.id for r in rows])
