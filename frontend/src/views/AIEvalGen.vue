@@ -1,16 +1,6 @@
 <template>
-  <div class="ai-evalgen">
-    <!-- 输入区 -->
-    <el-card class="input-card">
-      <template #header>
-        <div class="card-head">
-          <div class="title-wrap">
-            <el-icon class="title-icon"><ChatDotRound /></el-icon>
-            <div>
-              <div class="title">对话测评生成 · Eval Copilot</div>
-              <div class="subtitle">粘贴需求，AI 按选定维度拆解出可评测的对话 query 清单（含多轮）</div>
-            </div>
-          </div>
+  <WorkspacePage ref="workspace" title="测评生成" class="ai-evalgen functional-workspace">
+      <template #actions>
           <el-tag v-if="!aiAvailable" type="danger" effect="light" round>AI 服务不可用</el-tag>
           <!-- 仅在有 2 个及以上可用引擎时才显示切换器;只有一个引擎无需切换,直接隐藏 -->
           <div v-else-if="availProviders.length > 1" class="engine-picker">
@@ -28,9 +18,20 @@
               </el-radio-button>
             </el-radio-group>
           </div>
+      </template>
+      <template #selection>
+        <div class="result-toolbar">
+          <el-radio-group v-model="activePanel" aria-label="测评生成视图">
+            <el-radio-button value="config">生成配置</el-radio-button>
+            <el-radio-button value="results" :disabled="!queries.length">生成结果（{{ queries.length }}）</el-radio-button>
+          </el-radio-group>
+          <template v-if="activePanel === 'results'">
+            <span>已选 {{ selectedQueries.length }} 条</span>
+            <el-button type="primary" :disabled="!selectedQueries.length" @click="dispatchVisible = true">发送到执行机</el-button>
+          </template>
         </div>
       </template>
-
+    <section v-show="activePanel === 'config'" class="input-card">
       <div class="form-row">
         <el-select v-model="pid" placeholder="选择项目" style="width:200px" :disabled="running" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
@@ -74,39 +75,39 @@
           <el-icon v-if="!running" class="btn-icon"><MagicStick /></el-icon>
           {{ running ? '生成中…' : '生成测评 query' }}
         </el-button>
-        <el-button v-if="running" size="large" @click="cancel">取消</el-button>
+        <el-button v-if="running" size="large" @click="cancel">停止等待</el-button>
       </div>
-    </el-card>
+    </section>
 
     <!-- 生成过程反馈 -->
-    <el-card v-if="running" class="stream-card">
+    <section v-if="running" class="stream-card" aria-live="polite">
       <div class="running-head">
         <span class="pulse-dot" />
         <span class="running-text">{{ phaseText }}</span>
         <span class="elapsed mono">{{ (elapsed / 1000).toFixed(1) }}s</span>
       </div>
-      <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" color="#00b386" />
+      <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" />
       <pre v-if="rawStream" class="raw-stream">{{ rawStream }}</pre>
       <div v-else class="raw-hint">AI 正在阅读需求并设计测评 query，通常需要 30–60 秒，请稍候…</div>
-    </el-card>
+    </section>
 
     <!-- 结果区 -->
-    <el-card v-if="queries.length" class="result-card">
-      <template #header>
-        <div class="card-head">
-          <span class="result-title">测评 query 清单 · {{ queries.length }} 条</span>
-          <div class="dispatch-bar">
-            <span v-if="selectedQueries.length" class="sel-info">已选 {{ selectedQueries.length }} 条</span>
+    <el-dialog v-model="dispatchVisible" title="发送测评用例" width="560px" :close-on-click-modal="!dispatching" :show-close="!dispatching" :close-on-press-escape="!dispatching">
+      <p>已选 {{ selectedQueries.length }} 条测评用例</p>
+      <el-form label-position="top">
+        <el-form-item label="执行机">
             <el-select
-              v-model="chosenRunner" size="small" style="width:180px"
+              v-model="chosenRunner" style="width:100%" :disabled="dispatching"
               :placeholder="devices.length ? '选择执行机' : '未登记设备'"
               no-data-text="去『我的设备』注册"
               @change="loadClientDevices"
             >
               <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
             </el-select>
+        </el-form-item>
+        <el-form-item label="目标设备（可选）">
             <el-select
-              v-model="chosenDevice" size="small" style="width:200px" clearable
+              v-model="chosenDevice" style="width:100%" clearable :disabled="dispatching"
               :placeholder="clientDevices.length ? '选目标设备(可空)' : '该执行机未上报设备'"
               no-data-text="CLI platform 连客户端后自动上报"
             >
@@ -116,15 +117,18 @@
                 :value="dev.vm_id"
               />
             </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+            <el-button :disabled="dispatching" @click="dispatchVisible = false">取消</el-button>
             <el-button
-              type="success" size="small" :loading="dispatching"
+              type="primary" :loading="dispatching"
               :disabled="!selectedQueries.length || !chosenRunner"
               @click="dispatchSelected"
-            >发送到执行机</el-button>
-          </div>
-        </div>
+            >确认下发</el-button>
       </template>
-
+    </el-dialog>
+    <section v-if="queries.length" v-show="activePanel === 'results'" class="result-card">
       <!-- 战绩统计条 -->
       <div v-if="meta" class="stat-strip">
         <div class="stat"><div class="stat-num">{{ meta.case_count ?? queries.length }}</div><div class="stat-label">query</div></div>
@@ -141,7 +145,7 @@
           </template>
         </el-table-column>
         <el-table-column label="标题" min-width="180">
-          <template #default="{ row }"><div>{{ row.title }}</div></template>
+          <template #default="{ row }"><button type="button" class="query-title" @click="inspectedQuery = row">{{ row.title }}</button></template>
         </el-table-column>
         <el-table-column label="提问 prompt" min-width="240">
           <template #default="{ row }"><span class="multiline">{{ row.prompt || '—' }}</span></template>
@@ -156,14 +160,24 @@
           <template #default="{ row }"><span class="mono">{{ row.turn_index ?? 0 }}</span></template>
         </el-table-column>
       </el-table>
-    </el-card>
-  </div>
+    </section>
+    <el-drawer :model-value="!!inspectedQuery" class="generation-detail" title="测评用例详情" size="min(760px, 100vw)" @close="inspectedQuery = null">
+      <template v-if="inspectedQuery">
+        <h2 class="detail-title">{{ inspectedQuery.title }}</h2>
+        <p>{{ dimLabel(inspectedQuery.dimension) }} · {{ inspectedQuery.conversation_group || '单轮对话' }} · 轮次 {{ inspectedQuery.turn_index ?? 0 }}</p>
+        <h3>提问 prompt</h3><div class="detail-text">{{ inspectedQuery.prompt || '—' }}</div>
+        <h3>预期 expected</h3><div class="detail-text">{{ inspectedQuery.expected || '—' }}</div>
+      </template>
+    </el-drawer>
+  </WorkspacePage>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { MagicStick, ChatDotRound } from '@element-plus/icons-vue'
+import { MagicStick } from '@element-plus/icons-vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { aiStatus, streamEvalQueries, listMyDevices, enqueueEvalQueries, listEvalDevices, listEvalDimensions, listEvalTasks } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -235,9 +249,18 @@ const chosenRunner = ref('')       // 选中的 runner_id
 const clientDevices = ref([])       // 选中执行机上报的客户端设备(vm)列表
 const chosenDevice = ref('')        // 选中的目标设备 vm_id(空=用执行机当前设备)
 const dispatching = ref(false)
+const activePanel = ref('config')
+const workspace = ref(null)
+watch(activePanel, async () => {
+  await nextTick()
+  workspace.value?.$el.closest('.el-main')?.scrollTo({ top: 0 })
+})
+const dispatchVisible = ref(false)
+const inspectedQuery = ref(null)
 
 let timer = null
 let ctrl = null
+let generationVersion = 0
 
 const phaseText = computed(() => PHASES[Math.min(phaseIdx.value, PHASES.length - 1)])
 // 多轮同组的按 conversation_group 聚拢、组内按 turn_index 升序(便于阅读对话顺序)
@@ -273,6 +296,9 @@ onMounted(async () => {
 async function onProjectChange() {
   taskId.value = null
   queries.value = []
+  selectedQueries.value = []
+  activePanel.value = 'config'
+  inspectedQuery.value = null
   meta.value = null
   if (!pid.value) { evalTasks.value = []; return }
   setLastProjectId(pid.value)
@@ -282,8 +308,12 @@ async function onProjectChange() {
 function fillDemo() { requirement.value = DEMO }
 
 function generate() {
+  if (running.value) return
   if (!pid.value || !requirement.value.trim() || !dimensions.value.length) return
+  const version = ++generationVersion
   queries.value = []
+  selectedQueries.value = []
+  inspectedQuery.value = null
   meta.value = null
   rawStream.value = ''
   elapsed.value = 0
@@ -303,7 +333,9 @@ function generate() {
       signal: ctrl.signal,
       onDelta: (t) => { rawStream.value += t },
       onDone: (evt) => {
+        if (version !== generationVersion) return
         queries.value = evt.queries || []
+        if (queries.value.length) activePanel.value = 'results'
         meta.value = evt.meta || null
         if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效 query')
         // 关联了测评任务:后端已把本批挂进任务用例集,attached 为实际新增条数(去重后)
@@ -311,7 +343,7 @@ function generate() {
         else ElMessage.success(`已生成 ${queries.value.length} 条测评 query`)
         stop()
       },
-      onError: (msg) => { ElMessage.error(msg || '生成失败'); stop() },
+      onError: (msg) => { if (version === generationVersion) { ElMessage.error(msg || '生成失败'); stop() } },
     },
   )
 }
@@ -322,7 +354,17 @@ function stop() {
   ctrl = null
 }
 
-function cancel() { ctrl?.abort() }
+function cancel() {
+  generationVersion++
+  ctrl?.abort()
+  stop()
+  ElMessage.info('已停止等待，后台生成任务可能仍在执行；完成后可在测评用例库查看')
+}
+onBeforeUnmount(() => {
+  generationVersion++
+  ctrl?.abort()
+  if (timer) clearInterval(timer)
+})
 
 // 选中执行机后,拉该执行机上报的客户端设备(vm)供下拉选。执行机变了要重拉、重置已选设备。
 async function loadClientDevices() {
@@ -346,13 +388,20 @@ async function dispatchSelected() {
       eval_query_ids: selectedQueries.value.map((q) => q.id),
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
+    dispatchVisible.value = false
   } catch { /* http 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
 </script>
 
 <style scoped>
-.ai-evalgen { display: flex; flex-direction: column; gap: 16px; }
+.result-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.input-card, .result-card, .stream-card { margin-top:16px; }
+.query-title { padding:0; border:0; background:none; color:var(--el-color-primary); font:inherit; text-align:left; cursor:pointer; overflow-wrap:anywhere; }
+.detail-title { font-size:18px; overflow-wrap:anywhere; }
+.generation-detail { font-family:system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--el-text-color-primary); }
+.generation-detail h3 { font-size:14px; margin:24px 0 10px; }
+.detail-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; }
 .card-head { display: flex; align-items: center; justify-content: space-between; }
 .title-wrap { display: flex; align-items: center; gap: 12px; }
 .title-icon {
@@ -372,21 +421,22 @@ async function dispatchSelected() {
   border: none; background: transparent; color: #5b6472; font-weight: 500;
   padding: 5px 14px; box-shadow: none; transition: all .15s ease;
 }
-.engine-seg { background: #f0f2f5; border: 1px solid #e3e8ef; border-radius: 16px; padding: 2px; }
+.engine-seg { background: #f0f2f5; border: 1px solid #e3e8ef; border-radius: 6px; padding: 2px; }
 .engine-seg :deep(.el-radio-button:first-child .el-radio-button__inner),
-.engine-seg :deep(.el-radio-button:last-child .el-radio-button__inner) { border-radius: 14px; }
+.engine-seg :deep(.el-radio-button:last-child .el-radio-button__inner) { border-radius: 4px; }
 .engine-seg :deep(.el-radio-button__inner:hover) { color: #1f2d3d; }
 .engine-seg :deep(.el-radio-button.is-active .el-radio-button__inner) {
-  background: #00b386; color: #fff; border-radius: 14px;
-  box-shadow: 0 1px 4px rgba(0,179,134,.35);
+  background: var(--el-color-primary); color: #fff; border-radius: 4px;
+  box-shadow: none;
 }
 .engine-seg :deep(.el-radio-button.is-active .eng-dot) { box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
-.form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.form-row { display: flex; flex-wrap:wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
+.form-row :deep(.el-select) { max-width:100%; }
 
 /* 维度多选 */
-.dim-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.dim-head { display: flex; flex-wrap:wrap; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .dim-label { font-size: 13px; font-weight: 600; color: #1a1d21; }
 .dim-sub { font-size: 12px; color: #a0a8b3; }
 .dim-group { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -425,16 +475,16 @@ async function dispatchSelected() {
 .stat {
   flex: 1; min-width: 96px; text-align: center;
   padding: 12px 8px; border-radius: 8px;
-  background: linear-gradient(160deg, #f3fbf8, #eaf5ff);
-  border: 1px solid #e3eef0;
+  background: #fff;
+  border: 1px solid var(--el-border-color-light);
 }
-.stat-num { font-size: 22px; font-weight: 700; color: #00926e; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.stat-num { font-size: 22px; font-weight: 700; color: var(--el-text-color-primary); font-family: 'JetBrains Mono', ui-monospace, monospace; overflow-wrap:anywhere; }
 .stat-label { font-size: 12px; color: #8a94a6; margin-top: 4px; }
 
 .result-title { font-weight: 600; color: #1f2d3d; }
 .dispatch-bar { display: flex; align-items: center; gap: 10px; }
 .sel-info { font-weight: 600; color: #00926e; font-size: 13px; }
-.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
+.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 .cg { font-size: 12px; color: #5a6b7b; }
 .case-table { margin-top: 4px; }
 </style>

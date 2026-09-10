@@ -17,7 +17,11 @@
         <span class="sub">{{ headSub }}</span>
       </template>
 
-    <el-empty v-if="!loading && !groups.length" :description="currentSet ? '该报告集下暂无已完成的采集' : '暂无性能数据，先在「任务下发」建报告集并采集'" />
+    <el-skeleton v-if="loading" :rows="6" animated />
+    <el-result v-else-if="loadError" icon="error" title="性能报告加载失败">
+      <template #extra><el-button type="primary" @click="load">重新加载</el-button></template>
+    </el-result>
+    <el-empty v-else-if="!groups.length" :description="currentSet ? '该报告集下暂无已完成的采集' : '暂无性能数据，先在「任务下发」建报告集并采集'" />
 
     <template v-else>
       <div v-if="verdict" class="verdict" :class="verdict.tone">{{ verdict.text }}</div>
@@ -52,24 +56,16 @@
     </WorkspacePage>
 
     <!-- 性能红线:超线的采集完成即推飞书告警 -->
-    <el-dialog v-model="thVisible" title="性能红线（阈值告警）" width="560px">
+    <el-dialog v-model="thVisible" title="性能红线（阈值告警）" width="560px" :show-close="!thSaving" :close-on-click-modal="!thSaving" :close-on-press-escape="!thSaving">
       <el-alert type="info" :closable="false" show-icon class="th-tip"
         title="给本报告集设红线：采集完成时逐指标比对，超线自动推送推推告警（需配置通知通道）。留空=不检查该指标。" />
-      <el-table :data="thRows" size="small" border>
-        <el-table-column prop="label" label="指标" width="110" />
-        <el-table-column label="单位" width="60" align="center">
-          <template #default="{ row }">{{ row.unit || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="红线" min-width="220">
-          <template #default="{ row }">
-            <span class="th-op">{{ row.lowGood ? '不得超过' : '不得低于' }}</span>
-            <el-input-number v-model="row.limit" :min="0" :controls="false" size="small"
-                             style="width:120px" placeholder="留空不检查" />
-          </template>
-        </el-table-column>
-      </el-table>
+      <el-form label-position="top" class="threshold-form">
+        <el-form-item v-for="row in thRows" :key="row.key" :label="`${row.label}${row.unit ? `（${row.unit}）` : ''} · ${row.lowGood ? '不得超过' : '不得低于'}`">
+          <el-input-number v-model="row.limit" :min="0" :controls="false" :disabled="thSaving" style="width:100%" placeholder="留空不检查" :aria-label="row.label" />
+        </el-form-item>
+      </el-form>
       <template #footer>
-        <el-button @click="thVisible = false">取消</el-button>
+        <el-button :disabled="thSaving" @click="thVisible = false">取消</el-button>
         <el-button type="primary" :loading="thSaving" @click="saveThresholds">保存</el-button>
       </template>
     </el-dialog>
@@ -87,6 +83,9 @@ import { perfReport, listPerfSets, renamePerfSet, setPerfThresholds } from '@/ap
 import { groupByScenario, buildVerdict, pickKpis, DIMENSIONS, fmtVal } from '@/utils/perf-report-logic'
 
 const loading = ref(false)
+const loadError = ref(false)
+let loadVersion = 0
+let disposed = false
 const groups = ref([])
 const verdict = ref(null)
 const kpis = ref([])
@@ -117,23 +116,38 @@ function disposeCharts() { Object.keys(charts).forEach((k) => { charts[k].dispos
 async function loadSets() { try { sets.value = await listPerfSets() } catch { sets.value = [] } }
 
 async function load() {
+  if (disposed) return
+  const version = ++loadVersion
   loading.value = true
+  loadError.value = false
   disposeCharts()   // 切集/刷新前清旧图，避免残留
   try {
     const params = {}
     if (scenarioFilter.value) params.scenario = scenarioFilter.value
     if (currentSet.value) params.report_set_id = currentSet.value
     const payload = await perfReport(params)
+    if (version !== loadVersion) return
     const gs = groupByScenario(payload)
     groups.value = gs
     verdict.value = buildVerdict(gs)
     kpis.value = pickKpis(gs)
-    scenarioOptions.value = [...new Set(payload.map((p) => p.meta.scenario))]
+    if (!scenarioFilter.value) scenarioOptions.value = gs.map(group => group.scenario)
     gs.forEach((g) => { if (!metricByScene[g.scenario]) metricByScene[g.scenario] = 'cpuPct' })
     await nextTick()
-    renderCharts()
-  } finally {
+    if (version !== loadVersion) return
     loading.value = false
+    await nextTick()
+    if (version !== loadVersion) return
+    renderCharts()
+  } catch {
+    if (version === loadVersion) {
+      groups.value = []
+      verdict.value = null
+      kpis.value = []
+      loadError.value = true
+    }
+  } finally {
+    if (version === loadVersion) loading.value = false
   }
 }
 
@@ -218,8 +232,10 @@ function renderCharts() {
 }
 
 const onResize = () => Object.values(charts).forEach((c) => c.resize())
-onMounted(async () => { await loadSets(); await load(); window.addEventListener('resize', onResize) })
+onMounted(async () => { window.addEventListener('resize', onResize); await loadSets(); await load() })
 onBeforeUnmount(() => {
+  disposed = true
+  loadVersion++
   window.removeEventListener('resize', onResize)
   disposeCharts()
 })
@@ -227,6 +243,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .th-tip { margin-bottom: 10px; }
+.threshold-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 16px; }
+@media (max-width:600px) { .threshold-form { grid-template-columns:1fr; } }
 .th-op { font-size: 12px; color: #909399; margin-right: 8px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .title { font-size: 18px; font-weight: 600; }

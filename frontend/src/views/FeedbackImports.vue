@@ -10,7 +10,8 @@
         <el-select v-model="statusFilter" clearable placeholder="全部状态" aria-label="导入状态" style="width:160px"><el-option v-for="(label, value) in STATUS_LABEL" :key="value" :label="label" :value="value" /></el-select>
         <span>共 {{ filteredRows.length }} 条</span>
       </template>
-      <el-table :data="filteredRows" v-loading="loading" size="small" border stripe empty-text="暂无符合条件的导入记录">
+      <el-result v-if="loadError" icon="error" title="导入记录加载失败"><template #extra><el-button @click="reload">重新加载</el-button></template></el-result>
+      <el-table v-else :data="filteredRows" v-loading="loading" size="small" border stripe empty-text="暂无符合条件的导入记录">
         <el-table-column prop="id" label="ID" width="60" align="center" />
         <el-table-column prop="filename" label="文件" min-width="200" show-overflow-tooltip />
         <el-table-column prop="source_bot" label="来源" width="120" show-overflow-tooltip>
@@ -95,6 +96,7 @@ const filteredRows = computed(() => rows.value.filter(row =>
   `${row.filename || ''} ${row.source_bot || ''}`.toLocaleLowerCase().includes(keyword.value.trim().toLocaleLowerCase()) &&
   (!statusFilter.value || row.status === statusFilter.value)))
 const loading = ref(false)
+const loadError = ref(false)
 const uploadDlg = ref(false)
 const botToken = ref(localStorage.getItem('tp_feedback_bot_token') || '')
 const srcBot = ref('手动上传')
@@ -111,10 +113,12 @@ function fmt(s) {
 }
 
 async function reload() {
+  if (loading.value) return
   loading.value = true
+  loadError.value = false
   try {
     rows.value = await feedbackImports()
-  } catch { /* 拦截器已提示 */ } finally {
+  } catch { rows.value = []; loadError.value = true } finally {
     loading.value = false
   }
 }
@@ -138,7 +142,7 @@ async function refill(row) {
 }
 
 async function doUpload() {
-  if (!file.value || !botToken.value) return
+  if (uploading.value || !file.value || !botToken.value) return
   uploading.value = true
   localStorage.setItem('tp_feedback_bot_token', botToken.value)
   const fd = new FormData()

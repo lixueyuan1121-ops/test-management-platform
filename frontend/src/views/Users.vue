@@ -133,8 +133,10 @@ async function submit() {
       })
     }
     ElMessage.success('保存成功')
-        await load()
-  } finally { dialog.saving = false; dialog.visible = false }
+    dialog.visible = false
+    await load()
+  } catch { /* 请求拦截器已提示；保存失败时保留编辑内容。 */ }
+  finally { dialog.saving = false }
 }
 
 function openPwd(row) {
@@ -150,14 +152,16 @@ async function submitPwd() {
     await resetPassword(pwd.id, { password: pwd.password })
     ElMessage.success('密码已重置')
     pwd.visible = false
-  } finally { pwd.saving = false }
+  } catch { /* 保留新密码，允许重试。 */ } finally { pwd.saving = false }
 }
 
 async function toggleStatus(row) {
   const next = row.status === 'active' ? 'disabled' : 'active'
-  await updateUser(row.id, { status: next })
-  ElMessage.success(next === 'active' ? '已启用' : '已禁用')
-  await load()
+  try {
+    await updateUser(row.id, { status: next })
+    ElMessage.success(next === 'active' ? '已启用' : '已禁用')
+    await load()
+  } catch { /* 请求拦截器已提示。 */ }
 }
 </script>
 

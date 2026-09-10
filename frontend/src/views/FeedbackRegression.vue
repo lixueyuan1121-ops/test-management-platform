@@ -198,7 +198,7 @@ async function saveSet() {
 
 async function runNow(row) {
   try {
-    await ElMessageBox.confirm(`立即回归集「${row.name}」？将下发集内可自动化用例。`, '确认', { type: 'warning' })
+    await ElMessageBox.confirm(`立即回归集「${row.name}」？将下发集内可自动化用例。`, '确认', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' })
   } catch { return }
   row._run = true
   try {
@@ -266,7 +266,7 @@ async function removeCases() {
 
 async function del(row) {
   try {
-    await ElMessageBox.confirm(`确认删除回归集「${row.name}」？`, '删除确认', { type: 'warning' })
+    await ElMessageBox.confirm(`确认删除回归集「${row.name}」？`, '删除确认', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' })
   } catch { return }
   try { await deleteFeedbackSet(row.id); ElMessage.success('已删除'); reload() } catch { /* ignore */ }
 }

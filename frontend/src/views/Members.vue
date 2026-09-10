@@ -116,14 +116,20 @@ async function submit() {
       await updateMember(pid.value, form.user_id, { role: form.role })
     }
     ElMessage.success('保存成功')
-        await load()
-  } finally { dialog.saving = false; dialog.visible = false }
+    dialog.visible = false
+    await load()
+  } catch { /* 请求拦截器已提示；保存失败时保留编辑内容。 */ }
+  finally { dialog.saving = false }
 }
 async function onRemove(row) {
-  await ElMessageBox.confirm(`确定将 ${row.name} 移出项目？`, '确认', { type: 'warning' })
-  await removeMember(pid.value, row.user_id)
-  ElMessage.success('已移除')
-  await load()
+  try {
+    await ElMessageBox.confirm(`确定将 ${row.name} 移出项目？`, '确认', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' })
+  } catch { return }
+  try {
+    await removeMember(pid.value, row.user_id)
+    ElMessage.success('已移除')
+    await load()
+  } catch { /* 请求拦截器已提示。 */ }
 }
 </script>
 

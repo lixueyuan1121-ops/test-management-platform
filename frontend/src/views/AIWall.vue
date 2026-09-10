@@ -1,12 +1,9 @@
 <template>
-  <div class="viz-root">
-    <!-- 顶部标题条 + 范围选择 -->
-    <div class="head">
-      <div>
-        <div class="eyebrow">// AI CONTRIBUTION · QA COPILOT</div>
-        <h1>AI 战绩墙</h1>
-        <div class="sub">QA Copilot 在所选区间内为测试团队生成、被采纳的测试点，以及折算的提效与成本</div>
-      </div>
+  <WorkspacePage title="AI 战绩墙" class="viz-root" data-theme="light">
+    <template #actions>
+      <el-button :icon="Refresh" circle aria-label="刷新战绩" title="刷新战绩" :loading="loading" @click="load" />
+    </template>
+    <template #filters>
       <div class="controls">
         <el-radio-group v-model="range" size="small" @change="onRangeChange">
           <el-radio-button value="7d">近 7 天</el-radio-button>
@@ -27,11 +24,14 @@
           @change="onCustomChange"
         />
       </div>
-    </div>
+    </template>
 
     <div v-loading="loading" element-loading-background="rgba(255,255,255,0.6)" class="viz-body">
       <!-- 空态：所选区间无 AI 生成数据 -->
-      <div v-if="!loading && isEmpty" class="empty-state panel">
+      <el-result v-if="loadError" icon="error" title="战绩数据加载失败" sub-title="请重试，当前不展示统计结果。">
+        <template #extra><el-button type="primary" @click="load">重新加载</el-button></template>
+      </el-result>
+      <div v-else-if="!loading && isEmpty" class="empty-state panel">
         <div class="grid-bg"></div>
         <div class="es-inner">
           <TargetMark :size="96" :animated="true" class="es-mark" />
@@ -52,7 +52,8 @@
         </div>
       </div>
 
-      <template v-else>
+      <template v-else-if="!loading">
+        <el-alert v-if="funnelError" title="价值漏斗加载失败，其他统计仍可查看" type="warning" :closable="false" />
         <!-- 顶部：hero 节省工时 + 4 KPI -->
         <div class="top">
           <div class="panel hero">
@@ -266,19 +267,24 @@
           </div>
         </div>
 
-        <div class="foot-note">// 数据源 ai_task / test_case · 配色经 dataviz 校验 · 折算系数可调（本地记忆）</div>
+        <div class="foot-note">数据源：ai_task / test_case · 节省工时为折算估值</div>
       </template>
     </div>
-  </div>
+  </WorkspacePage>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { aiStats, aiFunnel } from '@/api'
 import TargetMark from '@/components/TargetMark.vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
 
 const stats = ref(null)
 const loading = ref(false)
+const loadError = ref(false)
+const funnelError = ref(false)
+let loadVersion = 0
 const hoverIdx = ref(-1)
 const factor = ref(Number(localStorage.getItem('tp_ai_save_factor')) || 0.5)
 const range = ref('30d')            // '7d'|'30d'|'90d'|'mtd'|'custom'
@@ -315,7 +321,10 @@ function calcFromTo() {
 }
 
 async function load() {
+  const version = ++loadVersion
   loading.value = true
+  loadError.value = false
+  funnelError.value = false
   hoverIdx.value = -1
   // 漏斗窗口跟随范围：from/to 差值换算 days（自定义区间也适用）
   const { from, to } = calcFromTo()
@@ -325,11 +334,17 @@ async function load() {
       aiStats({ from, to }),
       aiFunnel(days).catch(() => null),   // 漏斗失败不拖垮整页
     ])
+    if (version !== loadVersion) return
     stats.value = s
-    if (f) funnel.value = f
+    funnelError.value = !f
+    funnel.value = f || { funnel: [] }
   }
-  catch { stats.value = null }
-  finally { loading.value = false }
+  catch {
+    if (version !== loadVersion) return
+    stats.value = null
+    loadError.value = true
+  }
+  finally { if (version === loadVersion) loading.value = false }
 }
 
 function onRangeChange() {
@@ -473,7 +488,7 @@ const tv = computed(() => {
   --text-secondary:#52514e;
   --muted:         #6b7280;
   --dim:           #9aa3b2;
-  --signal:        #00b386;      /* 品牌强调色（chrome/hero，不做数据识别） */
+  --signal:        var(--el-color-primary);
   --signal-weak:   rgba(0,179,134,0.10);
   --mono: 'JetBrains Mono','SFMono-Regular',ui-monospace,'Menlo',monospace;
   --sans: system-ui,-apple-system,'Segoe UI',sans-serif;
@@ -490,7 +505,7 @@ const tv = computed(() => {
      不设 min-height——高度随内容自然收缩，避免比 el-main 可用区高出而无端触发纵向滚动条。 */
   background: var(--bg); color: var(--text-primary);
   font-family: var(--sans);
-  margin: -20px; padding: 20px;
+  min-width: 0;
   box-sizing: border-box;
 }
 /* dark 值声明两份：媒体查询覆盖 OS 深色偏好；data-theme 属性覆盖手动切换（双向生效）。
@@ -530,11 +545,9 @@ const tv = computed(() => {
 .eyebrow { font-family:var(--mono); font-size:12px; letter-spacing:3px; color:var(--signal); text-transform:uppercase; }
 
 /* 顶部标题条 */
-.head { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:16px; flex-wrap:wrap; }
-.head h1 { font-size:24px; font-weight:700; letter-spacing:1px; margin-top:12px; }
-.head .sub { font-size:13px; color:var(--muted); margin-top:8px; }
-.controls { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-.range-picker { width:250px; }
+.controls { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-width:0; }
+.controls :deep(.el-radio-group) { flex-wrap:wrap; gap:4px 0; }
+.range-picker { width:250px; max-width:100%; }
 
 .viz-body { display:flex; flex-direction:column; gap:14px; }
 
@@ -542,8 +555,8 @@ const tv = computed(() => {
 .top { display:grid; grid-template-columns: 1.3fr 2fr; gap:14px; }
 .hero { padding:24px 28px; display:flex; flex-direction:column; justify-content:center; }
 .hero-inner { position:relative; z-index:2; }
-.hero .val { font-family:var(--mono); font-size:52px; font-weight:700; line-height:1.05; letter-spacing:1px;
-  color:var(--signal); font-variant-numeric:tabular-nums; filter:drop-shadow(0 0 10px rgba(0,179,134,.24)); }
+.hero .val { font-family:var(--mono); font-size:32px; font-weight:700; line-height:1.2; letter-spacing:0;
+  color:var(--text-primary); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .hero .val small { font-family:var(--sans); font-size:18px; color:var(--dim); margin-left:6px; font-weight:400; letter-spacing:0; }
 .hero .cap { font-size:13px; color:var(--muted); margin-top:12px; line-height:1.55; }
 .hero .cap b { color:var(--text-primary); }
@@ -556,11 +569,16 @@ const tv = computed(() => {
 .kpis { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; align-content:stretch; }
 .kpi { padding:18px; transition:border-color .18s ease, box-shadow .2s ease, transform .18s ease; }
 .kpi .lbl { font-family:var(--mono); font-size:10px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; }
-.kpi .num { font-family:var(--mono); font-size:34px; font-weight:700; line-height:1.1; margin-top:10px;
-  color:var(--signal); font-variant-numeric:tabular-nums; }
+.kpi .num { font-family:var(--mono); font-size:28px; font-weight:700; line-height:1.2; margin-top:10px;
+  color:var(--text-primary); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .kpi .num small { font-family:var(--sans); font-size:15px; color:var(--dim); margin-left:3px; font-weight:400; }
 .kpi .foot { font-size:11px; color:var(--muted); margin-top:8px; font-family:var(--mono); letter-spacing:.3px; }
-.kpi:hover { border-color:var(--signal); box-shadow:0 0 16px rgba(0,179,134,.18); transform:translateY(-2px); }
+.engine-cmp { overflow-x:auto; }
+.eng-table { min-width:640px; }
+.top > *, .bottom > * { min-width:0; }
+.viz-root :deep(*) { letter-spacing:0; }
+.grid-bg { display:none; }
+.viz-body > .panel { border:0; border-radius:0; box-shadow:none; border-bottom:1px solid var(--line); }
 
 /* 主趋势图 */
 .trend { padding:20px 24px; }
@@ -614,13 +632,13 @@ const tv = computed(() => {
 .funnel-panel { padding:20px 24px; }
 .fp-range { font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.5px; }
 .fp-body { display:grid; grid-template-columns: 1fr 220px; gap:20px; align-items:center; }
-.fp-steps { display:flex; flex-direction:column; gap:6px; }
+.fp-steps { display:flex; flex-direction:column; gap:6px; min-width:0; }
 .fp-step { position:relative; min-height:46px; border-radius:6px; padding:6px 14px;
-  display:flex; align-items:center; gap:12px; color:#fff;
+  box-sizing:border-box; max-width:100%; display:flex; flex-wrap:wrap; align-items:center; gap:12px; color:#fff;
   clip-path: polygon(0 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
   transition: width .5s cubic-bezier(.22,1,.36,1); }
 .fp-num { font-family:var(--mono); font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1; }
-.fp-lbl { font-size:12px; opacity:.92; display:flex; align-items:center; gap:8px; }
+.fp-lbl { font-size:12px; opacity:.92; display:flex; flex-wrap:wrap; align-items:center; gap:8px; overflow-wrap:anywhere; }
 .fp-rate { font-family:var(--mono); font-size:11px; background:rgba(255,255,255,.22); border-radius:4px; padding:1px 6px; }
 .fp-runs { font-family:var(--mono); font-size:11px; color:rgba(255,255,255,.82); letter-spacing:.2px; }
 .fp-side { display:flex; flex-direction:column; gap:10px; }
@@ -681,6 +699,9 @@ const tv = computed(() => {
 @media (max-width: 560px) {
   .kpis { grid-template-columns:1fr; }
   .range-picker { width:100%; }
+  .fp-side { flex-direction:column; }
+  .row-head { flex-wrap:wrap; gap:8px; }
+  .fp-step { min-width:88px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .viz-body > *, .barfill, .meter-fill { animation:none; transition:none; }

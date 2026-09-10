@@ -41,7 +41,7 @@ export const workloadStats = (project_id, from, to) => http.get('/stats/workload
 // AI 战绩墙聚合（返回已解包 data）；params: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
 export const aiStats = (params) => http.get('/stats/ai', { params })
 // AI 价值漏斗：生成→采纳→可自动化→执行→通过 + 真bug/选择器卡点/省时
-export const aiFunnel = (days = 30) => http.get('/stats/ai-funnel', { params: { days } })
+export const aiFunnel = (days = 30, config = {}) => http.get('/stats/ai-funnel', { ...config, params: { days } })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
 export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
 export const reportIssueToGeelib = (id) => http.post(`/issues/${id}/report-geelib`)
@@ -337,7 +337,7 @@ export const updateDevice = (id, patch) => http.patch(`/devices/${id}`, patch)
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
 export const deleteDevice = (id) => http.delete(`/devices/${id}`)
 // 设备看板只读聚合(平台管理员)：全平台设备 + 在线状态 + 各状态执行计数 + 执行中明细
-export const getDeviceOverview = () => http.get('/devices/overview')
+export const getDeviceOverview = (config = {}) => http.get('/devices/overview', config)
 
 // ===== 性能测试（nami-perfdog 采集结果的下发 / 回传 / 在线报告）=====
 export const dispatchPerfJob = (data) => http.post('/perf/jobs', data)
@@ -436,7 +436,7 @@ export const setFeedbackSchedule = (sid, cron, enabled) => http.patch(`/feedback
 export const feedbackRuns = (set_id) => http.get('/feedback/runs', { params: { set_id } })
 export const feedbackRunDetail = (rid) => http.get(`/feedback/runs/${rid}`)
 // 回归防线日历(GitHub 贡献墙式:每天跑批状态 + 连续值守天数)
-export const defenseCalendar = (weeks = 12) => http.get('/feedback/defense-calendar', { params: { weeks } })
+export const defenseCalendar = (weeks = 12, config = {}) => http.get('/feedback/defense-calendar', { ...config, params: { weeks } })
 
 // 测试计划
 export const testPlans = (project_id) => http.get('/test-plans', { params: { project_id } })

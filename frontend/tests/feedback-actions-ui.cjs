@@ -1,0 +1,98 @@
+const { chromium } = require('../../tools/qalab-runner/eval/node_modules/playwright');
+const assert = require('node:assert/strict');
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+    const writes = [], errors = [];
+    let failSave = true;
+    let noDevices = false;
+    const rows = [{ id: 1, title: '自动反馈用例', req_title: '反馈需求', point_code: 'P1', exec_kind: 'gui', precondition: '已登录', steps: '原步骤', expected: '原预期', auto_feasible: 'yes', status: 'ready' }, { id: 2, title: '人工反馈用例', exec_kind: 'manual', auto_feasible: 'no', status: 'ready' }];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.addInitScript(() => localStorage.setItem('tp_token', 'mock-local-only'));
+    await page.route(url => url.pathname.startsWith('/api/'), async route => {
+      const req = route.request(), path = new URL(req.url()).pathname;
+      let data = [];
+      if (req.method() !== 'GET') writes.push({ path, method: req.method(), body: req.postData() ? req.postDataJSON() : null });
+      if (path.endsWith('/auth/me')) data = { user: { id: 1, name: '测试员' }, is_platform_admin: true, memberships: [] };
+      if (path.endsWith('/projects')) data = [{ id: 1, name: '测试项目' }];
+      if (path === '/api/devices') data = noDevices ? [] : [{ runner_id: 'registered-runner', name: '已注册设备' }];
+      if (path === '/api/feedback/cases') data = rows;
+      if (path === '/api/feedback/cases/1') {
+        if (req.method() === 'PATCH') {
+          if (failSave) return route.fulfill({ status: 500, json: { msg: '模拟保存失败' } });
+          Object.assign(rows[0], req.postDataJSON());
+        }
+        data = rows[0];
+      }
+      if (path === '/api/feedback/cases/run') data = { run_ids: [10], batch_id: 'mock' };
+      if (path === '/api/feedback/sets') data = [{ id: 3, name: '回归验收集', case_count: 0 }];
+      if (path === '/api/feedback/sets/3/cases') data = { added: 1 };
+      if (path === '/api/feedback/sets/3/run') data = { run_ids: [11], batch_id: 'set-mock' };
+      await route.fulfill({ json: { code: 0, data } });
+    });
+    await page.goto(`${process.env.UI_BASE_URL || 'http://127.0.0.1:5189'}/feedback-cases`);
+    const auto = page.locator('.el-table__body-wrapper tr').filter({ hasText: '自动反馈用例' });
+    const manual = page.locator('.el-table__body-wrapper tr').filter({ hasText: '人工反馈用例' });
+    await auto.waitFor();
+    assert.equal(await manual.getByRole('checkbox').isDisabled(), true);
+    await auto.getByRole('button', { name: '详情', exact: true }).click();
+    const drawer = page.locator('.el-drawer');
+    await drawer.getByLabel('标题', { exact: true }).fill('编辑后的反馈用例');
+    await drawer.getByLabel('步骤', { exact: true }).fill('新步骤\n'.repeat(20));
+    await drawer.getByLabel('预期', { exact: true }).fill('新预期');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: '/tmp/feedback-editor-mobile.png' });
+    const saveButton = drawer.getByRole('button', { name: '保存', exact: true });
+    const saveBox = await saveButton.boundingBox();
+    assert(saveBox.y >= 0 && saveBox.y + saveBox.height <= 844);
+    await saveButton.click();
+    await page.getByText('模拟保存失败', { exact: true }).waitFor();
+    assert(await drawer.isVisible());
+    assert.equal(await drawer.getByLabel('标题', { exact: true }).inputValue(), '编辑后的反馈用例');
+    failSave = false;
+    await saveButton.click();
+    await drawer.waitFor({ state: 'hidden' });
+    assert.deepEqual(writes.filter(write => write.method === 'PATCH').at(-1).body, { title: '编辑后的反馈用例', steps: '新步骤\n'.repeat(20), expected: '新预期', precondition: '已登录', exec_kind: 'gui' });
+    await page.getByRole('button', { name: '收起侧栏' }).click();
+    const edited = page.locator('.el-table__body-wrapper tr').filter({ hasText: '编辑后的反馈用例' });
+    await edited.locator('.el-checkbox').click();
+    await page.getByRole('button', { name: '发送执行', exact: true }).click();
+    await page.getByText(/已下发 1 条/).waitFor();
+    assert.deepEqual(writes.find(write => write.path === '/api/feedback/cases/run').body, { case_ids: [1], runner: 'registered-runner' });
+    await page.getByRole('button', { name: '加入回归集', exact: true }).click();
+    const dialog = page.locator('.el-dialog');
+    await dialog.locator('.el-select').click();
+    await page.getByRole('option', { name: '回归验收集（0 条）', exact: true }).click();
+    await dialog.getByRole('button', { name: '加入', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.deepEqual(writes.find(write => write.path === '/api/feedback/sets/3/cases').body, { case_ids: [1] });
+    await edited.getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    assert(!writes.some(write => write.method === 'DELETE'));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`${process.env.UI_BASE_URL || 'http://127.0.0.1:5189'}/feedback-regression`);
+    await page.getByRole('button', { name: '立即回归', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '取消', exact: true }).click();
+    assert(!writes.some(write => write.path === '/api/feedback/sets/3/run'));
+    await page.getByRole('button', { name: '立即回归', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '确认', exact: true }).click();
+    await page.getByText(/批次 set-mock/).waitFor();
+    assert.equal(writes.filter(write => write.path === '/api/feedback/sets/3/run').length, 1);
+    await page.getByRole('button', { name: '定时', exact: true }).click();
+    const schedule = page.locator('.el-dialog');
+    await schedule.locator('.el-switch').click();
+    await schedule.getByText('自定义', { exact: true }).click();
+    await schedule.getByLabel('cron', { exact: true }).fill('15 9 * * 1');
+    await schedule.getByRole('button', { name: '保存', exact: true }).click();
+    await schedule.waitFor({ state: 'hidden' });
+    assert.deepEqual(writes.find(write => write.path === '/api/feedback/sets/3/schedule').body, { cron: '15 9 * * 1', enabled: true });
+    noDevices = true;
+    await page.goto(`${process.env.UI_BASE_URL || 'http://127.0.0.1:5189'}/feedback-cases`);
+    await page.locator('.el-table__body-wrapper tr').filter({ hasText: '编辑后的反馈用例' }).locator('.el-checkbox').click();
+    assert.equal(await page.getByRole('button', { name: '发送执行', exact: true }).isDisabled(), true);
+    assert.deepEqual(errors, []);
+    console.log('PASS feedback edit payload/failure retention/mobile footer, manual guard, registered runner dispatch, add-to-set and delete cancellation');
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exit(1); });

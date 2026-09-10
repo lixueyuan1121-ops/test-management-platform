@@ -19,7 +19,7 @@
         <el-select v-model="runner" size="small" style="width:170px" placeholder="选择执行设备">
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
-        <el-button type="success" size="small" :loading="dispatching" @click="runSelected">发送执行</el-button>
+        <el-button type="success" size="small" :loading="dispatching" :disabled="!runner" @click="runSelected">发送执行</el-button>
         <el-button type="primary" size="small" @click="openAddToSet">加入回归集</el-button>
         <span class="sel-hint">发送执行仅跳过 manual 用例</span>
       </div>
@@ -151,7 +151,7 @@ const selected = ref([])
 const importFilter = ref(null)
 const kindFilter = ref(null)
 const feasFilter = ref(null)
-const runner = ref('mac-01')
+const runner = ref('')
 const dispatching = ref(false)
 
 const detailDrawer = ref(false)
@@ -185,10 +185,14 @@ async function reload() {
 async function loadAux() {
   try { imports.value = await feedbackImports() } catch { /* ignore */ }
   try { sets.value = await feedbackSets() } catch { /* ignore */ }
-  try { myDevices.value = await listMyDevices() } catch { /* ignore */ }
+  try {
+    myDevices.value = await listMyDevices()
+    if (!myDevices.value.some(device => device.runner_id === runner.value)) runner.value = myDevices.value[0]?.runner_id || ''
+  } catch { /* ignore */ }
 }
 
 async function runSelected() {
+  if (!runner.value || dispatching.value) return
   const ids = selected.value.map((r) => r.id)
   if (!ids.length) return
   dispatching.value = true
@@ -253,7 +257,7 @@ async function regen(row) {
 
 async function del(row) {
   try {
-    await ElMessageBox.confirm(`确认删除用例「${row.title}」？`, '删除确认', { type: 'warning' })
+    await ElMessageBox.confirm(`确认删除用例「${row.title}」？`, '删除确认', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' })
   } catch { return }
   try {
     await deleteFeedbackCase(row.id)

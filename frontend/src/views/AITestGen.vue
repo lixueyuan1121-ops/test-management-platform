@@ -1,16 +1,6 @@
 <template>
-  <div class="ai-testgen">
-    <!-- 输入区 -->
-    <el-card class="input-card">
-      <template #header>
-        <div class="card-head">
-          <div class="title-wrap">
-            <el-icon class="title-icon"><MagicStick /></el-icon>
-            <div>
-              <div class="title">AI 测试助手 · QA Copilot</div>
-              <div class="subtitle">粘贴需求，AI 秒级拆解出结构化、可执行的测试点清单</div>
-            </div>
-          </div>
+  <WorkspacePage ref="workspace" title="AI 测试助手" class="ai-testgen functional-workspace">
+      <template #actions>
           <el-tag v-if="!aiAvailable" type="danger" effect="light" round>AI 服务不可用</el-tag>
           <!-- 仅在有 2 个及以上可用引擎时才显示切换器;只有一个引擎无需切换,直接隐藏 -->
           <div v-else-if="availProviders.length > 1" class="engine-picker">
@@ -28,14 +18,24 @@
               </el-radio-button>
             </el-radio-group>
           </div>
+      </template>
+      <template #selection>
+        <div class="result-toolbar">
+          <el-radio-group v-model="activePanel" aria-label="测试生成视图">
+            <el-radio-button value="config">生成配置</el-radio-button>
+            <el-radio-button value="results" :disabled="!cases.length && !viewingId">生成结果（{{ cases.length }}）</el-radio-button>
+          </el-radio-group>
+          <el-select v-model="viewingId" placeholder="查看历史生成" clearable size="small" style="width:260px" :disabled="running" @change="onViewHistory">
+            <el-option v-for="h in history" :key="h.id" :label="`#${h.id} · ${fmtTime(h.created_at)} · ${h.case_count}条 · ${h.status}`" :value="h.id" />
+          </el-select>
         </div>
       </template>
-
+    <section v-show="activePanel === 'config'" class="input-card">
       <div class="form-row">
-        <el-select v-model="pid" placeholder="选择项目" style="width:200px" @change="onProjectChange">
+        <el-select v-model="pid" placeholder="选择项目" style="width:200px" :disabled="running" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（必填）" @change="onTaskChange" />
+        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（必填）" :disabled="running" @change="onTaskChange" />
         <el-select
           v-model="targetPages" multiple filterable collapse-tags collapse-tags-tooltip
           placeholder="目标页面（可选，聚焦该页选择器）" style="width:260px" :disabled="running"
@@ -78,10 +78,10 @@
 
       <div v-if="inputType === 'url'" class="extract-row-wrap">
         <div class="extract-row">
-          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="extracting" @keyup.enter="doExtractUrl()">
+          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="extracting || running" @keyup.enter="doExtractUrl()">
             <template #prepend>URL</template>
           </el-input>
-          <el-button type="primary" :loading="extracting" :disabled="!urlInput.trim()" @click="doExtractUrl()">抓取正文</el-button>
+          <el-button type="primary" :loading="extracting" :disabled="running || !urlInput.trim()" @click="doExtractUrl()">抓取正文</el-button>
         </div>
         <div class="extract-tip">支持普通网页与飞书文档（飞书需管理员配置应用凭据并把文档共享给应用）</div>
       </div>
@@ -89,6 +89,7 @@
       <el-upload
         v-else-if="inputType === 'file'"
         :auto-upload="false"
+        :disabled="extracting || running"
         :show-file-list="false"
         :on-change="onFilePick"
         accept=".txt,.md,.markdown,.docx,.pdf"
@@ -190,10 +191,10 @@
           </el-tooltip>
         </el-checkbox>
       </div>
-    </el-card>
+    </section>
 
     <!-- 生成过程反馈 -->
-    <el-card v-if="running" class="stream-card">
+    <section v-if="running" class="stream-card" aria-live="polite">
       <div class="running-head">
         <span class="pulse-dot" :class="{ queued: jobStatus === 'pending' }" />
         <el-tag v-if="jobStatus" :type="jobStatus === 'pending' ? 'warning' : 'success'" size="small" effect="light">
@@ -205,32 +206,15 @@
       <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" color="#00b386" />
       <pre v-if="rawStream" class="raw-stream">{{ rawStream }}</pre>
       <div v-else class="raw-hint">{{ statusHint }}</div>
-    </el-card>
+    </section>
 
     <!-- 结果区 -->
-    <el-card v-if="cases.length || viewingId" class="result-card">
-      <template #header>
-        <div class="card-head">
-          <span class="result-title">测试点清单<template v-if="cases.length"> · {{ cases.length }} 条</template></span>
-          <div class="result-tools">
-            <el-select
-              v-model="viewingId"
-              placeholder="查看历史生成"
-              clearable
-              size="small"
-              style="width:260px"
-              @change="onViewHistory"
-            >
-              <el-option
-                v-for="h in history"
-                :key="h.id"
-                :label="`#${h.id} · ${fmtTime(h.created_at)} · ${h.case_count}条 · ${h.status}`"
-                :value="h.id"
-              />
-            </el-select>
-          </div>
-        </div>
-      </template>
+    <section v-if="cases.length || viewingId" v-show="activePanel === 'results'" class="result-card">
+      <el-skeleton v-if="historyLoading" :rows="5" animated />
+      <el-result v-else-if="historyError" icon="error" title="历史生成记录加载失败">
+        <template #extra><el-button type="primary" @click="onViewHistory(viewingId)">重新加载</el-button></template>
+      </el-result>
+      <template v-else>
 
       <!-- 战绩统计条 -->
       <div v-if="meta" class="stat-strip">
@@ -259,7 +243,7 @@
         </el-table-column>
         <el-table-column label="测试点" min-width="200">
           <template #default="{ row }">
-            <div>{{ row.title }}</div>
+            <button type="button" class="case-title" @click="inspectedCase = row">{{ row.title }}</button>
             <el-tooltip v-if="row.selector_fix" :content="row.kind_reason" placement="top">
               <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">
                 补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"> · 补: {{ row.selector_fix_keys.join(', ') }}</template>
@@ -289,12 +273,27 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
-  </div>
+      </template>
+    </section>
+    <el-drawer :model-value="!!inspectedCase" class="generation-detail" title="测试点详情" size="min(760px, 100vw)" @close="inspectedCase = null">
+      <template v-if="inspectedCase">
+        <h2 class="detail-title">{{ inspectedCase.title }}</h2>
+        <h3>步骤</h3><div class="detail-text">{{ inspectedCase.steps || '—' }}</div>
+        <h3>预期结果</h3><div class="detail-text">{{ inspectedCase.expected || '—' }}</div>
+      </template>
+      <template #footer>
+        <el-radio-group v-if="inspectedCase" :model-value="inspectedCase.review_status || 'pending'" :disabled="reviewingId === inspectedCase.id" @change="value => reviewRow(inspectedCase, value)">
+          <el-radio-button value="adopted">采纳</el-radio-button>
+          <el-radio-button value="rejected">否决</el-radio-button>
+          <el-radio-button value="pending">待定</el-radio-button>
+        </el-radio-group>
+      </template>
+    </el-drawer>
+  </WorkspacePage>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MagicStick, UploadFilled, Document, Connection, QuestionFilled } from '@element-plus/icons-vue'
 import {
@@ -306,6 +305,8 @@ import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { renderMarkdown } from '@/utils/markdown'
 import TaskPicker from '@/components/TaskPicker.vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 
 // 维度 / 优先级 → el-tag 配色
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
@@ -384,9 +385,19 @@ const currentJobId = ref(null)  // 当前 job id,供「取消」调后端释放�
 const runningSince = ref(0)     // 进入 running 的时刻(ms),做执行超时判定 + PHASES 动画基准
 const abortReason = ref('')     // 中断原因:'user'(主动取消)/'timeout'(前端兜底停等),区分提示文案
 const cases = ref([])
+const activePanel = ref('config')
+const workspace = ref(null)
+watch(activePanel, async () => {
+  await nextTick()
+  workspace.value?.$el.closest('.el-main')?.scrollTo({ top: 0 })
+})
+const inspectedCase = ref(null)
 const meta = ref(null)
 const history = ref([])
 const viewingId = ref(null)
+const historyLoading = ref(false)
+const historyError = ref(false)
+let historyVersion = 0
 const taskCases = ref([])       // 选定关联任务后,该任务已有的历史用例(提示避免重复生成)
 const taskCasesTotal = ref(0)   // 该任务历史用例总数(以后端 total 为准,不受分页截断)
 const showTaskCases = ref(false)
@@ -396,6 +407,7 @@ const reviewingId = ref(null)   // 正在提交评审的行 id，禁用该行控
 
 let timer = null
 let ctrl = null
+let generationVersion = 0
 
 const adoptedCount = computed(() => cases.value.filter((c) => (c.review_status || (c.adopted ? 'adopted' : 'pending')) === 'adopted').length)
 // 进度文案:真实状态驱动(不再是纯时间假动画)。pending 显示排队位次,running 显示多路生成动态文案。
@@ -434,6 +446,11 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
+  historyVersion++
+  historyLoading.value = false
+  historyError.value = false
+  activePanel.value = 'config'
+  inspectedCase.value = null
   taskId.value = null
   cases.value = []
   meta.value = null
@@ -525,6 +542,7 @@ async function onTaskChange(id) {
 function fillDemo() { requirement.value = DEMO; sourceInfo.value = null; sourceUrl.value = ''; reqMode.value = 'preview' }
 
 async function doExtractUrl(overrideUrl) {
+  if (extracting.value || running.value) return
   let url = (typeof overrideUrl === 'string' ? overrideUrl : urlInput.value).trim()
   if (!url) return
   urlInput.value = url
@@ -546,12 +564,15 @@ async function doExtractUrl(overrideUrl) {
     sourceUrl.value = url   // 记录需求来源:生成时后端据此 upsert 需求实体并给用例挂 requirement_id
     reqMode.value = 'preview'   // 抓取后先看渲染效果
     ElMessage.success(`已提取 ${r.chars} 字`)
+  } catch {
+    // 请求拦截器已提示失败，保留当前正文供重试。
   } finally {
     extracting.value = false
   }
 }
 
 async function onFilePick(uploadFile) {
+  if (extracting.value || running.value) return
   const raw = uploadFile?.raw
   if (!raw) return
   if (raw.size > 5 * 1024 * 1024) { ElMessage.warning('文件过大（>5MB）'); return }
@@ -560,16 +581,24 @@ async function onFilePick(uploadFile) {
     const r = await extractFile(raw)
     requirement.value = r.text
     sourceInfo.value = { label: r.filename, chars: r.chars }
+    sourceUrl.value = ''
     reqMode.value = 'preview'   // 解析后先看渲染效果
     ElMessage.success(`已解析 ${r.chars} 字`)
+  } catch {
+    // 请求拦截器已提示失败，保留当前正文供重试。
   } finally {
     extracting.value = false
   }
 }
 
 function generate() {
+  if (running.value) return
   if (!pid.value || !requirement.value.trim()) return
   if (!taskId.value) { ElMessage.warning('请先选择关联任务(必填)'); return }
+  const version = ++generationVersion
+  historyVersion++
+  historyLoading.value = false
+  historyError.value = false
   cases.value = []
   meta.value = null
   viewingId.value = null
@@ -600,13 +629,17 @@ function generate() {
       signal: ctrl.signal,
       // 轮询回传真实状态:排队位次 / 执行中;记录进入 running 的时刻供超时判定
       onTick: (job) => {
+        if (version !== generationVersion) return
         jobStatus.value = job.status || ''
         queuePos.value = job.queue_position || 0
         if (job.id) currentJobId.value = job.id
         if (job.status === 'running' && !runningSince.value) runningSince.value = Date.now()
       },
       onDone: (evt) => {
+        if (version !== generationVersion) return
+        if (abortReason.value) { stop(); return }
         cases.value = evt.cases || []
+        if (cases.value.length) activePanel.value = 'results'
         meta.value = evt.meta || null
         if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效测试点')
         else {
@@ -624,6 +657,7 @@ function generate() {
       },
       // 中断原因分流:主动取消 / 超时停等(均已各自提示过)不再重复弹错,只有真实失败才报错
       onError: (msg) => {
+        if (version !== generationVersion) return
         if (!abortReason.value) ElMessage.error(msg || '生成失败')
         stop()
       },
@@ -655,7 +689,11 @@ function stop() {
   ctrl = null
   jobStatus.value = ''
   queuePos.value = 0
-  if (pid.value) listAiTasks(pid.value, 20).then((h) => { history.value = h })
+  const projectId = pid.value
+  const version = generationVersion
+  if (projectId) listAiTasks(projectId, 20).then((h) => {
+    if (projectId === pid.value && version === generationVersion) history.value = h
+  }).catch(() => {})
 }
 
 // 取消:排队中(pending)调后端取消并释放队列位;执行中(running)后端无法中断(409),仅停止前端等待。
@@ -667,22 +705,44 @@ async function cancel() {
     try {
       await cancelAiJob(jid)
       ElMessage.info('已取消排队任务，队列位已释放')
-    } catch {
-      // 409=running 无法远程中断:后台仍会完成,前端仅停止等待
-      ElMessage.info('任务执行中无法中断，已停止等待（后台仍会完成，可稍后在历史中查看）')
+    } catch (error) {
+      if (error.response?.status === 409) ElMessage.info('任务执行中无法中断，已停止等待（后台仍会完成，可稍后在历史中查看）')
+      else ElMessage.warning('取消请求未成功，已停止等待；后台任务状态尚未确认，请稍后查看历史记录')
     }
+  } else {
+    ElMessage.info('已停止等待，尚未取得任务编号；后台任务可能仍在执行')
   }
 }
 
 async function onViewHistory(id) {
-  if (!id) { cases.value = []; meta.value = null; return }
+  const version = ++historyVersion
+  inspectedCase.value = null
+  cases.value = []
+  meta.value = null
+  historyError.value = false
+  historyLoading.value = false
+  if (!id) { activePanel.value = 'config'; return }
   const h = history.value.find((x) => x.id === id)
-  cases.value = await listAiCases(id)
-  meta.value = h
-    ? { case_count: h.case_count, duration_ms: h.duration_ms, cost_usd: h.cost_usd, output_tokens: h.output_tokens }
-    : null
-  rawStream.value = ''
+  activePanel.value = 'results'
+  historyLoading.value = true
+  try {
+    const result = await listAiCases(id)
+    if (version !== historyVersion) return
+    cases.value = result
+    meta.value = h ? { case_count: h.case_count, duration_ms: h.duration_ms, cost_usd: h.cost_usd, output_tokens: h.output_tokens } : null
+    rawStream.value = ''
+  } catch {
+    if (version === historyVersion) historyError.value = true
+  } finally {
+    if (version === historyVersion) historyLoading.value = false
+  }
 }
+onBeforeUnmount(() => {
+  historyVersion++
+  generationVersion++
+  ctrl?.abort()
+  if (timer) clearInterval(timer)
+})
 
 // 三态评审：采纳/否决/待定。用后端返回的 data 回写本地行（review_status/reviewed_at/adopted）。
 async function reviewRow(row, val) {
@@ -710,7 +770,17 @@ function fmtTime(s) {
 </script>
 
 <style scoped>
-.ai-testgen { display: flex; flex-direction: column; gap: 16px; }
+.result-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.result-toolbar :deep(.el-select) { max-width:100%; }
+.input-card, .result-card, .stream-card { margin-top:16px; }
+.case-title { padding:0; border:0; background:none; color:var(--el-color-primary); font:inherit; text-align:left; cursor:pointer; overflow-wrap:anywhere; }
+.detail-title { font-size:18px; overflow-wrap:anywhere; }
+.generation-detail { font-family:system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--el-text-color-primary); }
+.generation-detail h3 { font-size:14px; margin:24px 0 10px; }
+.detail-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; }
+.form-row, .actions { flex-wrap:wrap; }
+.form-row :deep(.el-select) { max-width:100%; }
+.multiline { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 .actions { display: flex; align-items: center; gap: 12px; }
 .scenario-only { margin-left: 4px; }
 .scenario-help { color: #909399; margin-left: 2px; vertical-align: -2px; cursor: help; }
@@ -738,14 +808,14 @@ function fmtTime(s) {
   border: none; background: transparent; color: #5b6472; font-weight: 500;
   padding: 5px 14px; box-shadow: none; transition: all .15s ease;
 }
-.engine-seg { background: #f0f2f5; border: 1px solid #e3e8ef; border-radius: 16px; padding: 2px; }
+.engine-seg { background: #f0f2f5; border: 1px solid #e3e8ef; border-radius: 6px; padding: 2px; }
 .engine-seg :deep(.el-radio-button:first-child .el-radio-button__inner),
-.engine-seg :deep(.el-radio-button:last-child .el-radio-button__inner) { border-radius: 14px; }
+.engine-seg :deep(.el-radio-button:last-child .el-radio-button__inner) { border-radius: 4px; }
 .engine-seg :deep(.el-radio-button__inner:hover) { color: #1f2d3d; }
 /* 选中态：signal-green 填充 + 白字 + 柔和阴影 */
 .engine-seg :deep(.el-radio-button.is-active .el-radio-button__inner) {
-  background: #00b386; color: #fff; border-radius: 14px;
-  box-shadow: 0 1px 4px rgba(0,179,134,.35);
+  background: var(--el-color-primary); color: #fff; border-radius: 4px;
+  box-shadow: none;
 }
 .engine-seg :deep(.el-radio-button.is-active .eng-dot) { box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
 /* 不可用引擎：降透明度 + 禁用光标 */
@@ -872,10 +942,10 @@ function fmtTime(s) {
 .stat {
   flex: 1; min-width: 96px; text-align: center;
   padding: 12px 8px; border-radius: 8px;
-  background: linear-gradient(160deg, #f3fbf8, #eaf5ff);
-  border: 1px solid #e3eef0;
+  background: #fff;
+  border: 1px solid var(--el-border-color-light);
 }
-.stat-num { font-size: 22px; font-weight: 700; color: #00926e; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.stat-num { font-size: 22px; font-weight: 700; color: var(--el-text-color-primary); font-family: 'JetBrains Mono', ui-monospace, monospace; overflow-wrap:anywhere; }
 .stat-label { font-size: 12px; color: #8a94a6; margin-top: 4px; }
 .stat.adopted .stat-num { color: #3b9ad9; }
 

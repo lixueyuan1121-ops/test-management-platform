@@ -101,8 +101,10 @@ async function submit() {
       app.invalidateProjects()
     }
     ElMessage.success('保存成功')
-        await load()
-  } finally { dialog.saving = false; dialog.visible = false }
+    dialog.visible = false
+    await load()
+  } catch { /* 请求拦截器已提示；保存失败时保留编辑内容。 */ }
+  finally { dialog.saving = false }
 }
 </script>
 
