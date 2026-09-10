@@ -1,20 +1,17 @@
 <template>
   <div class="eval-library">
-    <el-card>
-      <template #header>
+    <section class="library-workspace">
         <div class="head">
           <div class="title-wrap">
             <el-icon class="title-icon"><Collection /></el-icon>
             <div>
               <div class="title">对话测评用例库</div>
-              <div class="subtitle">历史生成的对话测评 query，可勾选再次下发到执行机验证</div>
             </div>
           </div>
           <el-select v-model="pid" placeholder="选择项目" style="width:200px" @change="onProjectChange">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
         </div>
-      </template>
 
       <div class="filter-bar">
         <el-select v-model="filterDim" clearable placeholder="按维度筛选(全部)" size="small" style="width:180px" @change="reload">
@@ -24,38 +21,50 @@
           <el-option v-for="t in tasks" :key="t.id" :label="t.name" :value="t.id" />
         </el-select>
         <span class="count-info" v-if="!loading">共 {{ queries.length }} 条</span>
+        <span class="sel-info">已选 {{ selected.length }} 条</span>
         <div class="spacer" />
         <el-button type="primary" size="small" :icon="Upload" :disabled="!pid" @click="openImport">导入用例</el-button>
+        <el-button type="primary" size="small" :disabled="!selected.length" @click="dispatchVisible = true">配置并下发</el-button>
       </div>
 
-      <div class="dispatch-bar" v-if="selected.length">
+      <el-dialog v-model="dispatchVisible" title="下发测评用例" width="560px" :close-on-click-modal="!dispatching" :show-close="!dispatching">
+      <div class="dispatch-fields">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
-        <el-select v-model="chosenRunner" size="small" style="width:180px" placeholder="选择执行机" @change="loadClientDevices">
+        <label>执行机</label>
+        <el-select v-model="chosenRunner" aria-label="执行机" placeholder="选择执行机" @change="loadClientDevices">
           <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
-        <el-select v-model="chosenDevice" size="small" style="width:200px" clearable
+        <label>目标设备</label>
+        <el-select v-model="chosenDevice" aria-label="目标设备" clearable
           :placeholder="clientDevices.length ? '选目标设备(可空)' : '该执行机未上报设备'">
           <el-option v-for="dev in clientDevices" :key="dev.vm_id"
             :label="`${dev.name || dev.vm_id}${(dev.status==='online'||dev.status==='active')?' 🟢':' ⚪'}`" :value="dev.vm_id" />
         </el-select>
-        <el-select v-model="chosenChatMode" size="small" style="width:200px" clearable placeholder="对话模式(默认)">
+        <label>对话模式</label>
+        <el-select v-model="chosenChatMode" aria-label="对话模式" clearable placeholder="对话模式(默认)">
           <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
         </el-select>
-        <el-input v-model="chosenModel" size="small" style="width:220px" clearable :placeholder="MODEL_PLACEHOLDER" />
-        <el-select v-model="chosenDepth" size="small" style="width:130px" clearable placeholder="思考深度(默认)">
+        <label>模型</label>
+        <el-input v-model="chosenModel" aria-label="模型" clearable :placeholder="MODEL_PLACEHOLDER" />
+        <label>思考深度</label>
+        <el-select v-model="chosenDepth" aria-label="思考深度" clearable placeholder="思考深度(默认)">
           <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
         </el-select>
-        <el-button type="success" size="small" :loading="dispatching" :disabled="!chosenRunner" @click="dispatch">
-          下发选中到执行机
-        </el-button>
       </div>
+      <template #footer>
+        <el-button :disabled="dispatching" @click="dispatchVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dispatching" :disabled="!chosenRunner || !selected.length" @click="dispatch">
+          确认下发
+        </el-button>
+      </template>
+      </el-dialog>
 
       <el-table v-if="loading || queries.length" :data="sorted" size="small" border stripe @selection-change="s => selected = s" v-loading="loading">
         <el-table-column type="selection" width="42" />
         <el-table-column label="维度" width="120" align="center">
           <template #default="{ row }"><el-tag :type="DIM_TYPE[row.dimension] || 'info'" effect="plain" size="small">{{ dimLabel(row.dimension) }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="标题" min-width="180"><template #default="{ row }">{{ row.title }}</template></el-table-column>
+        <el-table-column label="标题" min-width="180"><template #default="{ row }"><button class="case-title" @click="inspectedCase = row; caseVisible = true">{{ row.title }}</button></template></el-table-column>
         <el-table-column label="提问 prompt" min-width="240"><template #default="{ row }"><span class="multiline">{{ row.prompt || '—' }}</span></template></el-table-column>
         <el-table-column label="预期 expected" min-width="200"><template #default="{ row }"><span class="multiline">{{ row.expected || '—' }}</span></template></el-table-column>
         <el-table-column label="对话组" min-width="110"><template #default="{ row }"><span class="mono">{{ row.conversation_group || '—' }}</span></template></el-table-column>
@@ -74,7 +83,15 @@
         </el-table-column>
       </el-table>
       <el-empty v-if="!loading && !queries.length" description="该项目暂无生成的对话测评 query，去『对话测评生成』生成" />
-    </el-card>
+    </section>
+    <el-drawer v-model="caseVisible" :title="inspectedCase?.title || '用例详情'" size="min(720px, 100vw)">
+      <template v-if="inspectedCase">
+        <el-tag effect="plain">{{ dimLabel(inspectedCase.dimension) }}</el-tag>
+        <section class="case-section"><h3>提问 Prompt</h3><div>{{ inspectedCase.prompt || '未填写' }}</div></section>
+        <section class="case-section"><h3>预期 Expected</h3><div>{{ inspectedCase.expected || '未填写' }}</div></section>
+        <section class="case-section"><h3>对话信息</h3><div>{{ inspectedCase.conversation_group || '单轮对话' }} · 第 {{ (inspectedCase.turn_index ?? 0) + 1 }} 轮</div></section>
+      </template>
+    </el-drawer>
 
     <!-- 占位符变体展开:{{变量}} × 取值列表笛卡尔积批量生成 -->
     <el-dialog v-model="expandVisible" title="批量生成变体题" width="560px">
@@ -202,6 +219,9 @@ const pid = ref(null)
 const queries = ref([])
 const loading = ref(false)
 const selected = ref([])
+const dispatchVisible = ref(false)
+const caseVisible = ref(false)
+const inspectedCase = ref(null)
 const devices = ref([])
 const chosenRunner = ref('')
 const clientDevices = ref([])
@@ -292,6 +312,7 @@ async function dispatch() {
       }),
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
+    dispatchVisible.value = false
   } catch { /* 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
@@ -431,10 +452,23 @@ async function doExpand() {
 </script>
 
 <style scoped>
+.library-workspace { min-width: 0; }
+.filter-bar { position: sticky; top: -20px; z-index: 20; padding: 12px 0; background: var(--tech-bg); }
+.head { flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.dispatch-fields { display: grid; gap: 8px; }
+.dispatch-fields label { font-size: 13px; margin-top: 8px; color: var(--el-text-color-regular); }
+.case-title { border: 0; background: none; padding: 0; font: inherit; color: var(--el-color-primary); cursor: pointer; text-align: left; }
+.case-title:hover { text-decoration: underline; }
+.case-section { padding: 20px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.case-section h3 { font-size: 14px; margin: 0 0 12px; }
+.case-section div { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.eval-library :deep(.el-dialog) { max-width: calc(100vw - 24px); }
+.eval-library :deep(.el-dialog__body) { max-height: 68dvh; overflow: auto; }
+.eval-library :deep(.el-dialog__footer) { border-top: 1px solid var(--el-border-color-lighter); padding-top: 16px; }
 .eval-library { display: flex; flex-direction: column; gap: 16px; }
 .head { display: flex; align-items: center; justify-content: space-between; }
 .title-wrap { display: flex; align-items: center; gap: 12px; }
-.title-icon { font-size: 24px; color: #00b386; }
+.title-icon { font-size: 24px; color: var(--el-color-primary); }
 .title { font-size: 16px; font-weight: 600; color: #1f2d3d; }
 .subtitle { font-size: 12px; color: #8a94a6; margin-top: 2px; }
 .dispatch-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -453,7 +487,7 @@ async function doExpand() {
 .skip-list { margin: 8px 0 0; padding-left: 18px; color: #b88230; font-size: 12px; line-height: 1.6; }
 .hint { color: #8a94a6; font-size: 12px; }
 .sel-info { font-weight: 600; color: #00926e; font-size: 13px; }
-.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
+.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #5a6b7b; }
 .exp-base { margin-bottom: 12px; color: #5a6b7b; font-size: 13px; }
 </style>

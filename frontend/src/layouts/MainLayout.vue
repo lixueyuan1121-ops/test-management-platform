@@ -5,255 +5,114 @@
         <TargetMark :size="32" :animated="false" class="brand-mark" />
         <span v-show="!collapsed" class="logo-text">测试管理平台</span>
       </div>
-      <el-menu
-        :default-active="activeMenu"
-        :default-openeds="openSubs"
-        :collapse="collapsed"
-        :collapse-transition="false"
-        router
-        class="menu"
-        background-color="var(--tech-sidebar)"
-        text-color="#bfcbd9"
-        active-text-color="var(--tech-on-dark-accent)"
-      >
-        <!-- 概览 -->
-        <el-menu-item index="/dashboard">
-          <el-icon><Odometer /></el-icon><span>工作台</span>
-        </el-menu-item>
-
-        <!-- 发版记录 -->
-        <el-menu-item index="/releases"><el-icon><Promotion /></el-icon><span>发版记录</span></el-menu-item>
-
-        <!-- 设备看板:全平台执行机监控大屏 -->
-        <el-menu-item index="/device-board"><el-icon><Cpu /></el-icon><span>设备看板</span></el-menu-item>
-
-        <!-- 作战大屏:全平台质量脉搏整合页 -->
-        <el-menu-item index="/war-room"><el-icon><DataBoard /></el-icon><span>作战大屏</span></el-menu-item>
-
-        <!-- 测试指挥官:一句话问质量(对话式,全体成员可用) -->
-        <el-menu-item index="/commander"><el-icon><ChatDotRound /></el-icon><span>测试指挥官</span></el-menu-item>
-
-        <!-- 功能测试:完整链路(生成 → 用例资产 → 派单 → 结果 → 问题) -->
-        <el-sub-menu index="func">
-          <template #title><el-icon><MagicStick /></el-icon><span>功能测试</span></template>
-          <el-menu-item index="/ai-testgen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>AI 测试助手</span></el-menu-item>
-          <el-menu-item index="/case-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
-          <el-menu-item index="/adopted-cases"><el-icon><Select /></el-icon><span>已采纳用例</span></el-menu-item>
-          <el-menu-item index="/regression-cases"><el-icon><RefreshRight /></el-icon><span>回归用例库</span></el-menu-item>
-          <el-menu-item index="/test-plans"><el-icon><Calendar /></el-icon><span>测试计划</span></el-menu-item>
-          <el-menu-item index="/requirements"><el-icon><Link /></el-icon><span>需求覆盖</span></el-menu-item>
-          <el-menu-item index="/release-checklist"><el-icon><Checked /></el-icon><span>上线checklist</span></el-menu-item>
-          <el-menu-item index="/tasks"><el-icon><List /></el-icon><span>任务分配</span></el-menu-item>
-          <el-menu-item index="/exec-results"><el-icon><Finished /></el-icon><span>执行结果</span></el-menu-item>
-          <el-menu-item index="/issues"><el-icon><Warning /></el-icon><span>遗留问题</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 对话测评:独立完整链路(生成 → 用例库 → 测评任务 → 结果) -->
-        <el-sub-menu index="eval">
-          <template #title><el-icon><ChatDotRound /></el-icon><span>对话测评</span></template>
-          <el-menu-item index="/ai-eval-gen" class="ai-entry"><el-icon><MagicStick /></el-icon><span>测评生成</span></el-menu-item>
-          <el-menu-item index="/eval-library"><el-icon><Collection /></el-icon><span>用例库</span></el-menu-item>
-          <el-menu-item index="/eval-tasks"><el-icon><Tickets /></el-icon><span>测评任务</span></el-menu-item>
-          <el-menu-item index="/eval-results"><el-icon><Finished /></el-icon><span>测评结果</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 反馈测试:机器人推送反馈用例 → 拆解 → 回归集 → 定时/手动回归 -->
-        <el-sub-menu index="feedback">
-          <template #title><el-icon><ChatLineSquare /></el-icon><span>反馈测试</span></template>
-          <el-menu-item index="/feedback-imports"><el-icon><UploadFilled /></el-icon><span>导入记录</span></el-menu-item>
-          <el-menu-item index="/feedback-cases"><el-icon><Collection /></el-icon><span>反馈用例库</span></el-menu-item>
-          <el-menu-item index="/feedback-regression"><el-icon><RefreshRight /></el-icon><span>回归用例集</span></el-menu-item>
-          <el-menu-item index="/feedback-results"><el-icon><Finished /></el-icon><span>回归结果</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 性能测试:nami-perfdog 采集结果下发 + 在线报告 -->
-        <el-sub-menu index="perf">
-          <template #title><el-icon><Stopwatch /></el-icon><span>性能测试</span></template>
-          <el-menu-item index="/perf-report"><el-icon><Histogram /></el-icon><span>性能报告</span></el-menu-item>
-          <el-menu-item index="/perf-dispatch"><el-icon><Promotion /></el-icon><span>任务下发</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 数据统计 -->
-        <el-sub-menu index="stats">
-          <template #title><el-icon><DataLine /></el-icon><span>数据统计</span></template>
-          <el-menu-item index="/stats"><el-icon><DataAnalysis /></el-icon><span>日报统计</span></el-menu-item>
-          <el-menu-item index="/workload"><el-icon><TrendCharts /></el-icon><span>工作量统计</span></el-menu-item>
-          <el-menu-item index="/ai-wall" class="ai-entry"><el-icon><Trophy /></el-icon><span>AI 战绩墙</span></el-menu-item>
-          <el-menu-item index="/fail-clusters"><el-icon><Filter /></el-icon><span>版本质量聚焦</span></el-menu-item>
-          <el-menu-item index="/rts"><el-icon><Aim /></el-icon><span>回归智选</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 我的:个人相关(避免与顶层"工作台"撞名) -->
-        <el-sub-menu index="mine">
-          <template #title><el-icon><User /></el-icon><span>我的</span></template>
-          <el-menu-item v-if="showMyReports" index="/my-reports"><el-icon><EditPen /></el-icon><span>我的日报</span></el-menu-item>
-          <el-menu-item index="/my-devices"><el-icon><Monitor /></el-icon><span>我的设备</span></el-menu-item>
-        </el-sub-menu>
-
-        <!-- 工具广场(去父子同名,提为单项;工具配置移入系统设置) -->
-        <el-menu-item index="/tool-plaza"><el-icon><Grid /></el-icon><span>工具广场</span></el-menu-item>
-
-        <!-- 系统设置(管理员,低频配置/管理统一收拢,置底) -->
-        <el-sub-menu v-if="auth.isPlatformAdmin" index="settings">
-          <template #title><el-icon><Setting /></el-icon><span>系统设置</span></template>
-          <el-menu-item index="/selectors"><el-icon><Aim /></el-icon><span>选择器管理</span></el-menu-item>
-          <el-menu-item index="/api-env"><el-icon><Connection /></el-icon><span>API 环境</span></el-menu-item>
-          <el-menu-item index="/tool-admin"><el-icon><Grid /></el-icon><span>工具配置</span></el-menu-item>
-          <el-menu-item index="/projects"><el-icon><Files /></el-icon><span>项目管理</span></el-menu-item>
-          <el-menu-item index="/users"><el-icon><User /></el-icon><span>用户管理</span></el-menu-item>
+      <div v-if="!collapsed" class="nav-search"><el-input v-model="navSearch" :prefix-icon="Search" placeholder="查找功能" aria-label="查找功能" clearable /></div>
+      <el-menu :key="`${collapsed}-${!!navSearch}`" ref="menuRef" :default-active="activeMenu"
+        :default-openeds="openSubs" :unique-opened="!navSearch" :collapse="collapsed" :collapse-transition="false"
+        router class="menu" aria-label="平台导航" background-color="var(--tech-sidebar)" text-color="#bfcbd9" active-text-color="var(--tech-on-dark-accent)">
+        <el-sub-menu v-for="group in groups" :key="group.id" :index="group.id">
+          <template #title><el-icon><component :is="icons[group.icon]" /></el-icon><span>{{ group.label }}</span></template>
+          <el-menu-item v-for="item in group.items" :key="item.path" :index="item.path"><el-icon><component :is="icons[item.icon]" /></el-icon><span>{{ item.label }}</span></el-menu-item>
         </el-sub-menu>
       </el-menu>
+      <div v-if="!groups.length && !collapsed" class="nav-empty">无匹配功能</div>
     </el-aside>
-
     <el-container>
       <el-header class="header">
         <div class="header-left">
-          <el-icon class="collapse-btn" :title="collapsed ? '展开侧栏' : '收起侧栏'" @click="toggleCollapse">
-            <component :is="collapsed ? Expand : Fold" />
-          </el-icon>
-          <span class="role-tag">{{ roleLabel }}</span>
+          <el-button class="collapse-btn" text :icon="collapsed ? Expand : Fold" :aria-label="collapsed ? '展开侧栏' : '收起侧栏'" :title="collapsed ? '展开侧栏' : '收起侧栏'" @click="toggleCollapse" />
+          <div class="location" aria-label="当前位置"><span class="location-group">{{ currentGroup?.label }}</span><span v-if="currentGroup" class="location-divider">/</span><span class="location-page">{{ pageTitle }}</span></div>
         </div>
         <div class="header-right">
+          <span class="role-tag">{{ roleLabel }}</span>
           <el-dropdown @command="onCommand">
-            <span class="user">
-              <el-avatar :size="28" class="avatar">{{ avatarText }}</el-avatar>
-              <span class="uname">{{ auth.user?.name || auth.user?.username }}</span>
-              <el-icon><CaretBottom /></el-icon>
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="logout">退出登录</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
+            <button class="user" aria-label="账户菜单"><el-avatar :size="28" class="avatar">{{ avatarText }}</el-avatar><span class="uname">{{ auth.user?.name || auth.user?.username }}</span><el-icon><CaretBottom /></el-icon></button>
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="logout">退出登录</el-dropdown-item></el-dropdown-menu></template>
           </el-dropdown>
         </div>
       </el-header>
-      <el-main class="main">
-        <router-view />
-      </el-main>
+      <el-main ref="mainRef" class="main"><router-view /></el-main>
     </el-container>
   </el-container>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
-import {
-  Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning,
-  DataAnalysis, CaretBottom, Grid, Histogram, Setting,
-  Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked, Tickets, Calendar, Link, Filter,
-} from '@element-plus/icons-vue'
+import { visibleNavigation } from '@/utils/navigation'
+import { Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning, DataAnalysis, CaretBottom, Grid,
+  Histogram, Setting, Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch,
+  Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard,
+  Checked, Tickets, Calendar, Link, Filter, Search } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
+const icons = { Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning, DataAnalysis, Grid, Histogram,
+  Setting, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection,
+  RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked, Tickets, Calendar, Link, Filter }
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
-
-// 侧栏折叠：状态持久化，刷新保持
 const collapsed = ref(localStorage.getItem('tp_sidebar_collapsed') === '1')
+const navSearch = ref('')
+const menuRef = ref(null)
+const mainRef = ref(null)
+const activeMenu = computed(() => route.path.startsWith('/perf-collect/') ? '/perf-report' : '/' + (route.path.split('/')[1] || 'dashboard'))
+const showMyReports = computed(() => !!auth.user && (auth.isPlatformAdmin || auth.memberships.some(m => m.role !== 'guest')))
+const permittedGroups = computed(() => visibleNavigation({ admin: auth.isPlatformAdmin, reports: showMyReports.value }))
+const groups = computed(() => visibleNavigation({ admin: auth.isPlatformAdmin, reports: showMyReports.value, search: navSearch.value }))
+const currentGroup = computed(() => permittedGroups.value.find(g => g.items.some(item => item.path === activeMenu.value)))
+const pageTitle = computed(() => route.meta.title || currentGroup.value?.items.find(item => item.path === activeMenu.value)?.label || '工作台')
+const openSubs = computed(() => navSearch.value ? groups.value.map(g => g.id) : (currentGroup.value ? [currentGroup.value.id] : []))
 function toggleCollapse() {
   collapsed.value = !collapsed.value
+  navSearch.value = ''
   localStorage.setItem('tp_sidebar_collapsed', collapsed.value ? '1' : '0')
 }
-
-const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
-const openSubs = ['func', 'eval', 'feedback', 'perf', 'stats', 'mine', 'settings']
-
-const avatarText = computed(() => {
-  const n = auth.user?.name || auth.user?.username || '?'
-  return n.slice(0, 1).toUpperCase()
+watch([openSubs, collapsed], async () => {
+  await nextTick()
+  if (!collapsed.value) for (const id of openSubs.value) menuRef.value?.open(id)
 })
-const roleLabel = computed(() => {
-  if (!auth.user) return ''
-  if (auth.user.is_platform_admin) return '平台管理员'
-  return '项目成员'
+watch(() => route.path, async () => {
+  navSearch.value = ''
+  await nextTick()
+  mainRef.value?.$el?.scrollTo({ top: 0, left: 0 })
 })
-const showMyReports = computed(() => {
-  if (!auth.user) return false
-  if (auth.user.is_platform_admin) return true
-  return auth.memberships.some((m) => m.role !== 'guest')
-})
-
+const avatarText = computed(() => (auth.user?.name || auth.user?.username || '?').slice(0, 1).toUpperCase())
+const roleLabel = computed(() => !auth.user ? '' : auth.isPlatformAdmin ? '平台管理员' : '项目成员')
 function onCommand(cmd) {
-  if (cmd === 'logout') {
-    auth.logout()
-    router.push('/login')
-  }
+  if (cmd === 'logout') { auth.logout(); router.push('/login') }
 }
 </script>
 
 <style scoped>
-.layout { height: 100vh; }
-.aside {
-  background: var(--tech-sidebar); border-right: 1px solid #30343b;
-  transition: width 0.25s ease;
-  height: 100vh;
-  display: flex; flex-direction: column;   /* logo 固定 + 菜单区占满可滚 */
-  overflow: hidden;
-}
-.logo {
-  flex: none;                              /* logo 不参与滚动 */
-  height: 60px; display: flex; align-items: center; gap: 8px;
-  padding: 0 14px; color: #fff; white-space: nowrap;
-  animation: fadeInUp 0.5s ease-out both;
-}
+.layout { height: 100vh; height: 100dvh; }
+.aside { background: var(--tech-sidebar); border-right: 1px solid #30343b; transition: width .25s ease; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.logo { flex: none; height: 60px; display: flex; align-items: center; gap: 8px; padding: 0 14px; color: #fff; white-space: nowrap; }
 .logo-collapsed { padding: 0; justify-content: center; }
 .logo-text { font-size: 15px; font-weight: 600; letter-spacing: 0; }
-/* 靶心图标：深色侧栏上提亮 + 上色，保证清晰 */
-.brand-mark {
-  --tm-line: #668ff1;
-  --tm-dim: #92b1f5;
-  --tm-signal: var(--tech-on-dark-accent);
-}
-.menu {
-  border-right: none;
-  flex: 1;                 /* 占满 logo 以下全部高度 */
-  overflow-y: auto;        /* 内容超高时纵向滚动 */
-  overflow-x: hidden;
-}
-/* 深色侧栏细滚动条(不占位、hover 才明显) */
-.menu::-webkit-scrollbar { width: 6px; }
-.menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
-.menu:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.28); }
-.menu::-webkit-scrollbar-track { background: transparent; }
-/* 折叠态菜单宽度对齐 aside(64px)，消除默认 200px 造成的横向溢出 */
+.brand-mark { --tm-line: #668ff1; --tm-dim: #92b1f5; --tm-signal: var(--tech-on-dark-accent); }
+.nav-search { padding: 8px 12px 16px; }
+.nav-search :deep(.el-input__wrapper) { background: #2b2f36; box-shadow: 0 0 0 1px #3d424c inset; }
+.nav-search :deep(.el-input__inner) { color: #e7ebef; }
+.menu { border-right: none; flex: 1; overflow-y: auto; overflow-x: hidden; }
 .menu:not(.el-menu--collapse) { width: 226px; }
 .menu.el-menu--collapse { width: 64px; }
-.menu :deep(.el-sub-menu__title:hover),
-.menu :deep(.el-menu-item:hover) { background-color: var(--tech-sidebar-hover) !important; }
-.menu :deep(.el-menu-item.is-active) {
-  background-color: var(--tech-sidebar-hover) !important;
-  border-left: 3px solid var(--tech-on-dark-accent);
-}
-/* 深色背景使用更亮的蓝色，保证选中态可读。 */
+.menu :deep(.el-sub-menu__title), .menu :deep(.el-menu-item) { height: 44px; line-height: 44px; font-size: 13px; }
+.menu :deep(.el-sub-menu__title:hover), .menu :deep(.el-menu-item:hover) { background-color: var(--tech-sidebar-hover) !important; }
+.menu :deep(.el-menu-item.is-active) { background-color: var(--tech-sidebar-hover) !important; border-left: 3px solid var(--tech-on-dark-accent); }
 .menu :deep(.el-menu-item.is-active .el-icon) { color: var(--tech-on-dark-accent); }
-/* AI 入口与普通菜单项使用相同选中色。 */
-.menu :deep(.ai-entry.is-active span) {
-  color: var(--tech-on-dark-accent);
-  font-weight: 600;
-}
-
-.header {
-  display: flex; align-items: center; justify-content: space-between;
-  background: #fff; border-bottom: 1px solid #ebeef5;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
-}
-.header-left { display: flex; align-items: center; gap: 14px; }
-.collapse-btn {
-  font-size: 20px; color: #606266; cursor: pointer;
-  padding: 6px; border-radius: 6px;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-.collapse-btn:hover { color: var(--tech-signal); background: var(--tech-signal-weak); }
-.role-tag {
-  font-size: 12px; color: var(--tech-signal); letter-spacing: 0;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  padding: 3px 12px; border: 1px solid var(--tech-signal-line); border-radius: 4px;
-  background: var(--tech-signal-weak);
-}
-.user { cursor: pointer; color: #303133; display: flex; align-items: center; gap: 8px; }
+.nav-empty { color: #aeb8c4; font-size: 12px; padding: 16px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; background: #fff; border-bottom: 1px solid #ebeef5; }
+.header-left, .header-right { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.header-left { flex: 1; }
+.collapse-btn { font-size: 20px; flex: none; padding: 6px; }
+.location { display: flex; align-items: center; gap: 12px; font-size: 13px; min-width: 0; }
+.location-group, .location-divider { color: #68717d; white-space: nowrap; }
+.location-page { color: #202329; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-tag { font-size: 12px; color: #68717d; white-space: nowrap; }
+.user { border: 0; padding: 0; background: none; cursor: pointer; color: #303133; display: flex; align-items: center; gap: 8px; }
 .avatar { background: var(--tech-signal); color: #fff; font-size: 13px; font-weight: 600; }
-.uname { font-size: 14px; }
+.uname { font-size: 14px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { background: var(--tech-bg); padding: 20px; }
+@media (max-width: 700px) { .header { padding: 0 12px; gap: 8px; } .header-left { gap: 8px; } .location-group, .location-divider, .role-tag, .uname { display: none; } }
 </style>

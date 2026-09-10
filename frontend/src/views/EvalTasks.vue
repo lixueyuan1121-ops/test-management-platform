@@ -1,13 +1,11 @@
 <template>
   <div class="eval-tasks">
-    <el-card>
-      <template #header>
+    <section class="task-workspace">
         <div class="head">
           <div class="title-wrap">
             <el-icon class="title-icon"><Tickets /></el-icon>
             <div>
               <div class="title">测评任务</div>
-              <div class="subtitle">定制用例集合 → 整体执行 → 逐条结果 + AI 综合评价</div>
             </div>
           </div>
           <div class="head-right">
@@ -17,14 +15,18 @@
             <el-button type="primary" :icon="Plus" :disabled="!pid" @click="openEdit(null)">新建任务</el-button>
           </div>
         </div>
-      </template>
+      <div class="task-filters">
+        <el-input v-model="taskSearch" clearable placeholder="搜索任务名称或描述" aria-label="搜索任务" />
+        <el-select v-model="taskStatus" clearable placeholder="全部状态" aria-label="任务状态"><el-option v-for="(label, value) in TS_LABEL" :key="value" :label="label" :value="value" /></el-select>
+        <span class="muted">共 {{ visibleTasks.length }} 个任务</span>
+      </div>
 
       <el-empty v-if="!loading && !tasks.length" description="暂无测评任务，点右上角「新建任务」创建" :image-size="70" />
-      <el-table v-else :data="tasks" v-loading="loading" size="small" border stripe>
+      <el-table v-else :data="visibleTasks" v-loading="loading" size="small" border stripe empty-text="没有符合筛选条件的任务">
         <el-table-column prop="id" label="#" width="60" align="center" />
         <el-table-column label="任务名" min-width="160">
           <template #default="{ row }">
-            <b class="tname" @click="openDetail(row)">{{ row.name }}</b>
+            <button class="tname" @click="openDetail(row)">{{ row.name }}</button>
             <el-tooltip v-if="row.schedule_enabled" :content="`定时 ${row.schedule_cron} → ${row.schedule_runner}${row.last_auto_run_at ? '，上次自动执行 ' + row.last_auto_run_at.replace('T',' ').slice(0,16) : ''}`" placement="top">
               <span class="sched-flag">⏰</span>
             </el-tooltip>
@@ -81,15 +83,18 @@
               title="停止该测评任务？未执行的不再下发、执行中的结果作废，并关闭定时" width="280" @confirm="stopTask(row)">
               <template #reference><el-button size="small" type="danger" text>停止</el-button></template>
             </el-popconfirm>
-            <el-button size="small" text :type="row.schedule_enabled ? 'warning' : ''" @click="openSchedule(row)">定时</el-button>
             <el-button size="small" text @click="openEdit(row)">编辑</el-button>
-            <el-popconfirm title="删除该任务？(执行记录保留)" @confirm="removeTask(row)">
-              <template #reference><el-button size="small" type="danger" text>删除</el-button></template>
-            </el-popconfirm>
+            <el-dropdown trigger="click" @command="command => onTaskCommand(command, row)">
+              <el-button size="small" text :icon="MoreFilled" :aria-label="`更多操作 ${row.name}`" title="更多操作" />
+              <template #dropdown><el-dropdown-menu>
+                <el-dropdown-item command="schedule">{{ row.schedule_enabled ? '修改定时' : '设置定时' }}</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>删除任务</el-dropdown-item>
+              </el-dropdown-menu></template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </section>
 
     <!-- 新建/编辑任务 -->
     <el-dialog v-model="editVisible" :title="editing?.id ? '编辑测评任务' : '新建测评任务'" width="860px" top="6vh">
@@ -109,7 +114,7 @@
         <el-form-item label="用例">
           <div class="qpick">
             <div class="qpick-head">
-              <span>勾选纳入任务的用例（已选 {{ editForm.query_ids.length }} 条）</span>
+              <el-radio-group v-model="queryView" size="small" aria-label="用例范围"><el-radio-button value="all">全部用例</el-radio-button><el-radio-button value="selected">已选 {{ editForm.query_ids.length }}</el-radio-button></el-radio-group>
               <el-button size="small" type="primary" text :icon="Plus" @click="customVisible = true">新增自定义用例</el-button>
             </div>
             <div class="qpick-filters">
@@ -261,8 +266,9 @@
     </el-dialog>
 
     <!-- 详情/结果 -->
-    <el-drawer v-model="detailVisible" :title="detail?.task?.name || '任务详情'" size="72%" destroy-on-close>
+    <el-drawer v-model="detailVisible" :title="detail?.task?.name || '任务详情'" size="min(1200px, 100vw)" destroy-on-close>
       <div v-if="detail" class="detail">
+        <div class="detail-toolbar">
         <div class="d-meta">
           <el-tag :type="TS_TYPE[detail.task.status] || 'info'" effect="plain">{{ TS_LABEL[detail.task.status] || detail.task.status || '—' }}</el-tag>
           <template v-if="taskBatches.length > 1">
@@ -278,24 +284,27 @@
           <span class="muted">{{ detail.task.description || '' }}</span>
           <div class="d-actions">
             <el-button size="small" :icon="Refresh" @click="refreshDetail">刷新</el-button>
-            <el-checkbox v-model="robustJudge" size="small" class="robust-ck">
+            <el-checkbox v-show="detailTab === 'results'" v-model="robustJudge" size="small" class="robust-ck">
               <el-tooltip content="每条判 3 次取多数票（更稳，但 3 倍耗时）" placement="top"><span>稳健(3票)</span></el-tooltip>
             </el-checkbox>
-            <el-button size="small" type="primary" :loading="batchJudging" :disabled="!judgeableRuns.length" @click="judgeAll">
+            <el-button v-show="detailTab === 'results'" size="small" type="primary" :loading="batchJudging" :disabled="!judgeableRuns.length" @click="judgeAll">
               {{ batchJudging && batchProgress ? batchProgress : `批量判定（${judgeableRuns.length}）` }}
             </el-button>
-            <el-popconfirm v-if="failedRunIds.length" :title="`重跑该批次全部 ${failedRunIds.length} 条失败？`" width="240" @confirm="retryAllFailed">
+            <el-popconfirm v-if="detailTab === 'results' && failedRunIds.length" :title="`重跑该批次全部 ${failedRunIds.length} 条失败？`" width="240" @confirm="retryAllFailed">
               <template #reference>
                 <el-button size="small" type="success">重跑失败（{{ failedRunIds.length }}）</el-button>
               </template>
             </el-popconfirm>
-            <el-button size="small" type="warning" :loading="summarizing" :disabled="!canSummarize" @click="genSummary">
+            <el-button v-show="detailTab === 'summary'" size="small" type="primary" :loading="summarizing" :disabled="!canSummarize" @click="genSummary">
               {{ detail.task.summary_status === 'done' ? '重新生成综合评价' : '生成综合评价' }}
             </el-button>
-            <el-button size="small" :icon="Download" :disabled="!canExport" @click="exportReport">导出 HTML</el-button>
+            <el-button v-show="detailTab === 'summary'" size="small" :icon="Download" :disabled="!canExport" @click="exportReport">导出 HTML</el-button>
           </div>
         </div>
 
+        <el-tabs v-model="detailTab" class="detail-tabs"><el-tab-pane label="执行结果" name="results" /><el-tab-pane label="综合评价" name="summary" /></el-tabs>
+        </div>
+        <section v-show="detailTab === 'results'">
         <!-- A/B 对比批次:按题配对的胜率统计(pass/fail 对比;任一侧未判定/error 计未决) -->
         <div v-if="compareInfo" class="cmp-bar">
           <span class="cmp-seg cmp-a">A 胜 {{ compareInfo.aWin }}</span>
@@ -404,8 +413,9 @@
           </el-table-column>
         </el-table>
 
+        </section>
         <!-- 综合评价 -->
-        <div class="summary-sec">
+        <div v-show="detailTab === 'summary'" class="summary-sec">
           <div class="summary-head">
             <span class="summary-title">AI 综合评价</span>
             <span v-if="detail.task.summary_at" class="muted">{{ (detail.task.summary_at || '').replace('T',' ').slice(0,19) }} · {{ detail.task.summary_provider }}</span>
@@ -425,8 +435,8 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Tickets, Plus, Refresh, InfoFilled, Download } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Tickets, Plus, Refresh, InfoFilled, Download, MoreFilled } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns, listEvalTaskBatches,
   streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
@@ -458,6 +468,11 @@ const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
+const taskSearch = ref('')
+const taskStatus = ref('')
+const visibleTasks = computed(() => tasks.value.filter(task =>
+  (!taskStatus.value || task.status === taskStatus.value) &&
+  `${task.name || ''} ${task.description || ''}`.toLocaleLowerCase().includes(taskSearch.value.trim().toLocaleLowerCase())))
 const loading = ref(false)
 
 // 维度注册表
@@ -472,11 +487,12 @@ const engineList = ref([])   // 被测产品注册表(listEvalEngines);>1 才显
 const allQueries = ref([])
 const queryTaskFilter = ref(null)
 const queryTitleFilter = ref('')
+const queryView = ref('all')
 const filteredQueries = computed(() => {
   const task = tasks.value.find(t => t.id === queryTaskFilter.value)
   const ids = task ? new Set(task.query_ids) : null
   const title = queryTitleFilter.value.trim().toLocaleLowerCase()
-  return allQueries.value.filter(q => (!ids || ids.has(q.id)) &&
+  return allQueries.value.filter(q => (queryView.value !== 'selected' || editForm.value.query_ids.includes(q.id)) && (!ids || ids.has(q.id)) &&
     (!title || (q.title || '').toLocaleLowerCase().includes(title)))
 })
 const allFilteredSelected = computed(() => filteredQueries.value.length > 0 && filteredQueries.value.every(q => editForm.value.query_ids.includes(q.id)))
@@ -511,6 +527,7 @@ const running = ref(false)
 
 // 详情
 const detailVisible = ref(false)
+const detailTab = ref('results')
 const detail = ref(null)
 const batchJudging = ref(false)
 const batchProgress = ref('')   // 批量判定进度「判定中 done/total」
@@ -607,6 +624,7 @@ async function load() {
 
 // ── 编辑 ──
 async function openEdit(row) {
+  queryView.value = 'all'
   queryTaskFilter.value = null
   queryTitleFilter.value = ''
   editing.value = row
@@ -651,6 +669,13 @@ async function saveCustom() {
 
 async function removeTask(row) {
   try { await deleteEvalTask(row.id); ElMessage.success('已删除'); await load() } catch { /* 拦截器已提示 */ }
+}
+async function onTaskCommand(command, row) {
+  if (command === 'schedule') return openSchedule(row)
+  if (command !== 'delete') return
+  try { await ElMessageBox.confirm('删除该任务？执行记录保留。', '删除任务', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) }
+  catch { return }
+  await removeTask(row)
 }
 
 // ── 定时执行(回归守卫) ──
@@ -785,6 +810,7 @@ async function doRun() {
 
 // ── 详情/判定/综合评价 ──
 async function openDetail(row) {
+  detailTab.value = 'results'
   detailVisible.value = true
   detail.value = null
   summaryStream.value = ''
@@ -882,6 +908,7 @@ async function retryAllFailed() {
 }
 
 function genSummary() {
+  detailTab.value = 'summary'
   if (!detail.value?.task) return
   summarizing.value = true
   summaryStream.value = ''
@@ -957,6 +984,20 @@ function exportReport() {
 </script>
 
 <style scoped>
+.task-workspace { min-width: 0; }
+.task-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 0; }
+.task-filters .el-input { width: 280px; max-width: 100%; }
+.task-filters .el-select { width: 160px; }
+.head { position: sticky; top: -20px; z-index: 20; background: var(--tech-bg); padding: 16px 0; gap: 12px; flex-wrap: wrap; }
+.head-right { flex-wrap: wrap; }
+.detail-toolbar { position: sticky; top: -20px; background: #fff; z-index: 3; padding-top: 12px; }
+.detail-toolbar .d-meta { max-height: 30dvh; overflow: auto; padding-bottom: 12px; }
+.detail :deep(.el-tabs__header) { margin: 0; }
+.d-actions { flex-wrap: wrap; }
+.eval-tasks :deep(.el-dialog) { max-width: calc(100vw - 24px); }
+.eval-tasks :deep(.el-dialog__body) { max-height: 68dvh; overflow: auto; }
+.eval-tasks :deep(.el-dialog__footer) { border-top: 1px solid var(--el-border-color-lighter); padding-top: 16px; }
+.qpick-head { gap: 8px; flex-wrap: wrap; }
 .payload-tip { font-size: 12px; line-height: 1.6; }
 .payload-tip > div { margin: 2px 0; }
 .payload-ico { margin-left: 4px; font-size: 13px; color: #909399; cursor: help; vertical-align: -1px; }
@@ -964,12 +1005,12 @@ function exportReport() {
 .head { display: flex; align-items: center; justify-content: space-between; }
 .head-right { display: flex; gap: 10px; align-items: center; }
 .title-wrap { display: flex; align-items: center; gap: 12px; }
-.title-icon { font-size: 24px; color: #00b386; }
+.title-icon { font-size: 24px; color: var(--el-color-primary); }
 .title { font-size: 16px; font-weight: 600; color: #1f2d3d; }
 .subtitle { font-size: 12px; color: #8a94a6; margin-top: 2px; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; }
 .muted { color: #c0c4cc; font-size: 12px; }
-.tname { color: #00926e; cursor: pointer; }
+.tname { color: var(--el-color-primary); cursor: pointer; border: 0; padding: 0; background: none; font: inherit; font-weight: 600; text-align: left; }
 .tname:hover { text-decoration: underline; }
 .sched-flag { margin-left: 6px; font-size: 13px; cursor: default; }
 .fail-reason { color: #e5565f; font-size: 12px; }
