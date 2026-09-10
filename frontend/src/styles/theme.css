@@ -1,5 +1,5 @@
 /* ============================================================
-   全局「亮色科技风」主题
+   全局石墨灰 + 钴蓝主题
    - 定义设计 token（供各页面 var() 引用）
    - 覆盖 ElementPlus CSS 变量，让标准组件(按钮/表格/标签/链接)
      一次性统一到科技风，子页面无需逐个改样式。
@@ -8,31 +8,56 @@
 
 :root {
   /* ---- 科技风设计 token ---- */
-  --tech-bg: #f4f6f9;
+  --tech-bg: #f5f6f8;
   --tech-panel: #ffffff;
-  --tech-panel-2: #f7f9fc;
-  --tech-line: #e3e8ef;
+  --tech-panel-2: #f5f6f8;
+  --tech-line: #e4e7ec;
   --tech-line-strong: #d0d7e2;
-  --tech-fg: #1a1d21;
-  --tech-muted: #6b7280;
+  --tech-fg: #27333e;
+  --tech-muted: #637181;
   --tech-dim: #9aa3b2;
-  --tech-signal: #00b386;
-  --tech-signal-weak: rgba(0, 179, 134, 0.10);
-  --tech-signal-line: rgba(0, 179, 134, 0.35);
-  --tech-warn: #e6a23c;
-  --tech-info: #3b82c4;
-  --tech-danger: #e05561;
+  --tech-signal: #2563eb;
+  --tech-signal-weak: #eff4fe;
+  --tech-signal-line: #bed0f9;
+  --tech-success: #15803d;
+  --tech-warn: #b76a08;
+  --tech-info: #637181;
+  --tech-danger: #c83e4d;
+  --tech-sidebar: #202329;
+  --tech-sidebar-hover: #2c3038;
+  --tech-on-dark-accent: #93b4f5;
 
   --tech-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, 'Menlo', monospace;
 
   /* ---- 覆盖 ElementPlus 主色（影响全站按钮/链接/tag/开关等）---- */
-  --el-color-primary: #00b386;
-  --el-color-primary-light-3: #33c2a0;
-  --el-color-primary-light-5: #66d1b8;
-  --el-color-primary-light-7: #99e0cf;
-  --el-color-primary-light-8: #b3e8db;
-  --el-color-primary-light-9: #e6f7f2;
-  --el-color-primary-dark-2: #009973;
+  --el-color-primary: var(--tech-signal);
+  --el-color-primary-light-3: #668ff1;
+  --el-color-primary-light-5: #92b1f5;
+  --el-color-primary-light-7: #bed0f9;
+  --el-color-primary-light-8: #d3e0fb;
+  --el-color-primary-light-9: #e9effd;
+  --el-color-primary-dark-2: #1e4fbc;
+  --el-color-success: var(--tech-success);
+  --el-color-success-light-3: #5ba675;
+  --el-color-success-light-5: #8ac09e;
+  --el-color-success-light-7: #b9d9c5;
+  --el-color-success-light-8: #d0e6d8;
+  --el-color-success-light-9: #e8f2ec;
+  --el-color-success-dark-2: #116631;
+  --el-color-warning: var(--tech-warn);
+  --el-color-warning-light-3: #cd974f;
+  --el-color-warning-light-5: #dbb584;
+  --el-color-warning-light-7: #e9d2b5;
+  --el-color-warning-light-8: #f1e1ce;
+  --el-color-warning-light-9: #f8f0e6;
+  --el-color-warning-dark-2: #925506;
+  --el-color-danger: var(--tech-danger);
+  --el-color-danger-light-3: #d87882;
+  --el-color-danger-light-5: #e49fa6;
+  --el-color-danger-light-7: #efc5ca;
+  --el-color-danger-light-8: #f4d8db;
+  --el-color-danger-light-9: #faecee;
+  --el-color-danger-dark-2: #a0323e;
 
   --el-bg-color-page: var(--tech-bg);
   --el-text-color-primary: var(--tech-fg);
@@ -52,10 +77,10 @@
 .el-card__header {
   border-bottom: 1px solid var(--tech-line);
   font-weight: 600;
-  letter-spacing: 0.3px;
+  letter-spacing: 0;
 }
 
-/* 表格：冷灰表头，行 hover 青绿微染 */
+/* 表格：中性表头，行 hover 淡蓝微染 */
 .el-table thead th {
   background: var(--tech-panel-2) !important;
   color: var(--tech-muted) !important;
@@ -66,19 +91,29 @@
   background: var(--tech-signal-weak) !important;
 }
 
-/* 主按钮：青绿实心 + hover 轻发光 */
-.el-button--primary {
+/* 主按钮：钴蓝实心，悬停加深，不发光 */
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
   --el-button-bg-color: var(--tech-signal);
   --el-button-border-color: var(--tech-signal);
-  --el-button-hover-bg-color: #00a17a;
-  --el-button-hover-border-color: #00a17a;
-  --el-button-active-bg-color: #009973;
+  --el-button-hover-bg-color: #1d4ed8;
+  --el-button-hover-border-color: #1d4ed8;
+  --el-button-active-bg-color: #1e40af;
 }
 .el-button--primary:not(.is-link):hover {
-  box-shadow: 0 0 12px rgba(0, 179, 134, 0.28);
+  box-shadow: none;
 }
 
-/* 输入聚焦：青绿描边 + 柔光圈 */
+/* 浅色状态底使用深色文字，避免小字号标签对比度不足。 */
+.el-tag--success:not(.el-tag--dark) { --el-tag-text-color: var(--el-color-success-dark-2); }
+.el-tag--warning:not(.el-tag--dark) { --el-tag-text-color: var(--el-color-warning-dark-2); }
+.el-tag--danger:not(.el-tag--dark) { --el-tag-text-color: var(--el-color-danger-dark-2); }
+.el-button--warning.is-plain {
+  --el-button-text-color: var(--el-color-warning-dark-2);
+  --el-button-hover-bg-color: var(--el-color-warning-dark-2);
+  --el-button-hover-border-color: var(--el-color-warning-dark-2);
+}
+
+/* 输入聚焦：蓝色描边 + 清晰焦点圈 */
 .el-input__wrapper.is-focus,
 .el-input__wrapper:focus-within,
 .el-textarea__inner:focus {

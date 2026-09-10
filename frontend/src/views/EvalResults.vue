@@ -1,9 +1,22 @@
 <template>
   <div class="eval-results">
+    <header class="page-heading">
+      <h1>对话测评结果</h1>
+      <el-select v-model="pid" aria-label="选择项目" placeholder="选择项目" class="project-select" @change="onProjectChange">
+        <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+      </el-select>
+    </header>
+    <el-tabs v-model="activeView" class="view-tabs" aria-label="测评视图">
+      <el-tab-pane label="结果明细" name="results" />
+      <el-tab-pane label="分析概览" name="analysis" />
+    </el-tabs>
+    <section v-show="activeView === 'analysis'" class="analysis-view" aria-label="分析概览">
+    <div class="scope-label">当前项目 · 能力画像近 30 天 · 趋势按批次 · 判定质量按人工复核</div>
+    <el-empty v-if="!dimStats.dims.length && trend.length < 2 && !quality.overall?.reviewed" description="暂无可分析的数据" :image-size="70" />
     <!-- 维度能力画像雷达(选中项目且有判定数据时显示) -->
     <div v-if="dimStats.dims.length" class="dr-panel">
       <div class="dr-head">
-        <div class="dr-eyebrow">// CAPABILITY PROFILE · 测评维度能力画像</div>
+        <h2 class="dr-eyebrow">测评维度能力画像</h2>
         <div class="dr-overall">
           <span class="dr-rate">{{ dimStats.overall_rate }}<span class="dr-u">%</span></span>
           <span class="dr-lbl">综合通过率 · {{ dimStats.judged_total }} 条判定</span>
@@ -34,7 +47,7 @@
     <!-- 批次趋势:每批次一个点(通过率+均分),回答「比上次强吗」;≥2 批才有趋势可看 -->
     <div v-if="trend.length >= 2" class="tr-panel">
       <div class="tr-head">
-        <div class="dr-eyebrow">// BATCH TREND · 批次趋势（近 {{ trend.length }} 批）</div>
+        <h2 class="dr-eyebrow">批次趋势（近 {{ trend.length }} 批）</h2>
         <div class="tr-legend">
           <span class="tr-lg"><i class="tr-dot tr-dot-rate"></i>通过率%</span>
           <span class="tr-lg"><i class="tr-dot tr-dot-score"></i>均分(1-5)</span>
@@ -45,8 +58,8 @@
     <!-- 判定质量:人工复核反推 AI 判定准不准(样本少的引擎不列,明细标注在展开区) -->
     <div v-if="quality.overall?.reviewed > 0" class="jq-panel">
       <div class="jq-head">
-        <div class="dr-eyebrow">// JUDGE QUALITY · 判定质量（人工复核反推）</div>
-        <div class="jq-hint">明细可在任一会话展开区标注误报/漏报</div>
+        <h2 class="dr-eyebrow">判定质量</h2>
+        <div class="jq-hint">基于人工复核</div>
       </div>
       <div class="jq-cards">
         <div class="jq-card">
@@ -69,31 +82,35 @@
         </div>
       </div>
       <div v-else-if="!quality.by_engine?.length" class="jq-note">
-        尚无引擎维度的复核样本。多判几条、多标几条误报/漏报后这里会显示各引擎的准确率横评——也正好验证稳健 3 票是否更准。
+        暂无产品维度的复核样本
       </div>
     </div>
-    <el-card>
-      <template #header>
+    </section>
+    <section v-show="activeView === 'results'" class="results-view" aria-label="结果明细">
+      <div class="result-summary" aria-label="当前加载执行统计">
+        <div><span>当前加载</span><strong>{{ rows.length }}</strong></div>
+        <div><span>已判定</span><strong>{{ judgedCount }}</strong></div>
+        <div><span>待判定</span><strong>{{ doneCount }}</strong></div>
+        <div><span>异常</span><strong class="summary-alert">{{ abnormalCount }}</strong></div>
+      </div>
         <div class="header">
-          <span>对话测评结果</span>
           <div class="filters">
-            <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
-              <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-            </el-select>
-            <el-select v-model="batchFilter" placeholder="全部批次" size="small" clearable filterable style="width:210px" @change="load">
+            <el-select v-model="batchFilter" aria-label="筛选批次" placeholder="全部批次" size="small" clearable filterable style="width:210px" @change="load">
               <el-option v-for="b in batchOptions" :key="b.batch_id"
                 :label="`${b.batch_id}${b.task_name ? ' · ' + b.task_name : ''}`" :value="b.batch_id" />
             </el-select>
-            <el-select v-model="verdictFilter" placeholder="判定" size="small" clearable style="width:110px">
+            <el-select v-model="verdictFilter" aria-label="筛选判定" placeholder="全部判定" size="small" clearable style="width:110px">
               <el-option label="通过" value="pass" />
               <el-option label="不通过" value="fail" />
               <el-option label="判定出错" value="error" />
               <el-option label="未判定" value="__none__" />
             </el-select>
-            <el-select v-if="engineOptions.length > 1" v-model="engineFilter" placeholder="全部产品" size="small" clearable style="width:120px">
+            <el-select v-if="engineOptions.length > 1" v-model="engineFilter" aria-label="筛选产品" placeholder="全部产品" size="small" clearable style="width:120px">
               <el-option v-for="e in engineOptions" :key="e" :label="ENGINE_LABEL[e] || e" :value="e" />
             </el-select>
-            <el-button size="small" :icon="Refresh" @click="load">刷新</el-button>
+            <el-tooltip content="刷新结果" placement="top"><el-button size="small" :icon="Refresh" aria-label="刷新结果" @click="load" /></el-tooltip>
+          </div>
+          <div class="batch-actions">
             <el-checkbox v-model="robustJudge" size="small" class="robust-ck">
               <el-tooltip content="每条判 3 次取多数票（更稳，但 3 倍耗时）" placement="top"><span>稳健(3票)</span></el-tooltip>
             </el-checkbox>
@@ -104,7 +121,7 @@
             >{{ batchJudging && batchProgress ? batchProgress : `批量判定（${judgeableCount}）` }}</el-button>
             <el-popconfirm v-if="failedCount" :title="`重跑当前列表全部 ${failedCount} 条失败？`" width="240" @confirm="retryAllFailed">
               <template #reference>
-                <el-button size="small" type="success">重跑失败（{{ failedCount }}）</el-button>
+                <el-button size="small" type="warning" plain>重跑失败（{{ failedCount }}）</el-button>
               </template>
             </el-popconfirm>
             <el-button
@@ -113,13 +130,16 @@
               @click="exportDialogVisible = true"
             >导出到飞书</el-button>
               <el-button
-                size="small" type="warning" :icon="Promotion" :loading="pushingMultica"
+                size="small" :icon="Promotion" :loading="pushingMultica"
                 :disabled="!pid || !selectedRunIds.length"
                 @click="doPushMultica"
               >推送到 Multica（{{ selectedRunIds.length }}）</el-button>
           </div>
         </div>
-      </template>
+      <div class="selection-status">
+        <span>已选 {{ selectedRunIds.length }} 条对话</span>
+        <el-button v-if="selectedRunIds.length" text size="small" :disabled="pushingMultica" @click="selectedRunIds = []">清空选择</el-button>
+      </div>
 
       <el-empty v-if="!groupedRows.length" :description="loading ? '加载中…' : '暂无测评执行记录'" :image-size="70" />
 
@@ -197,7 +217,7 @@
             </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column label="query" min-width="200" show-overflow-tooltip>
+        <el-table-column label="用例 / 会话" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
             <template v-if="row.isGroup">
               <el-tag size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>{{ queryTitle(row) }}
@@ -267,7 +287,7 @@
           <template #default="{ row }">
             <el-popconfirm v-if="!row.isGroup && row.status === 'failed'"
               title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryOne(row)">
-              <template #reference><el-button size="small" type="success" text>重跑</el-button></template>
+              <template #reference><el-button size="small" type="warning" text>重跑</el-button></template>
             </el-popconfirm>
             <el-button
               v-else-if="!row.isGroup"
@@ -281,11 +301,11 @@
         </el-table-column>
       </el-table>
 
-      <div class="foot-hint">共 {{ rows.length }} 条执行 / 已判 {{ judgedCount }} 条 / 异常 {{ abnormalCount }} 条（判定读会话轨迹调 AI 判三维，单条约 30-60s）</div>
-    </el-card>
+      <div class="foot-hint">当前加载 {{ rows.length }} 条执行 · 已判定 {{ judgedCount }} 条 · 异常 {{ abnormalCount }} 条</div>
+    </section>
 
     <el-dialog v-model="exportDialogVisible" title="导出到飞书表" width="480px">
-      <el-form label-width="90px">
+      <el-form label-width="100px">
         <el-form-item label="飞书表链接" required>
           <el-input v-model="exportSheetUrl" placeholder="粘贴目标飞书表格链接" clearable />
         </el-form-item>
@@ -357,7 +377,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
 import { listEvalRuns, judgeEvalRun, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
@@ -402,7 +422,7 @@ const DIM_TAG_TYPE = {
 }
 // eval_run 生命周期（EvalRunStatus）
 const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败' }
-const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judging: 'warning', judged: 'success', failed: 'danger' }
+const STATUS_TYPE = { pending: 'info', running: 'primary', done: 'primary', judging: 'primary', judged: 'info', failed: 'danger' }
 // 总判定（EvalVerdict 值 pass/fail/error）：pass 绿 / fail 红 / error 灰
 const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '判定出错' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
@@ -415,6 +435,7 @@ const projects = ref([])
 const pid = ref(null)
 const rows = ref([])
 const loading = ref(false)
+const activeView = ref('results')
 const verdictFilter = ref(null)
 const engineFilter = ref(null)
 // 批次筛选(选项复用 trend 批次列表,最新在前);清空=全部批次
@@ -747,10 +768,11 @@ const dimStats = ref({ dims: [], judged_total: 0, overall_rate: 0 })
 const radarEl = ref(null)
 let radarChart = null
 
-function drColor(r) { return r >= 90 ? '#00b386' : r >= 70 ? '#e8a23d' : '#e5565f' }
+function drColor(r) { return r >= 90 ? '#15803d' : r >= 70 ? '#b76a08' : '#c83e4d' }
 
 function drawRadar() {
-  if (!radarEl.value || dimStats.value.dims.length < 3) return
+  if (activeView.value !== 'analysis' || !radarEl.value || dimStats.value.dims.length < 3) return
+  if (radarChart && radarChart.getDom() !== radarEl.value) { radarChart.dispose(); radarChart = null }
   if (!radarChart) radarChart = echarts.init(radarEl.value)
   const dims = dimStats.value.dims
   radarChart.setOption({
@@ -759,18 +781,18 @@ function drawRadar() {
     radar: {
       indicator: dims.map((d) => ({ name: dimLabel(d.dimension), max: 100 })),
       radius: '65%',
-      splitArea: { areaStyle: { color: ['rgba(0,179,134,.05)', 'rgba(0,179,134,.02)'] } },
+      splitArea: { areaStyle: { color: ['rgba(37,99,235,.05)', 'rgba(37,99,235,.02)'] } },
       axisName: { color: '#7d8a9b', fontSize: 12 },
-      splitLine: { lineStyle: { color: 'rgba(0,179,134,.2)' } },
-      axisLine: { lineStyle: { color: 'rgba(0,179,134,.2)' } },
+      splitLine: { lineStyle: { color: 'rgba(37,99,235,.2)' } },
+      axisLine: { lineStyle: { color: 'rgba(37,99,235,.2)' } },
     },
     series: [{
       type: 'radar',
       data: [{ name: '通过率', value: dims.map((d) => d.pass_rate) }],
       symbol: 'circle', symbolSize: 5,
-      lineStyle: { color: '#00b386', width: 2 },
-      areaStyle: { color: 'rgba(0,179,134,.3)' },
-      itemStyle: { color: '#00b386' },
+      lineStyle: { color: '#2563eb', width: 2 },
+      areaStyle: { color: 'rgba(37,99,235,.18)' },
+      itemStyle: { color: '#2563eb' },
     }],
   })
 }
@@ -800,7 +822,8 @@ async function loadQuality() {
 }
 
 function drawTrend() {
-  if (!trendEl.value || trend.value.length < 2) return
+  if (activeView.value !== 'analysis' || !trendEl.value || trend.value.length < 2) return
+  if (trendChart && trendChart.getDom() !== trendEl.value) { trendChart.dispose(); trendChart = null }
   if (!trendChart) trendChart = echarts.init(trendEl.value)
   const bs = trend.value
   const x = bs.map((b) => (b.date || '').slice(5, 16).replace('T', ' '))
@@ -818,17 +841,17 @@ function drawTrend() {
       },
     },
     grid: { left: 44, right: 44, top: 16, bottom: 28 },
-    xAxis: { type: 'category', data: x, axisLabel: { color: '#7d8a9b', fontSize: 10 }, axisLine: { lineStyle: { color: 'rgba(255,255,255,.15)' } } },
+    xAxis: { type: 'category', data: x, axisLabel: { color: '#7d8a9b', fontSize: 10 }, axisLine: { lineStyle: { color: '#dce2e7' } } },
     yAxis: [
-      { type: 'value', min: 0, max: 100, axisLabel: { color: '#7d8a9b', formatter: '{value}%' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,.06)' } } },
-      { type: 'value', min: 0, max: 5, axisLabel: { color: '#d98b00' }, splitLine: { show: false } },
+      { type: 'value', min: 0, max: 100, axisLabel: { color: '#7d8a9b', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#edf0f3' } } },
+      { type: 'value', min: 0, max: 5, axisLabel: { color: '#b76a08' }, splitLine: { show: false } },
     ],
     series: [
       { name: '通过率', type: 'line', data: bs.map((b) => b.pass_rate), smooth: true, connectNulls: true,
-        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#00e5a0', width: 2 }, itemStyle: { color: '#00e5a0' },
-        areaStyle: { color: 'rgba(0,229,160,.12)' } },
+        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#2563eb', width: 2 }, itemStyle: { color: '#2563eb' },
+        areaStyle: { color: 'rgba(37,99,235,.08)' } },
       { name: '均分', type: 'line', yAxisIndex: 1, data: bs.map((b) => b.avg_score), smooth: true, connectNulls: true,
-        symbol: 'circle', symbolSize: 5, lineStyle: { color: '#d98b00', width: 2, type: 'dashed' }, itemStyle: { color: '#d98b00' } },
+        symbol: 'circle', symbolSize: 5, lineStyle: { color: '#b76a08', width: 2, type: 'dashed' }, itemStyle: { color: '#b76a08' } },
     ],
   })
 }
@@ -840,93 +863,134 @@ async function loadTrend() {
   drawTrend()
 }
 
+function resizeCharts() {
+  if (activeView.value !== 'analysis') return
+  radarChart?.resize()
+  trendChart?.resize()
+}
+watch(activeView, async () => {
+  await nextTick()
+  drawRadar()
+  drawTrend()
+  resizeCharts()
+})
+// Sidebar and viewport changes both affect the available chart width.
+let chartObserver
+onMounted(() => {
+  chartObserver = new ResizeObserver(resizeCharts)
+  const container = document.querySelector('.analysis-view')
+  if (container) chartObserver.observe(container)
+})
 onBeforeUnmount(() => {
+  chartObserver?.disconnect()
   if (radarChart) { radarChart.dispose(); radarChart = null }
   if (trendChart) { trendChart.dispose(); trendChart = null }
 })
 </script>
 
 <style scoped>
+.eval-results { min-width: 0; color: #27333e; font-variant-numeric: tabular-nums; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.page-heading h1 { margin: 0; font-size: 24px; font-weight: 650; line-height: 1.4; }
+.project-select { width: 220px; flex-shrink: 0; }
+.view-tabs :deep(.el-tabs__header) { margin-bottom: 0; }
+.view-tabs :deep(.el-tabs__nav-wrap::after) { height: 1px; }
+.results-view, .analysis-view { min-width: 0; background: #fff; }
+.scope-label { padding: 16px 20px; color: #637181; font-size: 12px; }
+.result-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 20px 0; border-bottom: 1px solid #e7ebef; }
+.result-summary > div { padding: 0 24px; border-right: 1px solid #e7ebef; }
+.result-summary > div:last-child { border: 0; }
+.result-summary span { display: block; color: #637181; font-size: 12px; margin-bottom: 6px; }
+.result-summary strong { font-size: 24px; font-weight: 650; }
+.result-summary .summary-alert { color: var(--tech-danger); }
+.header { padding: 16px 20px 0; }
+.batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 12px; }
+.batch-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.selection-status { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 20px; font-size: 12px; color: #637181; }
+.results-view :deep(.el-table) { font-size: 13px; --el-table-header-bg-color: #f5f7f9; --el-table-header-text-color: #536170; }
+.results-view :deep(.el-table__cell) { padding: 10px 0; }
+.eval-results :deep(.el-dialog) { max-width: calc(100vw - 32px); }
 /* A/B 并排对比 */
-.ab-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.ab-col { border: 1px solid #e4e7ed; border-radius: 10px; padding: 12px 14px; background: #fbfdfe; }
-.ab-col.ab-win { border-color: #00b386; background: #f5fcf9; box-shadow: 0 0 0 1px #00b38633; }
+.ab-wrap { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.ab-col { min-width: 0; border: 1px solid #e4e7ed; border-radius: 6px; padding: 12px 14px; background: #fbfdfe; }
+.ab-col.ab-win { border-color: var(--tech-success); background: var(--el-color-success-light-9); }
 .ab-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.ab-tag { width: 20px; height: 20px; border-radius: 5px; text-align: center; line-height: 20px; font-weight: 800; font-size: 12px; color: #fff; flex: none; }
+.ab-tag { min-width: 20px; padding: 0 5px; min-height: 20px; border-radius: 4px; text-align: center; line-height: 20px; font-weight: 600; font-size: 12px; color: #fff; flex-shrink: 0; }
 .ab-tag-a { background: #2f7dd1; }
-.ab-tag-b { background: #d98b00; }
+.ab-tag-b { background: var(--tech-warn); }
 .ab-opts { font-size: 11px; color: #8099aa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ab-verdict { font-size: 13px; font-weight: 700; flex: none; }
 .ab-body { display: flex; flex-direction: column; gap: 6px; }
 .ab-sec { font-size: 11px; color: #8a94a6; font-weight: 600; margin-top: 6px; }
-.ab-text { font-size: 12px; color: #34495e; line-height: 1.65; max-height: 180px; overflow: auto; word-break: break-word; }
-.ab-score { font-size: 12px; color: #d98b00; font-weight: 700; }
-.ab-prompt { grid-column: 1 / -1; border: 1px dashed #e4e7ed; border-radius: 10px; padding: 12px 14px; }
+.ab-text { font-size: 14px; color: #34495e; line-height: 1.7; max-height: 280px; overflow: auto; word-break: break-word; }
+.ab-score { font-size: 12px; color: var(--tech-warn); font-weight: 700; }
+.ab-prompt { grid-column: 1 / -1; border-top: 1px solid #e4e7ed; padding: 12px 0; }
 /* 判定质量面板 */
-.jq-panel { background: #fff; border: 1px solid #e4e7ed; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+.jq-panel { background: #fff; border-top: 1px solid #e4e7ed; padding: 20px; }
 .jq-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.jq-head .dr-eyebrow { color: #7a4fd0; }
+.jq-head .dr-eyebrow { color: #27333e; }
 .jq-hint { font-size: 12px; color: #8a94a6; }
 .jq-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
-.jq-card { background: #f8fafc; border: 1px solid #eef1f5; border-radius: 8px; padding: 10px 14px; text-align: center; }
+.jq-card { padding: 10px 14px; text-align: left; }
 .jq-n { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 800; color: #1f2d3d; }
 .jq-n .jq-u { font-size: 12px; color: #8a94a6; }
-.jq-n.warn { color: #d98b00; }
-.jq-n.danger { color: #e5565f; }
+.jq-n.warn { color: var(--tech-warn); }
+.jq-n.danger { color: var(--tech-danger); }
 .jq-l { font-size: 11px; color: #8a94a6; margin-top: 3px; }
 .jq-rows { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed #e4e7ed; padding-top: 10px; }
 .jq-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .jq-eng { width: 110px; font-family: 'JetBrains Mono', monospace; color: #4a5568; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jq-bar { flex: 1; height: 10px; background: #eef1f5; border-radius: 5px; overflow: hidden; }
 .jq-bar i { display: block; height: 100%; border-radius: 5px; }
-.q-hi { color: #00b386; background-color: #00b386; }
-.q-mid { color: #d98b00; background-color: #d98b00; }
-.q-lo { color: #e5565f; background-color: #e5565f; }
+.q-hi { color: var(--tech-success); background-color: var(--tech-success); }
+.q-mid { color: var(--tech-warn); background-color: var(--tech-warn); }
+.q-lo { color: var(--tech-danger); background-color: var(--tech-danger); }
 .jq-val { width: 48px; text-align: right; font-family: 'JetBrains Mono', monospace; font-weight: 700; flex: none; }
+.jq-n, .jq-val { background-color: transparent; }
 .jq-sub { font-size: 11px; color: #9aa5b1; flex: none; }
 .jq-note { font-size: 12px; color: #8a94a6; border-top: 1px dashed #e4e7ed; padding-top: 10px; }
 /* 批次趋势 */
-.tr-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px; padding: 18px 24px 10px; margin-bottom: 16px; }
+.tr-panel { background: #fff; border-top: 1px solid #e4e7ed; padding: 20px; }
 .tr-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .tr-legend { display: flex; gap: 14px; }
-.tr-lg { font-size: 12px; color: #a7b4c4; display: inline-flex; align-items: center; gap: 5px; }
+.tr-lg { font-size: 12px; color: #637181; display: inline-flex; align-items: center; gap: 5px; }
 .tr-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.tr-dot-rate { background: #00e5a0; }
-.tr-dot-score { background: #d98b00; }
+.tr-dot-rate { background: var(--tech-signal); }
+.tr-dot-score { background: var(--tech-warn); }
 .tr-chart { width: 100%; height: 200px; }
 /* 维度能力画像雷达 */
-.dr-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px; padding: 20px 24px; margin-bottom: 16px; color: #e6edf3; }
+.dr-panel { background: #fff; padding: 20px; color: #27333e; }
 .dr-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
-.dr-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #00e5a0; }
+.dr-eyebrow { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0; color: #27333e; }
 .dr-overall { text-align: right; }
-.dr-rate { font-family: 'JetBrains Mono', monospace; font-size: 36px; font-weight: 800; color: #fff; }
+.dr-rate { font-size: 28px; font-weight: 650; color: var(--tech-fg); }
 .dr-u { font-size: 18px; color: #7d8a9b; }
 .dr-lbl { font-size: 12px; color: #8b98a9; display: block; margin-top: 2px; }
 .dr-body { display: grid; grid-template-columns: 1fr 200px; gap: 24px; align-items: center; }
 .dr-chart { width: 100%; height: 260px; }
 .dr-bars { display: flex; flex-direction: column; gap: 10px; }
 .dr-bar-row { display: flex; align-items: center; gap: 10px; }
-.dr-bar-lbl { font-size: 12px; color: #a7b4c4; width: 64px; flex: none; font-family: 'JetBrains Mono', monospace; }
-.dr-bar-track { flex: 1; height: 14px; background: rgba(255,255,255,.08); border-radius: 4px; overflow: hidden; }
+.dr-bar-lbl { font-size: 12px; color: #637181; width: 80px; flex: none; }
+.dr-bar-track { flex: 1; height: 10px; background: #edf0f3; border-radius: 4px; overflow: hidden; }
 .dr-bar-fill { height: 100%; border-radius: 4px; transition: width .5s ease; }
 .dr-bar-val { font-family: 'JetBrains Mono', monospace; font-size: 12px; width: 40px; text-align: right; flex: none; }
 .dr-dims { display: flex; flex-direction: column; gap: 8px; }
 .dr-dim { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .dr-dim-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.dr-dim-name { color: #a7b4c4; }
+.dr-dim-name { color: #637181; }
 .dr-dim-rate { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-weight: 700; }
 .dr-dim-n { color: #5f6b7a; font-size: 11px; }
 @media (max-width: 900px) { .dr-body { grid-template-columns: 1fr; } .dr-chart { height: 220px; } }
 
-.header { display: flex; justify-content: space-between; align-items: center; }
+.header { display: flex; flex-direction: column; align-items: stretch; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.foot-hint { margin-top: 8px; color: #90a4ae; font-size: 12px; }
+.foot-hint { padding: 12px 20px; color: #637181; font-size: 12px; line-height: 1.6; }
 .dim-muted { color: #c0c4cc; }
 .turn-tag { margin-right: 6px; }
 .score { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 14px; }
-.score-hi { color: #00b386; }
-.score-mid { color: #d98b00; }
-.score-lo { color: #e5565f; }
+.score-hi { color: var(--tech-success); }
+.score-mid { color: var(--tech-warn); }
+.score-lo { color: var(--tech-danger); }
 /* 人工复核 */
 .review-bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e4e7ed; flex-wrap: wrap; }
 .review-lbl { font-size: 12px; color: #8a94a6; font-weight: 600; }
@@ -934,9 +998,9 @@ onBeforeUnmount(() => {
 .raw-msg { margin-top: 10px; }
 .raw-msg-pre { max-height: 360px; overflow: auto; margin: 0; padding: 10px 12px; background: #0d1117; color: #c9d1d9; border-radius: 6px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .review-flag { display: inline-block; margin-left: 4px; font-size: 11px; font-weight: 700; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; cursor: default; }
-.rf-confirmed { background: #e7f7f1; color: #00b386; }
-.rf-false_positive { background: #fdf3e3; color: #d98b00; }
-.rf-false_negative { background: #fdeaea; color: #e5565f; }
+.rf-confirmed { background: var(--el-color-success-light-9); color: var(--tech-success); }
+.rf-false_positive { background: var(--el-color-warning-light-9); color: var(--tech-warn); }
+.rf-false_negative { background: var(--el-color-danger-light-9); color: var(--tech-danger); }
 .robust-ck { margin-right: 0; }
 /* 三维展开 */
 .verdict-detail { padding: 8px 16px; background: #fafcfe; }
@@ -944,8 +1008,8 @@ onBeforeUnmount(() => {
 .dims { display: flex; gap: 16px; flex-wrap: wrap; }
 .dim { flex: 1; min-width: 200px; padding: 10px 12px; border: 1px solid #e4e7ed; border-radius: 6px; background: #fff; }
 .dim-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #334; margin-bottom: 4px; }
-.dim-head .ok { color: #67c23a; }
-.dim-head .ng { color: #f56c6c; }
+.dim-head .ok { color: var(--tech-success); }
+.dim-head .ng { color: var(--tech-danger); }
 .dim-head .unk { color: #909399; }
 .dim-label { font-size: 13px; }
 .dim-note { font-size: 12px; color: #5a6b7b; }
@@ -956,4 +1020,22 @@ onBeforeUnmount(() => {
 .dim-note :deep(code), .summary :deep(code) { background: #eef2f6; border-radius: 3px; padding: 0 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .dim-note :deep(pre), .summary :deep(pre) { background: #f6f8fa; border-radius: 5px; padding: 6px 10px; overflow: auto; margin: 4px 0; }
 .summary :deep(p:first-child) { display: inline; }
+@media (max-width: 700px) {
+  .page-heading { align-items: stretch; flex-direction: column; gap: 10px; }
+  .page-heading h1 { font-size: 22px; }
+  .project-select { width: 100%; }
+  .result-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 0; }
+  .result-summary > div { padding: 0 16px; }
+  .result-summary > div:nth-child(2) { border: 0; }
+  .header { padding: 12px 12px 0; }
+  .filters :deep(.el-select) { max-width: 100%; flex: 1 1 140px; }
+  .batch-actions { align-items: flex-start; }
+  .dr-head, .tr-head, .jq-head { gap: 12px; flex-wrap: wrap; }
+  .dr-overall { text-align: left; }
+  .jq-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .jq-row { flex-wrap: wrap; }
+  .jq-sub { flex-basis: 100%; }
+  .ab-wrap { grid-template-columns: minmax(0, 1fr); }
+  .ab-hd { flex-wrap: wrap; }
+}
 </style>

@@ -12,9 +12,9 @@
         :collapse-transition="false"
         router
         class="menu"
-        background-color="#1f2d3d"
+        background-color="var(--tech-sidebar)"
         text-color="#bfcbd9"
-        active-text-color="#00e5a0"
+        active-text-color="var(--tech-on-dark-accent)"
       >
         <!-- 概览 -->
         <el-menu-item index="/dashboard">
@@ -186,7 +186,7 @@ function onCommand(cmd) {
 <style scoped>
 .layout { height: 100vh; }
 .aside {
-  background: #1f2d3d; box-shadow: 2px 0 8px rgba(0,0,0,0.08);
+  background: var(--tech-sidebar); border-right: 1px solid #30343b;
   transition: width 0.25s ease;
   height: 100vh;
   display: flex; flex-direction: column;   /* logo 固定 + 菜单区占满可滚 */
@@ -199,13 +199,12 @@ function onCommand(cmd) {
   animation: fadeInUp 0.5s ease-out both;
 }
 .logo-collapsed { padding: 0; justify-content: center; }
-.logo-text { font-size: 15px; font-weight: 600; letter-spacing: 0.5px; }
+.logo-text { font-size: 15px; font-weight: 600; letter-spacing: 0; }
 /* 靶心图标：深色侧栏上提亮 + 上色，保证清晰 */
 .brand-mark {
-  --tm-line: #4fd8c4;     /* 外靶环/取景框：亮青 */
-  --tm-dim: #3b9ad9;      /* 内环/准星：亮蓝 */
-  --tm-signal: #00e5a0;   /* 扫描环 + 对勾：信号青绿 */
-  filter: drop-shadow(0 0 5px rgba(0, 229, 160, 0.35));
+  --tm-line: #668ff1;
+  --tm-dim: #92b1f5;
+  --tm-signal: var(--tech-on-dark-accent);
 }
 .menu {
   border-right: none;
@@ -222,17 +221,16 @@ function onCommand(cmd) {
 .menu:not(.el-menu--collapse) { width: 226px; }
 .menu.el-menu--collapse { width: 64px; }
 .menu :deep(.el-sub-menu__title:hover),
-.menu :deep(.el-menu-item:hover) { background-color: #263445 !important; }
+.menu :deep(.el-menu-item:hover) { background-color: var(--tech-sidebar-hover) !important; }
 .menu :deep(.el-menu-item.is-active) {
-  background-color: #263445 !important;
-  border-left: 3px solid #00e5a0;
+  background-color: var(--tech-sidebar-hover) !important;
+  border-left: 3px solid var(--tech-on-dark-accent);
 }
-/* 激活态图标也染青绿 */
-.menu :deep(.el-menu-item.is-active .el-icon) { color: #00e5a0; }
-/* AI 入口：仅在选中当前项时亮出渐变色，未选中与普通菜单项一致 */
+/* 深色背景使用更亮的蓝色，保证选中态可读。 */
+.menu :deep(.el-menu-item.is-active .el-icon) { color: var(--tech-on-dark-accent); }
+/* AI 入口与普通菜单项使用相同选中色。 */
 .menu :deep(.ai-entry.is-active span) {
-  background: linear-gradient(90deg, #00e5a0, #3b9ad9);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  color: var(--tech-on-dark-accent);
   font-weight: 600;
 }
 
@@ -247,15 +245,15 @@ function onCommand(cmd) {
   padding: 6px; border-radius: 6px;
   transition: color 0.15s ease, background 0.15s ease;
 }
-.collapse-btn:hover { color: #00b386; background: rgba(0,179,134,.08); }
+.collapse-btn:hover { color: var(--tech-signal); background: var(--tech-signal-weak); }
 .role-tag {
-  font-size: 12px; color: #00926e; letter-spacing: .5px;
+  font-size: 12px; color: var(--tech-signal); letter-spacing: 0;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  padding: 3px 12px; border: 1px solid rgba(0,179,134,.3); border-radius: 4px;
-  background: rgba(0,179,134,.06);
+  padding: 3px 12px; border: 1px solid var(--tech-signal-line); border-radius: 4px;
+  background: var(--tech-signal-weak);
 }
 .user { cursor: pointer; color: #303133; display: flex; align-items: center; gap: 8px; }
-.avatar { background: #00b386; color: #fff; font-size: 13px; font-weight: 600; }
+.avatar { background: var(--tech-signal); color: #fff; font-size: 13px; font-weight: 600; }
 .uname { font-size: 14px; }
-.main { background: #f0f2f5; padding: 20px; }
+.main { background: var(--tech-bg); padding: 20px; }
 </style>
