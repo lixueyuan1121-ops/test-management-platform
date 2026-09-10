@@ -95,6 +95,7 @@
       </div>
         <div class="header">
           <div class="filters">
+            <el-input v-model="searchText" :prefix-icon="Search" aria-label="搜索用例或提问" placeholder="搜索用例或提问" clearable class="result-search" />
             <el-select v-model="batchFilter" aria-label="筛选批次" placeholder="全部批次" size="small" clearable filterable style="width:210px" @change="load">
               <el-option v-for="b in batchOptions" :key="b.batch_id"
                 :label="`${b.batch_id}${b.task_name ? ' · ' + b.task_name : ''}`" :value="b.batch_id" />
@@ -102,7 +103,7 @@
             <el-select v-model="verdictFilter" aria-label="筛选判定" placeholder="全部判定" size="small" clearable style="width:110px">
               <el-option label="通过" value="pass" />
               <el-option label="不通过" value="fail" />
-              <el-option label="判定出错" value="error" />
+              <el-option label="待复核 / 判定出错" value="error" />
               <el-option label="未判定" value="__none__" />
             </el-select>
             <el-select v-if="engineOptions.length > 1" v-model="engineFilter" aria-label="筛选产品" placeholder="全部产品" size="small" clearable style="width:120px">
@@ -129,21 +130,19 @@
               :disabled="!pid"
               @click="exportDialogVisible = true"
             >导出到飞书</el-button>
-              <el-button
-                size="small" :icon="Promotion" :loading="pushingMultica"
-                :disabled="!pid || !selectedRunIds.length"
-                @click="doPushMultica"
-              >推送到 Multica（{{ selectedRunIds.length }}）</el-button>
           </div>
         </div>
       <div class="selection-status">
+        <span class="visible-count">{{ groupedRows.length }} 个会话</span>
         <span>已选 {{ selectedRunIds.length }} 条对话</span>
         <el-button v-if="selectedRunIds.length" text size="small" :disabled="pushingMultica" @click="selectedRunIds = []">清空选择</el-button>
+        <el-button class="push-action" size="small" :icon="Promotion" :loading="pushingMultica" :disabled="!pid || !selectedRunIds.length" @click="doPushMultica">推送到 Multica（{{ selectedRunIds.length }}）</el-button>
       </div>
 
       <el-empty v-if="!groupedRows.length" :description="loading ? '加载中…' : '暂无测评执行记录'" :image-size="70" />
 
       <el-table v-else :data="groupedRows" v-loading="loading" size="small" border stripe row-key="run_id"
+        :row-class-name="({ row }) => row.isGroup ? 'conversation-row' : 'single-run'"
         :tree-props="{ children: '_unusedChildren' }" :expand-row-keys="expanded" @expand-change="onExpand">
         <el-table-column width="42">
           <template #header><el-checkbox aria-label="全选当前结果" :model-value="allPushSelected" :indeterminate="somePushSelected && !allPushSelected" :disabled="pushingMultica || !selectableRuns.length" @change="checked => selectPushRuns(selectableRuns, checked)" /></template>
@@ -154,17 +153,17 @@
             <div class="verdict-detail">
               <div v-if="row.isGroup" class="no-dims">
                 <el-text type="info">
-                  这是一次 {{ row.children.length }} 轮的多轮会话（批次 {{ row.batch_id || '—' }}），各轮在同一对话内连续发送。
-                  各轮明细：{{ groupTurnSummary(row) }}。
+                  {{ row.children.length }} 轮对话 · {{ groupTurnSummary(row) }} · 批次 {{ row.batch_id || '—' }}
                 </el-text>
                 <el-table :data="row.children" row-key="run_id" border size="small">
                   <el-table-column width="42"><template #default="{ row: turn }"><el-checkbox :aria-label="`选择第${(turn.payload?.turn_index ?? 0) + 1}轮`" :model-value="selectedRunIds.includes(turn.run_id)" :disabled="pushingMultica || !!turn.pushed_multica" @change="checked => selectPushRuns([turn], checked)" /></template></el-table-column>
                   <el-table-column label="轮次" width="65"><template #default="{ row: turn }">{{ (turn.payload?.turn_index ?? 0) + 1 }}</template></el-table-column>
                   <el-table-column prop="run_id" label="执行ID" width="80" />
-                  <el-table-column label="提问" min-width="200"><template #default="{ row: turn }"><div style="white-space: pre-wrap; overflow-wrap: anywhere">{{ turn.payload?.prompt || queryTitle(turn) }}</div></template></el-table-column>
-                  <el-table-column label="回答" min-width="240"><template #default="{ row: turn }"><div style="white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto">{{ turn.answer || turn.reason || '暂无回答' }}</div></template></el-table-column>
-                  <el-table-column label="判定" min-width="150"><template #default="{ row: turn }">{{ turn.verdict || turn.status }}<div>{{ turn.verdict_reason || '—' }}</div></template></el-table-column>
+                  <el-table-column label="提问" min-width="200"><template #default="{ row: turn }"><button class="case-link" @click="openInspector(turn)">{{ turn.payload?.prompt || queryTitle(turn) }}</button></template></el-table-column>
+                  <el-table-column label="回答摘要" min-width="220"><template #default="{ row: turn }"><div class="text-preview">{{ turn.answer || turn.reason || '暂无回答' }}</div></template></el-table-column>
+                  <el-table-column label="判定" min-width="160"><template #default="{ row: turn }"><el-tag :type="VERDICT_TYPE[turn.verdict] || 'info'" size="small">{{ VERDICT_LABEL[turn.verdict] || STATUS_LABEL[turn.status] }}</el-tag><div class="text-preview">{{ turn.verdict_reason || '—' }}</div></template></el-table-column>
                   <el-table-column label="Multica" width="90"><template #default="{ row: turn }">{{ turn.pushed_multica ? '已推送' : '未推送' }}</template></el-table-column>
+                  <el-table-column label="详情" width="66" fixed="right"><template #default="{ row: turn }"><el-tooltip content="查看结果详情"><el-button text :icon="Document" :aria-label="`查看执行 ${turn.run_id} 详情`" @click="openInspector(turn)" /></el-tooltip></template></el-table-column>
                 </el-table>
               </div>
               <div v-else-if="row.status === 'failed'" class="no-dims">
@@ -223,8 +222,9 @@
               <el-tag size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>{{ queryTitle(row) }}
             </template>
             <template v-else>
-              <el-tag v-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>{{ queryTitle(row) }}
+              <el-tag v-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag><button class="case-link" @click="openInspector(row)">{{ queryTitle(row) }}</button>
               <el-tag v-if="row.pushed_multica" size="small" type="success" effect="plain">Multica 已推送</el-tag>
+              <div class="reason-preview">{{ row.verdict_reason || row.reason || '暂无判定理由' }}</div>
             </template>
           </template>
         </el-table-column>
@@ -234,7 +234,7 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="产品" width="96" align="center">
+        <el-table-column label="产品" width="112" align="center">
           <template #default="{ row }">
             <el-tag v-if="!row.isGroup && row.target_engine" size="small" effect="plain" type="info">{{ ENGINE_LABEL[row.target_engine] || row.target_engine }}</el-tag>
             <span v-else class="dim-muted">—</span>
@@ -260,6 +260,9 @@
             <span v-else class="dim-muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="上报耗时" width="110" align="center">
+          <template #default="{ row }"><span v-if="!row.isGroup && row.reported_duration != null">{{ row.reported_duration }}{{ /^\d+(\.\d+)?$/.test(String(row.reported_duration)) ? ' 秒' : '' }}</span><span v-else class="dim-muted">—</span></template>
+        </el-table-column>
         <el-table-column label="异常" width="70" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.is_abnormal" type="danger" size="small" effect="dark">异常</el-tag>
@@ -283,8 +286,9 @@
             <span v-if="!row.isGroup && !row.payload?.compare_group && !hasEngineCompare(row)" class="dim-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="96" align="center">
+        <el-table-column label="操作" width="120" align="center" fixed="right">
           <template #default="{ row }">
+            <el-tooltip v-if="!row.isGroup" content="查看结果详情"><el-button text :icon="Document" :aria-label="`查看执行 ${row.run_id} 详情`" @click="openInspector(row)" /></el-tooltip>
             <el-popconfirm v-if="!row.isGroup && row.status === 'failed'"
               title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryOne(row)">
               <template #reference><el-button size="small" type="warning" text>重跑</el-button></template>
@@ -303,6 +307,23 @@
 
       <div class="foot-hint">当前加载 {{ rows.length }} 条执行 · 已判定 {{ judgedCount }} 条 · 异常 {{ abnormalCount }} 条</div>
     </section>
+
+    <EvalRunInspector v-model:visible="inspectorVisible" :row="inspectedRun" :title="queryTitle(inspectedRun)">
+      <template #review>
+        <div v-if="inspectedRun" class="inspector-review">
+          <el-button v-for="(label, mark) in REVIEW_LABEL" :key="mark" size="small" :type="inspectedRun.review_mark === mark ? 'primary' : ''" @click="doReview(inspectedRun, mark)">{{ mark === 'confirmed' ? '认可判定' : label }}</el-button>
+          <el-button v-if="inspectedRun.review_mark" text size="small" @click="doReview(inspectedRun, null)">清除</el-button>
+          <div v-if="inspectedRun.review_note" class="review-note">{{ inspectedRun.review_note }}</div>
+        </div>
+      </template>
+      <template #actions>
+        <template v-if="inspectedRun">
+          <el-checkbox :model-value="selectedRunIds.includes(inspectedRun.run_id)" :disabled="pushingMultica || !!inspectedRun.pushed_multica" @change="checked => selectPushRuns([inspectedRun], checked)">{{ inspectedRun.pushed_multica ? 'Multica 已推送' : '加入推送选择' }}</el-checkbox>
+          <el-popconfirm v-if="inspectedRun.status === 'failed'" title="重跑该条执行？" @confirm="retryOne(inspectedRun)"><template #reference><el-button type="warning" plain>重跑</el-button></template></el-popconfirm>
+          <el-button v-else type="primary" :icon="DataAnalysis" :disabled="!canJudge(inspectedRun)" :loading="judgingIds.has(inspectedRun.run_id)" @click="judgeOne(inspectedRun)">{{ inspectedRun.verdict ? '重新判定' : '判定' }}</el-button>
+        </template>
+      </template>
+    </EvalRunInspector>
 
     <el-dialog v-model="exportDialogVisible" title="导出到飞书表" width="480px">
       <el-form label-width="100px">
@@ -379,7 +400,8 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled, Search, Document } from '@element-plus/icons-vue'
+import EvalRunInspector from '@/components/EvalRunInspector.vue'
 import { listEvalRuns, judgeEvalRun, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -424,7 +446,7 @@ const DIM_TAG_TYPE = {
 const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败' }
 const STATUS_TYPE = { pending: 'info', running: 'primary', done: 'primary', judging: 'primary', judged: 'info', failed: 'danger' }
 // 总判定（EvalVerdict 值 pass/fail/error）：pass 绿 / fail 红 / error 灰
-const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '判定出错' }
+const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '待复核' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
 // 人工复核标记(失败收敛)
 const REVIEW_LABEL = { confirmed: '已认可判定', false_positive: '误报（实际通过）', false_negative: '漏报（实际有问题）' }
@@ -434,6 +456,15 @@ const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
 const rows = ref([])
+const searchText = ref('')
+const inspectorVisible = ref(false)
+const inspectedRunId = ref(null)
+const inspectedRun = computed(() => rows.value.find(r => r.run_id === inspectedRunId.value) || null)
+function openInspector(row) {
+  inspectedRunId.value = row.run_id
+  inspectorVisible.value = true
+}
+watch(inspectedRun, row => { if (!row) inspectorVisible.value = false })
 const loading = ref(false)
 const activeView = ref('results')
 const verdictFilter = ref(null)
@@ -476,6 +507,8 @@ const failedCount = computed(() => rows.value.filter((r) => r.status === 'failed
 const judgedCount = computed(() => rows.value.filter((r) => r.verdict).length)
 const abnormalCount = computed(() => rows.value.filter((r) => r.is_abnormal).length)
 const matchFilter = (r) => {
+  const term = searchText.value.trim().toLocaleLowerCase()
+  if (term && !`${queryTitle(r)} ${r.payload?.prompt || ''}`.toLocaleLowerCase().includes(term)) return false
   if (engineFilter.value && r.target_engine !== engineFilter.value) return false
   if (!verdictFilter.value) return true
   if (verdictFilter.value === '__none__') return !r.verdict
@@ -588,6 +621,9 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
+  inspectorVisible.value = false
+  inspectedRunId.value = null
+  searchText.value = ''
   verdictFilter.value = null
   batchFilter.value = null
   expanded.value = []
@@ -633,6 +669,7 @@ async function judgeOne(row) {
       status: res.status ?? row.status,
       verdict: res.verdict ?? null,
       verdict_dims: res.verdict_dims ?? null,
+      score: res.score ?? null,
       verdict_reason: res.verdict_reason ?? null,
       is_abnormal: !!res.is_abnormal,
     })
@@ -906,9 +943,21 @@ onBeforeUnmount(() => {
 .header { padding: 16px 20px 0; }
 .batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 12px; }
 .batch-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.selection-status { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 20px; font-size: 12px; color: #637181; }
+.selection-status { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 52px; padding: 10px 20px; border-top: 1px solid #e7ebef; margin-top: 16px; font-size: 12px; color: #637181; }
+.visible-count { color: #27333e; font-weight: 600; }
+.push-action { margin-left: auto; }
+.result-search { width: 230px; }
+.case-link { display: inline-block; max-width: 100%; padding: 0; border: 0; background: none; color: #27333e; text-align: left; font: inherit; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; white-space: normal; }
+.case-link:hover { color: var(--el-color-primary); text-decoration: underline; }
+.case-link:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
+.reason-preview { color: #68717d; font-size: 12px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 5px; }
+.text-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.6; margin-top: 4px; }
+.inspector-review { display: flex; flex-wrap: wrap; gap: 8px; }
+.inspector-review :deep(.el-button) { margin-left: 0; }
+.inspector-review .review-note { width: 100%; }
 .results-view :deep(.el-table) { font-size: 13px; --el-table-header-bg-color: #f5f7f9; --el-table-header-text-color: #536170; }
 .results-view :deep(.el-table__cell) { padding: 10px 0; }
+.results-view :deep(.single-run .el-table__expand-icon) { display: none; }
 .eval-results :deep(.el-dialog) { max-width: calc(100vw - 32px); }
 /* A/B 并排对比 */
 .ab-wrap { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
@@ -1029,6 +1078,9 @@ onBeforeUnmount(() => {
   .result-summary > div:nth-child(2) { border: 0; }
   .header { padding: 12px 12px 0; }
   .filters :deep(.el-select) { max-width: 100%; flex: 1 1 140px; }
+  .result-search { width: 100%; }
+  .selection-status { padding: 12px; gap: 8px; }
+  .selection-status .push-action { margin-left: 0; }
   .batch-actions { align-items: flex-start; }
   .dr-head, .tr-head, .jq-head { gap: 12px; flex-wrap: wrap; }
   .dr-overall { text-align: left; }
