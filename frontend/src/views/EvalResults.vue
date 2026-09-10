@@ -93,7 +93,12 @@
         <div><span>待判定</span><strong>{{ doneCount }}</strong></div>
         <div><span>异常</span><strong class="summary-alert">{{ abnormalCount }}</strong></div>
       </div>
-        <div class="header">
+      <div class="result-toolbar" role="region" aria-label="结果筛选与操作">
+        <div class="toolbar-mobile-head">
+          <span>结果操作</span>
+          <el-button size="small" :icon="Filter" :aria-expanded="mobileToolsOpen" aria-controls="result-toolbar-options" @click="mobileToolsOpen = !mobileToolsOpen">{{ mobileToolsOpen ? '收起筛选与操作' : '筛选与操作' }}</el-button>
+        </div>
+        <div id="result-toolbar-options" class="header toolbar-options" :class="{ 'mobile-open': mobileToolsOpen }">
           <div class="filters">
             <el-input v-model="searchText" :prefix-icon="Search" aria-label="搜索用例或提问" placeholder="搜索用例或提问" clearable class="result-search" />
             <el-select v-model="batchFilter" aria-label="筛选批次" placeholder="全部批次" size="small" clearable filterable style="width:210px" @change="load">
@@ -133,10 +138,12 @@
           </div>
         </div>
       <div class="selection-status">
+        <el-checkbox aria-label="全选当前结果（工具栏）" :model-value="allPushSelected" :indeterminate="somePushSelected && !allPushSelected" :disabled="pushingMultica || !selectableRuns.length" @change="checked => selectPushRuns(selectableRuns, checked)">全选</el-checkbox>
         <span class="visible-count">{{ groupedRows.length }} 个会话</span>
         <span>已选 {{ selectedRunIds.length }} 条对话</span>
         <el-button v-if="selectedRunIds.length" text size="small" :disabled="pushingMultica" @click="selectedRunIds = []">清空选择</el-button>
         <el-button class="push-action" size="small" :icon="Promotion" :loading="pushingMultica" :disabled="!pid || !selectedRunIds.length" @click="doPushMultica">推送到 Multica（{{ selectedRunIds.length }}）</el-button>
+      </div>
       </div>
 
       <el-empty v-if="!groupedRows.length" :description="loading ? '加载中…' : '暂无测评执行记录'" :image-size="70" />
@@ -400,7 +407,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled, Search, Document } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled, Search, Document, Filter } from '@element-plus/icons-vue'
 import EvalRunInspector from '@/components/EvalRunInspector.vue'
 import { listEvalRuns, judgeEvalRun, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
@@ -457,6 +464,7 @@ const projects = ref([])
 const pid = ref(null)
 const rows = ref([])
 const searchText = ref('')
+const mobileToolsOpen = ref(false)
 const inspectorVisible = ref(false)
 const inspectedRunId = ref(null)
 const inspectedRun = computed(() => rows.value.find(r => r.run_id === inspectedRunId.value) || null)
@@ -941,9 +949,12 @@ onBeforeUnmount(() => {
 .result-summary strong { font-size: 24px; font-weight: 650; }
 .result-summary .summary-alert { color: var(--tech-danger); }
 .header { padding: 16px 20px 0; }
+/* 抵消 MainLayout 内容区 20px 顶部内边距，吸顶后紧贴全局导航。 */
+.result-toolbar { position: sticky; top: -20px; z-index: 20; background: #fff; border-bottom: 1px solid #e7ebef; box-shadow: 0 3px 6px rgb(32 35 41 / 5%); }
+.toolbar-mobile-head { display: none; }
 .batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 12px; }
 .batch-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.selection-status { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 52px; padding: 10px 20px; border-top: 1px solid #e7ebef; margin-top: 16px; font-size: 12px; color: #637181; }
+.selection-status { box-sizing: border-box; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 52px; padding: 10px 20px; border-top: 1px solid #e7ebef; margin-top: 16px; font-size: 12px; color: #637181; }
 .visible-count { color: #27333e; font-weight: 600; }
 .push-action { margin-left: auto; }
 .result-search { width: 230px; }
@@ -1070,6 +1081,11 @@ onBeforeUnmount(() => {
 .dim-note :deep(pre), .summary :deep(pre) { background: #f6f8fa; border-radius: 5px; padding: 6px 10px; overflow: auto; margin: 4px 0; }
 .summary :deep(p:first-child) { display: inline; }
 @media (max-width: 700px) {
+  .toolbar-mobile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600; }
+  .header.toolbar-options { display: none; }
+  .header.toolbar-options.mobile-open { display: flex; max-height: 35dvh; overflow-y: auto; padding-bottom: 12px; }
+  .result-toolbar .selection-status { margin-top: 0; }
+  .result-toolbar .visible-count { display: none; }
   .page-heading { align-items: stretch; flex-direction: column; gap: 10px; }
   .page-heading h1 { font-size: 22px; }
   .project-select { width: 100%; }

@@ -134,6 +134,7 @@ const assert = require('node:assert/strict');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('.collapse-btn').click();
     await page.waitForFunction(() => document.querySelector('.aside').getBoundingClientRect().width <= 65);
+    await page.getByRole('button', { name: '筛选与操作', exact: true }).click();
     assert(await page.locator('.header, .page-heading, .result-summary').evaluateAll(nodes => nodes.every(node => node.scrollWidth <= node.clientWidth + 1)));
     await page.screenshot({ path: '/tmp/eval-results-mobile.png', fullPage: true });
     await page.getByRole('button', { name: '查看执行 103 详情', exact: true }).click();
@@ -161,7 +162,49 @@ const assert = require('node:assert/strict');
     await page.getByRole('tab', { name: '分析概览' }).click();
     await page.waitForTimeout(600);
     assert(await page.locator('.tr-chart canvas').evaluate(canvas => canvas.getBoundingClientRect().width < 390));
+    // Populate a long list to exercise the actual el-main scroll container.
+    rows.push(...Array.from({ length: 60 }, (_, i) => ({ run_id: 200 + i, eval_query_id: 200 + i,
+      status: 'done', batch_id: 'batch-1', target_engine: 'workbuddy', payload: { title: `滚动用例 ${i}` } })));
+    await page.getByRole('tab', { name: '结果明细' }).click();
+    await page.getByRole('button', { name: '刷新结果', exact: true }).click();
+    await page.getByRole('button', { name: '滚动用例 59', exact: true }).waitFor();
+    await page.getByRole('button', { name: '收起筛选与操作', exact: true }).click();
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 1000 }]) {
+      await page.setViewportSize(viewport);
+      await page.locator('.main').evaluate(node => { node.scrollTop = 1400; });
+      await page.waitForTimeout(350);
+      const toolbar = page.getByRole('region', { name: '结果筛选与操作' });
+      const geometry = await toolbar.evaluate(node => {
+        const rect = node.getBoundingClientRect();
+        const main = document.querySelector('.main');
+        return { top: rect.top, mainTop: main.getBoundingClientRect().top, bottom: rect.bottom, right: rect.right, height: innerHeight, width: innerWidth,
+          scrollWidth: node.scrollWidth, clientWidth: node.clientWidth };
+      });
+      assert(Math.abs(geometry.top - geometry.mainTop) < 2 && geometry.bottom < geometry.height && geometry.right <= geometry.width && geometry.scrollWidth <= geometry.clientWidth + 1, JSON.stringify(geometry));
+      await page.getByRole('checkbox', { name: '全选当前结果（工具栏）', exact: true }).locator('..').click();
+      assert(await page.getByRole('checkbox', { name: '全选当前结果', exact: true }).isChecked());
+      await page.getByRole('button', { name: '清空选择', exact: true }).click();
+      if (viewport.width === 390) {
+        assert(await toolbar.evaluate(node => node.getBoundingClientRect().height < 170));
+        await page.getByRole('button', { name: '筛选与操作', exact: true }).click();
+        await page.getByRole('textbox', { name: '搜索用例或提问' }).waitFor({ state: 'visible' });
+        await page.locator('.filters .el-select').nth(1).click();
+        await page.getByRole('option', { name: '通过', exact: true }).waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.getByRole('button', { name: '收起筛选与操作', exact: true }).click();
+      }
+      await page.screenshot({ path: `/tmp/eval-sticky-${viewport.width}.png`, fullPage: true });
+    }
+    await page.getByRole('checkbox', { name: '选择 滚动用例 50', exact: true }).locator('..').click();
+    const pushWhileScrolled = page.getByRole('button', { name: '推送到 Multica（1）', exact: true });
+    assert(await pushWhileScrolled.evaluate(node => {
+      const rect = node.getBoundingClientRect();
+      return rect.top >= 60 && rect.bottom < innerHeight && node.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    }));
+    await pushWhileScrolled.click();
+    await page.getByText('推送成功 1/1 条', { exact: true }).waitFor();
+    assert.deepEqual(writes.at(-1), { path: '/api/eval-export/multica', body: { project_id: 1, run_ids: [250] } });
     assert.deepEqual(errors, []);
-    console.log('PASS results/analysis, charts, inspector evidence/review/selection, trace errors and URL safety, search, multi-turn push payload, export and mobile layout');
+    console.log('PASS results/analysis, inspector, multi-turn selection, export, desktop/mobile sticky toolbar, mobile filter toggle and scrolled push payload');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
