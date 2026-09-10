@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, or_
@@ -340,6 +341,7 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
     r.reason = body.reason
     r.duration_ms = body.duration_ms
     r.finished_at = func.now()
+    _backfill_conversation_share(db, r)
     if r.claim_token:
         remaining = db.query(EvalRun).filter(
             EvalRun.claim_token == r.claim_token, EvalRun.status == EvalRunStatus.running,
@@ -361,6 +363,44 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
         except Exception:
             pass  # 一条龙触发失败绝不影响 runner 回写
     return ok(_to_out(r))
+
+
+def _backfill_conversation_share(db: Session, source: EvalRun) -> int:
+    """末轮分享覆盖整个对话，仅补同次认领中已完成各轮的空链接。"""
+    if source.target_engine != "namiwork" or not source.share_link or not source.claim_token or not source.batch_id:
+        return 0
+    try:
+        url = urlsplit(source.share_link)
+        if url.scheme not in ("http", "https") or not url.hostname or not url.path.startswith("/share/") or not url.path[7:]:
+            return 0
+        payload = json.loads(source.payload or "{}")
+        group = payload.get("conversation_group")
+        if not group:
+            return 0
+    except (ValueError, TypeError, AttributeError):
+        return 0
+    candidates = db.query(EvalRun).filter(
+        EvalRun.id != source.id,
+        EvalRun.project_id == source.project_id,
+        EvalRun.batch_id == source.batch_id,
+        EvalRun.eval_task_id == source.eval_task_id,
+        EvalRun.target_engine == source.target_engine,
+        EvalRun.runner == source.runner,
+        EvalRun.claim_token == source.claim_token,
+        EvalRun.status.in_([EvalRunStatus.done, EvalRunStatus.judged, EvalRunStatus.judging]),
+        or_(EvalRun.share_link.is_(None), EvalRun.share_link == ""),
+    ).with_for_update().all()
+    filled = 0
+    for target in candidates:
+        try:
+            other = json.loads(target.payload or "{}")
+            if other.get("conversation_group") != group or other.get("compare_group") != payload.get("compare_group"):
+                continue
+        except (ValueError, TypeError, AttributeError):
+            continue
+        target.share_link = source.share_link
+        filled += 1
+    return filled
 
 
 _UPLOADS_DIR = os.path.join(

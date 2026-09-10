@@ -1067,7 +1067,7 @@ class DialogRunner {
   async extractConversationShareLink() {
     const btnSel = this.platform.shareBtnSelector;
     const genSel = this.platform.shareGenerateSelector;
-    if (!btnSel || !genSel) return '';
+    if (!btnSel || !genSel) { this._warnShare('未配置分享按钮或生成按钮选择器'); return ''; }
     const ctx = this._ctx();
     const run = async () => {
       let lastReason = '未知';
@@ -1085,15 +1085,18 @@ class DialogRunner {
         // 打开面板→确保全选→生成链接→读剪贴板；面板偶发打不开/不复制，失败就重开重试
         for (let round = 0; round < 3; round++) {
           const btn = ctx.locator(btnSel).first();
-          if (await btn.count() === 0) {
-            lastReason = `分享按钮未找到(${btnSel})`;
-            this._warnShare(lastReason); return '';   // 按钮都没有,重试无益,直接返回
+          try {
+            await btn.waitFor({ state: 'visible', timeout: 5000 });
+            await btn.click({ timeout: 5000 });
+          } catch {
+            lastReason = `分享按钮未就绪或点击失败(${btnSel})`;
+            await this.page.keyboard.press('Escape').catch(() => {});
+            continue;
           }
-          await btn.click({ timeout: 5000 }).catch(() => {});
 
           const gen = ctx.locator(genSel).first();
           try { await gen.waitFor({ state: 'visible', timeout: 5000 }); }
-          catch { lastReason = `分享面板未打开(${genSel} 不可见)`; await this.page.waitForTimeout(500); continue; } // 面板没开，重试
+          catch { lastReason = `分享面板未打开(${genSel} 不可见)`; await this.page.keyboard.press('Escape').catch(() => {}); await this.page.waitForTimeout(500); continue; }
 
           // 勾选全部内容再生成链接（用户明确流程）：主动点「全选」，点到全部勾选为止——
           // 多轮对话一次全选常只到部分选中，需再点一次（ensureAllSelected 自适应单轮 1 次/多轮 2 次）。
@@ -1117,27 +1120,31 @@ class DialogRunner {
             }
           }
 
-          await this._clipSentinel();
-          await gen.click({ timeout: 5000 }).catch(() => {});      // 点「生成/复制链接」
+          if (!(await allChecked())) {
+            lastReason = '未能确认全部对话已勾选，未生成不完整分享';
+            await this.page.keyboard.press('Escape').catch(() => {});
+            continue;
+          }
+          const clipboardReady = await this.page.evaluate(() => navigator.clipboard.writeText('__WAIT_SHARE__').then(() => true)).catch(() => false);
+          try { await gen.click({ timeout: 5000 }); }
+          catch { lastReason = '生成链接按钮点击失败'; await this.page.keyboard.press('Escape').catch(() => {}); continue; }
 
-          // ① 优先直读面板 DOM 的链接(不碰剪贴板,不受失焦/权限/并发污染)。链接异步生成,轮询 12s。
+          // DOM 和本轮已清空的剪贴板交替读取，避免先空等 DOM 12 秒而错过复制结果。
           const panelSel = this.platform.sharePanelSelector || '.chat-share-panel';
-          const directDeadline = Date.now() + 12000;
+          const directDeadline = Date.now() + 22000;
           let link = '';
           while (Date.now() < directDeadline) {
             link = await this._readShareUrlFromPanel(panelSel);
+            if (!link && clipboardReady) {
+              const clip = await this.page.evaluate(() => navigator.clipboard.readText()).catch(() => '');
+              link = pickShareUrl({ text: clip });
+            }
             if (link) break;
             await this.page.waitForTimeout(600);
           }
           if (link) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
 
-          // ② 直读拿不到 → 剪贴板兜底(gen 点击多已复制;失焦/受限时才会走到这)。
-          // 只认对话分享链接(含 /share/):防剪贴板残留产物链接被当分享链接(与 pickShareUrl 同口径)。
-          link = await this._pollClipboardUrl(10000);
-          if (link && link.includes('/share/')) { await this.page.keyboard.press('Escape').catch(() => {}); return link; }
-          if (link) { this._warnShare(`剪贴板取到非分享链接(不含 /share/),丢弃:${link.slice(0, 80)}`); link = ''; }
-
-          lastReason = '直读面板与剪贴板均未取到 URL(链接未生成或面板结构未知)';
+          lastReason = clipboardReady ? '面板与剪贴板均未取到分享 URL' : '面板未取到分享 URL，剪贴板写入权限不可用，已拒绝读取可能残留的旧链接';
           await this.page.keyboard.press('Escape').catch(() => {});
           await this.page.waitForTimeout(500);
         }
@@ -1170,7 +1177,8 @@ class DialogRunner {
   async _readShareUrlFromPanel(panelSel) {
     try {
       const cands = await this._liveFrame().evaluate((sel) => {
-        const root = document.querySelector(sel) || document.body;
+        const root = document.querySelector(sel);
+        if (!root) return {};
         return {
           inputs: [...root.querySelectorAll('input, textarea')].map(e => e.value || ''),
           hrefs: [...root.querySelectorAll('a[href]')].map(a => a.getAttribute('href') || ''),
