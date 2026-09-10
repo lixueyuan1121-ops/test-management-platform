@@ -42,7 +42,15 @@ def _load_trace(run: EvalRun) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
             obj = json.load(f)
-        return obj if isinstance(obj, dict) else fallback
+        if not isinstance(obj, dict):
+            return fallback
+        # DOM 回答独立于 WS 回填；空 trace 不能遮蔽已经落库的回答。
+        if not str(obj.get("answer") or "").strip():
+            obj["answer"] = run.answer or ""
+            obj["answer_source"] = "run.answer"
+        else:
+            obj["answer_source"] = "trace"
+        return obj
     except (OSError, json.JSONDecodeError, ValueError):
         logger.warning("判定读 trace 失败:%s", path)
         return fallback
@@ -72,18 +80,45 @@ def _judge_once(engine, trace: dict, expected: str, dimension: str | None) -> tu
     dims = claude_runner.parse_eval_verdict(raw)
     if not err and dims.get("error"):
         err = "判定输出无法解析"
+    if not err:
+        _guard_missing_evidence(dims, trace)
     return dims, err
+
+
+def _guard_missing_evidence(dims: dict, trace: dict) -> None:
+    """缺过程记录时，失败结论须有输入中的直接引文；缺记录本身不是失败证据。"""
+    if trace.get("thinking") and trace.get("tool_calls"):
+        return
+    sources = {
+        "answer": str(trace.get("answer") or ""),
+        "thinking": str(trace.get("thinking") or ""),
+        "tool_calls": json.dumps(trace.get("tool_calls") or [], ensure_ascii=False),
+        "artifacts": json.dumps(trace.get("artifacts") or [], ensure_ascii=False),
+    }
+    changed = False
+    for key in (*claude_runner._JUDGE_DIM_KEYS, "dimension_ok"):
+        dim = dims.get(key)
+        if not isinstance(dim, dict) or dim.get("pass") is not False:
+            continue
+        source = dim.get("evidence_source")
+        quote = str(dim.get("evidence_quote") or "").strip()
+        if not quote or source not in sources or not trace.get(source) or quote not in sources[source]:
+            dim["pass"] = None
+            dim["note"] = "证据不足：过程记录缺失，且失败结论未引用可核对的实际证据；需补齐轨迹或人工复核。"
+            changed = True
+    if changed:
+        dims["summary"] = "部分维度证据不足，不能将未捕获思考、工具或产物记录认定为任务未执行；请结合已有回答补充核验。"
 
 
 def _verdict_of(dims: dict) -> str:
     """由多维结论推导单次总判定(pass/fail/error),与原单票口径一致:
-    任一明确 false → fail;核心三维全 true(且主考维不为 false)→ pass;有 None 未判 → error。"""
+    任一明确 false → fail;核心三维及已提供主考维全 true → pass;有 None 未判 → error。"""
     passes = [dims[k]["pass"] for k in ("thinking_complete", "tools_ok", "artifact_expected")]
     opt = dims.get("dimension_ok")
     opt_pass = opt.get("pass") if isinstance(opt, dict) else None
     if any(p is False for p in passes) or opt_pass is False:
         return EvalVerdict.failed.value
-    if all(p is True for p in passes):
+    if all(p is True for p in passes) and (not isinstance(opt, dict) or opt_pass is True):
         return EvalVerdict.passed.value
     return EvalVerdict.error.value
 
@@ -108,12 +143,16 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
     # 未回填快速失败:执行机没回写任何东西(无轨迹、无回答、无思考)时没有可判定的素材——
     # 直接标 error 不调引擎,免得空壳 run 白耗几十秒 LLM、拖垮批量判定(前端同步等待会超时)。
     has_material = bool(
-        (run.answer or "").strip() or trace.get("ws_captured") or trace.get("tool_calls")
+        trace.get("tool_calls") or trace.get("artifacts")
         or str(trace.get("answer") or "").strip() or str(trace.get("thinking") or "").strip()
     )
     if not has_material:
         run.verdict = EvalVerdict.error.value
-        run.verdict_reason = "会话未正常回填(无轨迹与回答),无可判定内容;请重跑该用例后再判定"
+        run.verdict_reason = "证据不足：无可用回答、思考、工具或产物记录；不能据此判任务失败，请补齐证据后重判。"
+        run.score = None
+        run.verdict_dims = None
+        run.is_abnormal = False
+        run.status = EvalRunStatus.done
         run.judged_by = provider_id
         db.commit()
         return {"verdict": "error", "reason": run.verdict_reason}
@@ -124,6 +163,10 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
         # 让前端走 error 分支露出真因(而非 verdict=null 的假成功)且可重判;保持 status 不变(done)。
         run.verdict = EvalVerdict.error.value
         run.verdict_reason = f"判定引擎「{provider_id}」不可用"
+        run.score = None
+        run.verdict_dims = None
+        run.is_abnormal = False
+        run.status = EvalRunStatus.done
         run.judged_by = provider_id
         db.commit()
         return {"verdict": "error", "reason": run.verdict_reason}
@@ -148,15 +191,18 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
         run.status = EvalRunStatus.done
         run.verdict = EvalVerdict.error.value
         run.verdict_reason = (fail_reasons[0] if fail_reasons else "判定失败")[:2000]
+        run.score = None
+        run.verdict_dims = None
+        run.is_abnormal = False
         run.judged_by = provider_id
         db.commit()
         return {"verdict": "error", "reason": run.verdict_reason}
 
     n_pass = sum(1 for v, _ in valid if v == EvalVerdict.passed.value)
     n_fail = sum(1 for v, _ in valid if v == EvalVerdict.failed.value)
-    if n_pass > n_fail:
+    if n_pass > len(ballots) / 2:
         verdict = EvalVerdict.passed.value
-    elif n_fail > n_pass:
+    elif n_fail > len(ballots) / 2:
         verdict = EvalVerdict.failed.value
     else:
         # 平票(含全 error 票):标 error 供复核,不猜
@@ -164,9 +210,15 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
 
     # dims 取与最终结论一致的最后一票(error 结论时取最后一张有效票);score 取有效均值
     dims = next((d for v, d in reversed(valid) if v == verdict), valid[-1][1])
-    scores = [d.get("score") for _, d in valid if isinstance(d.get("score"), int)]
+    scores = [d.get("score") for v, d in valid
+              if v != EvalVerdict.error.value and isinstance(d.get("score"), int)]
     score = round(sum(scores) / len(scores)) if scores else dims.get("score")
+    if verdict == EvalVerdict.error.value:
+        score = None
+        dims["score"] = None
     reason = dims.get("summary") or ""
+    if verdict == EvalVerdict.error.value:
+        reason = "无法定论（证据不足或有效票未过半）：" + reason
     if votes > 1:
         reason = f"[{len(valid)}票:{n_pass}过/{n_fail}不过] {reason}"
 

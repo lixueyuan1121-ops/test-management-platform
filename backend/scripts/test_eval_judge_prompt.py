@@ -42,7 +42,7 @@ def test_single_call_not_flagged():
 
 def test_no_tools():
     p = cr.build_eval_judge_prompt(_trace([]), expected="随便答", dimension=None)
-    assert "(无工具调用)" in p, "无工具调用应显式说明"
+    assert "未取得工具调用记录" in p, "缺记录不能断言未调用工具"
     assert "调用统计：" not in p, "无工具时不应出现调用统计行"
     print("OK 无工具调用")
 

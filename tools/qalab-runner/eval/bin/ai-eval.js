@@ -920,6 +920,10 @@ program
       // 多轮同一对话逐轮隔离靠此 reset:session_id 每帧都带,reset 后下一轮仍能复得同一 session_id。
       const reportRun = async (runId, result, ws) => {
         const trace = ws ? ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
+        if (!String(trace.answer || '').trim() && result.answer) {
+          trace.answer = result.answer;
+          trace.answer_source = 'runner_dom';
+        }
         try {
           // ⚠️ 顺序关键:必须【先传 trace，再 report(done)】。report 会让 run 达终态,
           // 若这是本批最后一条,后端 eval_queue.report 会【同步】触发一条龙(on_batch_maybe_done)

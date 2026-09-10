@@ -1285,9 +1285,9 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         tool_lines.append(
             f"{idx}. {name}{mcp}{dup}: {reached};参数={_clip_keep_ends(json.dumps(tc.get('args'), ensure_ascii=False), 700)};结果摘要={_clip_keep_ends(sanitize_dialog_text(tc.get('result_text')), 500)}"
         )
-    tools_block = "\n".join(tool_lines) if tool_lines else "(无工具调用)"
+    tools_block = "\n".join(tool_lines) if tool_lines else "(未取得工具调用记录；不代表未调用工具)"
     artifacts = t.get("artifacts") or []
-    art_block = "\n".join(f"- {str(a.get('name') if isinstance(a, dict) else a)}" for a in artifacts) or "(无产物)"
+    art_block = "\n".join(f"- {str(a.get('name') if isinstance(a, dict) else a)}" for a in artifacts) or "(未取得独立产物记录；请同时核对最终答案中的交付信息)"
     dim_lines = "\n".join(f"- {k}: {v}" for k, v in EVAL_JUDGE_DIMS.items())
     ws_note = "" if ws_captured else "\n注意:本会话轨迹未完整捕获(ws_captured=false),思考/工具信息可能缺失,对应维度请据可得信息判定并在 note 说明。"
 
@@ -1298,9 +1298,9 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         f"\n本题主考维度:{dim_key}({focus_hint})。请额外给出 dimension_ok 维度的判定,聚焦该主考能力本身。\n"
         if dim_key else ""
     )
-    dim_json_line = '\n  "dimension_ok": {"pass": true/false, "note": "主考维度达标情况"},' if dim_key else ""
+    dim_json_line = '\n  "dimension_ok": {"pass": true/false/null, "note": "主考维度达标情况", "evidence_source": "answer/thinking/tool_calls/artifacts", "evidence_quote": "输入中的直接引文"},' if dim_key else ""
 
-    return f"""判定下面这次 AI 对话的质量。按维度各给 pass(true/false)与 note(简短理由),并给总体评分 score。
+    return f"""判定下面这次 AI 对话的质量。按维度各给 pass(true/false/null)与 note(简短理由),并给总体评分 score。
 
 维度:
 {dim_lines}
@@ -1310,6 +1310,16 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
 2=大部分未达成,仅局部可用;1=完全失败/答非所问/未产出。
 
 判定规则(重要,避免误判):
+0. 【证据优先，优先于后续规则】pass 允许 true、false、null。null 表示证据不足，绝不是失败。
+   WS 标记只表示收到了事件，不保证思考/工具轨迹完整。未取得记录不能写成没有思考、没有调用、任务未执行。
+   最终答案可能由数据库回答补入，与 WS 是独立来源，必须完整参考；其中的链接、交付说明不可因 artifacts 列表空而忽略。
+   有答案且能验证预期时正常判定，不需要工具且答案正确可判 tools_ok=true，不因缺过程扣分。
+   答案有直接可验证的错误、明确拒绝或承认未完成时，可以判 false，不因缺 trace 豁免真实错误。
+   仅自称完成、有下载链接或 reasoning token 数，不足以证明文件内容正确、工具执行成功或完整思考链。
+   需要核对工具行为/文件内容但没有相应证据时，该维度判 null，不推断成功，也不推断失败。
+   所有 false 维度必须附 evidence_source（answer/thinking/tool_calls/artifacts）和 evidence_quote（该输入原文直接引文），
+   note 解释该证据为何违反预期。禁止把“未捕获/记录为空”作为失败依据，禁止捏造引文。
+   没有明确失败但必要维度无法定论时 score=null；summary 说明已知结果、缺失证据及补验方法。
 1. 文本里出现「【评测系统截断:…】」或「…(已截断)」字样,是评测系统为控制篇幅做的展示截断,**不是**被测模型输出中断;不得据此判"回答不完整/被截断/论证链缺失"。
 2. 【思考过程】为空 ≠ 没有思考:轨迹经旁路抓取,思考流可能没抓到(ws_captured=false 时尤甚)。思考为空时:若最终答案结构清晰、结论合理、体现了推理,thinking_complete 判 true 并在 note 注明"思考未捕获,按答案质量判定";仅当题目明确要求展示推理过程、且答案本身也无推理痕迹或存在结论跳跃错误时才判 false。
 3. 本题不需要工具时,无工具调用应判 tools_ok=true(note 写"本题无需工具")。
@@ -1321,6 +1331,7 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
    【结果优先】若本题看似可借助工具、但模型没调或少调工具,却直接给出达成期望的正确结果:
    tools_ok 判 true,**不因此扣分**,并在 note 里**记为高效**(说明它靠基座/推理能力一步到位、省去工具往返)——
    不调工具而结果对,是本事,不是缺陷,不得据此判 fail 或降 score。
+   上述效率优势必须有可靠证据；未捕获调用记录不等于实际零调用，不能据此推断省去工具往返或基座能力更强。
 5. artifact_expected 对照期望判"实质是否达成",不纠结措辞差异;期望未提的附加内容不扣分。
 6. 在 tools_ok.note 中记录文件流转及执行重试:已使用的本地上传文件调用 tool/MCP 时又上传、下载、转存;
    文件路径错误或 bash 乱码/编码错误后重试。引用调用步骤、路径/参数和报错,说明问题、原因、实际恢复动作
@@ -1333,7 +1344,7 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
 
 会话轨迹:
 【思考过程】
-{thinking or "(无)"}
+{thinking or "(未取得思考记录；不代表没有思考)"}
 
 【工具/MCP 调用】
 {tools_block}
@@ -1342,15 +1353,15 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
 {art_block}
 
 【最终答案】
-{answer or "(无)"}
+{answer or "(未取得最终答案；不代表没有回答)"}
 {ws_note}
 
 严格输出一个 JSON 对象(不要数组、不要额外文字):
 {{
-  "thinking_complete": {{"pass": true/false, "note": "..."}},
-  "tools_ok": {{"pass": true/false, "note": "..."}},
-  "artifact_expected": {{"pass": true/false, "note": "..."}},{dim_json_line}
-  "score": 1-5 的整数,
+  "thinking_complete": {{"pass": true/false/null, "note": "...", "evidence_source": "thinking", "evidence_quote": "输入中的直接引文"}},
+  "tools_ok": {{"pass": true/false/null, "note": "...", "evidence_source": "tool_calls", "evidence_quote": "输入中的直接引文"}},
+  "artifact_expected": {{"pass": true/false/null, "note": "...", "evidence_source": "answer", "evidence_quote": "输入中的直接引文"}},{dim_json_line}
+  "score": 1-5 的整数或 null,
   "summary": "总体判定理由(简短)"
 }}"""
 
@@ -1374,7 +1385,11 @@ def parse_eval_verdict(raw: str) -> dict:
     def _norm_dim(v):
         _p = v.get("pass")
         _pass = _p if isinstance(_p, bool) else (None if _p is None else str(_p).strip().lower() not in ("false", "0", "no", "", "none"))
-        return {"pass": _pass, "note": str(v.get("note") or "").strip()}
+        result = {"pass": _pass, "note": str(v.get("note") or "").strip()}
+        for key in ("evidence_source", "evidence_quote"):
+            if key in v:
+                result[key] = str(v[key] or "").strip()
+        return result
 
     for k in _JUDGE_DIM_KEYS:
         v = obj.get(k)
@@ -1632,6 +1647,10 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
    <h2>亮点</h2> 值得肯定的表现。
    <h2>改进建议</h2> 面向被测产品团队的可执行建议(有序列表,每条引用具体用例/证据)。
 5. 判定为 error/未判定的用例单独说明,不计入通过率。
+   证据不足不是产品失败，也不计入均分。trace 为空但有回答时仍需参考回答；
+   缺少思考/工具记录不代表没有思考或调用，也不能据此表扬调用更少、效率更高。
+   历史判定若仅因记录缺失而判失败、但回答包含交付信息，明确标注证据冲突、建议补验后重判，
+   不直接沿用为产品缺陷，也不擅自改判通过。说明已知结果、缺失证据、可能的采集问题和具体补验方法。
 6. 分析务必**具体**、有据可依:引用用例时用其标题,给出证据,不要泛泛而谈、不要编造未提供的信息。
    有问题就追到根因、给建设性的改进意见,不要只描述现象。
 7. 表述**口语化、说人话**,让不懂技术细节的人也能看明白;少用生僻术语,该解释的解释一句。
