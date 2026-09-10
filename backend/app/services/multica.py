@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import shutil
+from urllib.parse import quote
 
 import requests
 
@@ -17,6 +18,7 @@ from app.core.config import settings
 
 logger = logging.getLogger("test_platform")
 MULTICA_EVAL_PROJECT = "fe648247-d5b5-43bb-876e-e31afa63d2a6"
+MULTICA_EVAL_ASSIGNEE = "79bfeb61-df55-40fe-acd4-36408563eeae"
 
 
 def _safe_link(u):
@@ -70,15 +72,31 @@ def check_skill_ready():
     _skill_command(["workspace", "list"])
 
 
+def _skill_description(payload):
+    def text_block(value, missing):
+        text = str(value or "")
+        if not text.strip():
+            return missing
+        # 提问可能自带代码围栏；外层用更长围栏，避免原文破坏描述分区。
+        fence = "`" * max(3, 1 + max((len(s) for s in re.findall(r"`+", text)), default=0))
+        return f"{fence}text\n{text}\n{fence}"
+
+    link = _safe_link(payload.get("share_link"))
+    encoded_link = quote(link, safe="/:?#[]@!$&'()*+,;=%") if link else None
+    share = f"[查看完整对话](<{encoded_link}>)" if encoded_link else "暂未回填分享链接"
+    return "\n\n".join([
+        "## 对话分享", share,
+        "## 提问原文（Prompt）", text_block(payload.get("prompt"), "暂无提问原文"),
+        "## 预期结果（Expected）", text_block(payload.get("expected"), "未设置预期结果"),
+    ])
+
+
 def _create_skill_task(payload):
     title = "【测评反馈】" + (payload.get("verdict_reason") or "")
-    description = (
-        f"1.【对话分享链接】{payload.get('share_link') or ''}\n"
-        f"2.【对话提问的prompt】{payload.get('prompt') or ''}\n"
-        f"3.【对话预期expected】{payload.get('expected') or ''}"
-    )
+    description = _skill_description(payload)
     raw = _skill_command([
         "issue", "create", "--title", title, "--project", MULTICA_EVAL_PROJECT,
+        "--assignee-id", MULTICA_EVAL_ASSIGNEE,
         "--description-stdin", "--output", "json",
     ], description)
     try:
