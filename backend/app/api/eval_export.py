@@ -1,7 +1,7 @@
 """对话测评结果导出:飞书表 + multica 推送(异常会话)。
 
 飞书:导出到用户指定表(eval 平台生成、无飞书来源锚点,故导出非回填原表)。
-multica:推 is_abnormal 且未 pushed 的 run,回写 pushed_multica/multica_ref 防重推。
+multica:按 run_ids 推送正常或异常结果;旧调用仍只推异常。回写推送状态防重推。
 """
 import json
 
@@ -72,8 +72,12 @@ def export_feishu(body: EvalExportFeishuIn, db: Session = Depends(get_db), user:
 def push_multica(body: EvalPushMulticaIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
     q = db.query(EvalRun).filter(EvalRun.project_id == body.project_id,
-                                 EvalRun.is_abnormal == True,  # noqa: E712
                                  EvalRun.pushed_multica == False)  # noqa: E712
+    if body.run_ids is not None:
+        q = q.filter(EvalRun.id.in_(body.run_ids))
+    else:
+        # 兼容旧调用:未指定勾选项仍只推异常,不能意外全量推送。
+        q = q.filter(EvalRun.is_abnormal == True)  # noqa: E712
     if body.batch_id:
         q = q.filter(EvalRun.batch_id == body.batch_id)
     runs = q.order_by(EvalRun.id).all()

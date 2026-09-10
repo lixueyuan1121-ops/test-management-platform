@@ -13,7 +13,7 @@
 export function groupEvalRuns(rows, matchFilter = () => true) {
   const keyOf = (r) => {
     const g = r.payload?.conversation_group
-    return g ? `${r.batch_id || ''}|${g}` : null
+    return g ? JSON.stringify([r.batch_id || '', r.target_engine || '', r.payload?.compare_group || '', g]) : null
   }
   const byGroup = new Map()
   for (const r of rows) {

@@ -12,3 +12,4 @@ class EvalExportFeishuIn(BaseModel):
 class EvalPushMulticaIn(BaseModel):
     project_id: int
     batch_id: str | None = None
+    run_ids: list[int] | None = Field(default=None, min_length=1, max_length=200)

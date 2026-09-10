@@ -5,6 +5,7 @@ push_abnormal_run(run):组装 {share_link,session_id,verdict_reason,run_id,...} 
 share_link 推前校验 http(s)(补子项3 XSS 写入侧:外发也校验)。
 """
 import logging
+import json
 import re
 import shlex
 import subprocess
@@ -22,6 +23,12 @@ def _safe_link(u):
 
 
 def _payload(run) -> dict:
+    try:
+        snapshot = json.loads(getattr(run, "payload", None) or "{}")
+    except (ValueError, TypeError):
+        snapshot = {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
     return {
         "run_id": run.id,
         "project_id": run.project_id,
@@ -30,6 +37,11 @@ def _payload(run) -> dict:
         "session_id": run.session_id,
         "verdict": run.verdict,
         "verdict_reason": run.verdict_reason,
+        "prompt": snapshot.get("prompt"),
+        "turn_index": snapshot.get("turn_index"),
+        "conversation_group": snapshot.get("conversation_group"),
+        "answer": getattr(run, "answer", None),
+        "target_engine": getattr(run, "target_engine", None),
     }
 
 

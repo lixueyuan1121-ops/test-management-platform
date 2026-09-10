@@ -112,13 +112,11 @@
               :disabled="!pid"
               @click="exportDialogVisible = true"
             >导出到飞书</el-button>
-            <el-badge :value="multicaPending" :hidden="!multicaPending" :max="99" type="danger">
               <el-button
                 size="small" type="warning" :icon="Promotion" :loading="pushingMultica"
-                :disabled="!pid || !abnormalCount"
+                :disabled="!pid || !selectedRunIds.length"
                 @click="doPushMultica"
-              >推送异常到 multica</el-button>
-            </el-badge>
+              >推送到 Multica（{{ selectedRunIds.length }}）</el-button>
           </div>
         </div>
       </template>
@@ -126,15 +124,28 @@
       <el-empty v-if="!groupedRows.length" :description="loading ? '加载中…' : '暂无测评执行记录'" :image-size="70" />
 
       <el-table v-else :data="groupedRows" v-loading="loading" size="small" border stripe row-key="run_id"
-        :tree-props="{ children: 'children' }" :expand-row-keys="expanded" @expand-change="onExpand">
+        :tree-props="{ children: '_unusedChildren' }" :expand-row-keys="expanded" @expand-change="onExpand">
+        <el-table-column width="42">
+          <template #header><el-checkbox aria-label="全选当前结果" :model-value="allPushSelected" :indeterminate="somePushSelected && !allPushSelected" :disabled="pushingMultica || !selectableRuns.length" @change="checked => selectPushRuns(selectableRuns, checked)" /></template>
+          <template #default="{ row }"><el-checkbox :aria-label="`选择 ${queryTitle(row)}`" :model-value="pushChecked(row)" :indeterminate="pushPartial(row)" :disabled="pushingMultica || !pushLeaves(row).length" @change="checked => selectPushRuns(pushLeaves(row), checked)" /></template>
+        </el-table-column>
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="verdict-detail">
               <div v-if="row.isGroup" class="no-dims">
                 <el-text type="info">
                   这是一次 {{ row.children.length }} 轮的多轮会话（批次 {{ row.batch_id || '—' }}），各轮在同一对话内连续发送。
-                  各轮明细：{{ groupTurnSummary(row) }}。左侧另一个小箭头可展开逐轮行查看判定与评分。
+                  各轮明细：{{ groupTurnSummary(row) }}。
                 </el-text>
+                <el-table :data="row.children" row-key="run_id" border size="small">
+                  <el-table-column width="42"><template #default="{ row: turn }"><el-checkbox :aria-label="`选择第${(turn.payload?.turn_index ?? 0) + 1}轮`" :model-value="selectedRunIds.includes(turn.run_id)" :disabled="pushingMultica || !!turn.pushed_multica" @change="checked => selectPushRuns([turn], checked)" /></template></el-table-column>
+                  <el-table-column label="轮次" width="65"><template #default="{ row: turn }">{{ (turn.payload?.turn_index ?? 0) + 1 }}</template></el-table-column>
+                  <el-table-column prop="run_id" label="执行ID" width="80" />
+                  <el-table-column label="提问" min-width="200"><template #default="{ row: turn }"><div style="white-space: pre-wrap; overflow-wrap: anywhere">{{ turn.payload?.prompt || queryTitle(turn) }}</div></template></el-table-column>
+                  <el-table-column label="回答" min-width="240"><template #default="{ row: turn }"><div style="white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto">{{ turn.answer || turn.reason || '暂无回答' }}</div></template></el-table-column>
+                  <el-table-column label="判定" min-width="150"><template #default="{ row: turn }">{{ turn.verdict || turn.status }}<div>{{ turn.verdict_reason || '—' }}</div></template></el-table-column>
+                  <el-table-column label="Multica" width="90"><template #default="{ row: turn }">{{ turn.pushed_multica ? '已推送' : '未推送' }}</template></el-table-column>
+                </el-table>
               </div>
               <div v-else-if="row.status === 'failed'" class="no-dims">
                 <el-text type="danger">执行失败：{{ row.reason || '（执行机未回写失败原因）' }}</el-text>
@@ -193,6 +204,7 @@
             </template>
             <template v-else>
               <el-tag v-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>{{ queryTitle(row) }}
+              <el-tag v-if="row.pushed_multica" size="small" type="success" effect="plain">Multica 已推送</el-tag>
             </template>
           </template>
         </el-table-column>
@@ -409,6 +421,19 @@ const engineFilter = ref(null)
 const batchFilter = ref(null)
 const batchOptions = computed(() => [...trend.value].reverse())
 const expanded = ref([])
+const selectedRunIds = ref([])
+const pushLeaves = row => (row.isGroup ? row.children : [row]).filter(r => !r.pushed_multica)
+const selectableRuns = computed(() => groupedRows.value.flatMap(pushLeaves))
+const allPushSelected = computed(() => selectableRuns.value.length > 0 && selectableRuns.value.every(r => selectedRunIds.value.includes(r.run_id)))
+const somePushSelected = computed(() => selectableRuns.value.some(r => selectedRunIds.value.includes(r.run_id)))
+const pushChecked = row => pushLeaves(row).length > 0 && pushLeaves(row).every(r => selectedRunIds.value.includes(r.run_id))
+const pushPartial = row => !pushChecked(row) && pushLeaves(row).some(r => selectedRunIds.value.includes(r.run_id))
+function selectPushRuns(runs, checked) {
+  const ids = new Set(runs.map(r => r.run_id))
+  selectedRunIds.value = checked
+    ? [...new Set([...selectedRunIds.value, ...ids])]
+    : selectedRunIds.value.filter(id => !ids.has(id))
+}
 const judgingIds = ref(new Set())
 const batchJudging = ref(false)
 const batchProgress = ref('')   // 批量判定进度文案「判定中 done/total」
@@ -545,6 +570,7 @@ async function onProjectChange() {
   verdictFilter.value = null
   batchFilter.value = null
   expanded.value = []
+  selectedRunIds.value = []
   if (!pid.value) { rows.value = []; multicaPending.value = 0; return }
   setLastProjectId(pid.value)
   await load()
@@ -558,6 +584,7 @@ async function load() {
   loading.value = true
   try {
     rows.value = await listEvalRuns(pid.value, batchFilter.value || undefined)
+    selectedRunIds.value = selectedRunIds.value.filter(id => rows.value.some(r => r.run_id === id && !r.pushed_multica))
     refreshMulticaPending()
   } finally { loading.value = false }
 }
@@ -637,12 +664,17 @@ async function doExportFeishu() {
   finally { exporting.value = false }
 }
 
-// 推送异常会话到 multica（后端只推 is_abnormal 且未 pushed 的，防重推）；完成后刷新列表 + 待推数。
+// 仅推送选中的真实 run,成功项刷新后移出勾选,失败项保留以便重试。
 async function doPushMultica() {
+  if (!selectedRunIds.value.length || pushingMultica.value) return
+  if (selectedRunIds.value.length > 200) { ElMessage.warning('单次最多推送200条，请减少勾选'); return }
   pushingMultica.value = true
   try {
-    const res = await pushEvalMultica({ project_id: pid.value })
-    ElMessage.success(`推送 ${res.pushed}/${res.candidates} 条异常到 multica`)
+    const res = await pushEvalMultica({ project_id: pid.value, run_ids: [...selectedRunIds.value] })
+    const failed = (res.results || []).filter(r => r.error || r.skipped)
+    const message = `推送成功 ${res.pushed}/${res.candidates} 条` + (failed.length ? `；${failed.length} 条未推送：${failed[0].error || failed[0].skipped}` : '')
+    if (failed.length || !res.pushed) ElMessage.warning(message)
+    else ElMessage.success(message)
     await load()
   } catch { /* http 拦截器已提示 */ }
   finally { pushingMultica.value = false }

@@ -133,6 +133,8 @@ def _to_out(r: EvalRun) -> dict:
         "review_mark": r.review_mark,
         "review_note": r.review_note,
         "is_abnormal": bool(r.is_abnormal),
+        "pushed_multica": bool(r.pushed_multica),
+        "multica_ref": r.multica_ref,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
