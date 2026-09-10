@@ -329,6 +329,7 @@ class DesktopPool {
 
     // 导航后重新 resolve 主 page + 等对话输入框就绪 + 重挂 wsTrace
     await this._sleep(2000);
+    if (this._wsTrace?.dispose) this._wsTrace.dispose();
     this._wsTrace = null;      // 允许重挂(挂在新导航的 page 上)
     this._wsReloaded = false;  // 允许 _resolveMainPage 对新页面再 reload 一次触发 WS 重连(切设备后同样需要)
     this.mainPage = await this._resolveMainPage(this.readyTimeout);

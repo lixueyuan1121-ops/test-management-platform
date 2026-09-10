@@ -236,21 +236,59 @@ function handleFrame(state, frame) {
 // 挂到 page:监听 framereceived(收到的服务端帧即对话数据)。返回 collector。
 function attachWsTrace(page) {
   const state = newState();
+  const sockets = new Map();
+  const newDiagnostics = () => ({ frames: 0, binary_frames: 0, parse_errors: 0, ignored_frames: 0, events: {}, streams: {} });
+  let diagnostics = newDiagnostics();
+  const count = (map, key) => {
+    const label = String(key || '(missing)').slice(0, 80);
+    // Only record bounded protocol labels, never message bodies or socket URLs.
+    const bucket = Object.hasOwn(map, label) || Object.keys(map).length < 30 ? label : '(other)';
+    Object.defineProperty(map, bucket, { value: (Object.hasOwn(map, bucket) ? map[bucket] : 0) + 1, writable: true, enumerable: true, configurable: true });
+  };
   const onWs = (ws) => {
     state.wsConnected = true;   // 至少挂上了一个 WS(区分"WS没挂上"vs"挂上了但本次无对话活动")
-    ws.on('framereceived', (ev) => {
+    const onFrame = (ev) => {
+      diagnostics.frames++;
       try {
-        const payloadStr = typeof ev === 'string' ? ev : (ev && ev.payload);
-        if (!payloadStr || typeof payloadStr !== 'string') return;
-        if (payloadStr[0] !== '{') return; // 非 JSON 文本帧(如心跳)跳过
-        handleFrame(state, JSON.parse(payloadStr));
-      } catch (_) { /* 单帧解析失败不影响整体 */ }
-    });
+        let payloadStr = typeof ev === 'string' ? ev : (ev && ev.payload);
+        if (Buffer.isBuffer(payloadStr)) {
+          diagnostics.binary_frames++;
+          payloadStr = payloadStr.toString('utf8');
+        }
+        if (typeof payloadStr !== 'string' || !payloadStr.trimStart().startsWith('{')) {
+          diagnostics.ignored_frames++;
+          return;
+        }
+        const frame = JSON.parse(payloadStr);
+        if (frame.type === 'event') {
+          count(diagnostics.events, frame.event);
+          if (frame.event === 'agent') count(diagnostics.streams, _unwrapPanel(frame.payload || {})?.stream);
+        }
+        handleFrame(state, frame);
+      } catch (_) { diagnostics.parse_errors++; }
+    };
+    const onClose = () => { sockets.delete(ws); state.wsConnected = sockets.size > 0; };
+    sockets.set(ws, { onFrame, onClose });
+    ws.on('framereceived', onFrame);
+    ws.on('close', onClose);
   };
   try { page.on('websocket', onWs); } catch (_) {}
   return {
     _state: state,
-    reset() { const s = newState(); Object.assign(state, s); state.toolsById = s.toolsById; state.toolOrder = s.toolOrder; state.answerSegments = s.answerSegments; state.artifacts = s.artifacts; },
+    reset() {
+      Object.assign(state, newState());
+      state.wsConnected = sockets.size > 0;
+      diagnostics = newDiagnostics();
+    },
+    dispose() {
+      page.off('websocket', onWs);
+      for (const [ws, handlers] of sockets) {
+        ws.off('framereceived', handlers.onFrame);
+        ws.off('close', handlers.onClose);
+      }
+      sockets.clear();
+      state.wsConnected = false;
+    },
     buildTrace(runId) {
       const tool_calls = state.toolOrder.map(id => {
         const e = state.toolsById.get(id);
@@ -269,7 +307,8 @@ function attachWsTrace(page) {
       if (!thinking.trim() && inlineThink) thinking = inlineThink;
       return { session_id: state.sessionId, run_id: runId || state.runId,
                thinking, tool_calls, artifacts: state.artifacts,
-               answer, ws_captured: state.sawAny, ws_connected: state.wsConnected };
+               answer, ws_captured: state.sawAny, ws_connected: state.wsConnected,
+               capture_diagnostics: JSON.parse(JSON.stringify(diagnostics)) };
     },
   };
 }

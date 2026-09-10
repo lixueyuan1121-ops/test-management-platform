@@ -920,6 +920,9 @@ program
       // 多轮同一对话逐轮隔离靠此 reset:session_id 每帧都带,reset 后下一轮仍能复得同一 session_id。
       const reportRun = async (runId, result, ws) => {
         const trace = ws ? ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
+        if (!trace.thinking && !trace.tool_calls?.length) {
+          logger.warn(`[trace] run=${runId} 缺过程记录: connected=${trace.ws_connected ?? false}, captured=${trace.ws_captured}, diagnostics=${JSON.stringify(trace.capture_diagnostics || {})}`);
+        }
         if (!String(trace.answer || '').trim() && result.answer) {
           trace.answer = result.answer;
           trace.answer_source = 'runner_dom';
