@@ -58,9 +58,9 @@ def _dev(rid, platform="web", seen_ago_sec=None, eval_ago=None):
     return d
 
 
-def _run(runner, status_, case_id=None, batch="b"):
+def _run(runner, status_, case_id=None, batch="b", auto_reassign=True):
     r = ExecRun(project_id=100, test_case_id=case_id, runner=runner, payload="{}",
-                status=status_, batch_id=batch)
+                status=status_, batch_id=batch, auto_reassign=auto_reassign)
     _s.add(r)
     _s.commit()
     return r
@@ -134,6 +134,7 @@ def test_reassign():
     # 纯离线设备 mac-off(无 running):2 条 pending → 应改派
     p1 = _run("mac-off", ExecStatus.pending)
     p2 = _run("mac-off", ExecStatus.pending)
+    pinned = _run("mac-off", ExecStatus.pending, auto_reassign=False)
     # mac-off2:心跳超窗但挂着 running → 按「running 视为在线」口径不算离线(执行期心跳滞后),
     # 其 pending 不改派(保守:设备可能正干活,等 reaper 收口 running 后下轮再判)
     _dev("mac-off2", "web", seen_ago_sec=9999)
@@ -149,6 +150,7 @@ def test_reassign():
     moved = reassign_stranded_runs(_s)
     assert moved == 2, f"应改派 2 条,实际 {moved}"
     _s.expire_all()
+    assert _s.get(ExecRun, pinned.id).runner == "mac-off", "手动指定机器的任务不得自动改派"
     assert _s.get(ExecRun, p1.id).runner in ("mac-01", "mac-02")
     assert _s.get(ExecRun, p2.id).runner in ("mac-01", "mac-02")
     assert "[自动改派]" in (_s.get(ExecRun, p1.id).reason or "")

@@ -451,8 +451,16 @@ async function tick() {
   log(`拉到 ${pending.length} 条待执行`);
   const batch = [];   // 本批各条结果(供结束语汇总)
   for (const item of pending) {
+    let claimed = false;
+    let heartbeatTimer;
     try {
       await claim(item.run_id);
+      claimed = true;
+      const heartbeat = () => api("POST", `/api/exec-queue/${item.run_id}/heartbeat?runner=${encodeURIComponent(RUNNER_ID)}`)
+        .catch(e => log(`run_id=${item.run_id} 心跳失败: ${e.message}`));
+      await heartbeat();
+      heartbeatTimer = setInterval(heartbeat, 60000);
+      heartbeatTimer.unref();
       log(`执行 run_id=${item.run_id} kind=${item.kind} case=${item.case_id}`);
 
       let result;
@@ -544,8 +552,12 @@ async function tick() {
     } catch (e) {
       log(`run_id=${item.run_id} 执行异常:`, e.message);
       // runner 侧异常(连接/客户端/网络类)属环境阻塞,归 selector(不计功能失败率)。
-      try { await report(item.run_id, { verdict: "fail", fail_kind: "selector", reason: `runner异常: ${e.message}` }); } catch {}
+      if (claimed) {
+        try { await report(item.run_id, { verdict: "fail", fail_kind: "selector", reason: `runner异常: ${e.message}` }); } catch {}
+      }
       batch.push({ verdict: "fail", fail_kind: "selector" });
+    } finally {
+      clearInterval(heartbeatTimer);
     }
   }
   // 本批结束语:一批跑完给个明确收尾状态(此前静默结束,无人值守时看不出跑没跑完)。

@@ -17,6 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
@@ -97,6 +98,7 @@ def _maybe_auto_retry(db: Session, r: ExecRun) -> bool:
         project_id=r.project_id,
         batch_id=r.batch_id,
         runner=r.runner,
+        auto_reassign=r.auto_reassign,
         kind=r.kind,
         status=ExecStatus.pending,
         payload=r.payload,
@@ -537,6 +539,7 @@ def enqueue(
             project_id=it.project_id,
             batch_id=batch_id,
             runner=runner,
+            auto_reassign=body.runner == "auto",
             kind=_kind_of(tc),
             status=ExecStatus.pending,
             payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
@@ -598,6 +601,7 @@ def enqueue_cases(
             project_id=tc.project_id,
             batch_id=batch_id,
             runner=resolved[cid],
+            auto_reassign=body.runner == "auto",
             kind=_kind_of(tc),
             status=ExecStatus.pending,
             payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
@@ -698,10 +702,39 @@ def claim(
     # （设备 token 下 runner 已锁定为设备 runner_id;共享 token 下靠 query runner 区分）。
     if r.runner != runner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
-    r.status = ExecStatus.running
+    changed = db.query(ExecRun).filter(
+        ExecRun.id == run_id, ExecRun.runner == runner, ExecRun.status == ExecStatus.pending,
+    ).update({ExecRun.status: ExecStatus.running, ExecRun.started_at: func.now(),
+              ExecRun.runner_device_id: ctx.device.id if ctx.device else None}, synchronize_session=False)
+    if changed != 1:
+        db.rollback()
+        raise HTTPException(409, detail="该执行项已被认领或改派")
     db.commit()
     db.refresh(r)
     return ok(_to_out(r))
+
+
+@router.post("/{run_id}/heartbeat")
+def heartbeat(run_id: int, runner: str = Query(...), db: Session = Depends(get_db),
+              ctx: RunnerCtx = Depends(require_runner_ctx)):
+    if ctx.device is not None:
+        runner = ctx.device.runner_id
+    q = db.query(ExecRun).filter(ExecRun.id == run_id, ExecRun.runner == runner,
+                                 ExecRun.status == ExecStatus.running)
+    if ctx.device:
+        q = q.filter(ExecRun.runner_device_id == ctx.device.id)
+    changed = q.update({ExecRun.heartbeat_at: func.now()}, synchronize_session=False)
+    if not changed:
+        db.rollback()
+        raise HTTPException(409, detail="执行已结束或不属于此设备")
+    if ctx.device:
+        ctx.device.last_seen_at = datetime.utcnow()
+        ctx.device.last_exec_at = datetime.utcnow()
+    db.commit()
+    if not ctx.device:
+        from app.services.dispatcher import touch_runner_heartbeat
+        touch_runner_heartbeat(db, runner, kind="exec")
+    return ok({"alive": True})
 
 
 # ---- ④ runner 回写结果，并同步验收清单项状态 ----
@@ -715,12 +748,17 @@ def report(
 ):
     if ctx.device is not None:
         runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
-    r = db.get(ExecRun, run_id)
+    r = db.query(ExecRun).filter(ExecRun.id == run_id).with_for_update().populate_existing().first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     # 归属校验：只能回写派给自己的执行项（见 claim 说明）。
     if r.runner != runner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+
+    if r.started_at is not None and r.status != ExecStatus.running:
+        raise HTTPException(409, detail="执行已结束,拒绝过期回填")
+    if r.runner_device_id is not None and (not ctx.device or ctx.device.id != r.runner_device_id):
+        raise HTTPException(403, detail="实际认领设备不匹配")
 
     is_pass = body.verdict == "pass"
     # L2 失败分类:fail_kind=selector(选择器/环境阻塞)记 blocked,不计入功能失败率;
@@ -732,6 +770,7 @@ def report(
     r.reason = body.reason
     r.evidence_url = body.evidence_url
     r.duration_ms = body.duration_ms
+    r.finished_at = func.now()
     if body.report is not None:
         r.report = json.dumps(body.report, ensure_ascii=False)   # 逐步执行报告(含截图 URL)
     # flaky 判定(Azure DevOps 同语义):重试行通过 = 首试失败重跑即过 → 抖动,非稳定通过。

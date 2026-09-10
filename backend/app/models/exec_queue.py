@@ -45,6 +45,11 @@ class ExecRun(Base):
         ForeignKey("project.id", ondelete="CASCADE"), index=True
     )
     runner: Mapped[str] = mapped_column(String(64), default="mac-01", server_default="mac-01", index=True)
+    auto_reassign: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    runner_device_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     kind: Mapped[ExecKind] = mapped_column(
         Enum(ExecKind, length=8), default=ExecKind.gui, server_default="gui"
     )

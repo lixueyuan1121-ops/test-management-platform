@@ -70,6 +70,8 @@ class EvalRun(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    runner_device_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     device_kind: Mapped[EvalDeviceKind] = mapped_column(
         Enum(EvalDeviceKind, length=8), default=EvalDeviceKind.web, server_default="web"
     )

@@ -19,6 +19,7 @@
     </div>
 
     <!-- ② KPI 指标条 -->
+    <el-alert v-if="refreshFailed" title="刷新失败，当前显示的是上次获取的数据" type="warning" :closable="false" show-icon />
     <div class="kpi-wall">
       <div class="kpi">
         <div class="kpi-num">{{ ov.total_devices }}</div>
@@ -89,6 +90,8 @@
           </div>
 
           <!-- 执行中明细：当前正在跑的用例（非批次/非历史），最多展示 3 条，超出汇总 -->
+          <div v-if="d.identity_conflict" class="data-warning">设备标识重名，无法确认归属的历史记录未计入</div>
+          <div v-if="d.stale_runs" class="data-warning">{{ d.stale_runs }} 项执行状态待确认（长时间无活动）</div>
           <div v-if="d.active_runs.length" class="active">
             <div v-for="r in d.active_runs.slice(0, 3)" :key="(r.kind || 'func') + r.run_id" class="run">
               <span class="run-pip" :class="{ 'pip-eval': r.kind === 'eval' }"></span>
@@ -97,11 +100,11 @@
               <span class="run-time" :class="{ stale: isStale(r) }"
                 :title="isStale(r) ? '已超 6 小时(单条执行上限 5h)，疑似执行中断未回填' : ''">{{ fmtElapsed(r) }}</span>
             </div>
-            <div v-if="d.active_runs.length > 3" class="run-more">
-              +{{ d.active_runs.length - 3 }} 项并发执行中
+            <div v-if="d.run_counts.running > 3" class="run-more">
+              +{{ d.run_counts.running - 3 }} 项并发执行中
             </div>
           </div>
-          <div v-else class="idle">{{ d.online ? '空闲待命' : '离线' }}</div>
+          <div v-else class="idle">{{ d.stale_runs ? '执行状态待确认' : (d.online ? '空闲待命' : '离线') }}</div>
         </div>
       </div>
     </div>
@@ -117,6 +120,8 @@ const ONLINE_STATE = { online_devices: 0, total_devices: 0, running_devices: 0, 
 const ov = ref({ ...ONLINE_STATE })
 const loading = ref(true)
 const lastAt = ref('—')
+const refreshFailed = ref(false)
+let fetching = false
 
 // 执行类型标识:后端 active_runs[].kind → 展示文案(卡片头全称/明细行短标)。
 // 老数据无 kind 按 func 兜底;未知新类型直接显示原文,后端扩展类型时前端无需先行发版。
@@ -145,13 +150,17 @@ const todayDone = computed(() =>
   ov.value.devices.reduce((s, d) => s + d.today.passed + d.today.failed, 0))
 
 async function load() {
+  if (fetching) return
+  fetching = true
   try {
     ov.value = await getDeviceOverview()
+    refreshFailed.value = false
     fetchBase.value = Date.now()
     lastAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   } catch {
-    // 轮询失败静默：保留上次数据，不打断看板（下次 tick 再试）
+    refreshFailed.value = true
   } finally {
+    fetching = false
     loading.value = false
   }
 }
@@ -203,6 +212,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.data-warning { color: #a65c00; font-size: 12px; line-height: 1.5; margin-top: 8px; overflow-wrap: anywhere; }
+.board { container-type: inline-size; }
+@container (max-width: 600px) {
+  .board .hero { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .board .hero-r { text-align: left; }
+  .board .kpi-wall { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .board .grid { grid-template-columns: minmax(0, 1fr); }
+  .board .card-hd { flex-wrap: wrap; }
+  .board .counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* 浅色主题：白底 + 浅灰卡片浮起；hero 保留深色科技条作顶部锚点（对齐 Dashboard 浅底+深色hero 的模式） */
 .board {
   /* 负 margin 抵消 MainLayout .main 的 20px 灰底 padding，让看板浅底铺满，与侧栏衔接处自然过渡 */

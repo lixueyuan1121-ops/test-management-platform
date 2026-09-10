@@ -1,14 +1,18 @@
 """验证 online_eval_runners 按被测引擎(eval_engine)过滤在线机。构造后 rollback,不落库。"""
 from datetime import datetime
-from app.db.session import SessionLocal
+from app.db.session import Base
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from app.models.runner_device import RunnerDevice
 from app.models.user import User
 from app.services.dispatcher import online_eval_runners
 
-db = SessionLocal()
-uid = db.query(User.id).first()
-assert uid, "库里需有至少一个 user(种子管理员)才能建 runner_device"
-uid = uid[0]
+engine = create_engine("sqlite://")
+Base.metadata.create_all(engine)
+db = sessionmaker(bind=engine)()
+db.add(User(id=1, username="test", name="Test", password_hash="x"))
+db.flush()
+uid = 1
 now = datetime.utcnow()
 d1 = RunnerDevice(owner_id=uid, runner_id="test-nami-01", name="nami机", token="tk-nami-test",
                   eval_engine="namiwork", last_eval_at=now, last_seen_at=now)
@@ -24,4 +28,4 @@ try:
     assert "test-wb-01" in alle and "test-nami-01" in alle, f"无参应全返回: {alle}"
     print("PASS: online_eval_runners 按 engine 过滤")
 finally:
-    db.rollback(); db.close()
+    db.rollback(); db.close(); engine.dispose()

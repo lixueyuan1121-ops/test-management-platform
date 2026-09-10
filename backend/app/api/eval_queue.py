@@ -280,6 +280,7 @@ def claim(run_id: int, runner: str = Query(...), db: Session = Depends(get_db),
         EvalRun.runner.in_({x.runner for x in group}),
     ).update({EvalRun.status: EvalRunStatus.running, EvalRun.runner: runner,
               EvalRun.started_at: func.now(), EvalRun.heartbeat_at: func.now(),
+              EvalRun.runner_device_id: ctx.device.id if ctx.device else None,
               EvalRun.claim_token: token}, synchronize_session=False)
     if changed != len(ids):
         db.rollback()
@@ -338,6 +339,18 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
     r.session_id = body.session_id
     r.reason = body.reason
     r.duration_ms = body.duration_ms
+    r.finished_at = func.now()
+    if r.claim_token:
+        remaining = db.query(EvalRun).filter(
+            EvalRun.claim_token == r.claim_token, EvalRun.status == EvalRunStatus.running,
+            EvalRun.id != r.id).all()
+        if remaining:
+            def turn_index(row):
+                try:
+                    return (int(json.loads(row.payload or "{}").get("turn_index") or 0), row.id)
+                except (ValueError, TypeError, AttributeError):
+                    return (0, row.id)
+            min(remaining, key=turn_index).started_at = func.now()
     db.commit(); db.refresh(r)
     # 一条龙钩子:该 run 达终态后,若所属测评任务开了 auto_pipeline 且本批全部执行完 → 后台自动
     # 判定+评价+通知(幂等门闩,非任务批次/未开开关/未跑完都直接返回,不影响回写主流程)。
@@ -403,6 +416,7 @@ def reset_run_for_retry(r: EvalRun) -> None:
     (历史按「执行批次」保留:每次执行任务=新 batch,旧批次 run 都留库;见 /eval-tasks/{id}/batches。)"""
     r.status = EvalRunStatus.pending
     r.started_at = None; r.heartbeat_at = None; r.claim_token = None
+    r.finished_at = None; r.runner_device_id = None
     r.reason = None
     r.session_id = None; r.share_link = None; r.artifact_share_link = None
     r.answer = None; r.trace = None; r.raw_message = None

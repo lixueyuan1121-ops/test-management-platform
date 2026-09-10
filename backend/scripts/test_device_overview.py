@@ -69,6 +69,7 @@ def _seed():
         # 不能用进程 utcnow(生产 MySQL 东八区时区≠UTC,会差 8h)。仅"非今日"用例显式回拨日期。
         if created_at is not None:
             r.created_at = created_at
+            r.updated_at = created_at
         return r
 
     # 设备 A: 2 running + 1 pending + 今日 1 passed(全量)+ 1 failed(今日)

@@ -105,11 +105,13 @@ def register_device(body: DeviceIn, db: Session = Depends(get_db), user: User = 
     """注册一台我的设备,生成专属 token(明文仅此次返回)。"""
     dup = (
         db.query(RunnerDevice)
-        .filter(RunnerDevice.owner_id == user.id, RunnerDevice.runner_id == body.runner_id)
+        .filter(RunnerDevice.runner_id == body.runner_id.strip())
         .first()
     )
     if dup:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"你已登记过 runner_id={body.runner_id} 的设备")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="该 runner_id 已被登记,请使用全平台唯一的设备标识")
+    if not body.runner_id.strip():
+        raise HTTPException(400, detail="设备标识不能为空")
     device = RunnerDevice(
         owner_id=user.id,
         runner_id=body.runner_id.strip(),
@@ -167,7 +169,7 @@ _COUNT_STATUSES = ("running", "pending", "passed", "failed", "blocked")
 # eval_run 状态并入看板计数的归一映射:running/pending 原样(设备忙闲口径);done/judged 归 passed、
 # failed 归 failed(取"执行成败",判定结论不在看板范畴)。judging 是服务端大模型判定、不占设备,不计。
 _EVAL_STATUS_MAP = {"pending": "pending", "running": "running",
-                    "done": "passed", "judged": "passed", "failed": "failed"}
+                    "done": "passed", "judging": "passed", "judged": "passed", "failed": "failed"}
 
 
 def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
@@ -214,18 +216,14 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
     明细每条带 kind 类型标识(func/eval,新执行类型在收集处追加即可扩展)。
     前端定时轮询本端点渲染看板(无任何写操作)。
 
-    关联口径:exec_run/eval_run 均按 `runner`(字符串,= runner_id)归拢——沿用现有下发/拉取的
-    runner_id 字符串匹配口径。若两名成员登记了同名 runner_id,其执行计数会合并(既有数据
-    模型的固有限制,不在本只读看板内区分)。
+    排队按当前派遣归属,执行及结果优先按实际认领的设备 ID 归属。
+    旧记录只有 runner 字符串时仅在设备标识唯一时归属,重名数据不猜测。
     """
     now = datetime.now()
     utc_now = datetime.utcnow()   # 在线判定专用：对齐 last_seen_at 的 utcnow 写入（避免时区偏移误判离线）
-    # created_at 由 DB func.now() 生成——生产 MySQL(东八区)非 UTC。凡与 created_at 比较(elapsed 相减、
-    # today 当日过滤)都必须用【DB 时钟】为基准,否则用进程 utcnow/now 会整体差 8h(elapsed 恒 -8h、
-    # today 跨日错位)。与 scheduler._db_now / reaper 同源治法。online 判定仍用 utcnow(对齐 last_seen)。
+    # 执行时间字段使用数据库时钟;设备心跳 last_seen_at 则使用应用 UTC 时钟。
     from app.services.scheduler import _db_now
     db_now = _db_now(db)
-    db_today = db_now.date()
     devices = db.query(RunnerDevice).order_by(RunnerDevice.id).all()
     # owner 姓名批量取(避免逐设备查 user)
     owner_ids = {d.owner_id for d in devices}
@@ -233,39 +231,42 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         db.query(User.id, User.name).filter(User.id.in_(owner_ids)).all()
     ) if owner_ids else {}
 
-    # 全量计数:group by (runner, status)——功能测试 + 对话测评(状态归一后)累加
-    counts_by_runner: dict[str, dict] = {}
-    for runner, st, cnt in (
-        db.query(ExecRun.runner, ExecRun.status, func.count(ExecRun.id))
-        .group_by(ExecRun.runner, ExecRun.status).all()
-    ):
-        counts_by_runner.setdefault(runner, {})[getattr(st, "value", st)] = cnt
-    for runner, st, cnt in (
-        db.query(EvalRun.runner, EvalRun.status, func.count(EvalRun.id))
-        .group_by(EvalRun.runner, EvalRun.status).all()
-    ):
-        key = _EVAL_STATUS_MAP.get(getattr(st, "value", st))
-        if key:
-            m = counts_by_runner.setdefault(runner, {})
-            m[key] = m.get(key, 0) + cnt
+    by_name = {}
+    for d in devices:
+        by_name.setdefault(d.runner_id, []).append(d.id)
+    device_ids = {d.id for d in devices}
 
-    # 今日计数:同上但限定 created_at 为当天
-    today_by_runner: dict[str, dict] = {}
-    for runner, st, cnt in (
-        db.query(ExecRun.runner, ExecRun.status, func.count(ExecRun.id))
-        .filter(func.date(ExecRun.created_at) == db_today)
-        .group_by(ExecRun.runner, ExecRun.status).all()
-    ):
-        today_by_runner.setdefault(runner, {})[getattr(st, "value", st)] = cnt
-    for runner, st, cnt in (
-        db.query(EvalRun.runner, EvalRun.status, func.count(EvalRun.id))
-        .filter(func.date(EvalRun.created_at) == db_today)
-        .group_by(EvalRun.runner, EvalRun.status).all()
-    ):
-        key = _EVAL_STATUS_MAP.get(getattr(st, "value", st))
-        if key:
-            m = today_by_runner.setdefault(runner, {})
-            m[key] = m.get(key, 0) + cnt
+    def device_of(runner, device_id, st):
+        # Pending belongs to the current assignee, executed work to the actual
+        # claimant. Ambiguous legacy names must not be counted on both devices.
+        if st != "pending" and device_id is not None:
+            return device_id if device_id in device_ids else None
+        matches = by_name.get(runner, [])
+        return matches[0] if len(matches) == 1 else None
+
+    def increment(dest, device_id, st, count=1):
+        if device_id is not None and st in _COUNT_STATUSES:
+            values = dest.setdefault(device_id, {})
+            values[st] = values.get(st, 0) + count
+
+    counts_by_device, today_by_device = {}, {}
+    day_start = db_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    for model in (ExecRun, EvalRun):
+        for is_today, dest in ((False, counts_by_device), (True, today_by_device)):
+            q = db.query(model.runner, model.runner_device_id, model.status, func.count(model.id))
+            if is_today:
+                completed = func.coalesce(model.finished_at, model.updated_at)
+                q = q.filter(completed >= day_start, completed < day_start + timedelta(days=1))
+            for runner, device_id, st, count in q.group_by(model.runner, model.runner_device_id, model.status).all():
+                raw = getattr(st, "value", st)
+                key = _EVAL_STATUS_MAP.get(raw) if model is EvalRun else raw
+                if not is_today or key in ("passed", "failed", "blocked"):
+                    increment(dest, device_of(runner, device_id, raw), key, count)
+
+    from app.services.run_activity import live_run_filter
+    live_exec = {rid for rid, in db.query(ExecRun.id).filter(live_run_filter(ExecRun, db_now)).all()}
+    live_eval = {rid for rid, in db.query(EvalRun.id).filter(live_run_filter(EvalRun, db_now)).all()}
+    stale_by_device = {}
 
     # 执行中明细:功能测试(kind=func) + 对话测评(kind=eval)合并;新执行类型在此追加收集即可扩展。
     # 统一按开始时间排序后再按 runner 截断(ACTIVE_RUNS_LIMIT),并发混跑时两类不偏科。
@@ -278,17 +279,26 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         .order_by(ExecRun.created_at).all()
     )
     for r, proj_name, tc_title in running_rows:
-        # 耗时/开始时间必须用 UTC 对齐:created_at 由数据库 func.now() 生成——SQLite 的
-        # CURRENT_TIMESTAMP 与 docker MySQL 默认时区都是 UTC;此前用本地 now 相减、且
-        # started_at 不带 Z 让前端按本地时区解析,CST 下执行时长凭空多 8 小时(同 last_seen_at 的坑)。
-        elapsed = int((db_now - r.created_at).total_seconds() * 1000) if r.created_at else None
-        all_active.append((r.runner, {
+        did = device_of(r.runner, r.runner_device_id, "running")
+        if r.id not in live_exec:
+            increment(counts_by_device, did, "running", -1)
+            stale_by_device[did] = stale_by_device.get(did, 0) + 1
+            continue
+        start = r.started_at or r.updated_at
+        elapsed = max(0, int((db_now - start).total_seconds() * 1000)) if start else None
+        try:
+            payload = json.loads(r.payload or "{}")
+        except (ValueError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        all_active.append((did, {
             "run_id": r.id,
             "kind": "func",
-            "title": tc_title or "(无用例快照)",
+            "title": payload.get("title") or tc_title or "(无用例快照)",
             "project": r.project_id,          # 项目 id(测试契约)
             "project_name": proj_name,        # 项目名(前端展示用)
-            "started_at": (r.created_at.isoformat() + "Z") if r.created_at else None,
+            "started_at": (utc_now - timedelta(milliseconds=elapsed)).isoformat() + "Z" if elapsed is not None else None,
             "elapsed_ms": elapsed,
         }))
     eval_running_rows = (
@@ -297,25 +307,48 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
         .filter(EvalRun.status == EvalRunStatus.running)
         .order_by(EvalRun.created_at).all()
     )
+    def turn_order(item):
+        try:
+            return (int(json.loads(item[0].payload or "{}").get("turn_index") or 0), item[0].id)
+        except (ValueError, TypeError, AttributeError):
+            return (0, item[0].id)
+    eval_running_rows.sort(key=turn_order)
+    active_claims = set()
     for r, proj_name in eval_running_rows:
         try:
             payload = json.loads(r.payload) if r.payload else {}
         except (ValueError, TypeError):
             payload = {}
-        elapsed = int((db_now - r.created_at).total_seconds() * 1000) if r.created_at else None
-        all_active.append((r.runner, {
+        if not isinstance(payload, dict):
+            payload = {}
+        did = device_of(r.runner, r.runner_device_id, "running")
+        if r.id not in live_eval:
+            increment(counts_by_device, did, "running", -1)
+            stale_by_device[did] = stale_by_device.get(did, 0) + 1
+            continue
+        # Whole-group claims reserve future turns, but only the first unfinished
+        # turn is executing; the remaining turns are waiting on this device.
+        if r.claim_token and r.claim_token in active_claims:
+            increment(counts_by_device, did, "running", -1)
+            increment(counts_by_device, did, "pending")
+            continue
+        if r.claim_token:
+            active_claims.add(r.claim_token)
+        start = r.started_at or r.updated_at
+        elapsed = max(0, int((db_now - start).total_seconds() * 1000)) if start else None
+        all_active.append((did, {
             "run_id": r.id,
             "kind": "eval",
             "title": payload.get("title") or payload.get("prompt") or f"测评 run#{r.id}",
             "project": r.project_id,
             "project_name": proj_name,
-            "started_at": (r.created_at.isoformat() + "Z") if r.created_at else None,
+            "started_at": (utc_now - timedelta(milliseconds=elapsed)).isoformat() + "Z" if elapsed is not None else None,
             "elapsed_ms": elapsed,
         }))
     all_active.sort(key=lambda t: t[1]["started_at"] or "")
-    active_by_runner: dict[str, list] = {}
-    for runner, item in all_active:
-        lst = active_by_runner.setdefault(runner, [])
+    active_by_device: dict[int, list] = {}
+    for did, item in all_active:
+        lst = active_by_device.setdefault(did, [])
         if len(lst) < ACTIVE_RUNS_LIMIT:
             lst.append(item)
 
@@ -323,14 +356,15 @@ def devices_overview(db: Session = Depends(get_db), _: User = Depends(get_curren
     online_cnt = 0
     running_cnt = 0
     # 运行时类型判定的 running 补偿集合:有 running exec/eval 的 runner_id(执行期不轮询、心跳滞后时兜底)
-    exec_running_ids = {r.runner for r, _, _ in running_rows}
-    eval_running_ids = {r.runner for r, _ in eval_running_rows}
     for d in devices:
-        counts = counts_by_runner.get(d.runner_id, {})
-        today = today_by_runner.get(d.runner_id, {})
-        active = active_by_runner.get(d.runner_id, [])
+        counts = counts_by_device.get(d.id, {})
+        today = today_by_device.get(d.id, {})
+        active = active_by_device.get(d.id, [])
         dev = _overview_device_out(d, owner_names.get(d.owner_id, ""), utc_now, counts, today, active,
-                                   exec_running_ids, eval_running_ids)
+                                   {d.runner_id} if any(r["kind"] == "func" for r in active) else set(),
+                                   {d.runner_id} if any(r["kind"] == "eval" for r in active) else set())
+        dev["stale_runs"] = stale_by_device.get(d.id, 0)
+        dev["identity_conflict"] = len(by_name[d.runner_id]) > 1
         if dev["online"]:
             online_cnt += 1
         if dev["run_counts"]["running"] > 0:

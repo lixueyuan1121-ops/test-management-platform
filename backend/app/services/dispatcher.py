@@ -23,15 +23,20 @@ def _exec_running_runners(db: Session) -> set[str]:
     """当前有 running 功能测试(exec_run)的 runner 集合。执行期设备不轮询队列,
     last_exec_at 会滞后,用 running 补偿:正在跑功能用例的机必然在跑功能 runner。"""
     return {r for (r,) in db.query(ExecRun.runner)
-            .filter(ExecRun.status == "running").distinct().all()}
+            .filter(_live_filter(db, ExecRun)).distinct().all()}
+
+
+def _live_filter(db, model):
+    from app.db.clock import db_now
+    from app.services.run_activity import live_run_filter
+    return live_run_filter(model, db_now(db))
 
 
 def _eval_running_runners(db: Session) -> set[str]:
     """当前有 running 对话测评(eval_run)的 runner 集合(补偿测评执行期心跳滞后)。"""
-    from app.core.enums import EvalRunStatus
     from app.models import EvalRun
     return {r for (r,) in db.query(EvalRun.runner)
-            .filter(EvalRun.status == EvalRunStatus.running).distinct().all()}
+            .filter(_live_filter(db, EvalRun)).distinct().all()}
 
 
 def current_kind(d: RunnerDevice, cutoff: datetime,
@@ -190,15 +195,16 @@ def pick_runner(db: Session, platform: str = "web") -> str | None:
 
 
 def reassign_stranded_runs(db: Session) -> int:
-    """把「派给离线设备的 pending」改派到同平台在线且负载最小的设备。返回改派条数。
+    """只把明确允许自动调度的 pending 改派到同平台在线设备。
 
     - 只动 pending(running 表示设备曾活着认领过,可能还会回写,不抢);
+    - 手动指定机器及无法确认原始调度意图的历史记录不改派;
     - 目标设备离线才改派(在线设备的 pending 它自己会拉,不折腾);
     - 无同平台在线设备 → 原地等待(设备上线自然消化,不盲目改派);
     - 改派 reason 打标留痕(不覆盖既有 reason——pending 本无 reason)。
     """
     pending_runners = [r for (r,) in db.query(ExecRun.runner)
-                       .filter(ExecRun.status == "pending").distinct().all()]
+                       .filter(ExecRun.status == "pending", ExecRun.auto_reassign.is_(True)).distinct().all()]
     if not pending_runners:
         return 0
     # 每台待判定 runner:查设备与在线态
@@ -216,7 +222,7 @@ def reassign_stranded_runs(db: Session) -> int:
         if not target or target == rid:
             continue   # 无可改派目标:原地等
         n = (db.query(ExecRun)
-             .filter(ExecRun.runner == rid, ExecRun.status == "pending")
+             .filter(ExecRun.runner == rid, ExecRun.status == "pending", ExecRun.auto_reassign.is_(True))
              .update({"runner": target,
                       "reason": f"[自动改派] 原设备 {rid} 离线,改派到 {target}"},
                      synchronize_session=False))

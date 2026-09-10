@@ -575,6 +575,22 @@ def ensure_eval_run_target_device() -> None:
             conn.execute(text("ALTER TABLE eval_run ADD COLUMN target_device VARCHAR(64) NULL"))
 
 
+def ensure_run_tracking_columns() -> None:
+    for table, fields in {
+        "exec_run": {"auto_reassign": "BOOLEAN NOT NULL DEFAULT 0",
+                     "runner_device_id": "INTEGER NULL", "started_at": "DATETIME NULL",
+                     "heartbeat_at": "DATETIME NULL", "finished_at": "DATETIME NULL"},
+        "eval_run": {"runner_device_id": "INTEGER NULL", "finished_at": "DATETIME NULL"},
+    }.items():
+        cols = _columns(table)
+        if not cols:
+            continue
+        for name, ddl in fields.items():
+            if name not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+
 def ensure_eval_run_scheduling_columns() -> None:
     cols = _columns("eval_run")
     if not cols:

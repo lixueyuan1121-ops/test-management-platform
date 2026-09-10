@@ -111,6 +111,7 @@ def reap_stale_eval_runs() -> None:
                 EvalRun.id == r.id, EvalRun.status == EvalRunStatus.running,
                 last_active < cutoff,
             ).update({EvalRun.status: EvalRunStatus.failed,
+                      EvalRun.finished_at: func.now(),
                       EvalRun.reason: "自动收口:执行超 6 小时无活动(执行机中断),标记失败"},
                      synchronize_session=False)
             if changed:
@@ -200,6 +201,7 @@ def reap_stale_exec_runs(session_factory=None) -> int:
     from datetime import timedelta
 
     from app.core.enums import ExecStatus
+    from sqlalchemy import func
     from app.db.session import SessionLocal
 
     sf = session_factory or SessionLocal
@@ -208,13 +210,18 @@ def reap_stale_exec_runs(session_factory=None) -> int:
     reaped = 0
     try:
         rows = (db.query(ExecRun)
-                .filter(ExecRun.status == ExecStatus.running, ExecRun.updated_at < cutoff)
+                .filter(ExecRun.status == ExecStatus.running,
+                        func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff)
                 .all())
         for r in rows:
-            r.status = ExecStatus.failed
-            r.fail_kind = "timeout"   # L2 细化:收口归因=执行超时(非 selector/business,不入真bug统计)
-            r.reason = "自动收口:执行超 2 小时未回填(执行机中断),标记失败"
-            reaped += 1
+            changed = db.query(ExecRun).filter(
+                ExecRun.id == r.id, ExecRun.status == ExecStatus.running,
+                func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff,
+            ).update({ExecRun.status: ExecStatus.failed, ExecRun.fail_kind: "timeout",
+                      ExecRun.finished_at: func.now(),
+                      ExecRun.reason: "自动收口:执行超 2 小时未回填(执行机中断),标记失败"},
+                     synchronize_session=False)
+            reaped += changed
         if rows:
             db.commit()
             logger.info("自动收口 %d 条超龄 running exec_run", reaped)
