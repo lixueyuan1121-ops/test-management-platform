@@ -1,18 +1,14 @@
 <template>
-  <div class="release-notes">
-    <div class="board">
-      <div class="board-head">
-        <div class="board-title">
-          <span class="kicker">// RELEASE DASHBOARD</span>
-          <span class="board-h1">发版记录</span>
-        </div>
-        <div class="board-tools">
+  <div class="release-notes functional-workspace">
+    <WorkspacePage title="发版记录">
+      <template #actions>
           <el-select v-model="pid" placeholder="全部项目" clearable size="small" style="width:200px" @change="onProjectChange">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
           <el-button v-if="isAdmin" type="primary" size="small" :disabled="!pid" @click="openCreate">登记发版</el-button>
-        </div>
-      </div>
+      </template>
+      <template #selection><el-tabs v-model="activeView"><el-tab-pane label="版本列表" name="list" /><el-tab-pane label="质量概览" name="overview" /></el-tabs></template>
+    <div v-show="activeView === 'overview'" class="board">
       <div class="stat-row">
         <div class="stat-card"><div class="stat-num">{{ stats.total_releases }}</div><div class="stat-label">发布版本总数</div></div>
         <div class="stat-card"><div class="stat-num">{{ stats.total_reqs }}</div><div class="stat-label">发布需求总数</div></div>
@@ -33,7 +29,7 @@
               <circle v-if="q.pass_rate != null" cx="22" cy="22" r="18" fill="none"
                       :stroke="rqRateColor(q.pass_rate)" stroke-width="4" stroke-linecap="round"
                       :stroke-dasharray="`${(q.pass_rate * 1.131).toFixed(1)} 113.1`" transform="rotate(-90 22 22)"/>
-              <text x="22" y="26" text-anchor="middle" fill="#fff" font-size="12"
+              <text x="22" y="26" text-anchor="middle" fill="currentColor" font-size="12"
                     font-family="'JetBrains Mono',monospace" font-weight="700">{{ q.pass_rate != null ? Math.round(q.pass_rate) : '--' }}</text>
             </svg>
             <div class="rq-rl">执行通过率
@@ -61,12 +57,10 @@
       </div>
     </div>
 
-    <el-card class="list-card">
-      <template #header>
+    <section v-show="activeView === 'list'" class="list-card">
         <div class="list-head">
           <span>版本列表<span v-if="!pid" class="dim"> · 请选择项目查看明细</span></span>
         </div>
-      </template>
       <div v-if="pid" class="sub-tabs">
         <el-radio-group v-model="subProduct" size="small" @change="reload">
           <el-radio-button :value="''">全部</el-radio-button>
@@ -111,9 +105,10 @@
           @current-change="load" @size-change="reload"
         />
       </div>
-    </el-card>
+    </section>
+    </WorkspacePage>
 
-    <el-drawer v-model="detail.visible" :title="`发版详情 · ${detail.row?.version || ''}`" size="560px">
+    <el-drawer v-model="detail.visible" :title="`发版详情 · ${detail.row?.version || ''}`" size="min(720px, 100vw)">
       <div v-if="detail.row" class="detail">
         <p class="d-row"><span class="d-k">版本号</span> {{ detail.row.version }}</p>
         <p class="d-row"><span class="d-k">子产品</span> {{ detail.row.sub_product || '—' }}</p>
@@ -163,7 +158,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
@@ -211,6 +208,14 @@ const pageSize = ref(20)
 const total = ref(0)
 
 const chartEl = ref(null)
+const activeView = ref('list')
+watch(activeView, async value => {
+  if (value !== 'overview') return
+  await nextTick()
+  if (!chart && chartEl.value) chart = echarts.init(chartEl.value)
+  renderChart()
+  onResize()
+})
 let chart = null
 
 function plain(md) {
@@ -233,7 +238,6 @@ onMounted(async () => {
   try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
   pid.value = pickDefaultProjectId(projects.value)
   await nextTick()
-  chart = echarts.init(chartEl.value)
   window.addEventListener('resize', onResize)
   await loadStats()
   if (pid.value) await reload()
@@ -345,21 +349,21 @@ async function onDel(row) {
 
 <style scoped>
 .release-notes { display: flex; flex-direction: column; gap: 16px; }
-.board { background: linear-gradient(135deg, #1f2d3d 0%, #24344a 100%); border-radius: 10px; padding: 20px 24px; color: #fff; box-shadow: 0 4px 20px rgba(31,45,61,.25); }
+.board { color: var(--el-text-color-primary); }
 .board-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
 .board-title { display: flex; flex-direction: column; gap: 4px; }
 .kicker { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #4fd8c4; letter-spacing: 1px; }
 .board-h1 { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
 .board-tools { display: flex; gap: 10px; align-items: center; }
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
-.stat-card { background: rgba(255,255,255,.06); border: 1px solid rgba(79,216,196,.18); border-radius: 8px; padding: 16px 18px; }
-.stat-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 30px; font-weight: 700; background: linear-gradient(90deg, #00e5a0, #3b9ad9); -webkit-background-clip: text; background-clip: text; color: transparent; line-height: 1.1; }
+.stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+.stat-card { background: #fff; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 16px; }
+.stat-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 28px; font-weight: 700; color: var(--el-text-color-primary); line-height: 1.2; overflow-wrap: anywhere; }
 .stat-num.sm { font-size: 18px; }
-.stat-label { margin-top: 6px; font-size: 13px; color: #bfcbd9; }
+.stat-label { margin-top: 6px; font-size: 13px; color: var(--el-text-color-secondary); }
 /* 版本质量档案:深色 board 内横排记分卡 */
 .rq-row { display: flex; gap: 12px; overflow-x: auto; margin-top: 14px; padding-bottom: 4px; }
-.rq-card { flex: 0 0 220px; background: rgba(255,255,255,.06); border: 1px solid rgba(79,216,196,.18);
-  border-radius: 10px; padding: 12px 14px; }
+.rq-card { flex: 0 0 220px; background: #fff; border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px; padding: 12px 14px; }
 .rq-card.rq-red { border-color: rgba(255,92,108,.45); }
 .rq-card.rq-yellow { border-color: rgba(232,162,61,.4); }
 .rq-hd { display: flex; align-items: center; gap: 8px; }
@@ -389,6 +393,12 @@ async function onDel(row) {
 .chart-wrap { background: rgba(255,255,255,.04); border-radius: 8px; padding: 14px 12px 6px; }
 .chart-title { font-size: 13px; color: #bfcbd9; margin: 0 0 6px 8px; }
 .chart { height: 260px; }
+.board .rq-ver, .board .rq-ring { color: var(--el-text-color-primary); }
+.board .rq-date, .board .rq-rl, .board .rq-sub, .board .rq-scope, .board .chart-title { color: var(--el-text-color-secondary); }
+.board .rq-bug.zero, .board .rq-iss.zero { color: var(--el-text-color-secondary); }
+.board .rq-scope.linked, .board .rq-ck.full { color: var(--el-color-success); }
+.list-head { margin-bottom: 12px; }
+@media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .list-head { display: flex; justify-content: space-between; align-items: center; }
 .sub-tabs { margin-bottom: 12px; }
 .chan-tag { margin: 0 4px 2px 0; }

@@ -1,26 +1,20 @@
 <template>
-  <div class="test-plans">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>测试计划</span>
-          <div class="actions">
+  <div class="test-plans functional-workspace">
+    <WorkspacePage title="测试计划">
+      <template #actions>
             <el-select v-model="projectId" size="small" style="width:200px" placeholder="选择项目" @change="reload">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
+            <el-button size="small" :icon="Refresh" aria-label="刷新计划" title="刷新计划" :loading="loading" @click="reload" />
             <el-button size="small" @click="openRuns()">执行历史</el-button>
             <el-button type="primary" size="small" :disabled="!projectId" @click="openCreate">新建计划</el-button>
-          </div>
-        </div>
       </template>
-
-      <el-alert type="info" :closable="false" show-icon class="intro">
-        把主用例库的用例组成<b>测试计划</b>（固定集合），可<b>立即执行</b>整计划、或设<b>定时自动回归</b>（到点自动下发）。
-        计划内 manual 用例执行时自动跳过；定时批次失败会推送推推告警（需配置通知通道）。
-      </el-alert>
-
-      <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="暂无测试计划（先选项目，再新建）">
+      <template #filters>
+        <el-input v-model="planKeyword" clearable placeholder="搜索计划名称或描述" aria-label="搜索计划" style="width:260px" />
+        <el-select v-model="scheduleFilter" clearable placeholder="全部定时状态" aria-label="定时状态" style="width:160px"><el-option label="已启用定时" value="enabled" /><el-option label="未启用定时" value="disabled" /></el-select>
+        <span class="hint">共 {{ filteredPlans.length }} 个计划</span>
+      </template>
+      <el-table :data="filteredPlans" v-loading="loading" size="small" border stripe empty-text="暂无符合条件的测试计划">
         <el-table-column prop="name" label="计划名" min-width="150" show-overflow-tooltip />
         <el-table-column prop="description" label="描述" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.description || '—' }}</template>
@@ -49,7 +43,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 建/编辑计划 -->
     <el-dialog v-model="editDlg" :title="editing ? '编辑测试计划' : '新建测试计划'" width="440px">
@@ -110,7 +104,7 @@
     </el-dialog>
 
     <!-- 计划内用例管理（含候选用例添加） -->
-    <el-drawer v-model="casesDrawer" :title="`计划「${curPlan?.name || ''}」的用例`" size="56%">
+    <el-drawer v-model="casesDrawer" :title="`计划「${curPlan?.name || ''}」的用例`" size="min(960px, 100vw)">
       <div class="drawer-actions">
         <el-button size="small" type="primary" @click="openAddCases">添加用例</el-button>
         <el-button size="small" type="danger" :disabled="!planSelected.length" @click="removeCasesSel">移出选中（{{ planSelected.length }}）</el-button>
@@ -165,7 +159,7 @@
     </el-dialog>
 
     <!-- 执行历史 -->
-    <el-drawer v-model="runsDrawer" :title="runsTitle" size="56%">
+    <el-drawer v-model="runsDrawer" :title="runsTitle" size="min(960px, 100vw)">
       <el-table :data="runRows" v-loading="runsLoading" size="small" border stripe empty-text="暂无执行记录">
         <el-table-column prop="plan_name" label="计划" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.plan_name || '（已删计划）' }}</template>
@@ -202,6 +196,9 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import {
@@ -223,6 +220,11 @@ const TRIGGER_LABEL = { auto: '定时', ci: 'CI', manual: '手动' }
 const projects = ref([])
 const projectId = ref(null)
 const rows = ref([])
+const planKeyword = ref('')
+const scheduleFilter = ref('')
+const filteredPlans = computed(() => rows.value.filter(row =>
+  `${row.name || ''} ${row.description || ''}`.toLocaleLowerCase().includes(planKeyword.value.trim().toLocaleLowerCase()) &&
+  (!scheduleFilter.value || Boolean(row.schedule_enabled) === (scheduleFilter.value === 'enabled'))))
 const myDevices = ref([])
 const loading = ref(false)
 

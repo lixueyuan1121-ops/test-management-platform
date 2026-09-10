@@ -1,16 +1,11 @@
 <template>
-  <div class="my-reports">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>我的日报</span>
-          <div class="filters">
+  <div class="my-reports functional-workspace">
+    <WorkspacePage title="我的日报">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:180px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
-          </div>
-        </div>
       </template>
       <el-table :data="tasks" v-loading="loading" size="small" empty-text="该日没有指派给你的任务">
         <el-table-column prop="description" label="任务名称" min-width="150" show-overflow-tooltip>
@@ -42,7 +37,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 填报日报弹窗 -->
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="`填报日报 · ${form.title || ''}`" width="620px">
@@ -77,7 +72,7 @@
     </el-dialog>
 
     <!-- 验收清单抽屉 -->
-    <el-drawer v-model="cl.visible" :title="`验收清单 · ${cl.taskTitle}`" size="640px">
+    <el-drawer v-model="cl.visible" :title="`验收清单 · ${cl.taskTitle}`" size="min(800px, 100vw)">
       <div class="cl-toolbar">
         <span class="cl-sum">共 {{ cl.items.length }} 项 · 通过 {{ clStat.passed }} · 失败 {{ clStat.failed }} · 阻塞 {{ clStat.blocked }} · 待执行 {{ clStat.pending }}</span>
         <el-button size="small" type="primary" plain @click="openAttach">添加测试点</el-button>
@@ -167,6 +162,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {

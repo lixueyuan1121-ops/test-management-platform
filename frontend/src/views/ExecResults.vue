@@ -1,13 +1,13 @@
 <template>
-  <div class="exec-results">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>执行结果</span>
-          <div class="filters">
+  <div class="exec-results functional-workspace">
+    <WorkspacePage title="执行结果">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+            <el-button size="small" :icon="Refresh" aria-label="刷新执行结果" title="刷新执行结果" @click="load" />
+      </template>
+      <template #filters>
             <TaskPicker v-model="taskId" :tasks="tasks" placeholder="任务" width="220px" @change="load" />
             <el-select v-model="runner" placeholder="执行设备" size="small" clearable style="width:150px" @change="load">
               <el-option v-for="rn in runners" :key="rn" :label="rn" :value="rn" />
@@ -17,9 +17,6 @@
               <el-option label="失败" value="fail" />
               <el-option label="选择器阻塞" value="blocked" />
             </el-select>
-            <el-button size="small" :icon="Refresh" @click="load">刷新</el-button>
-          </div>
-        </div>
       </template>
 
       <el-empty v-if="!batches.length" :description="loading ? '加载中…' : '暂无执行记录'" :image-size="70" />
@@ -29,8 +26,8 @@
         <el-collapse-item v-for="b in batches" :key="b.id" :name="b.id">
           <template #title>
             <div class="batch-head">
-              <el-tag :type="b.failed ? 'danger' : (b.blocked ? 'warning' : 'success')" size="small" effect="dark">
-                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : '全部通过') }}
+              <el-tag :type="b.failed ? 'danger' : (b.blocked ? 'warning' : (b.total > 0 && b.passed === b.total ? 'success' : 'info'))" size="small" effect="dark">
+                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : (b.total > 0 && b.passed === b.total ? '全部通过' : '尚未全部判定')) }}
               </el-tag>
               <span class="batch-id">{{ b.label }}</span>
               <span class="batch-stat">
@@ -101,7 +98,7 @@
       </el-collapse>
 
       <div class="foot-hint">共 {{ rows.length }} 条 / {{ batches.length }} 个批次(每次执行都留痕,不覆盖;按批次与时间倒序)</div>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 单条执行的逐步报告(含截图) -->
     <el-dialog v-model="rep.visible" title="执行报告" width="720px" top="6vh">
@@ -194,6 +191,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -425,6 +424,10 @@ async function saveCorrect() {
 .ev-path { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; margin-bottom: 10px; }
 /* 批次头 */
 .batch-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; width: 100%; }
+.batch-head > .el-tag { flex-shrink: 0; }
+.exec-results :deep(.el-collapse-item__header) { height: auto; min-height: 48px; padding: 12px; line-height: 1.6; }
+.batch-id { overflow-wrap: anywhere; }
+@media (max-width: 700px) { .batch-meta { width: 100%; margin-left: 0; } .batch-head { gap: 6px; } }
 .batch-id { font-weight: 600; color: #334; }
 .batch-stat { font-size: 13px; color: #5a6b7b; }
 .batch-stat .ok { color: #00926e; }

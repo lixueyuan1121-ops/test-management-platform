@@ -1,12 +1,7 @@
 <template>
-  <div class="projects">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>项目管理</span>
-          <el-button type="primary" size="small" @click="openCreate">新建项目</el-button>
-        </div>
-      </template>
+  <div class="projects functional-workspace">
+    <WorkspacePage title="项目管理">
+      <template #actions><el-button type="primary" size="small" @click="openCreate">新建项目</el-button></template>
       <el-table :data="projects" v-loading="loading" size="small">
         <el-table-column prop="code" label="编码" width="160" />
         <el-table-column prop="name" label="名称" />
@@ -28,7 +23,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑项目' : '新建项目'" width="460px">
       <el-form :model="form" label-width="80px">
@@ -61,6 +56,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createProject, updateProject, listProjects } from '@/api'

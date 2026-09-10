@@ -1,13 +1,12 @@
 <template>
   <div class="regression-cases">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>回归用例库</span>
-          <div class="filters">
+    <WorkspacePage title="回归用例库">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+      </template>
+      <template #filters>
             <el-select
               v-if="pageOptions.length" v-model="pageFilter" placeholder="页面" size="small"
               clearable filterable style="width:150px" @change="reload"
@@ -22,15 +21,10 @@
               <el-option v-for="p in PLATFORMS" :key="p.value" :label="p.label" :value="p.value" />
             </el-select>
             <el-input v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px" @keyup.enter="reload" @clear="reload" />
-          </div>
-        </div>
+        <el-button size="small" :icon="Search" @click="reload">查询</el-button>
       </template>
 
-      <el-alert type="success" :closable="false" show-icon class="intro">
-        这里是回归用例库(在「用例库」勾选用例点「标记回归」纳入)。按<b>页面</b>筛选后勾选,选自己的设备即可<b>直接执行</b>——不依赖关联任务、无需先采纳;人工(manual)用例不可执行。
-        <br>「导出脚本」把 GUI/E2E 用例导成 Playwright <code>.spec.mjs</code> 给开发本地自测;开发怎么跑、要装什么,见仓库根 <b>回归用例导出脚本-开发运行说明.md</b>。
-      </el-alert>
-
+      <template #selection>
       <div class="page-bar">
         <span class="sel-hint">共 {{ total }} 条回归用例{{ pageFilter ? `（页面：${pageFilter}）` : '' }}</span>
         <el-button
@@ -51,7 +45,7 @@
         <el-button size="small" :loading="exporting" @click="exportSelected">导出选中脚本</el-button>
         <span class="sel-hint">随选随跑,仅跳过 manual(不可自动化)用例</span>
       </div>
-
+      </template>
       <el-table ref="tableRef" :data="displayRows" v-loading="loading" size="small" border stripe empty-text="暂无回归用例（去「用例库」标记）"
                 @selection-change="(s) => (selected = s)">
         <el-table-column type="selection" width="42" />
@@ -71,7 +65,7 @@
             <span v-else class="page-none">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
+        <el-table-column label="测试点" min-width="200"><template #default="{ row }"><button class="case-link" @click="inspectedCase = row; detailVisible = true">{{ row.title }}</button></template></el-table-column>
         <el-table-column label="步骤" min-width="220">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
         </el-table-column>
@@ -102,11 +96,19 @@
           @size-change="reload"
         />
       </div>
-    </el-card>
+    </WorkspacePage>
+    <el-drawer v-model="detailVisible" :title="inspectedCase?.title || '用例详情'" size="min(720px, 100vw)">
+      <section class="case-detail"><h3>步骤</h3><div>{{ inspectedCase?.steps || '未填写' }}</div></section>
+      <section class="case-detail"><h3>预期</h3><div>{{ inspectedCase?.expected || '未填写' }}</div></section>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Search } from '@element-plus/icons-vue'
+const inspectedCase = ref(null)
+const detailVisible = ref(false)
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
@@ -275,8 +277,15 @@ async function exportSelected() {
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .intro { margin-bottom: 10px; }
 .page-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
-.dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
+.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dispatch-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
+.dispatch-bar .el-select { flex-shrink: 0; max-width: 100%; }
+.dispatch-bar .el-button { margin-left: 0; }
+.case-link { border: 0; background: none; padding: 0; color: var(--el-color-primary); font: inherit; cursor: pointer; text-align: left; }
+.case-link:hover { text-decoration: underline; }
+.case-detail { padding: 20px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.case-detail h3 { margin: 0 0 12px; font-size: 14px; }
+.case-detail div { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .sel-info { font-weight: 600; color: #00926e; }
 .exp-dim { color: #c0c4cc; font-size: 12px; cursor: not-allowed; }
 .sel-hint { color: #90a4ae; font-size: 12px; }

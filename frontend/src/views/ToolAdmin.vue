@@ -1,13 +1,13 @@
 <template>
-  <div class="tool-admin">
-    <!-- 分类管理 -->
-    <el-card style="margin-bottom:16px">
-      <template #header>
-        <div class="header">
-          <span>工具分类</span>
-          <el-button type="primary" size="small" @click="openCatCreate">新建分类</el-button>
-        </div>
+  <div class="tool-admin functional-workspace">
+    <WorkspacePage title="工具配置">
+      <template #actions>
+        <el-button v-if="activeTab === 'tools'" type="primary" size="small" @click="openToolCreate">新建工具</el-button>
+        <el-button v-else type="primary" size="small" @click="openCatCreate">新建分类</el-button>
       </template>
+      <template #selection><el-tabs v-model="activeTab"><el-tab-pane label="工具列表" name="tools" /><el-tab-pane label="分类管理" name="categories" /></el-tabs></template>
+    <!-- 分类管理 -->
+    <section v-show="activeTab === 'categories'">
       <el-table :data="categories" v-loading="catLoading" size="small">
         <el-table-column prop="name" label="分类名称" />
         <el-table-column prop="sort_order" label="排序" width="80" />
@@ -21,21 +21,17 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </section>
 
     <!-- 工具管理 -->
-    <el-card>
-      <template #header>
+    <section v-show="activeTab === 'tools'">
         <div class="header">
-          <span>工具列表</span>
           <div>
             <el-select v-model="toolCatFilter" placeholder="筛选分类" clearable size="small" style="width:140px;margin-right:8px" @change="loadTools">
               <el-option v-for="c in categories" :key="c.id" :label="c.name" :value="c.id" />
             </el-select>
-            <el-button type="primary" size="small" @click="openToolCreate">新建工具</el-button>
           </div>
         </div>
-      </template>
       <el-table :data="tools" v-loading="toolLoading" size="small">
         <el-table-column prop="name" label="工具名称" min-width="120" />
         <el-table-column prop="category_name" label="分类" width="100" />
@@ -54,7 +50,8 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </section>
+    </WorkspacePage>
 
     <!-- 分类对话框 -->
     <el-dialog v-if="catDialog.visible" v-model="catDialog.visible" :title="catDialog.id ? '编辑分类' : '新建分类'" width="400px">
@@ -94,6 +91,9 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
+const activeTab = ref('tools')
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listCategories, createCategory, updateCategory, deleteCategory, listTools, createTool, updateTool, deleteTool, toggleTool } from '@/api'

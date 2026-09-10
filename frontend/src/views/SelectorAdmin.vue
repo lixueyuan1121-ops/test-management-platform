@@ -1,8 +1,14 @@
 <template>
-  <div class="selector-admin">
+  <div class="selector-admin functional-workspace">
+    <WorkspacePage title="选择器管理">
+      <template #actions>
+        <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange"><el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" /></el-select>
+        <el-select v-model="subProduct" placeholder="作用域" size="small" style="width:150px" @change="reload"><el-option label="项目级共享" :value="''" /><el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" /></el-select>
+        <el-button type="primary" size="small" :disabled="!pid" @click="openCreate">新增 key</el-button>
+      </template>
+      <template #selection><el-tabs v-model="activeView"><el-tab-pane label="注册表" name="registry" /><el-tab-pane label="设备探测" name="probe" /><el-tab-pane label="候选评审" name="learned" /></el-tabs></template>
     <!-- 设备探测面板：选在线设备，扫当前页元素产候选 → 加为 key(新建/更新已有)；或校验现有 key 是否失效 -->
-    <el-card>
-      <template #header>
+    <section v-show="activeView === 'probe'">
         <div class="header">
           <span>设备探测</span>
           <div class="filters">
@@ -39,7 +45,6 @@
             >校验失效 key</el-button>
           </div>
         </div>
-      </template>
 
       <!-- 目标提示：当前落库作用域 + 若处于「更新已有」预置目标 -->
       <div class="probe-scope">
@@ -185,27 +190,16 @@
           </el-table-column>
         </el-table>
       </template>
-    </el-card>
+    </section>
 
-    <el-card class="registry-card">
-      <template #header>
+    <section v-show="activeView === 'registry'" class="registry-card">
         <div class="header">
-          <span>选择器管理</span>
           <div class="filters">
-            <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
-              <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-            </el-select>
-            <el-select v-model="subProduct" placeholder="作用域" size="small" style="width:150px" @change="reload">
-              <el-option label="项目级共享" :value="''" />
-              <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
-            </el-select>
-            <el-button type="primary" size="small" :disabled="!pid" @click="openCreate">新增 key</el-button>
             <el-button
               v-if="canImport" size="small" :disabled="!pid" :loading="importing" @click="onImport"
             >导入内置纳米Work注册表</el-button>
           </div>
         </div>
-      </template>
 
       <el-empty v-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
       <el-collapse v-else v-model="activePages" v-loading="loading">
@@ -237,7 +231,7 @@
           </el-table>
         </el-collapse-item>
       </el-collapse>
-    </el-card>
+    </section>
 
     <!-- 新增 / 编辑弹窗 -->
     <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑 key' : '新增 key'" width="600px">
@@ -337,8 +331,7 @@
     </el-dialog>
 
     <!-- 运行时自学习候选评审:runner 全候选失败→按语义自愈成功后上报;转正=去试用标,拒绝=移出注册表 -->
-    <el-card class="learned-card">
-      <template #header>
+    <section v-show="activeView === 'learned'" class="learned-card">
         <div class="header">
           <span>自学习候选评审
             <el-tag v-if="learned.rows.length" type="warning" size="small" effect="dark" class="learned-badge">{{ learned.rows.length }}</el-tag>
@@ -352,7 +345,6 @@
             <el-button size="small" :loading="learned.loading" @click="reloadLearned">刷新</el-button>
           </div>
         </div>
-      </template>
       <el-alert type="info" :closable="false" class="learned-intro" show-icon>
         执行机在<b>所有已注册候选都定位失败</b>时,按 key 语义在页面上找回元素并铸造新候选（已临时挂在该 key 候选链<b>尾部试用</b>）。
         <b>转正</b>=去掉试用标永久保留；<b>拒绝</b>=从注册表移除且不再自动挂回。
@@ -392,11 +384,15 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </section>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
+const activeView = ref('registry')
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
@@ -466,6 +462,7 @@ onMounted(async () => {
     pid.value = qPid
     await reload()
     fixCtx.keys = String(q.fix_keys || '').split(',').filter(Boolean)
+    if (fixCtx.keys.length) activeView.value = 'probe'
     fixCtx.ctx = String(q.ctx || '')
     fixCtx.activeKey = fixCtx.keys[0] || ''
     if (q.page) probe.page = String(q.page)
@@ -986,7 +983,10 @@ async function submitAddAsKey() {
 </script>
 
 <style scoped>
-.header { display: flex; justify-content: space-between; align-items: center; }
+.header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.header > span { flex-shrink: 0; }
+.header .filters { min-width: 0; }
+@media (max-width: 700px) { .header .filters { width: 100%; } .header .filters .el-select, .header .filters .el-input { max-width: 100%; } }
 .page-title { font-weight: 600; margin-right: 8px; }
 .page-count { vertical-align: middle; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

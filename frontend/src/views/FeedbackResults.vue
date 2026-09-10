@@ -1,22 +1,14 @@
 <template>
   <div class="feedback-results">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>回归结果</span>
-          <div class="actions">
+    <WorkspacePage title="回归结果">
+      <template #actions>
+        <el-button size="small" :icon="Refresh" aria-label="刷新回归结果" title="刷新回归结果" :loading="loading" @click="reload" />
+      </template>
+      <template #filters>
             <el-select v-model="setFilter" placeholder="按回归集" size="small" clearable style="width:180px" @change="reload">
               <el-option v-for="s in sets" :key="s.id" :label="s.name" :value="s.id" />
             </el-select>
-            <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
-          </div>
-        </div>
       </template>
-
-      <el-alert type="info" :closable="false" show-icon class="intro">
-        每次回归/执行是一个批次（feedback_run）。结果按批次实时聚合执行机回写的 exec_run 状态。
-        点「详情」看批次内逐条用例的 pass/fail。
-      </el-alert>
 
       <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="暂无回归记录">
         <el-table-column prop="id" label="ID" width="56" align="center" />
@@ -49,10 +41,10 @@
           <template #default="{ row }"><el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button></template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 批次详情 -->
-    <el-drawer v-model="detailDrawer" :title="`批次详情 #${cur?.id || ''}`" size="55%">
+    <el-drawer v-model="detailDrawer" :title="`批次详情 #${cur?.id || ''}`" size="min(960px, 100vw)">
       <template v-if="cur">
         <div class="detail-head">
           <el-tag :type="cur.trigger === 'auto' ? 'success' : 'primary'" size="small">{{ cur.trigger === 'auto' ? '定时' : '手动' }}</el-tag>
@@ -81,6 +73,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
 import { ref, onMounted } from 'vue'
 import { feedbackRuns, feedbackRunDetail, feedbackSets } from '@/api'
 

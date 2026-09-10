@@ -1,13 +1,8 @@
 <template>
-  <div class="members">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>成员管理 <small v-if="project">/ {{ project.name }}</small>
-            <small class="hint">同一用户在不同项目可设不同角色，按项目独立勾选</small>
-          </span>
+  <div class="members functional-workspace">
+    <WorkspacePage :title="project ? `成员管理 / ${project.name}` : '成员管理'">
+      <template #actions>
           <el-button v-if="canManage" type="primary" size="small" @click="openAdd">添加成员</el-button>
-        </div>
       </template>
       <el-table :data="members" v-loading="loading" size="small">
         <el-table-column prop="username" label="用户名" width="160" />
@@ -25,7 +20,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.mode === 'add' ? '添加成员' : '修改角色'" width="440px">
       <el-form :model="form" label-width="80px">
@@ -54,6 +49,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'

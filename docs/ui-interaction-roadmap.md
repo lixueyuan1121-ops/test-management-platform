@@ -32,6 +32,33 @@
 
 后续：功能测试全链路、反馈回归与性能模块、设备和质量看板、低频管理页。每一批复用上述规则，单独补关键流程测试；不把未验收模块标记为完成。
 
+## 当前进展
+
+- 第一批：导航与测评模块已随 d83eacf4 / d4dc4304 推送 main；服务器需运行 update.sh 生效。
+- 第二批：测试计划、任务分配、功能用例库接入统一页面框架，新增计划/任务筛选、窄屏筛选收起、吸顶批量操作和自适应弹窗。模拟接口验证后单独验收，尚未发布。
+- 第三批：已采纳/回归用例增加全文侧栏和吸顶选择区；执行结果接入统一框架，未全部判定的批次不再显示全部通过；反馈四个页面采用统一布局，反馈详情保存固定在抽屉底部。
+- 第四批进行中：性能下发配置改为弹窗，性能报告和采集控制接入统一页头。已验证下发参数、报告空态和采集推进；有数据图表和阈值编辑仍需补验收。
+- 第五批进行中：设备看板增加设备/负责人/在线筛选（总指标仍为全平台口径）；我的设备、项目、用户、成员管理接入共用框架；工具配置拆分列表/分类标签；API 环境保存与重置移至吸顶操作区。已验证设备筛选和总数、创建参数、成员编辑权限与手机注册弹窗。
+  工具分类创建与 API 环境保存参数已验证；修复开发代理误将 /api-env 页面匹配为 API 请求的问题。尚待设备异常态、完整管理操作和其余页面终验。
+- 第六批进行中：遗留问题、需求覆盖、上线清单、日报/工作量统计采用统一布局；发版记录分为默认版本列表与质量概览，图表打开时初始化并响应尺寸变化。需求创建、发版图表桌面/手机非空渲染与返回列表已验证；发版写操作和清单执行仍需终验。
+- 第七批进行中：选择器项目/作用域移至顶部，注册表/设备探测/候选评审分标签；保留缺失 key 深链接自动探测。工具广场增加搜索和键盘打开详情。新增 key 与深链接参数已验证。回归智选、质量聚焦已接入共用页头，核心推荐/聚类写操作待终验。
+- 第八批：工作台精简页头，我的日报采用统一操作区，指挥官输入区固定并区分已取消/已执行状态；日报提交参数、指挥官二次确认与取消不执行、手机布局已验证。
+- 2026-09-10 发布验收：五组 UI 脚本（eval-workspace、eval-results、functional-workspace、admin-devices、workspace）及全部页面模板编译通过。本批按 release.sh 推送；这不代表下述全量验收已完成，线上生效仍须服务器更新。
+- 待继续：设备与质量看板、管理页，以及生成/工作台等入口的整体一致性审计；各页的错误态、权限和剩余写操作需要最终全量回归。
+
+## 全量验收范围
+
+下列页面均需审计；已改动不等于验收通过，最终以各流程测试和桌面/手机截图为准。
+
+- 对话测评：EvalTasks、EvalLibrary、EvalResults、AIEvalGen。
+- 功能测试：TestPlans、Tasks、CaseLibrary、AdoptedCases、RegressionCases、ExecResults、AITestGen、Issues。
+- 反馈回归：FeedbackImports、FeedbackCases、FeedbackRegression、FeedbackResults。
+- 性能测试：PerfDispatch、PerfReport、PerfCollect。
+- 设备与工具：DeviceBoard、MyDevices、ToolPlaza。
+- 质量与发布：WarRoom、Requirements、ReleaseChecklist、ReleaseNotes、DailyStats、WorkloadStats、AIWall、FailClusters、RtsSelect。
+- 系统管理：Projects、Members、Users、SelectorAdmin、ApiEnvAdmin、ToolAdmin。
+- 工作空间与全局：Dashboard、Commander、MyReports、Login、MainLayout、导航权限及路由深链接。
+
 ## 验收清单
 
 - 桌面和手机宽度、长文本、空数据、加载与错误状态。

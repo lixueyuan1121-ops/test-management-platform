@@ -1,9 +1,14 @@
 <template>
-  <div class="feedback-regression">
+  <div class="feedback-regression functional-workspace">
+    <WorkspacePage title="回归用例集">
+      <template #actions>
+        <el-button size="small" :icon="Refresh" aria-label="刷新回归集" title="刷新回归集" :loading="loading" @click="reload" />
+        <el-button type="primary" size="small" @click="openCreate">新建回归集</el-button>
+      </template>
     <!-- 回归防线日历墙:GitHub 贡献墙式 + 连续值守大数字 -->
     <div class="dc-panel">
       <div class="dc-left">
-        <div class="dc-eyebrow">// DEFENSE LINE · 回归防线</div>
+        <div class="dc-eyebrow">回归执行概览</div>
         <div class="dc-streak" :class="{ inactive: !cal.streak }">{{ cal.streak }}</div>
         <div class="dc-streak-lbl">{{ cal.streak > 0 ? '连续值守(天)' : '防线待激活' }}</div>
         <div class="dc-total">窗口内值守 {{ cal.total_guard_days }} 天</div>
@@ -21,22 +26,6 @@
         </div>
       </div>
     </div>
-
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>回归用例集</span>
-          <div class="actions">
-            <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
-            <el-button type="primary" size="small" @click="openCreate">新建回归集</el-button>
-          </div>
-        </div>
-      </template>
-
-      <el-alert type="info" :closable="false" show-icon class="intro">
-        把反馈用例组成回归集，可设<b>定时自动回归</b>（到点自动下发执行）、或点<b>立即回归</b>手动触发整集。
-        集内 manual 用例会自动跳过。结果去「回归结果」查看。
-      </el-alert>
 
       <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="暂无回归集">
         <el-table-column prop="name" label="集名" min-width="150" show-overflow-tooltip />
@@ -65,7 +54,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 建/编辑集 -->
     <el-dialog v-model="editDlg" :title="editing ? '编辑回归集' : '新建回归集'" width="440px">
@@ -117,7 +106,7 @@
     </el-dialog>
 
     <!-- 集内用例管理 -->
-    <el-drawer v-model="casesDrawer" :title="`集「${curSet?.name || ''}」的用例`" size="52%">
+    <el-drawer v-model="casesDrawer" :title="`集「${curSet?.name || ''}」的用例`" size="min(960px, 100vw)">
       <div class="drawer-actions">
         <el-button size="small" type="primary" @click="reloadSetCases">刷新</el-button>
         <el-button size="small" type="danger" :disabled="!setSelected.length" @click="removeCases">移出选中（{{ setSelected.length }}）</el-button>
@@ -140,6 +129,9 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -288,23 +280,23 @@ onMounted(async () => {
 
 <style scoped>
 /* 回归防线日历墙 */
-.dc-panel { background: linear-gradient(135deg, #1a2836 0%, #212f43 100%); border-radius: 14px;
-  padding: 20px 24px; margin-bottom: 16px; color: #e6edf3;
+.dc-panel { background: #fff; border-bottom: 1px solid var(--el-border-color-lighter);
+  padding: 16px 0; margin-bottom: 16px; color: var(--el-text-color-primary);
   display: flex; gap: 28px; align-items: center; }
 .dc-left { flex: none; min-width: 150px; }
-.dc-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #00e5a0; }
-.dc-streak { font-family: 'JetBrains Mono', monospace; font-size: 46px; font-weight: 800; color: #00e5a0;
+.dc-eyebrow { font-size: 13px; letter-spacing: 0; color: var(--el-text-color-regular); }
+.dc-streak { font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 700; color: var(--el-color-primary);
   line-height: 1.1; margin-top: 8px; }
 .dc-streak.inactive { color: #e8a23d; }
 .dc-streak-lbl { font-size: 12px; color: #8b98a9; margin-top: 2px; }
 .dc-total { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5f6b7a; margin-top: 8px; }
-.dc-wall-wrap { flex: 1; min-width: 0; }
+.dc-wall-wrap { flex: 1; min-width: 0; max-width: 100%; }
 .dc-wall { display: grid; grid-template-rows: repeat(7, 13px); grid-auto-flow: column; grid-auto-columns: 13px;
   gap: 3px; overflow-x: auto; padding-bottom: 4px; }
 .dc-cell { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
 .dc-green { background: #00b386; }
 .dc-red { background: #e5565f; }
-.dc-gray { background: rgba(255,255,255,.1); }
+.dc-gray { background: #e4e7ed; }
 .dc-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: #8b98a9;
   font-family: 'JetBrains Mono', monospace; }
 .dc-lg { display: inline-flex; align-items: center; gap: 5px; }

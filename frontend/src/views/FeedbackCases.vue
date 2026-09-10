@@ -1,10 +1,8 @@
 <template>
-  <div class="feedback-cases">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>反馈用例库</span>
-          <div class="filters">
+  <div class="feedback-cases functional-workspace">
+    <WorkspacePage title="反馈用例库">
+      <template #actions><el-button size="small" :icon="Refresh" title="刷新反馈用例" aria-label="刷新反馈用例" :loading="loading" @click="reload" /></template>
+      <template #filters>
             <el-select v-model="importFilter" placeholder="按导入批次" size="small" clearable style="width:170px" @change="reload">
               <el-option v-for="im in imports" :key="im.id" :label="`#${im.id} ${im.filename || ''}`" :value="im.id" />
             </el-select>
@@ -14,16 +12,8 @@
             <el-select v-model="feasFilter" placeholder="自动化" size="small" clearable style="width:120px" @change="reload">
               <el-option label="yes" value="yes" /><el-option label="partial" value="partial" /><el-option label="no" value="no" />
             </el-select>
-            <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
-          </div>
-        </div>
       </template>
-
-      <el-alert type="success" :closable="false" show-icon class="intro">
-        机器人推送的反馈已拆解成结构化用例（按需求/测试点分组）。可自动化用例（非 manual）会自动补 script。
-        勾选后可<b>直接执行</b>（当场下发到执行机）或<b>加入回归集</b>（供定时/手动整集回归）。manual 用例不可执行。
-      </el-alert>
-
+      <template #selection>
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <el-select v-model="runner" size="small" style="width:170px" placeholder="选择执行设备">
@@ -33,7 +23,7 @@
         <el-button type="primary" size="small" @click="openAddToSet">加入回归集</el-button>
         <span class="sel-hint">发送执行仅跳过 manual 用例</span>
       </div>
-
+      </template>
       <el-table :data="rows" v-loading="loading" size="small" border stripe
                 empty-text="暂无反馈用例（去「导入记录」上传或等机器人推送）"
                 @selection-change="(s) => (selected = s)">
@@ -77,10 +67,10 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 详情/编辑抽屉 -->
-    <el-drawer v-model="detailDrawer" :title="`用例详情 #${cur?.id || ''}`" size="42%">
+    <el-drawer v-model="detailDrawer" :title="`用例详情 #${cur?.id || ''}`" size="min(800px, 100vw)">
       <template v-if="cur">
         <el-descriptions :column="1" border size="small">
           <el-descriptions-item label="需求">{{ cur.req_title || '—' }}</el-descriptions-item>
@@ -109,7 +99,9 @@
           <pre class="script-pre">{{ JSON.stringify(cur.script, null, 2) }}</pre>
         </div>
 
-        <div class="drawer-foot">
+      </template>
+      <template #footer>
+        <div v-if="cur" class="drawer-foot">
           <el-button @click="detailDrawer = false">关闭</el-button>
           <el-button type="primary" :loading="saving" @click="save">保存</el-button>
         </div>
@@ -135,6 +127,9 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
+import '@/styles/workspace-overlays.css'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -274,7 +269,9 @@ onMounted(() => { reload(); loadAux() })
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .intro { margin-bottom: 12px; }
-.dispatch-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #f0f9eb; border-radius: 6px; margin-bottom: 10px; }
+.dispatch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
+.dispatch-bar .el-select { flex-shrink: 0; max-width: 100%; }
+.dispatch-bar .el-button { margin-left: 0; }
 .sel-info { font-weight: 600; color: #67c23a; }
 .sel-hint { font-size: 12px; color: #909399; }
 .req-line { font-size: 13px; color: #303133; }

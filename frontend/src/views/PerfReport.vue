@@ -1,20 +1,21 @@
 <template>
-  <div class="perf-report">
-    <div class="toolbar">
-      <div class="title">性能报告 <span class="sub">{{ headSub }}</span></div>
-      <div class="ops">
+  <div class="perf-report functional-workspace">
+    <WorkspacePage title="性能报告">
+      <template #actions>
         <el-select v-model="currentSet" placeholder="选报告集" style="width:200px" @change="onSetChange">
           <el-option label="（全部采集）" :value="0" />
           <el-option v-for="s in sets" :key="s.id" :label="`${s.name}（${s.completed_count}）`" :value="s.id" />
         </el-select>
         <el-button size="small" :disabled="!currentSet" @click="onRename">重命名</el-button>
         <el-button size="small" :disabled="!currentSet" @click="openThresholds">性能红线</el-button>
+        <el-button size="small" :icon="Refresh" title="刷新性能报告" aria-label="刷新性能报告" :loading="loading" @click="load" />
+      </template>
+      <template #filters>
         <el-select v-model="scenarioFilter" placeholder="全部场景" clearable size="small" style="width:130px" @change="load">
           <el-option v-for="s in scenarioOptions" :key="s" :label="s" :value="s" />
         </el-select>
-        <el-button size="small" :loading="loading" @click="load">刷新</el-button>
-      </div>
-    </div>
+        <span class="sub">{{ headSub }}</span>
+      </template>
 
     <el-empty v-if="!loading && !groups.length" :description="currentSet ? '该报告集下暂无已完成的采集' : '暂无性能数据，先在「任务下发」建报告集并采集'" />
 
@@ -31,8 +32,7 @@
         </div>
       </div>
 
-      <el-card v-for="g in groups" :key="g.scenario" class="scene-card" shadow="never">
-        <template #header>
+      <section v-for="g in groups" :key="g.scenario" class="scene-card">
           <div class="scene-head">
             <span class="scene-name">{{ g.scenario }}</span>
             <span class="scene-objs">{{ g.objects.map(o => o.variant).join('  ·  ') }}</span>
@@ -40,7 +40,6 @@
               <el-option v-for="m in metricOptions" :key="m.key" :label="m.label" :value="m.key" />
             </el-select>
           </div>
-        </template>
         <el-table :data="dimRows(g)" size="small" class="cmp-table" :show-overflow-tooltip="true">
           <el-table-column prop="label" label="指标" width="120" />
           <el-table-column v-for="o in g.objects" :key="o.variant" :label="o.variant" min-width="100">
@@ -48,8 +47,9 @@
           </el-table-column>
         </el-table>
         <div :ref="(el) => setChartRef(g.scenario, el)" class="chart"></div>
-      </el-card>
+      </section>
     </template>
+    </WorkspacePage>
 
     <!-- 性能红线:超线的采集完成即推飞书告警 -->
     <el-dialog v-model="thVisible" title="性能红线（阈值告警）" width="560px">
@@ -77,6 +77,9 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
@@ -243,10 +246,10 @@ onBeforeUnmount(() => {
 .kpi-val { font-size: 18px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .kpi-vs { font-size: 12px; color: #c0c4cc; font-weight: 400; }
 .kpi-delta { font-size: 12px; color: #909399; margin-top: 4px; }
-.scene-card { margin-bottom: 16px; }
-.scene-head { display: flex; align-items: center; gap: 12px; }
+.scene-card { padding: 20px 0; border-top: 1px solid var(--el-border-color); }
+.scene-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-bottom: 12px; }
 .scene-name { font-size: 15px; font-weight: 600; }
-.scene-objs { font-size: 12px; color: #909399; flex: 1; }
+.scene-objs { font-size: 12px; color: #909399; flex: 1; overflow-wrap: anywhere; min-width: 100px; }
 .cmp-table { margin-bottom: 14px; }
 .chart { width: 100%; height: 280px; }
 </style>

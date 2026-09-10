@@ -1,14 +1,9 @@
 <template>
-  <div class="users">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>用户管理</span>
-          <div>
+  <div class="users functional-workspace">
+    <WorkspacePage title="用户管理">
+      <template #actions><el-button type="primary" size="small" @click="openCreate">新建用户</el-button></template>
+      <template #filters>
             <el-input v-model="keyword" placeholder="搜索用户名/姓名" clearable size="small" style="width:200px;margin-right:8px" @input="onSearch" />
-            <el-button type="primary" size="small" @click="openCreate">新建用户</el-button>
-          </div>
-        </div>
       </template>
       <el-table :data="users" v-loading="loading" size="small">
         <el-table-column prop="username" label="用户名" width="160" />
@@ -37,7 +32,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 新建/编辑 -->
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑用户' : '新建用户'" width="460px">
@@ -83,6 +78,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listUsers, createUser, updateUser, resetPassword } from '@/api'

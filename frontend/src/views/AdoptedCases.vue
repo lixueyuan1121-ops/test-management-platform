@@ -1,26 +1,21 @@
 <template>
   <div class="adopted-cases">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>已采纳用例</span>
-          <div class="filters">
+    <WorkspacePage title="已采纳用例">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+      </template>
+      <template #filters>
             <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务" @change="reload" />
             <el-select v-model="execKindFilter" placeholder="执行类型" size="small" clearable style="width:120px" @change="reload">
               <el-option v-for="k in EXEC_KINDS" :key="k.value" :label="k.label" :value="k.value" />
             </el-select>
             <el-input v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px" @keyup.enter="reload" @clear="reload" />
-          </div>
-        </div>
+        <el-button size="small" :icon="Search" @click="reload">查询</el-button>
       </template>
 
-      <el-alert type="success" :closable="false" show-icon class="intro">
-        这里只列已采纳的用例,勾选后选自己的设备即可下发执行。人工(manual)用例不可下发。
-      </el-alert>
-
+      <template #selection>
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <el-select v-model="runner" size="small" style="width:180px"
@@ -31,7 +26,7 @@
         <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
         <span class="sel-hint">仅『有关联任务 + 非人工』的选中项会下发</span>
       </div>
-
+      </template>
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="暂无已采纳用例"
                 @selection-change="(s) => (selected = s)">
         <el-table-column type="selection" width="42" />
@@ -43,7 +38,7 @@
         <el-table-column label="优先级" width="80" align="center">
           <template #default="{ row }"><el-tag :type="PRI_TYPE[(row.priority || '').toUpperCase()] || 'info'" size="small">{{ row.priority || '—' }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="title" label="测试点" min-width="200" show-overflow-tooltip />
+        <el-table-column label="测试点" min-width="200"><template #default="{ row }"><button class="case-link" @click="inspectedCase = row; detailVisible = true">{{ row.title }}</button></template></el-table-column>
         <el-table-column label="步骤" min-width="220">
           <template #default="{ row }"><span class="multiline">{{ row.steps || '—' }}</span></template>
         </el-table-column>
@@ -64,11 +59,19 @@
           @size-change="reload"
         />
       </div>
-    </el-card>
+    </WorkspacePage>
+    <el-drawer v-model="detailVisible" :title="inspectedCase?.title || '用例详情'" size="min(720px, 100vw)">
+      <section class="case-detail"><h3>步骤</h3><div>{{ inspectedCase?.steps || '未填写' }}</div></section>
+      <section class="case-detail"><h3>预期</h3><div>{{ inspectedCase?.expected || '未填写' }}</div></section>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Search } from '@element-plus/icons-vue'
+const inspectedCase = ref(null)
+const detailVisible = ref(false)
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
@@ -186,8 +189,15 @@ async function dispatchSelected() {
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .intro { margin-bottom: 10px; }
-.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
-.dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
+.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dispatch-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
+.dispatch-bar .el-select { flex-shrink: 0; max-width: 100%; }
+.dispatch-bar .el-button { margin-left: 0; }
+.case-link { border: 0; background: none; padding: 0; color: var(--el-color-primary); font: inherit; cursor: pointer; text-align: left; }
+.case-link:hover { text-decoration: underline; }
+.case-detail { padding: 20px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.case-detail h3 { margin: 0 0 12px; font-size: 14px; }
+.case-detail div { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .sel-info { font-weight: 600; color: #00926e; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 </style>

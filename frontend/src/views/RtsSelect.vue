@@ -1,9 +1,7 @@
 <template>
   <div class="rts-page">
-    <el-card>
-      <template #header>
-        <div class="hd"><span>回归智选 · 风险驱动的回归范围</span>
-          <div class="hd-r">
+    <WorkspacePage title="回归智选">
+      <template #actions>
             <el-select v-model="projectId" size="small" style="width:180px" @change="onProject">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
@@ -16,8 +14,6 @@
               <el-option label="⚡ 自动挑选" value="auto" />
               <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
             </el-select>
-          </div>
-        </div>
       </template>
 
       <div v-if="reco" class="reco" :class="`risk-${reco.overall_risk}`">
@@ -27,11 +23,11 @@
         <div class="reco-f"><span v-for="(f,i) in reco.focus_points" :key="i" class="fp">⚠ {{ f }}</span></div>
       </div>
 
-      <div v-if="releaseId" class="bar">
+      <template #selection><div v-if="releaseId" class="bar">
         <span>候选 {{ candidates.length }} 条（属本版本 {{ inReleaseCount }}）· 已选 {{ checked.length }}</span>
         <el-button size="small" :loading="analyzing" @click="runAnalyze">AI 生成推荐</el-button>
         <el-button size="small" type="primary" :loading="dispatching" :disabled="!checked.length" @click="dispatch">下发所选回归</el-button>
-      </div>
+      </div></template>
 
       <el-table ref="tableRef" :data="candidates" size="small" @selection-change="onSel" v-loading="loading" max-height="560">
         <el-table-column type="selection" width="44" />
@@ -46,11 +42,12 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { rtsCandidates, rtsAnalyze, rtsRecommendation, enqueueCases, listReleases, listMyDevices, pollAiJob } from '@/api'
@@ -123,6 +120,6 @@ init()
 .reco.risk-high { border-left-color: #d03b3b; } .reco.risk-medium { border-left-color: #fab219; } .reco.risk-low { border-left-color: #0ca30c; }
 .reco-h { font-size: 14px; } .reco-s { color: #303133; margin: 6px 0; } .reco-r { color: #606266; font-size: 13px; }
 .reco-f { margin-top: 6px; } .fp { color: #d03b3b; font-size: 12px; margin-right: 12px; }
-.bar { display: flex; align-items: center; gap: 12px; margin: 10px 0; font-size: 13px; color: #606266; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0; font-size: 13px; color: #606266; }
 .sig { margin: 0 4px 2px 0; }
 </style>

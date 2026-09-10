@@ -1,12 +1,11 @@
 <template>
   <div class="perf-collect">
-    <div class="head">
-      <div class="title">
-        采集控制 <span class="sub">{{ info.scenario }} / {{ info.variant }}</span>
+    <WorkspacePage title="采集控制">
+      <template #actions>
         <el-tag size="small" :type="statusType" class="st">{{ statusText }}</el-tag>
-      </div>
       <el-button size="small" @click="$router.push('/perf-dispatch')">返回下发</el-button>
-    </div>
+      </template>
+      <p class="sub">{{ info.scenario }} / {{ info.variant }}</p>
 
     <!-- 进行中:显示提示 + 推进/取消 -->
     <el-card v-if="info.status === 'running' || info.status === 'pending'" shadow="never" class="panel">
@@ -44,10 +43,12 @@
     <el-result v-else-if="info.status === 'failed'" icon="error" title="采集失败" :sub-title="info.error || ''">
       <template #extra><el-button @click="$router.push('/perf-dispatch')">返回下发</el-button></template>
     </el-result>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'

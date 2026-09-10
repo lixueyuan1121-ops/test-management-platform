@@ -1,27 +1,19 @@
 <template>
-  <div class="requirements">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>需求覆盖</span>
-          <div class="actions">
+  <div class="requirements functional-workspace">
+    <WorkspacePage title="需求覆盖">
+      <template #actions>
             <el-select v-model="projectId" size="small" style="width:200px" placeholder="选择项目" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+        <el-button size="small" :icon="Refresh" title="刷新需求" aria-label="刷新需求" :loading="loading" @click="reload" />
+        <el-button type="primary" size="small" :disabled="!projectId" @click="openCreate">新建需求</el-button>
+      </template>
+      <template #filters>
             <el-select v-model="filterRelease" size="small" style="width:170px" clearable placeholder="按发版筛选" @change="reload">
               <el-option v-for="r in releases" :key="r.id" :label="r.version" :value="r.id" />
             </el-select>
-            <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
-            <el-button type="primary" size="small" :disabled="!projectId" @click="openCreate">新建需求</el-button>
-          </div>
-        </div>
       </template>
 
-      <el-alert type="info" :closable="false" show-icon class="intro">
-        需求↔用例↔发版的<b>追溯链</b>：AI 测试助手用<b>需求链接</b>抓文生成时会自动建需求并挂上该批用例；
-        也可手动新建/挂用例。覆盖状态：<b>未覆盖</b>(没挂用例)→<b>未执行</b>→<b>有失败</b>/<b>部分通过</b>→<b>全部通过</b>。
-        需求挂到发版后，发版质量卡长出「需求覆盖」统计。
-      </el-alert>
 
       <div v-if="rows.length" class="cov-summary">
         <span v-for="s in STATES" :key="s.key" class="cov-pill" :class="s.key">
@@ -67,7 +59,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 建/编辑需求 -->
     <el-dialog v-model="editDlg" :title="editing ? '编辑需求' : '新建需求'" width="480px">
@@ -87,7 +79,7 @@
     </el-dialog>
 
     <!-- 需求下用例（含最新执行结论 + 挂/摘） -->
-    <el-drawer v-model="casesDrawer" :title="`需求「${curReq?.title || ''}」的用例`" size="52%">
+    <el-drawer v-model="casesDrawer" :title="`需求「${curReq?.title || ''}」的用例`" size="min(960px, 100vw)">
       <div class="drawer-actions">
         <el-button size="small" type="primary" @click="openLink">挂用例</el-button>
         <el-button size="small" type="danger" :disabled="!casesSelected.length" @click="unlinkSel">摘除选中（{{ casesSelected.length }}）</el-button>
@@ -130,6 +122,9 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
+import '@/styles/workspace-overlays.css'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {

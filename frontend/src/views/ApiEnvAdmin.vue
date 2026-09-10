@@ -1,15 +1,12 @@
 <template>
-  <div class="api-env-admin">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>api 测试环境</span>
-          <div class="filters">
+  <div class="api-env-admin functional-workspace">
+    <WorkspacePage title="API 测试环境">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:180px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-          </div>
-        </div>
+        <el-button v-if="pid && isAdmin" type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button v-if="pid && isAdmin" @click="reload">重置</el-button>
       </template>
 
       <el-alert
@@ -68,12 +65,8 @@
           />
         </el-form-item>
 
-        <el-form-item>
-          <el-button type="primary" :loading="saving" @click="save">保存</el-button>
-          <el-button @click="reload">重置</el-button>
-        </el-form-item>
       </el-form>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 粘贴 curl 解析 -->
     <el-dialog v-model="curlDlg.visible" title="粘贴 curl 解析" width="720px" @closed="onCurlClosed">
@@ -138,6 +131,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Position, Upload } from '@element-plus/icons-vue'

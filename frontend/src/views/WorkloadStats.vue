@@ -1,38 +1,33 @@
 <template>
   <div class="workload">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>工作量统计</span>
-          <div class="filters">
+    <WorkspacePage title="工作量统计">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <el-date-picker v-model="range" type="daterange" range-separator="-" start-placeholder="开始" end-placeholder="结束"
               value-format="YYYY-MM-DD" size="small" style="width:240px" @change="load" />
-          </div>
-        </div>
       </template>
       <el-row :gutter="12" v-loading="loading">
         <el-col :span="8"><div class="stat"><div class="num">{{ data.total_tasks }}</div><div class="lbl">总任务数(条)</div></div></el-col>
         <el-col :span="8"><div class="stat"><div class="num green">{{ data.total_online }}</div><div class="lbl">累计上线数</div></div></el-col>
         <el-col :span="8"><div class="stat"><div class="num">{{ data.members?.length || 0 }}</div><div class="lbl">参与人数</div></div></el-col>
       </el-row>
-    </el-card>
-
-    <el-card style="margin-top:16px">
-      <template #header><span>成员工作量对比</span></template>
+    <section class="stat-section">
+      <h2>成员工作量对比</h2>
       <div ref="barEl" style="height:320px"></div>
-    </el-card>
+    </section>
 
-    <el-card style="margin-top:16px">
-      <template #header><span>每日工作量趋势</span></template>
+    <section class="stat-section">
+      <h2>每日工作量趋势</h2>
       <div ref="lineEl" style="height:320px"></div>
-    </el-card>
+    </section>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, reactive, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
@@ -109,6 +104,9 @@ function render() {
 </script>
 
 <style scoped>
+.stat-section { padding: 20px 0; border-top: 1px solid var(--el-border-color); margin-top: 16px; }
+.stat-section h2 { font-size: 16px; margin: 0 0 12px; }
+@media (max-width: 700px) { .workload :deep(.el-col-8) { flex: 0 0 100%; max-width: 100%; margin-bottom: 8px; } }
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .stat { text-align: center; padding: 8px 0; }

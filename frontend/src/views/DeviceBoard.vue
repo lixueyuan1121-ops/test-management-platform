@@ -1,22 +1,12 @@
 <template>
   <div class="board">
-    <!-- ① 头条：设备编队总览 -->
-    <div class="panel hero">
-      <div class="grid-bg"></div>
-      <div class="hero-l">
-        <div class="eyebrow">// DEVICE FLEET · 执行机监控</div>
-        <div class="hero-hi">设备看板</div>
-        <div class="hero-sub">全平台注册执行机的在线状态与任务执行实时视图（只读）</div>
-      </div>
-      <div class="hero-r">
-        <div class="clock">{{ clock }}<div class="date">{{ dateLine }}</div></div>
-        <div class="status-row">
-          <span class="dot" :class="{ live: ov.online_devices > 0 }"></span>
-          {{ ov.online_devices }} / {{ ov.total_devices }} ONLINE
-        </div>
-        <div class="proj-cnt">POLL // 每 {{ POLL_SEC }}s 刷新 · {{ lastAt }}</div>
-      </div>
-    </div>
+    <WorkspacePage title="设备看板">
+      <template #actions><span class="updated-at">更新于 {{ lastAt }}</span><el-button :icon="Refresh" aria-label="刷新设备看板" title="刷新设备看板" @click="load" /></template>
+      <template #filters>
+        <el-input v-model="keyword" clearable placeholder="搜索设备或负责人" aria-label="搜索设备或负责人" style="width:260px" />
+        <el-select v-model="onlineFilter" clearable placeholder="全部设备" aria-label="设备在线状态" style="width:160px"><el-option label="在线" value="online" /><el-option label="离线" value="offline" /></el-select>
+        <span class="updated-at">匹配 {{ visibleDevices.length }} 台</span>
+      </template>
 
     <!-- ② KPI 指标条 -->
     <el-alert v-if="refreshFailed" title="刷新失败，当前显示的是上次获取的数据" type="warning" :closable="false" show-icon />
@@ -47,10 +37,9 @@
       </div>
 
       <div v-else class="grid">
-        <div v-for="d in ov.devices" :key="d.id" class="card"
+        <div v-for="d in visibleDevices" :key="d.id" class="card"
              :class="{ offline: !d.online, 'is-running': d.run_counts.running > 0 }">
           <!-- 执行中：边缘扫描流光 -->
-          <div v-if="d.run_counts.running > 0" class="scan"></div>
 
           <div class="card-hd">
             <span class="light" :class="d.online ? 'on' : 'off'"></span>
@@ -108,16 +97,25 @@
         </div>
       </div>
     </div>
+    <el-empty v-if="ov.devices.length && !visibleDevices.length" description="没有符合筛选条件的设备" />
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getDeviceOverview } from '@/api'
 
 const POLL_SEC = 5
 const ONLINE_STATE = { online_devices: 0, total_devices: 0, running_devices: 0, devices: [] }
 const ov = ref({ ...ONLINE_STATE })
+const keyword = ref('')
+const onlineFilter = ref('')
+const visibleDevices = computed(() => ov.value.devices.filter(d =>
+  `${d.name || ''} ${d.runner_id || ''} ${d.owner?.name || ''}`.toLocaleLowerCase().includes(keyword.value.trim().toLocaleLowerCase()) &&
+  (!onlineFilter.value || Boolean(d.online) === (onlineFilter.value === 'online'))))
 const loading = ref(true)
 const lastAt = ref('—')
 const refreshFailed = ref(false)
@@ -225,11 +223,10 @@ onUnmounted(() => {
 /* 浅色主题：白底 + 浅灰卡片浮起；hero 保留深色科技条作顶部锚点（对齐 Dashboard 浅底+深色hero 的模式） */
 .board {
   /* 负 margin 抵消 MainLayout .main 的 20px 灰底 padding，让看板浅底铺满，与侧栏衔接处自然过渡 */
-  margin: -20px;
-  padding: 20px 20px 40px;
+  padding-bottom: 20px;
   min-height: calc(100vh - 60px);
   box-sizing: border-box;
-  background: linear-gradient(180deg, #eef1f5 0%, #f6f8fa 120px);
+  background: var(--tech-bg);
   color: #1a1d21;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
@@ -265,7 +262,9 @@ onUnmounted(() => {
   background: #fff; border: 1px solid #e3e8ef; border-radius: 12px; padding: 18px 20px;
   box-shadow: 0 2px 8px rgba(31,45,61,.05);
 }
-.kpi-num { font-family: 'JetBrains Mono', monospace; font-size: 34px; font-weight: 800; color: #1a1d21; line-height: 1; position: relative; display: inline-block; }
+.kpi-num { font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 700; color: #1a1d21; line-height: 1; position: relative; display: inline-block; }
+.updated-at { font-size: 12px; color: var(--el-text-color-secondary); }
+.board .kpi, .board .card { border-radius: 8px; box-shadow: none; }
 .kpi-num.on { color: #00b386; }
 .kpi-num.running { color: #2f7dd1; }
 .kpi-lbl { color: #7d8a9b; font-size: 13px; margin-top: 8px; }
@@ -282,7 +281,7 @@ onUnmounted(() => {
   transition: border-color .3s, box-shadow .3s, opacity .3s;
 }
 .card.is-running { border-color: #2f7dd166; box-shadow: 0 0 0 1px #2f7dd122, 0 8px 28px -8px #2f7dd144; }
-.card.offline { opacity: .6; }
+.card.offline { border-style: dashed; }
 
 /* 签名动效：执行中卡片顶部扫描流光 */
 .scan {

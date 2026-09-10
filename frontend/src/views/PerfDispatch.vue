@@ -1,13 +1,12 @@
 <template>
-  <div class="perf-dispatch">
-    <el-alert type="info" :closable="false" class="tip">
-      <template #title>
-        性能采集说明：所有场景都在这里下发。<b>长监控</b> 执行机无人值守自动跑；<b>冷启动 / 对话 / 热启动</b> 等交互场景，下发后到<b>执行机 agent 窗口</b>按提示操作应用并回车，采完自动回传。采集都归入下面选中的报告集，结果在「性能报告」看。
+  <div class="perf-dispatch functional-workspace">
+    <WorkspacePage title="性能任务下发">
+      <template #actions>
+        <el-button size="small" :icon="Refresh" title="刷新采集记录" aria-label="刷新采集记录" :loading="loading" @click="loadRuns" />
+        <el-button type="primary" @click="dispatchVisible = true">下发性能任务</el-button>
       </template>
-    </el-alert>
-
+      <template #filters>
     <!-- 报告集 -->
-    <el-card shadow="never" class="set-card">
       <div class="set-row">
         <span class="lbl">报告集</span>
         <el-select v-model="currentSet" style="width:240px" @change="loadRuns">
@@ -17,14 +16,16 @@
         <el-button size="small" @click="onNewSet">新建报告集</el-button>
         <el-button size="small" :disabled="!currentSet" @click="onRenameSet">重命名</el-button>
         <el-button size="small" type="danger" plain :disabled="!currentSet" @click="onDeleteSet">删除</el-button>
-        <span class="hint">下发/采集将归入选中的报告集；报告页按集独立展示。</span>
+        <el-select v-model="statusFilter" placeholder="全部状态" clearable size="small" style="width:130px" @change="loadRuns">
+          <el-option v-for="s in statuses" :key="s" :label="s" :value="s" />
+        </el-select>
       </div>
-    </el-card>
+      </template>
 
     <!-- 下发表单 -->
-    <el-card shadow="never" class="form-card">
-      <template #header><span>下发性能任务（source=dispatch）→ 归入「{{ currentSetName }}」</span></template>
-      <el-form :model="form" label-width="80px" inline>
+    <el-dialog v-model="dispatchVisible" title="下发性能任务" width="560px" :close-on-click-modal="!submitting">
+      <el-form :model="form" label-width="80px">
+        <el-form-item label="报告集">{{ currentSetName }}</el-form-item>
         <el-form-item label="场景" required>
           <el-select v-model="form.scenario" style="width:140px"><el-option v-for="s in scenarios" :key="s" :label="s" :value="s" /></el-select>
         </el-form-item>
@@ -36,26 +37,14 @@
         </el-form-item>
         <el-form-item v-if="form.scenario === '长监控'" label="时长"><el-input v-model="form.duration" placeholder="40s / 30m / 12h" style="width:120px" /></el-form-item>
         <el-form-item label="竞品进程"><el-input v-model="form.proc" placeholder="可选 Doubao.exe" style="width:140px" /></el-form-item>
-        <el-form-item><el-button type="primary" :loading="submitting" @click="submit">下发</el-button></el-form-item>
       </el-form>
       <div v-if="form.scenario !== '长监控'" class="warn">
         提示：「{{ form.scenario }}」需人工操作应用。下发后请到<b>执行机的 agent 窗口</b>，按 perfdog 提示操作（启动应用/发消息/切窗口）并回车，采完自动回传，回「性能报告」刷新查看。
       </div>
-    </el-card>
+      <template #footer><el-button :disabled="submitting" @click="dispatchVisible = false">取消</el-button><el-button type="primary" :loading="submitting" @click="submit">确认下发</el-button></template>
+    </el-dialog>
 
     <!-- 记录表 -->
-    <el-card shadow="never">
-      <template #header>
-        <div class="head">
-          <span>任务 / 采集记录{{ currentSet ? `（${currentSetName}）` : '' }}</span>
-          <div>
-            <el-select v-model="statusFilter" placeholder="全部状态" clearable size="small" style="width:130px;margin-right:8px" @change="loadRuns">
-              <el-option v-for="s in statuses" :key="s" :label="s" :value="s" />
-            </el-select>
-            <el-button size="small" :loading="loading" @click="loadRuns">刷新</el-button>
-          </div>
-        </div>
-      </template>
       <el-table :data="runs" v-loading="loading" size="small">
         <el-table-column prop="id" label="#" width="52" />
         <el-table-column prop="scenario" label="场景" width="88" />
@@ -78,11 +67,14 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -98,6 +90,7 @@ const currentSet = ref(0)   // 0 = 全部/不归集
 const runs = ref([])
 const loading = ref(false)
 const submitting = ref(false)
+const dispatchVisible = ref(false)
 const statusFilter = ref('')
 
 const currentSetName = computed(() => (currentSet.value ? (sets.value.find((s) => s.id === currentSet.value)?.name || '未命名') : '不归集'))
@@ -152,6 +145,7 @@ async function submit() {
     }
     if (form.proc) data.proc = form.proc
     const run = await dispatchPerfJob(data)
+    dispatchVisible.value = false
     ElMessage.success('已下发')
     await loadRuns(); await loadSets()
     // 交互场景需人工按提示推进 → 直接跳采集控制页(用下发返回的 run.id)
@@ -169,7 +163,9 @@ onMounted(() => { loadDevices(); loadSets(); loadRuns() })
 .tip { margin-bottom: 14px; }
 .tip code { background: rgba(0, 0, 0, .06); padding: 0 4px; border-radius: 3px; }
 .set-card { margin-bottom: 14px; }
-.set-row { display: flex; align-items: center; gap: 10px; }
+.set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.set-row .el-select { max-width: 100%; }
+.perf-dispatch :deep(.el-dialog .el-form-item__content > .el-input), .perf-dispatch :deep(.el-dialog .el-form-item__content > .el-select) { width: 100% !important; }
 .set-row .lbl { font-weight: 600; }
 .set-row .hint { font-size: 12px; color: #909399; margin-left: 6px; }
 .form-card { margin-bottom: 16px; }

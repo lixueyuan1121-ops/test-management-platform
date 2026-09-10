@@ -1,0 +1,53 @@
+const { chromium } = require('../../tools/qalab-runner/eval/node_modules/playwright');
+const assert = require('node:assert/strict');
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const errors = [], writes = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.addInitScript(() => localStorage.setItem('tp_token', 'mock-local-only'));
+    await page.route(url => url.pathname.startsWith('/api/'), async route => {
+      const req = route.request(), path = new URL(req.url()).pathname;
+      let data = [];
+      if (req.method() !== 'GET') writes.push({ path, body: req.postData() ? req.postDataJSON() : null });
+      if (path.endsWith('/auth/me')) data = { user: { id: 1, name: '测试员' }, is_platform_admin: true, memberships: [] };
+      if (path.endsWith('/projects')) data = [{ id: 1, name: '测试项目', code: 'test' }];
+      if (path.endsWith('/tasks')) data = [{ id: 1, title: '验证任务', description: '验证任务' }];
+      if (path.endsWith('/stats/overview')) data = {};
+      if (path.endsWith('/commander/ask')) data = { job_id: 1 };
+      if (path.endsWith('/ai-jobs/1')) data = { status: 'done', result: { type: 'draft', draft: { endpoint: '/api/test-plans/1/run', method: 'POST', payload: { runner: 'mock-runner' }, human_summary: '执行本地模拟计划' } } };
+      await route.fulfill({ json: { code: 0, data } });
+    });
+    const base = process.env.UI_BASE_URL || 'http://127.0.0.1:5189';
+    await page.goto(`${base}/dashboard`);
+    await page.getByRole('heading', { name: '工作台', exact: true }).waitFor();
+    await page.screenshot({ path: '/tmp/workspace-dashboard-desktop.png' });
+    await page.goto(`${base}/my-reports`);
+    await page.getByRole('button', { name: '填报', exact: true }).click();
+    const report = page.getByRole('dialog', { name: '填报日报 · 验证任务', exact: true });
+    await report.getByRole('button', { name: '提交日报', exact: true }).click();
+    await report.waitFor({ state: 'hidden' });
+    assert.equal(writes.find(w => w.path === '/api/daily-reports').body.task_id, 1);
+    await page.goto(`${base}/commander`);
+    await page.getByPlaceholder('问我一个关于测试/质量的问题，回车发送（Shift+Enter 换行）').fill('执行计划');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.getByRole('button', { name: '确认执行', exact: true }).waitFor();
+    assert(!writes.some(w => w.path === '/api/test-plans/1/run'));
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '已取消', exact: true }).waitFor();
+    assert(!writes.some(w => w.path === '/api/test-plans/1/run'));
+    await page.getByPlaceholder('问我一个关于测试/质量的问题，回车发送（Shift+Enter 换行）').fill('执行计划');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.getByRole('button', { name: '确认执行', exact: true }).click();
+    await page.getByRole('button', { name: '已执行', exact: true }).waitFor();
+    assert.equal(writes.filter(w => w.path === '/api/test-plans/1/run').length, 1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: '/tmp/commander-mobile.png' });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.deepEqual(errors, []);
+    console.log('PASS workspace dashboard, daily report payload, commander confirm/cancel, mobile layout');
+  } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exit(1); });

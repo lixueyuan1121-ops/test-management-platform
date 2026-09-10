@@ -1,20 +1,17 @@
 <template>
-  <div class="issues">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>遗留问题</span>
-          <div class="filters">
+  <div class="issues functional-workspace">
+    <WorkspacePage title="遗留问题">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+      </template>
+      <template #filters>
             <el-select v-model="statusFilter" placeholder="状态" size="small" style="width:120px" @change="load">
               <el-option label="未解决" value="open" />
               <el-option label="已解决" value="resolved" />
               <el-option label="全部" value="" />
             </el-select>
-          </div>
-        </div>
       </template>
       <el-table :data="issues" v-loading="loading" size="small" empty-text="暂无遗留问题">
         <el-table-column prop="title" label="问题" min-width="160" />
@@ -49,7 +46,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" title="关联外部缺陷" width="440px">
       <el-form label-width="90px">
@@ -65,6 +62,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'

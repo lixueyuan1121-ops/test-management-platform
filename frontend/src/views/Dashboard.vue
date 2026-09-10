@@ -1,24 +1,7 @@
 <template>
   <div class="dashboard">
     <!-- ① 控制台头条 -->
-    <div class="panel hero">
-      <div class="grid-bg"></div>
-      <div class="hero-l">
-        <div class="eyebrow">// OPERATIONS CENTER</div>
-        <div class="hero-hi">{{ greeting }}，{{ auth.user?.name || auth.user?.username }}</div>
-        <div class="hero-sub">
-          {{ auth.user?.is_platform_admin ? '平台管理员视角 · 管理所有项目与人员' : '项目成员视角 · 查看你的任务与日报' }}
-        </div>
-      </div>
-      <div class="hero-r">
-        <div class="clock">
-          {{ clock }}
-          <div class="date">{{ dateLine }}</div>
-        </div>
-        <div class="status-row"><span class="dot"></span> SYSTEM // READY</div>
-        <div class="proj-cnt">NODES // {{ overview?.project_cnt ?? projects.length }} 项目 · {{ auth.memberships.length }} 成员关系</div>
-      </div>
-    </div>
+    <header class="workspace-head"><h1>工作台</h1><span>{{ greeting }}，{{ auth.user?.name || auth.user?.username }} · {{ dateLine }}</span></header>
 
     <!-- ② KPI 指标墙：今日派单流转状态维度 -->
     <div v-if="!isEmpty" class="kpi-wall" v-loading="ovLoading" element-loading-background="rgba(255,255,255,0.6)">
@@ -308,6 +291,9 @@ function roleClass(pid) {
 </script>
 
 <style scoped>
+.workspace-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; }
+.workspace-head h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+.workspace-head span { font-size: 13px; color: var(--el-text-color-secondary); }
 /* 亮色科技风 token（与全局 theme.css 呼应），仅作用于本页 */
 .dashboard {
   --ink: #f4f6f9;

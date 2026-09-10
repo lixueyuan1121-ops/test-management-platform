@@ -1,10 +1,7 @@
 <template>
   <div class="fc-page">
-    <el-card>
-      <template #header>
-        <div class="hd">
-          <span>版本质量聚焦 · 失败根因去噪</span>
-          <div class="hd-r">
+    <WorkspacePage title="版本质量聚焦">
+      <template #actions>
             <el-select v-model="projectId" placeholder="项目" size="small" style="width:180px" @change="onProject">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
@@ -12,8 +9,6 @@
                        no-data-text="该项目暂无发版记录" @change="onRelease">
               <el-option v-for="r in releases" :key="r.id" :label="`${r.version}（${r.release_date}）`" :value="r.id" />
             </el-select>
-          </div>
-        </div>
       </template>
 
       <!-- 需求勾选 -->
@@ -56,11 +51,12 @@
         </div>
       </div>
       <el-empty v-if="releaseId && !clusters.length && !running" description="暂无聚类结果，点上方「AI 聚类去噪」" />
-    </el-card>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
@@ -145,7 +141,7 @@ init()
 .overview .big { font-size: 24px; font-weight: 700; color: #00b386; font-family: monospace; }
 .cards { display: flex; flex-direction: column; gap: 10px; }
 .rc-card { border: 1px solid #e3e8ef; border-radius: 8px; padding: 14px 16px; }
-.rc-top { display: flex; align-items: center; gap: 10px; }
+.rc-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .rc-title { font-weight: 600; font-size: 15px; }
 .rc-sum { color: #606266; font-size: 13px; margin: 8px 0; }
 .rc-reqs { font-size: 12px; color: #909399; }

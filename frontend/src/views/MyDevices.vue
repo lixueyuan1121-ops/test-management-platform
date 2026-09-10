@@ -1,12 +1,7 @@
 <template>
-  <div class="my-devices">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>我的执行设备</span>
-          <el-button type="primary" size="small" :icon="Plus" @click="openRegister">注册设备</el-button>
-        </div>
-      </template>
+  <div class="my-devices functional-workspace">
+    <WorkspacePage title="我的执行设备">
+      <template #actions><el-button type="primary" size="small" :icon="Plus" @click="openRegister">注册设备</el-button></template>
 
       <el-alert type="info" :closable="false" show-icon class="intro">
         在自己的电脑上部署 runner,把这里生成的 <b>专属 token</b> 填进 runner 的 <code>.env</code>(RUNNER_TOKEN)与
@@ -45,7 +40,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 注册/编辑对话框(共用;dialog.id 为空=注册,非空=编辑) -->
     <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑执行设备' : '注册执行设备'" width="460px">
@@ -91,6 +86,8 @@
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, CopyDocument } from '@element-plus/icons-vue'

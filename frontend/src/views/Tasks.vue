@@ -1,20 +1,20 @@
 <template>
-  <div class="tasks">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>任务分配</span>
-          <div class="filters">
+  <div class="tasks functional-workspace">
+    <WorkspacePage title="任务分配">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:180px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
             <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid">复制昨日</el-button>
             <el-button type="primary" size="small" v-if="canManage" @click="openCreate" :disabled="!pid">新建任务</el-button>
-          </div>
-        </div>
       </template>
-      <el-table :data="tasks" v-loading="loading" size="small" empty-text="该日无任务" row-key="id" @expand-change="onExpandChange">
+      <template #filters>
+        <el-input v-model="taskKeyword" clearable aria-label="搜索任务名称或负责人" placeholder="搜索任务名称或负责人" style="width:260px" />
+        <el-select v-model="statusFilter" clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:160px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
+        <span class="cl-hint">共 {{ filteredTasks.length }} 个任务</span>
+      </template>
+      <el-table :data="filteredTasks" v-loading="loading" size="small" empty-text="没有符合条件的任务" row-key="id" @expand-change="onExpandChange">
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="cl-expand">
@@ -131,7 +131,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="560px">
       <el-form :model="form" label-width="90px">
@@ -167,7 +167,7 @@
     </el-dialog>
 
     <!-- 任务详情抽屉（只读回溯）-->
-    <el-drawer v-model="detail.visible" :title="`任务详情 · ${detail.row?.title || ''}`" size="480px">
+    <el-drawer v-model="detail.visible" :title="`任务详情 · ${detail.row?.title || ''}`" size="min(640px, 100vw)">
       <div v-if="detail.row" class="detail">
         <p class="d-row"><span class="d-k">任务名称</span> {{ detail.row.title || '—' }}</p>
         <p class="d-row"><span class="d-k">状态</span>
@@ -202,6 +202,8 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
@@ -245,6 +247,11 @@ const canManage = computed(() => {
 })
 const date = ref(new Date().toISOString().slice(0, 10))
 const tasks = ref([])
+const taskKeyword = ref('')
+const statusFilter = ref('')
+const filteredTasks = computed(() => tasks.value.filter(row =>
+  `${row.description || ''} ${row.title || ''} ${row.assigned_to_name || ''}`.toLocaleLowerCase().includes(taskKeyword.value.trim().toLocaleLowerCase()) &&
+  (!statusFilter.value || row.status === statusFilter.value)))
 const members = ref([])
 const loading = ref(false)
 const dialog = reactive({ visible: false, id: null, saving: false })
@@ -401,7 +408,7 @@ async function onCopy() {
 .cl-dim { color: var(--tech-dim, #9aa3b2); }
 .cl-expand { padding: 8px 16px; }
 .cl-empty { color: var(--tech-dim, #9aa3b2); font-size: 13px; padding: 4px 0; }
-.cl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cl-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cl-hint { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
 .exec-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .exec-meta { color: var(--tech-dim, #9aa3b2); font-size: 12px; }

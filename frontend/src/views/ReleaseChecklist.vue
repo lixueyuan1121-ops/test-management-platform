@@ -1,24 +1,14 @@
 <template>
   <div class="release-checklist">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>上线 checklist</span>
-          <div class="filters">
+    <WorkspacePage title="上线 checklist">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
-          </div>
-        </div>
       </template>
 
-      <el-alert type="warning" :closable="false" show-icon class="intro">
-        漏斗末端:用例库 → 回归用例库 → <b>上线checklist</b>。这里是上线前要跑一遍的最终回归集
-        (在「回归用例库」勾选用例点「加入上线checklist」纳入)。勾选后选设备可<b>直接执行</b>;
-        <b>移除</b>只从本清单剔除,不影响回归用例库和总用例。manual 用例不可执行。
-      </el-alert>
-
+      <template #selection>
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <el-select v-model="runner" size="small" style="width:180px"
@@ -34,7 +24,7 @@
         <el-button type="danger" size="small" :loading="removing" @click="removeSelected">移出清单</el-button>
         <span class="sel-hint">执行仅跳过 manual;选了发版则结果计入该版本质量卡(实体级)</span>
       </div>
-
+      </template>
       <el-table :data="rows" v-loading="loading" size="small" border stripe
                 empty-text="清单为空(去「回归用例库」勾选用例「加入上线checklist」)"
                 @selection-change="(s) => (selected = s)">
@@ -63,11 +53,12 @@
         </el-table-column>
       </el-table>
       <div v-if="rows.length" class="foot">共 {{ rows.length }} 条待上线验证用例</div>
-    </el-card>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
@@ -153,7 +144,9 @@ onMounted(async () => {
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; }
 .intro { margin-bottom: 12px; }
-.dispatch-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #fdf6ec; border-radius: 6px; margin-bottom: 10px; }
+.dispatch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
+.dispatch-bar .el-select { max-width: 100%; flex-shrink: 0; }
+.dispatch-bar .el-button { margin-left: 0; }
 .sel-info { font-weight: 600; color: #e6a23c; }
 .sel-hint { font-size: 12px; color: #909399; }
 .page-tag { margin: 0 2px; }

@@ -1,22 +1,17 @@
 <template>
-  <div class="plaza">
-    <div class="plaza-header">
-      <div class="plaza-title">
-        <span class="title-icon">🧰</span>
-        <div>
-          <h2>测试工具广场</h2>
-          <p class="subtitle">团队自研辅助测试工具集，点击卡片查看详情</p>
-        </div>
-      </div>
+  <div class="plaza functional-workspace">
+    <WorkspacePage title="测试工具广场">
+      <template #filters>
       <el-select v-model="catFilter" placeholder="全部分类" clearable size="default" style="width:200px" @change="load">
         <el-option v-for="c in categories" :key="c.id" :label="c.name" :value="c.id" />
       </el-select>
-    </div>
+        <el-input v-model="keyword" clearable placeholder="搜索工具名称或描述" aria-label="搜索工具" style="width:260px" />
+      </template>
 
     <div v-loading="loading" class="plaza-body">
-      <el-empty v-if="!tools.length" description="暂无已上线工具" />
+      <el-empty v-if="!visibleTools.length && !loading" description="暂无符合条件的工具" />
       <div class="tool-grid">
-        <div v-for="t in tools" :key="t.id" class="tool-card" @click="onTool(t)">
+        <div v-for="t in visibleTools" :key="t.id" class="tool-card" role="button" tabindex="0" :aria-label="`查看工具 ${t.name}`" @click="onTool(t)" @keydown.enter="onTool(t)" @keydown.space.prevent="onTool(t)">
           <div class="card-accent" :style="{ background: accentColor(t.category_id) }"></div>
           <div class="card-content">
             <div class="card-top">
@@ -41,7 +36,7 @@
         </div>
       </div>
     </div>
-
+    </WorkspacePage>
     <el-dialog v-if="detail.visible" v-model="detail.visible" :title="detail.name" width="520px" class="detail-dialog">
       <el-descriptions :column="1" border size="default">
         <el-descriptions-item label="分类">{{ detail.category_name }}</el-descriptions-item>
@@ -58,13 +53,17 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ElMessage } from 'element-plus'
 import { listCategories, listTools } from '@/api'
 
 const categories = ref([])
 const catFilter = ref(null)
 const tools = ref([])
+const keyword = ref('')
+const visibleTools = computed(() => tools.value.filter(t => `${t.name || ''} ${t.description || ''}`.toLocaleLowerCase().includes(keyword.value.trim().toLocaleLowerCase())))
 const loading = ref(false)
 const detail = reactive({ visible: false, name: '', description: '', doc_url: '', download_url: '', category_name: '', version: '' })
 
@@ -111,14 +110,14 @@ function accentBg(cid) { return morandi[(cid || 0) % morandi.length] + '22' }
 
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
   gap: 18px;
 }
 
 .tool-card {
   position: relative;
   background: #fff;
-  border-radius: 14px;
+  border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
   border: 1px solid #f0f0f0;

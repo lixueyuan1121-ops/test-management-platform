@@ -1,22 +1,16 @@
 <template>
-  <div class="feedback-imports">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>反馈导入记录</span>
-          <div class="actions">
-            <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
+  <div class="feedback-imports functional-workspace">
+    <WorkspacePage title="反馈导入记录">
+      <template #actions>
+            <el-button size="small" :icon="Refresh" aria-label="刷新导入记录" title="刷新导入记录" :loading="loading" @click="reload" />
             <el-button type="primary" size="small" @click="uploadDlg = true">手动上传 md/zip</el-button>
-          </div>
-        </div>
       </template>
-
-      <el-alert type="info" :closable="false" show-icon class="intro">
-        机器人把用户反馈加工成「需求+用例」的 md（可多文件打包 zip）推送到平台，自动解析成结构化用例并补 script。
-        这里是每次推送批次的记录；机器人走 <code>POST /api/feedback/ingest</code>（X-Bot-Token 鉴权）。手动上传用于兜底测试。
-      </el-alert>
-
-      <el-table :data="rows" v-loading="loading" size="small" border stripe empty-text="暂无导入记录">
+      <template #filters>
+        <el-input v-model="keyword" clearable placeholder="搜索文件或来源" aria-label="搜索导入记录" style="width:260px" />
+        <el-select v-model="statusFilter" clearable placeholder="全部状态" aria-label="导入状态" style="width:160px"><el-option v-for="(label, value) in STATUS_LABEL" :key="value" :label="label" :value="value" /></el-select>
+        <span>共 {{ filteredRows.length }} 条</span>
+      </template>
+      <el-table :data="filteredRows" v-loading="loading" size="small" border stripe empty-text="暂无符合条件的导入记录">
         <el-table-column prop="id" label="ID" width="60" align="center" />
         <el-table-column prop="filename" label="文件" min-width="200" show-overflow-tooltip />
         <el-table-column prop="source_bot" label="来源" width="120" show-overflow-tooltip>
@@ -57,7 +51,7 @@
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 手动上传兜底 -->
     <el-dialog v-model="uploadDlg" title="手动上传反馈 md/zip" width="460px">
@@ -84,7 +78,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import { Refresh } from '@element-plus/icons-vue'
+import '@/styles/workspace-overlays.css'
 import { ElMessage } from 'element-plus'
 import { feedbackImports, refillScripts } from '@/api'
 
@@ -92,6 +89,11 @@ const STATUS_TYPE = { parsing: 'warning', done: 'success', failed: 'danger' }
 const STATUS_LABEL = { parsing: '解析中', done: '完成', failed: '失败' }
 
 const rows = ref([])
+const keyword = ref('')
+const statusFilter = ref('')
+const filteredRows = computed(() => rows.value.filter(row =>
+  `${row.filename || ''} ${row.source_bot || ''}`.toLocaleLowerCase().includes(keyword.value.trim().toLocaleLowerCase()) &&
+  (!statusFilter.value || row.status === statusFilter.value)))
 const loading = ref(false)
 const uploadDlg = ref(false)
 const botToken = ref(localStorage.getItem('tp_feedback_bot_token') || '')

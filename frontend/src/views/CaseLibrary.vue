@@ -1,13 +1,12 @@
 <template>
-  <div class="case-library">
-    <el-card>
-      <template #header>
-        <div class="header">
-          <span>AI用例库</span>
-          <div class="filters">
+  <div class="case-library functional-workspace">
+    <WorkspacePage title="功能用例库">
+      <template #actions>
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+      </template>
+      <template #filters>
             <el-select v-model="reviewStatus" placeholder="采纳状态" size="small" clearable style="width:120px" @change="reload">
               <el-option label="已采纳" value="adopted" />
               <el-option label="已否决" value="rejected" />
@@ -33,10 +32,9 @@
               v-model="keyword" placeholder="按测试点搜索" size="small" clearable style="width:180px"
               @keyup.enter="reload" @clear="reload"
             />
-          </div>
-        </div>
+            <el-button size="small" :icon="Search" @click="reload">查询</el-button>
       </template>
-
+      <template #selection>
       <div v-if="selected.length" class="dispatch-bar">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <el-select v-model="runner" size="small" style="width:180px"
@@ -49,9 +47,8 @@
         <el-button size="small" plain @click="bulkSetRegressionFlag(false)">取消回归</el-button>
         <el-button size="small" @click="bulkReview('adopted')">批量采纳</el-button>
         <el-button size="small" type="danger" plain @click="bulkDelete">批量删除</el-button>
-        <span class="sel-hint">「发送到执行机」需已采纳+关联任务;标记回归后可在「回归用例库」按页面执行</span>
       </div>
-
+      </template>
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
                 @selection-change="(s) => (selected = s)">
         <el-table-column type="selection" width="42" />
@@ -139,7 +136,7 @@
           @size-change="reload"
         />
       </div>
-    </el-card>
+    </WorkspacePage>
 
     <!-- 编辑弹窗 -->
     <el-dialog v-model="edit.visible" title="编辑用例" width="560px">
@@ -177,7 +174,7 @@
     </el-dialog>
 
     <!-- 详情抽屉 -->
-    <el-drawer v-model="detail.visible" title="用例详情" size="480px">
+    <el-drawer v-model="detail.visible" title="用例详情" size="min(720px, 100vw)">
       <div v-if="detail.row" class="detail">
         <p><b>{{ detail.row.title }}</b></p>
         <p class="d-row"><span class="d-k">执行类型</span> {{ (detail.row.exec_kind || 'gui').toUpperCase() }}</p>
@@ -216,6 +213,9 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { Search } from '@element-plus/icons-vue'
+import WorkspacePage from '@/components/WorkspacePage.vue'
+import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/store/app'
@@ -556,8 +556,10 @@ async function bulkDelete() {
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
-.dispatch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 8px 12px; background: #f3f8f6; border: 1px solid #d6e9e2; border-radius: 6px; }
-.sel-info { font-weight: 600; color: #00926e; }
+.dispatch-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
+.dispatch-bar .el-select { flex-shrink: 0; max-width: 100%; }
+.dispatch-bar .el-button { margin-left: 0; }
+.sel-info { font-size: 13px; font-weight: 600; color: var(--el-color-primary); white-space: nowrap; }
 .sel-hint { color: #90a4ae; font-size: 12px; }
 .edit-hint { color: #90a4ae; font-size: 12px; margin-right: auto; }
 .sel-fix-tag { margin-top: 4px; cursor: help; display: block; height: auto; line-height: 1.5; white-space: normal; padding: 2px 6px; }

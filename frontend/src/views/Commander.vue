@@ -1,13 +1,10 @@
 <template>
   <div class="cmd-page">
-    <el-card>
-      <template #header>
-        <div class="hd">
-          <span>测试指挥官 · 用一句话问质量</span>
+    <WorkspacePage title="测试指挥官">
+      <template #actions>
           <el-select v-model="projectId" size="small" style="width:200px" @change="onProject">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
-        </div>
       </template>
 
       <!-- 能力引导：你可以问我… -->
@@ -44,7 +41,7 @@
 
             <!-- draft：确认卡 -->
             <template v-else-if="m.type === 'draft'">
-              <el-card class="draft-card" shadow="never">
+              <section class="draft-card">
                 <div class="draft-h"><el-icon><Warning /></el-icon><b>需要确认后执行</b></div>
                 <div class="draft-sum">{{ m.draft.human_summary }}</div>
                 <el-collapse class="data-collapse">
@@ -55,10 +52,10 @@
                 </el-collapse>
                 <div class="draft-btns">
                   <el-button type="primary" size="small" :loading="m.executing" :disabled="m.done"
-                             @click="confirmDraft(m)">{{ m.done ? '已执行' : '确认执行' }}</el-button>
+                             @click="confirmDraft(m)">{{ m.canceled ? '已取消' : (m.done ? '已执行' : '确认执行') }}</el-button>
                   <el-button size="small" :disabled="m.done" @click="cancelDraft(m)">取消</el-button>
                 </div>
-              </el-card>
+              </section>
             </template>
 
             <!-- pending/running：轮询期间的实时状态气泡（拿到结果后原地替换成 answer/draft/clarify） -->
@@ -81,11 +78,12 @@
                   @keydown.enter="onEnter" :disabled="loading" />
         <el-button type="primary" :disabled="!canSend" @click="send">发送</el-button>
       </div>
-    </el-card>
+    </WorkspacePage>
   </div>
 </template>
 
 <script setup>
+import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { InfoFilled, Warning, Loading } from '@element-plus/icons-vue'
@@ -205,6 +203,7 @@ async function confirmDraft(m) {
 }
 
 function cancelDraft(m) {
+  m.canceled = true
   m.done = true
   messages.value.push({ role: 'assistant', type: 'system', text: '已取消该操作' })
   scrollToEnd()
@@ -220,15 +219,15 @@ init()
 .hints-t { font-size: 13px; color: #909399; }
 .hint { cursor: default; }
 .conv {
-  min-height: 360px; max-height: 56vh; overflow-y: auto;
-  background: #f7f9fc; border-radius: 8px; padding: 14px; margin-bottom: 12px;
+  height: max(220px, calc(100dvh - 330px)); overflow-y: auto;
+  padding: 14px 0; margin-bottom: 12px;
 }
 .empty { color: #909399; font-size: 13px; text-align: center; padding: 40px 0; }
 .row { display: flex; margin-bottom: 12px; }
 .row.user { justify-content: flex-end; }
 .row.assistant { justify-content: flex-start; }
-.bubble { max-width: 78%; padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.6; }
-.user-bubble { background: #00b386; color: #fff; white-space: pre-wrap; word-break: break-word; }
+.bubble { max-width: 88%; min-width: 0; padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.user-bubble { background: var(--el-color-primary); color: #fff; white-space: pre-wrap; word-break: break-word; }
 .asst-bubble { background: #fff; color: #303133; border: 1px solid #ebeef5; }
 .clarify-bubble { background: #fdf6ec; border-color: #f5dab1; color: #b88230; display: flex; align-items: center; gap: 6px; }
 .system-bubble { background: #f0f9eb; border-color: #e1f3d8; color: #529b2e; }
@@ -244,12 +243,12 @@ init()
   overflow: auto; max-height: 320px; font-size: 12px; line-height: 1.5;
   font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
 }
-.draft-card { border: 1px solid #f5dab1; background: #fffdf7; }
+.draft-card { padding: 4px 0; }
 .draft-h { display: flex; align-items: center; gap: 6px; color: #e6a23c; font-size: 14px; }
 .draft-sum { margin: 8px 0; color: #303133; font-size: 14px; }
 .draft-ep { font-size: 12px; color: #909399; font-family: ui-monospace, monospace; margin-bottom: 6px; }
 .draft-btns { margin-top: 10px; display: flex; gap: 10px; }
-.input-bar { display: flex; gap: 10px; align-items: flex-end; }
+.input-bar { position: sticky; bottom: -20px; background: var(--tech-bg); padding: 12px 0; display: flex; gap: 10px; align-items: flex-end; }
 .input-bar .el-button { height: 56px; }
 
 /* Markdown 正文（对齐 ReleaseNotes.vue 风格） */
