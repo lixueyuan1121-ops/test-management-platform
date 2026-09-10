@@ -55,7 +55,7 @@ const assert = require('node:assert/strict');
     await saveButton.click();
     await drawer.waitFor({ state: 'hidden' });
     assert.deepEqual(writes.filter(write => write.method === 'PATCH').at(-1).body, { title: '编辑后的反馈用例', steps: '新步骤\n'.repeat(20), expected: '新预期', precondition: '已登录', exec_kind: 'gui' });
-    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     const edited = page.locator('.el-table__body-wrapper tr').filter({ hasText: '编辑后的反馈用例' });
     await edited.locator('.el-checkbox').click();
     await page.getByRole('button', { name: '发送执行', exact: true }).click();

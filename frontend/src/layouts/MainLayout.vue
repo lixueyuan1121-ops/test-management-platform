@@ -36,7 +36,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
 import { visibleNavigation } from '@/utils/navigation'
@@ -52,7 +52,17 @@ const icons = { Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warn
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
-const collapsed = ref(localStorage.getItem('tp_sidebar_collapsed') === '1')
+const narrowQuery = window.matchMedia('(max-width: 700px)')
+const narrow = ref(narrowQuery.matches)
+const desktopCollapsed = ref(localStorage.getItem('tp_sidebar_collapsed') === '1')
+const mobileCollapsed = ref(true)
+const collapsed = computed(() => narrow.value ? mobileCollapsed.value : desktopCollapsed.value)
+function onViewportChange(event) {
+  narrow.value = event.matches
+  if (event.matches) mobileCollapsed.value = true
+}
+narrowQuery.addEventListener('change', onViewportChange)
+onBeforeUnmount(() => narrowQuery.removeEventListener('change', onViewportChange))
 const navSearch = ref('')
 const menuRef = ref(null)
 const mainRef = ref(null)
@@ -64,9 +74,12 @@ const currentGroup = computed(() => permittedGroups.value.find(g => g.items.some
 const pageTitle = computed(() => route.meta.title || currentGroup.value?.items.find(item => item.path === activeMenu.value)?.label || '工作台')
 const openSubs = computed(() => navSearch.value ? groups.value.map(g => g.id) : (currentGroup.value ? [currentGroup.value.id] : []))
 function toggleCollapse() {
-  collapsed.value = !collapsed.value
+  if (narrow.value) mobileCollapsed.value = !mobileCollapsed.value
+  else {
+    desktopCollapsed.value = !desktopCollapsed.value
+    localStorage.setItem('tp_sidebar_collapsed', desktopCollapsed.value ? '1' : '0')
+  }
   navSearch.value = ''
-  localStorage.setItem('tp_sidebar_collapsed', collapsed.value ? '1' : '0')
 }
 watch([openSubs, collapsed], async () => {
   await nextTick()
@@ -74,6 +87,7 @@ watch([openSubs, collapsed], async () => {
 })
 watch(() => route.path, async () => {
   navSearch.value = ''
+  if (narrow.value) mobileCollapsed.value = true
   await nextTick()
   mainRef.value?.$el?.scrollTo({ top: 0, left: 0 })
 })

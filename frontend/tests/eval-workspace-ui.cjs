@@ -70,7 +70,7 @@ const assert = require('node:assert/strict');
     assert.equal(payload.dialog_options.model, 'test-model');
     await page.screenshot({ path: '/tmp/eval-library-desktop.png' });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     await page.getByRole('button', { name: '配置并下发', exact: true }).click();
     await page.waitForTimeout(350);
     const box = await dispatch.boundingBox();

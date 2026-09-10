@@ -62,7 +62,7 @@ const assert = require('node:assert/strict');
     const dispatch = await page.getByRole('button', { name: '发送到执行机', exact: true }).boundingBox();
     assert(dispatch.y > 55 && dispatch.y < 350);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     await page.waitForTimeout(350);
     assert.equal(await page.getByPlaceholder('按测试点搜索').isVisible(), false);
     await page.getByRole('button', { name: '筛选', exact: true }).click();

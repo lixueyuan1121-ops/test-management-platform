@@ -43,7 +43,7 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '已执行', exact: true }).waitFor();
     assert.equal(writes.filter(w => w.path === '/api/test-plans/1/run').length, 1);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     await page.waitForTimeout(350);
     await page.screenshot({ path: '/tmp/commander-mobile.png' });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);

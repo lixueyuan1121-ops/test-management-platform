@@ -7,7 +7,11 @@
             </el-select>
             <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
       </template>
-      <el-row :gutter="12" v-loading="loading">
+      <el-result v-if="loadError" icon="error" title="日报统计加载失败"><template #extra><el-button @click="load">重试统计</el-button></template></el-result>
+      <el-skeleton v-else-if="loading" :rows="4" animated />
+      <el-empty v-else-if="!ready" description="请选择项目和日期" />
+      <template v-else>
+      <el-row :gutter="12">
         <el-col :span="4"><div class="stat"><div class="num">{{ data.should_submit }}</div><div class="lbl">应交人数</div></div></el-col>
         <el-col :span="4"><div class="stat"><div class="num green">{{ data.submitted }}</div><div class="lbl">已交</div></div></el-col>
         <el-col :span="4"><div class="stat"><div class="num red">{{ data.not_submitted?.length || 0 }}</div><div class="lbl">未交</div></div></el-col>
@@ -46,13 +50,14 @@
         <el-table-column prop="summary" label="今日小结" />
       </el-table>
     </section>
+      </template>
     </WorkspacePage>
   </div>
 </template>
 
 <script setup>
 import WorkspacePage from '@/components/WorkspacePage.vue'
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { dailyStats } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -63,20 +68,30 @@ const pid = ref(null)
 const date = ref(new Date().toISOString().slice(0, 10))
 const data = reactive({ should_submit: 0, submitted: 0, not_submitted: [], avg_progress: 0, online_cnt: 0, open_issues: 0, new_issues: 0, workload_total: 0, reports: [] })
 const loading = ref(false)
+const ready = ref(false), loadError = ref(false)
+let version = 0, disposed = false
+onBeforeUnmount(() => { disposed = true; ++version })
 
 onMounted(async () => {
-  projects.value = await app.fetchProjects()
-  if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
+  try {
+    projects.value = await app.fetchProjects()
+    if (!disposed && projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await load() }
+  } catch { if (!disposed) loadError.value = true }
 })
 
 async function load() {
-  if (!pid.value) return
+  const current = ++version
+  ready.value = false; loadError.value = false; loading.value = false
+  if (!pid.value || !date.value) return
   setLastProjectId(pid.value)
   loading.value = true
   try {
     const d = await dailyStats(pid.value, date.value)
+    if (disposed || current !== version) return
     Object.assign(data, d)
-  } finally { loading.value = false }
+    ready.value = true
+  } catch { if (!disposed && current === version) loadError.value = true }
+  finally { if (!disposed && current === version) loading.value = false }
 }
 </script>
 

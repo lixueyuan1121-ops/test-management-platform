@@ -132,7 +132,7 @@ const assert = require('node:assert/strict');
     await page.waitForTimeout(300);
     await page.screenshot({ path: '/tmp/eval-results-desktop.png', fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.locator('.collapse-btn').click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('.aside').getBoundingClientRect().width <= 65);
     await page.getByRole('button', { name: '筛选与操作', exact: true }).click();
     assert(await page.locator('.header, .page-heading, .result-summary').evaluateAll(nodes => nodes.every(node => node.scrollWidth <= node.clientWidth + 1)));

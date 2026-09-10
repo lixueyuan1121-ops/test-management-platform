@@ -1,7 +1,7 @@
 <template>
   <div class="board">
     <WorkspacePage title="设备看板">
-      <template #actions><span class="updated-at">更新于 {{ lastAt }}</span><el-button :icon="Refresh" aria-label="刷新设备看板" title="刷新设备看板" @click="load" /></template>
+      <template #actions><span class="updated-at">{{ loaded ? `更新于 ${lastAt}` : '尚未获取数据' }}</span><el-button :icon="Refresh" :loading="loading" aria-label="刷新设备看板" title="刷新设备看板" @click="load" /></template>
       <template #filters>
         <el-input v-model="keyword" clearable placeholder="搜索设备或负责人" aria-label="搜索设备或负责人" style="width:260px" />
         <el-select v-model="onlineFilter" clearable placeholder="全部设备" aria-label="设备在线状态" style="width:160px"><el-option label="在线" value="online" /><el-option label="离线" value="offline" /></el-select>
@@ -9,29 +9,31 @@
       </template>
 
     <!-- ② KPI 指标条 -->
-    <el-alert v-if="refreshFailed" title="刷新失败，当前显示的是上次获取的数据" type="warning" :closable="false" show-icon />
+    <el-alert v-if="refreshFailed && loaded" title="刷新失败，当前显示的是上次获取的数据" type="warning" :closable="false" show-icon />
     <div class="kpi-wall">
       <div class="kpi">
-        <div class="kpi-num">{{ ov.total_devices }}</div>
+        <div class="kpi-num">{{ loaded ? ov.total_devices : '—' }}</div>
         <div class="kpi-lbl">注册设备</div>
       </div>
       <div class="kpi">
-        <div class="kpi-num on">{{ ov.online_devices }}</div>
+        <div class="kpi-num on">{{ loaded ? ov.online_devices : '—' }}</div>
         <div class="kpi-lbl">在线</div>
       </div>
       <div class="kpi">
-        <div class="kpi-num running">{{ ov.running_devices }}<span class="live-pip" v-if="ov.running_devices"></span></div>
+        <div class="kpi-num running">{{ loaded ? ov.running_devices : '—' }}<span class="live-pip" v-if="ov.running_devices"></span></div>
         <div class="kpi-lbl">执行中设备</div>
       </div>
       <div class="kpi">
-        <div class="kpi-num">{{ todayDone }}</div>
+        <div class="kpi-num">{{ loaded ? todayDone : '—' }}</div>
         <div class="kpi-lbl">今日完成</div>
       </div>
     </div>
 
     <!-- ③ 设备卡片网格 -->
-    <div v-loading="loading && !ov.devices.length" element-loading-background="rgba(17,20,26,0.6)">
-      <div v-if="!ov.devices.length && !loading" class="empty">
+    <el-result v-if="refreshFailed && !loaded" icon="error" title="设备数据加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
+    <el-skeleton v-else-if="!loaded" :rows="4" animated />
+    <div v-else>
+      <div v-if="!ov.devices.length" class="empty">
         <div class="empty-mark">∅</div>
         暂无注册设备。成员在「我的设备」登记执行机后，这里会显示其在线状态与执行情况。
       </div>
@@ -119,7 +121,9 @@ const visibleDevices = computed(() => ov.value.devices.filter(d =>
 const loading = ref(true)
 const lastAt = ref('—')
 const refreshFailed = ref(false)
+const loaded = ref(false)
 let fetching = false
+let disposed = false
 
 // 执行类型标识:后端 active_runs[].kind → 展示文案(卡片头全称/明细行短标)。
 // 老数据无 kind 按 func 兜底;未知新类型直接显示原文,后端扩展类型时前端无需先行发版。
@@ -148,15 +152,19 @@ const todayDone = computed(() =>
   ov.value.devices.reduce((s, d) => s + d.today.passed + d.today.failed, 0))
 
 async function load() {
-  if (fetching) return
+  if (fetching || disposed) return
   fetching = true
+  loading.value = true
   try {
-    ov.value = await getDeviceOverview()
+    const data = await getDeviceOverview({ silent: true })
+    if (disposed) return
+    ov.value = data
+    loaded.value = true
     refreshFailed.value = false
     fetchBase.value = Date.now()
     lastAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   } catch {
-    refreshFailed.value = true
+    if (!disposed) refreshFailed.value = true
   } finally {
     fetching = false
     loading.value = false
@@ -204,6 +212,7 @@ onMounted(() => {
   pollTimer = setInterval(load, POLL_SEC * 1000)
 })
 onUnmounted(() => {
+  disposed = true
   clearInterval(clockTimer)
   clearInterval(pollTimer)
 })

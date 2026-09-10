@@ -2,7 +2,7 @@
   <div class="requirements functional-workspace">
     <WorkspacePage title="需求覆盖">
       <template #actions>
-            <el-select v-model="projectId" size="small" style="width:200px" placeholder="选择项目" @change="onProjectChange">
+            <el-select v-model="projectId" :disabled="editDlg || casesDrawer || saving || linking || unlinking" size="small" style="width:200px" placeholder="选择项目" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
         <el-button size="small" :icon="Refresh" title="刷新需求" aria-label="刷新需求" :loading="loading" @click="reload" />
@@ -62,8 +62,8 @@
     </WorkspacePage>
 
     <!-- 建/编辑需求 -->
-    <el-dialog v-model="editDlg" :title="editing ? '编辑需求' : '新建需求'" width="480px">
-      <el-form label-width="80px">
+    <el-dialog v-model="editDlg" :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :title="editing ? '编辑需求' : '新建需求'" width="480px">
+      <el-form label-width="80px" :disabled="saving">
         <el-form-item label="标题"><el-input v-model="form.title" size="small" placeholder="需求名称" /></el-form-item>
         <el-form-item label="文档链接"><el-input v-model="form.url" size="small" placeholder="https://…（可选；同链接自动去重）" /></el-form-item>
         <el-form-item label="所属发版">
@@ -73,7 +73,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="editDlg = false">取消</el-button>
+        <el-button :disabled="saving" @click="editDlg = false">取消</el-button>
         <el-button type="primary" :loading="saving" :disabled="!form.title" @click="save">保存</el-button>
       </template>
     </el-dialog>
@@ -81,11 +81,12 @@
     <!-- 需求下用例（含最新执行结论 + 挂/摘） -->
     <el-drawer v-model="casesDrawer" :title="`需求「${curReq?.title || ''}」的用例`" size="min(960px, 100vw)">
       <div class="drawer-actions">
-        <el-button size="small" type="primary" @click="openLink">挂用例</el-button>
-        <el-button size="small" type="danger" :disabled="!casesSelected.length" @click="unlinkSel">摘除选中（{{ casesSelected.length }}）</el-button>
+        <el-button size="small" type="primary" :disabled="casesLoading || casesError || unlinking" @click="openLink">挂用例</el-button>
+        <el-button size="small" type="danger" :loading="unlinking" :disabled="!casesSelected.length || casesLoading || casesError" @click="unlinkSel">摘除选中（{{ casesSelected.length }}）</el-button>
         <el-button size="small" @click="reloadCases">刷新</el-button>
       </div>
-      <el-table :data="reqCases" v-loading="casesLoading" size="small" border stripe empty-text="未挂用例"
+      <el-result v-if="casesError" icon="error" title="需求用例加载失败"><template #extra><el-button @click="reloadCases">重试用例</el-button></template></el-result>
+      <el-table v-else :data="reqCases" v-loading="casesLoading" size="small" border stripe empty-text="未挂用例"
                 @selection-change="(s) => (casesSelected = s)">
         <el-table-column type="selection" width="42" />
         <el-table-column prop="id" label="ID" width="70" align="center" />
@@ -103,19 +104,24 @@
     </el-drawer>
 
     <!-- 挂用例挑选（复用已采纳用例列表） -->
-    <el-dialog v-model="linkDlg" title="挂用例到需求" width="680px" top="8vh">
+    <el-dialog v-if="linkDlg" v-model="linkDlg" :show-close="!linking" :close-on-click-modal="!linking" :close-on-press-escape="!linking" title="挂用例到需求" width="680px" top="8vh">
       <el-input v-model="linkKeyword" size="small" placeholder="按标题搜索(已采纳用例)" clearable style="width:240px;margin-bottom:10px" @keyup.enter="reloadLinkCand" />
       <el-button size="small" style="margin-left:8px" @click="reloadLinkCand">查询</el-button>
-      <el-table :data="linkCand" v-loading="linkLoading" size="small" border stripe height="360"
+      <el-radio-group v-model="linkView" size="small" style="display:flex;margin-bottom:12px">
+        <el-radio-button value="all">候选用例</el-radio-button>
+        <el-radio-button value="selected">已选（{{ linkSelected.length }}）</el-radio-button>
+      </el-radio-group>
+      <el-alert v-if="linkError" title="候选加载失败，已选用例已保留" type="error" :closable="false"><el-button link @click="reloadLinkCand">重试候选</el-button></el-alert>
+      <el-table :data="linkView === 'selected' ? linkSelected : linkCand" row-key="id" v-loading="linkLoading" size="small" border stripe height="360"
                 empty-text="无候选" @selection-change="(s) => (linkSelected = s)">
-        <el-table-column type="selection" width="42" />
+        <el-table-column type="selection" width="42" reserve-selection :selectable="() => !linking" />
         <el-table-column prop="id" label="ID" width="70" align="center" />
         <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
         <el-table-column prop="category" label="分类" width="80" align="center" />
       </el-table>
       <template #footer>
-        <el-button @click="linkDlg = false">取消</el-button>
-        <el-button type="primary" :loading="linking" :disabled="!linkSelected.length" @click="confirmLink">挂上选中（{{ linkSelected.length }}）</el-button>
+        <el-button :disabled="linking" @click="linkDlg = false">取消</el-button>
+        <el-button type="primary" :loading="linking" :disabled="!linkSelected.length || linkLoading || linkError" @click="confirmLink">挂上选中（{{ linkSelected.length }}）</el-button>
       </template>
     </el-dialog>
   </div>
@@ -125,7 +131,7 @@
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import { Refresh } from '@element-plus/icons-vue'
 import '@/styles/workspace-overlays.css'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createRequirement, deleteRequirement, linkRequirementCases, listCases,
@@ -173,6 +179,10 @@ const linkLoading = ref(false)
 const linkSelected = ref([])
 const linkKeyword = ref('')
 const linking = ref(false)
+const linkView = ref('all')
+const unlinking = ref(false), casesError = ref(false), linkError = ref(false)
+let casesVersion = 0, linkVersion = 0, disposed = false
+onBeforeUnmount(() => { disposed = true; ++casesVersion; ++linkVersion })
 
 const stateCount = computed(() => {
   const m = {}
@@ -212,6 +222,7 @@ function openEdit(row) {
   editDlg.value = true
 }
 async function save() {
+  if (saving.value || !form.title.trim()) return
   saving.value = true
   try {
     if (editing.value) {
@@ -233,7 +244,7 @@ async function save() {
 
 async function del(row) {
   try {
-    await ElMessageBox.confirm(`确认删除需求「${row.title}」？（用例保留，仅摘除关联）`, '删除确认', { type: 'warning' })
+    await ElMessageBox.confirm(`确认删除需求「${row.title}」？（用例保留，仅摘除关联）`, '删除确认', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' })
   } catch { return }
   try { await deleteRequirement(row.id); ElMessage.success('已删除'); reload() } catch { /* ignore */ }
 }
@@ -244,36 +255,51 @@ async function openCases(row) {
   reloadCases()
 }
 async function reloadCases() {
+  const version = ++casesVersion, id = curReq.value.id
+  casesSelected.value = []; reqCases.value = []; casesError.value = false
   casesLoading.value = true
-  try { reqCases.value = await requirementCases(curReq.value.id) }
-  catch { /* ignore */ } finally { casesLoading.value = false }
+  try { const data = await requirementCases(id); if (!disposed && version === casesVersion) reqCases.value = data }
+  catch { if (!disposed && version === casesVersion) casesError.value = true }
+  finally { if (!disposed && version === casesVersion) casesLoading.value = false }
 }
 async function unlinkSel() {
+  if (unlinking.value || !casesSelected.value.length || casesLoading.value || casesError.value) return
+  const id = curReq.value.id, ids = casesSelected.value.map(r => r.id)
+  unlinking.value = true
   try {
-    await unlinkRequirementCases(curReq.value.id, casesSelected.value.map((r) => r.id))
+    await ElMessageBox.confirm(`从当前需求摘除 ${ids.length} 条用例？用例本身会保留。`, '确认摘除', { type: 'warning', confirmButtonText: '确认摘除', cancelButtonText: '取消' })
+    if (disposed) return
+    await unlinkRequirementCases(id, ids)
     ElMessage.success('已摘除')
     reloadCases()
     reload()
-  } catch { /* ignore */ }
+  } catch { /* 用户取消或请求拦截器已提示。 */ } finally { unlinking.value = false }
 }
 
 function openLink() {
   linkKeyword.value = ''
+  linkView.value = 'all'
+  linkSelected.value = []
   linkDlg.value = true
   reloadLinkCand()
 }
 async function reloadLinkCand() {
+  const version = ++linkVersion
+  linkCand.value = []; linkError.value = false
   linkLoading.value = true
   try {
     const res = await listCases({
       project_id: projectId.value, review_status: 'adopted',
       keyword: linkKeyword.value || undefined, limit: 200,
     })
+    if (disposed || version !== linkVersion) return
     const inReq = new Set(reqCases.value.map((c) => c.id))
     linkCand.value = (res.items || []).filter((c) => !inReq.has(c.id))
-  } catch { /* ignore */ } finally { linkLoading.value = false }
+  } catch { if (!disposed && version === linkVersion) linkError.value = true }
+  finally { if (!disposed && version === linkVersion) linkLoading.value = false }
 }
 async function confirmLink() {
+  if (linking.value || linkLoading.value || linkError.value || !linkSelected.value.length) return
   linking.value = true
   try {
     const res = await linkRequirementCases(curReq.value.id, linkSelected.value.map((r) => r.id))
@@ -300,7 +326,7 @@ onMounted(async () => {
 .actions { display: flex; gap: 8px; align-items: center; }
 .intro { margin-bottom: 12px; }
 .cov-summary { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-.cov-pill { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #f4f4f5; color: #666; }
+.cov-pill { font-size: 12px; padding: 3px 10px; border-radius: 4px; background: #f4f4f5; color: #666; }
 .cov-pill.passed { background: rgba(0,179,134,.1); color: #00926e; }
 .cov-pill.failing { background: rgba(229,86,95,.1); color: #c45656; }
 .cov-pill.partial, .cov-pill.notrun { background: rgba(230,162,60,.12); color: #b88230; }
@@ -308,5 +334,5 @@ onMounted(async () => {
 .req-link:hover { text-decoration: underline; }
 .hint { font-size: 11px; color: #909399; margin-left: 4px; }
 .none { color: #c0c4cc; }
-.drawer-actions { display: flex; gap: 10px; margin-bottom: 10px; }
+.drawer-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
 </style>

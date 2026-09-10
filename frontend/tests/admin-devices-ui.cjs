@@ -61,7 +61,7 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '添加成员', exact: true }).waitFor();
     await page.goto(`${base}/my-devices`);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     await page.getByRole('button', { name: '注册设备', exact: true }).click();
     const registration = page.getByRole('dialog', { name: '注册执行设备', exact: true });
     await registration.getByPlaceholder('如 alice-mac(须与 runner .env 的 RUNNER_ID 一致)').fill('new-runner');

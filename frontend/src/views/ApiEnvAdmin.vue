@@ -2,11 +2,11 @@
   <div class="api-env-admin functional-workspace">
     <WorkspacePage title="API 测试环境">
       <template #actions>
-            <el-select v-model="pid" placeholder="选择项目" size="small" style="width:180px" @change="onProjectChange">
+            <el-select v-model="pid" :disabled="saving || curlDlg.visible || oapiDlg.visible" placeholder="选择项目" size="small" style="width:180px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-        <el-button v-if="pid && isAdmin" type="primary" :loading="saving" @click="save">保存</el-button>
-        <el-button v-if="pid && isAdmin" @click="reload">重置</el-button>
+        <el-button v-if="pid && isAdmin" type="primary" :loading="saving" :disabled="loading || loadError" @click="save">保存</el-button>
+        <el-button v-if="pid && isAdmin" :disabled="saving || loading" @click="confirmReset">重置</el-button>
       </template>
 
       <el-alert
@@ -16,7 +16,8 @@
 
       <el-empty v-if="!pid" description="请先选择项目" :image-size="70" />
 
-      <el-form v-else-if="isAdmin" v-loading="loading" label-width="96px" class="env-form">
+      <el-result v-else-if="loadError" icon="error" title="API 环境加载失败"><template #extra><el-button @click="reload">重试</el-button></template></el-result>
+      <el-form v-else-if="isAdmin" :disabled="saving || loading" v-loading="loading" label-width="96px" class="env-form">
         <el-form-item label="base_url">
           <el-input v-model="form.base_url" placeholder="被测系统地址，如 https://biz.example.com（执行器拼接 path）" clearable />
           <div class="form-hint">api 用例执行时以此为前缀拼接每步的相对 path。</div>
@@ -69,9 +70,9 @@
     </WorkspacePage>
 
     <!-- 粘贴 curl 解析 -->
-    <el-dialog v-model="curlDlg.visible" title="粘贴 curl 解析" width="720px" @closed="onCurlClosed">
+    <el-dialog v-model="curlDlg.visible" :show-close="!curlDlg.parsing" :close-on-click-modal="!curlDlg.parsing" :close-on-press-escape="!curlDlg.parsing" title="粘贴 curl 解析" width="720px" @closed="onCurlClosed">
       <el-input
-        v-model="curlDlg.text" type="textarea" :rows="6" spellcheck="false" class="mono"
+        v-model="curlDlg.text" :disabled="curlDlg.parsing" type="textarea" :rows="6" spellcheck="false" class="mono"
         placeholder="粘贴一条 curl（支持浏览器「复制为 cURL」）。鉴权头会被自动剥离，不会入库。"
       />
       <div class="dlg-actions">
@@ -102,16 +103,16 @@
       </template>
 
       <template #footer>
-        <el-button @click="curlDlg.visible = false">关闭</el-button>
+        <el-button :disabled="curlDlg.parsing" @click="curlDlg.visible = false">关闭</el-button>
         <el-button :disabled="!curlDlg.result" @click="copySeed">复制 script 种子</el-button>
         <el-button type="primary" :disabled="!curlDlg.result?.contract_line" @click="applyCurlToContract">并入契约</el-button>
       </template>
     </el-dialog>
 
     <!-- 导入 OpenAPI/Swagger -->
-    <el-dialog v-model="oapiDlg.visible" title="导入 OpenAPI/Swagger" width="720px" @closed="onOapiClosed">
+    <el-dialog v-model="oapiDlg.visible" :show-close="!oapiDlg.importing" :close-on-click-modal="!oapiDlg.importing" :close-on-press-escape="!oapiDlg.importing" title="导入 OpenAPI/Swagger" width="720px" @closed="onOapiClosed">
       <el-input
-        v-model="oapiDlg.text" type="textarea" :rows="7" spellcheck="false" class="mono"
+        v-model="oapiDlg.text" :disabled="oapiDlg.importing" type="textarea" :rows="7" spellcheck="false" class="mono"
         placeholder="粘贴 openapi.json / swagger.json 的内容（出于安全不在服务端拉取 URL，请自行获取后粘贴）。"
       />
       <div class="dlg-actions">
@@ -122,7 +123,7 @@
         <el-input :model-value="oapiDlg.result.contract" type="textarea" :rows="10" readonly spellcheck="false" class="mono" />
       </template>
       <template #footer>
-        <el-button @click="oapiDlg.visible = false">关闭</el-button>
+        <el-button :disabled="oapiDlg.importing" @click="oapiDlg.visible = false">关闭</el-button>
         <el-button :disabled="!oapiDlg.result" @click="applyOpenapi('append')">追加到契约</el-button>
         <el-button type="primary" :disabled="!oapiDlg.result" @click="applyOpenapi('replace')">替换契约</el-button>
       </template>
@@ -133,8 +134,8 @@
 <script setup>
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
-import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Position, Upload } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
@@ -148,6 +149,8 @@ const projects = ref([])
 const pid = ref(null)
 const loading = ref(false)
 const saving = ref(false)
+const loadError = ref(false)
+let loadVersion = 0, disposed = false
 
 const DEFAULT_AUTH = '{\n  "headers": {\n    "Authorization": "Bearer <token>"\n  }\n}'
 const form = reactive({ base_url: '', auth_type: 'fixed', authText: DEFAULT_AUTH, contract: '' })
@@ -178,11 +181,13 @@ const hasKeys = (o) => o && typeof o === 'object' && Object.keys(o).length > 0
 
 onMounted(async () => {
   try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
+  if (disposed) return
   if (projects.value.length) {
     pid.value = pickDefaultProjectId(projects.value)
     await reload()
   }
 })
+onBeforeUnmount(() => { disposed = true; ++loadVersion })
 
 async function onProjectChange() {
   if (pid.value) setLastProjectId(pid.value)
@@ -197,10 +202,13 @@ function resetForm() {
 }
 
 async function reload() {
+  const version = ++loadVersion
+  resetForm(); loadError.value = false; loading.value = false
   if (!pid.value || !isAdmin.value) { resetForm(); return }
   loading.value = true
   try {
     const env = await readApiEnv(pid.value)
+    if (disposed || version !== loadVersion) return
     if (env) {
       form.base_url = env.base_url || ''
       form.auth_type = env.auth_type || 'fixed'
@@ -209,11 +217,19 @@ async function reload() {
     } else {
       resetForm()
     }
-  } catch { /* http 拦截器已提示 */ }
-  finally { loading.value = false }
+  } catch { if (!disposed && version === loadVersion) loadError.value = true }
+  finally { if (!disposed && version === loadVersion) loading.value = false }
+}
+
+async function confirmReset() {
+  if (saving.value || loading.value) return
+  try { await ElMessageBox.confirm('重新读取已保存的配置？当前未保存的修改会被丢弃。', '确认重置', { confirmButtonText: '确认重置', cancelButtonText: '取消', type: 'warning' }) }
+  catch { return }
+  if (!disposed) await reload()
 }
 
 async function save() {
+  if (saving.value || loading.value || loadError.value || !isAdmin.value) return
   let authObj
   try { authObj = JSON.parse(form.authText || '{}') } catch { ElMessage.error('鉴权 JSON 不合法'); return }
   if (authObj === null || typeof authObj !== 'object' || Array.isArray(authObj)) { ElMessage.error('鉴权须为 JSON 对象'); return }
@@ -226,19 +242,21 @@ async function save() {
       auth: authObj,
       contract: form.contract,
     })
-    ElMessage.success('已保存')
+    if (!disposed) ElMessage.success('已保存')
   } catch { /* 已提示 */ }
   finally { saving.value = false }
 }
 
 // ---- curl 解析 ----
 const curlDlg = reactive({ visible: false, text: '', result: null, parsing: false })
+watch(() => curlDlg.text, () => { curlDlg.result = null }, { flush: 'sync' })
 const seedText = computed(() => (curlDlg.result ? JSON.stringify(curlDlg.result.script_seed, null, 2) : ''))
 
 async function doParseCurl() {
-  if (!curlDlg.text.trim()) return
+  if (!curlDlg.text.trim() || curlDlg.parsing) return
+  curlDlg.result = null
   curlDlg.parsing = true
-  try { curlDlg.result = await parseCurl(curlDlg.text) } catch { curlDlg.result = null } finally { curlDlg.parsing = false }
+  try { const result = await parseCurl(curlDlg.text); if (!disposed) curlDlg.result = result } catch { curlDlg.result = null } finally { curlDlg.parsing = false }
 }
 
 function applyCurlToContract() {
@@ -259,11 +277,13 @@ function onCurlClosed() { curlDlg.text = ''; curlDlg.result = null }
 
 // ---- OpenAPI 导入 ----
 const oapiDlg = reactive({ visible: false, text: '', result: null, importing: false })
+watch(() => oapiDlg.text, () => { oapiDlg.result = null }, { flush: 'sync' })
 
 async function doImportOpenapi() {
-  if (!oapiDlg.text.trim() || !pid.value) return
+  if (!oapiDlg.text.trim() || !pid.value || oapiDlg.importing) return
+  oapiDlg.result = null
   oapiDlg.importing = true
-  try { oapiDlg.result = await importOpenapi(pid.value, oapiDlg.text) } catch { oapiDlg.result = null } finally { oapiDlg.importing = false }
+  try { const result = await importOpenapi(pid.value, oapiDlg.text); if (!disposed) oapiDlg.result = result } catch { oapiDlg.result = null } finally { oapiDlg.importing = false }
 }
 
 function applyOpenapi(mode) {

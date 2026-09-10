@@ -1,7 +1,7 @@
 <template>
   <div class="my-devices functional-workspace">
     <WorkspacePage title="我的执行设备">
-      <template #actions><el-button type="primary" size="small" :icon="Plus" @click="openRegister">注册设备</el-button></template>
+      <template #actions><el-button :icon="Refresh" :loading="loading" aria-label="刷新我的设备" title="刷新我的设备" @click="load" /><el-button type="primary" size="small" :icon="Plus" :disabled="busy || dialog.saving" @click="openRegister">注册设备</el-button></template>
 
       <el-alert type="info" :closable="false" show-icon class="intro">
         在自己的电脑上部署 runner,把这里生成的 <b>专属 token</b> 填进 runner 的 <code>.env</code>(RUNNER_TOKEN)与
@@ -10,7 +10,8 @@
         跑哪个就接哪类任务,无需手动配置(两套 runner 抢同一客户端,不能在一台机上同时跑)。
       </el-alert>
 
-      <el-table :data="devices" v-loading="loading" size="small" border stripe empty-text="还没有登记设备,点右上角『注册设备』">
+      <el-result v-if="loadError" icon="error" title="设备列表加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
+      <el-table v-else :data="devices" v-loading="loading" size="small" border stripe empty-text="还没有登记设备,点右上角『注册设备』">
         <el-table-column prop="runner_id" label="runner_id" min-width="130" />
         <el-table-column prop="name" label="设备名" min-width="120" />
         <el-table-column label="平台" width="90" align="center">
@@ -34,17 +35,17 @@
         </el-table-column>
         <el-table-column label="操作" width="210" align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="primary" size="small" @click="onReset(row)">重置 token</el-button>
-            <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+            <el-button link type="primary" size="small" :disabled="busy || dialog.saving" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="primary" size="small" :disabled="busy || dialog.saving" @click="onReset(row)">重置 token</el-button>
+            <el-button link type="danger" size="small" :disabled="busy || dialog.saving" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </WorkspacePage>
 
     <!-- 注册/编辑对话框(共用;dialog.id 为空=注册,非空=编辑) -->
-    <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑执行设备' : '注册执行设备'" width="460px">
-      <el-form label-width="90px">
+    <el-dialog v-model="dialog.visible" :show-close="!dialog.saving" :close-on-click-modal="!dialog.saving" :close-on-press-escape="!dialog.saving" :title="dialog.id ? '编辑执行设备' : '注册执行设备'" width="460px">
+      <el-form label-width="90px" :disabled="dialog.saving">
         <el-form-item label="runner_id" required>
           <el-input v-model="dialog.runner_id" :disabled="!!dialog.id"
                     placeholder="如 alice-mac(须与 runner .env 的 RUNNER_ID 一致)" />
@@ -66,7 +67,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialog.visible = false">取消</el-button>
+        <el-button :disabled="dialog.saving" @click="dialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="dialog.saving" @click="doSave">{{ dialog.id ? '保存' : '生成 token' }}</el-button>
       </template>
     </el-dialog>
@@ -88,9 +89,9 @@
 <script setup>
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, CopyDocument } from '@element-plus/icons-vue'
+import { Plus, CopyDocument, Refresh } from '@element-plus/icons-vue'
 import { listMyDevices, registerDevice, updateDevice, resetDeviceToken, deleteDevice } from '@/api'
 
 const PLATFORM_LABEL = { web: 'PC/Web', android: 'Android', ios: 'iOS' }
@@ -101,15 +102,26 @@ const CAP_TYPE = { func: 'primary', eval: 'warning' }
 
 const devices = ref([])
 const loading = ref(false)
+const loadError = ref(false)
+const busy = ref(false)
+let loadVersion = 0; let disposed = false
 // dialog 兼注册/编辑:id 为空=注册,非空=编辑该设备。能力不再配置(运行时感知)。
 const dialog = reactive({ visible: false, id: null, runner_id: '', name: '', platform: 'web', saving: false })
 const tokenDlg = reactive({ visible: false, token: '' })
 
 async function load() {
+  const version = ++loadVersion
   loading.value = true
-  try { devices.value = await listMyDevices() } finally { loading.value = false }
+  loadError.value = false
+  try {
+    const data = await listMyDevices()
+    if (version === loadVersion && !disposed) devices.value = data
+  } catch {
+    if (version === loadVersion && !disposed) { loadError.value = true; devices.value = [] }
+  } finally { if (version === loadVersion && !disposed) loading.value = false }
 }
 onMounted(load)
+onBeforeUnmount(() => { disposed = true; ++loadVersion })
 
 function openRegister() {
   Object.assign(dialog, { id: null, runner_id: '', name: '', platform: 'web' })
@@ -127,15 +139,18 @@ function openEdit(row) {
 }
 
 async function doSave() {
+  if (dialog.saving || busy.value) return
   if (!dialog.runner_id.trim() || !dialog.name.trim()) { ElMessage.warning('请填写 runner_id 与设备名'); return }
   dialog.saving = true
   try {
     if (dialog.id) {
       await updateDevice(dialog.id, { name: dialog.name.trim(), platform: dialog.platform })
+      if (disposed) return
       dialog.visible = false
       ElMessage.success('已保存')
     } else {
       const d = await registerDevice(dialog.runner_id.trim(), dialog.name.trim(), dialog.platform)
+      if (disposed) return
       dialog.visible = false
       showToken(d.token)
     }
@@ -145,21 +160,28 @@ async function doSave() {
 }
 
 async function onReset(row) {
+  if (busy.value || dialog.saving) return
+  busy.value = true
   try {
-    await ElMessageBox.confirm(`重置「${row.name}」的 token?旧 token 立即失效,该设备的 runner 需换用新 token。`, '重置 token', { type: 'warning' })
-  } catch { return }
-  try {
+    await ElMessageBox.confirm(`重置「${row.name}」的 token?旧 token 立即失效,该设备的 runner 需换用新 token。`, '重置 token', { type: 'warning', confirmButtonText: '确认重置', cancelButtonText: '取消' })
+    if (disposed) return
     const d = await resetDeviceToken(row.id)
+    if (disposed) return
     showToken(d.token)
     await load()
-  } catch { /* 已提示 */ }
+  } catch { /* 用户取消或请求拦截器已提示。 */ } finally { busy.value = false }
 }
 
 async function onDelete(row) {
+  if (busy.value || dialog.saving) return
+  busy.value = true
   try {
-    await ElMessageBox.confirm(`删除设备「${row.name}」?其 token 立即失效,无法再用它下发/执行。`, '删除设备', { type: 'warning' })
-  } catch { return }
-  try { await deleteDevice(row.id); ElMessage.success('已删除'); await load() } catch { /* 已提示 */ }
+    await ElMessageBox.confirm(`删除设备「${row.name}」?其 token 立即失效,无法再用它下发/执行。`, '删除设备', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' })
+    if (disposed) return
+    await deleteDevice(row.id)
+    if (disposed) return
+    ElMessage.success('已删除'); await load()
+  } catch { /* 用户取消或请求拦截器已提示。 */ } finally { busy.value = false }
 }
 
 function showToken(token) {

@@ -2,9 +2,9 @@
   <div class="selector-admin functional-workspace">
     <WorkspacePage title="选择器管理">
       <template #actions>
-        <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange"><el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" /></el-select>
-        <el-select v-model="subProduct" placeholder="作用域" size="small" style="width:150px" @change="reload"><el-option label="项目级共享" :value="''" /><el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" /></el-select>
-        <el-button type="primary" size="small" :disabled="!pid" @click="openCreate">新增 key</el-button>
+        <el-select v-model="pid" :disabled="contextLocked" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange"><el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" /></el-select>
+        <el-select v-model="subProduct" :disabled="contextLocked" placeholder="作用域" size="small" style="width:150px" @change="onScopeChange"><el-option label="项目级共享" :value="''" /><el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" /></el-select>
+        <el-button type="primary" size="small" :disabled="!pid || contextLocked" @click="openCreate">新增 key</el-button>
       </template>
       <template #selection><el-tabs v-model="activeView"><el-tab-pane label="注册表" name="registry" /><el-tab-pane label="设备探测" name="probe" /><el-tab-pane label="候选评审" name="learned" /></el-tabs></template>
     <!-- 设备探测面板：选在线设备，扫当前页元素产候选 → 加为 key(新建/更新已有)；或校验现有 key 是否失效 -->
@@ -165,7 +165,7 @@
                   >已存在</el-button>
                   <el-button
                     v-else link type="primary" size="small"
-                    :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, g.frameMatch)"
+                    :disabled="!row.best || !row.candidates?.length" @click="openAddAsKey(row, row._frameMatch)"
                   >{{ row._status.type === 'update' ? '更新已有' : '加为 key' }}</el-button>
                 </template>
               </el-table-column>
@@ -196,12 +196,13 @@
         <div class="header">
           <div class="filters">
             <el-button
-              v-if="canImport" size="small" :disabled="!pid" :loading="importing" @click="onImport"
+              v-if="canImport" size="small" :disabled="!pid || contextLocked" :loading="importing" @click="onImport"
             >导入内置纳米Work注册表</el-button>
           </div>
         </div>
 
-      <el-empty v-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
+      <el-result v-if="loadError" icon="error" title="注册表加载失败"><template #extra><el-button @click="reload">重试注册表</el-button></template></el-result>
+      <el-empty v-else-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
       <el-collapse v-else v-model="activePages" v-loading="loading">
         <el-collapse-item v-for="grp in groupedRows" :key="grp.name" :name="grp.name">
           <template #title>
@@ -224,8 +225,8 @@
             </el-table-column>
             <el-table-column label="操作" width="120" align="center">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-                <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+                <el-button link type="primary" size="small" :disabled="contextLocked" @click="openEdit(row)">编辑</el-button>
+                <el-button link type="danger" size="small" :disabled="contextLocked" @click="onDelete(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -234,8 +235,8 @@
     </section>
 
     <!-- 新增 / 编辑弹窗 -->
-    <el-dialog v-model="dialog.visible" :title="dialog.id ? '编辑 key' : '新增 key'" width="600px">
-      <el-form label-width="80px">
+    <el-dialog v-model="dialog.visible" :show-close="!dialog.saving" :close-on-click-modal="!dialog.saving" :close-on-press-escape="!dialog.saving" :title="dialog.id ? '编辑 key' : '新增 key'" width="600px">
+      <el-form label-width="80px" :disabled="dialog.saving">
         <el-form-item label="key" required>
           <el-input v-model="dialog.key" :disabled="!!dialog.id" placeholder="语义 key，如 login_button" />
         </el-form-item>
@@ -267,13 +268,13 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialog.visible = false">取消</el-button>
+        <el-button :disabled="dialog.saving" @click="dialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="dialog.saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
 
     <!-- 加为 key：探测元素 → 落库为选择器（新建 / 更新已有 key 追加候选到头部）-->
-    <el-dialog v-model="add.visible" title="加为 key" width="560px">
+    <el-dialog v-model="add.visible" :show-close="!add.saving" :close-on-click-modal="!add.saving" :close-on-press-escape="!add.saving" title="加为 key" width="560px">
       <div class="add-preview">
         <div class="form-hint">来源元素（{{ add.frame }} frame）</div>
         <div><el-tag size="small" type="info" effect="plain">{{ add.tag }}{{ add.type ? `[${add.type}]` : '' }}</el-tag> <span class="probe-el-text">{{ add.text || '（无文本）' }}</span></div>
@@ -286,7 +287,7 @@
           该元素在嵌套 iframe，将按 frame url 定位：<code>{{ add.frame }}</code>（执行时从页面所有 frame 按此 url 匹配，找不到回退 shell/vm）
         </div>
       </div>
-      <el-form label-width="90px" style="margin-top:12px">
+      <el-form label-width="90px" :disabled="add.saving" style="margin-top:12px">
         <el-form-item label="模式">
           <el-radio-group v-model="add.mode">
             <el-radio value="create">新建 key</el-radio>
@@ -325,7 +326,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="add.visible = false">取消</el-button>
+        <el-button :disabled="add.saving" @click="add.visible = false">取消</el-button>
         <el-button type="primary" :loading="add.saving" @click="submitAddAsKey">保存</el-button>
       </template>
     </el-dialog>
@@ -349,7 +350,8 @@
         执行机在<b>所有已注册候选都定位失败</b>时,按 key 语义在页面上找回元素并铸造新候选（已临时挂在该 key 候选链<b>尾部试用</b>）。
         <b>转正</b>=去掉试用标永久保留；<b>拒绝</b>=从注册表移除且不再自动挂回。
       </el-alert>
-      <el-table :data="learned.rows" v-loading="learned.loading" size="small" border stripe
+      <el-result v-if="learned.error" icon="error" title="候选加载失败"><template #extra><el-button @click="reloadLearned">重试候选</el-button></template></el-result>
+      <el-table v-else :data="learned.rows" v-loading="learned.loading" size="small" border stripe
                 :empty-text="learned.status === 'pending' ? '暂无待评审的自学习候选' : '无记录'">
         <el-table-column prop="key" label="key" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">
@@ -379,8 +381,8 @@
         </el-table-column>
         <el-table-column v-if="learned.status === 'pending'" label="操作" width="140" align="center">
           <template #default="{ row }">
-            <el-button link type="success" size="small" @click="reviewLearnedRow(row, 'approve')">转正</el-button>
-            <el-button link type="danger" size="small" @click="reviewLearnedRow(row, 'reject')">拒绝</el-button>
+            <el-button link type="success" size="small" :disabled="reviewing" @click="reviewLearnedRow(row, 'approve')">转正</el-button>
+            <el-button link type="danger" size="small" :disabled="reviewing" @click="reviewLearnedRow(row, 'reject')">拒绝</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -479,51 +481,72 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(stopPoll)   // 离开页面时清轮询定时器，避免泄漏
+let disposed = false, listVersion = 0, learnedVersion = 0, probeVersion = 0
+const loadError = ref(false), reviewing = ref(false), deleting = ref(false)
+const contextLocked = computed(() => dialog.visible || dialog.saving || add.visible || add.saving || probe.running || importing.value || reviewing.value || deleting.value)
+onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll() })
 
 async function onProjectChange() {
   if (pid.value) setLastProjectId(pid.value)
+  fixCtx.keys = []; fixCtx.ctx = ''; fixCtx.activeKey = ''
+  await onScopeChange()
+}
+
+async function onScopeChange() {
+  probe.result = null; probe.screenshotUrl = ''; probe.done = false; probe.updateTarget = ''
+  boxMode.value = false; lastBox.value = null
   await reload()
 }
 
 // 按当前 (项目, 子产品) 取列表：'' 取 shared，否则取 by_sub[子产品]。
 async function reload() {
+  const version = ++listVersion, project = pid.value, scope = subProduct.value
+  rows.value = []; activePages.value = []; loadError.value = false; loading.value = false
+  reloadLearned()
   if (!pid.value) { rows.value = []; activePages.value = []; return }
   loading.value = true
   try {
-    const data = await listSelectors(pid.value)
-    rows.value = subProduct.value ? (data.by_sub?.[subProduct.value] || []) : (data.shared || [])
+    const data = await listSelectors(project)
+    if (disposed || version !== listVersion) return
+    rows.value = scope ? (data.by_sub?.[scope] || []) : (data.shared || [])
     activePages.value = groupedRows.value.map((g) => g.name)   // 默认全部展开
-  } finally { loading.value = false }
-  reloadLearned()   // 同步刷新自学习评审队列(独立 loading,失败不影响主列表)
+  } catch { if (!disposed && version === listVersion) loadError.value = true }
+  finally { if (!disposed && version === listVersion) loading.value = false }
 }
 
 // ---- 运行时自学习候选评审 ----
-const learned = reactive({ rows: [], status: 'pending', loading: false })
+const learned = reactive({ rows: [], status: 'pending', loading: false, error: false })
 
 async function reloadLearned() {
+  const version = ++learnedVersion
+  learned.rows = []; learned.error = false; learned.loading = false
   if (!pid.value) { learned.rows = []; return }
   learned.loading = true
-  try { learned.rows = await listLearnedSelectors(pid.value, learned.status) }
-  catch { /* 拦截器已提示 */ } finally { learned.loading = false }
+  try {
+    const data = await listLearnedSelectors(pid.value, learned.status)
+    if (!disposed && version === learnedVersion) learned.rows = data
+  } catch { if (!disposed && version === learnedVersion) learned.error = true }
+  finally { if (!disposed && version === learnedVersion) learned.loading = false }
 }
 
 async function reviewLearnedRow(row, action) {
+  if (reviewing.value) return
+  reviewing.value = true
   const label = action === 'approve' ? '转正' : '拒绝'
   try {
     await ElMessageBox.confirm(
       action === 'approve'
         ? `转正候选 ${row.candidate.by}=${row.candidate.value}？将去掉试用标、永久保留在「${row.key}」候选链中。`
         : `拒绝候选 ${row.candidate.by}=${row.candidate.value}？将从「${row.key}」注册表移除，且不再自动挂回。`,
-      `${label}确认`, { type: action === 'approve' ? 'success' : 'warning' },
+      `${label}确认`, { type: action === 'approve' ? 'success' : 'warning', confirmButtonText: `确认${label}`, cancelButtonText: '取消' },
     )
-  } catch { return }
+  } catch { reviewing.value = false; return }
   try {
+    if (disposed) return
     await reviewLearnedSelector(row.id, action)
     ElMessage.success(`已${label}`)
-    reloadLearned()
-    reload()
-  } catch { /* 拦截器已提示 */ }
+    if (!disposed) await reload()
+  } catch { /* 拦截器已提示 */ } finally { reviewing.value = false }
 }
 
 function fmtTime(s) {
@@ -553,6 +576,7 @@ function parseCandidates() {
 }
 
 async function submit() {
+  if (dialog.saving) return
   if (!dialog.id && !dialog.key.trim()) { ElMessage.warning('key 不能为空'); return }
   const candidates = parseCandidates()
   if (candidates === null) return
@@ -587,34 +611,44 @@ async function autoBackfill() {
 
 // ---- 删除 ----
 async function onDelete(row) {
+  if (contextLocked.value) return
+  deleting.value = true
+  try {
   // 删除前查影响范围:被可执行用例引用时列出明细,告知将联动降级为「选择器待补」。
   let usage = null
-  try { usage = await selectorUsage(row.id) } catch { /* 查不到就按无引用走 */ }
+  try { usage = await selectorUsage(row.id) } catch { ElMessage.warning('无法确认引用范围，暂未删除，请重试'); return }
+  if (disposed) return
   const n = usage?.count || 0
   const detail = n
     ? `该 key 被 ${n} 条可执行用例引用：${usage.cases.slice(0, 5).map((c) => `「${c.title}」`).join('、')}${n > 5 ? ` 等 ${n} 条` : ''}。删除后这些用例将降级为「选择器待补」（重新补 key 可一键恢复）。`
     : ''
   try {
-    await ElMessageBox.confirm(`删除选择器 key「${row.key}」？${detail}`, '删除', { type: 'warning' })
+    await ElMessageBox.confirm(`删除选择器 key「${row.key}」？${detail}`, '删除', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' })
   } catch { return }
   try {
+    if (disposed) return
     const res = await deleteSelector(row.id)
+    if (disposed) return
     ElMessage.success(res?.downgraded ? `已删除,${res.downgraded} 条用例已降级为「选择器待补」` : '已删除')
     await reload()
   } catch { /* 已提示 */ }
+  } finally { deleting.value = false }
 }
 
 // ---- 导入内置旧注册表（写入项目级共享）----
 async function onImport() {
+  if (contextLocked.value) return
+  importing.value = true
   try {
     await ElMessageBox.confirm(
       '将内置纳米Work注册表导入为本项目【项目级共享】的 key（同名 key 跳过），确认？',
-      '导入内置注册表', { type: 'warning' },
+      '导入内置注册表', { type: 'warning', confirmButtonText: '确认导入', cancelButtonText: '取消' },
     )
-  } catch { return }
-  importing.value = true
+  } catch { importing.value = false; return }
   try {
+    if (disposed) return
     const res = await importLegacySelectors(pid.value)
+    if (disposed) return
     ElMessage.success(`导入完成：新增 ${res.imported} 个，跳过 ${res.skipped} 个`)
     if (subProduct.value !== '') subProduct.value = ''   // 导入写入共享域，切过去看结果
     await reload()
@@ -644,6 +678,8 @@ function stopPoll() {
 
 // 发起一次探测并轮询到 done/failed；60s 超时。extraParams 合并进 params（如 { mode:'verify' }）。
 async function runProbe(mode, extraParams = {}) {
+  if (probe.running || disposed) return
+  const version = ++probeVersion
   if (!pid.value || !probe.runner) { ElMessage.warning('请先选择项目和在线设备'); return }
   stopPoll()
   probe.mode = mode
@@ -658,12 +694,23 @@ async function runProbe(mode, extraParams = {}) {
     const res = await startProbe({ project_id: pid.value, sub_product: subProduct.value, runner: probe.runner, params })
     id = res?.id
   } catch { probe.running = false; return /* http 拦截器已提示 */ }
+  if (disposed || version !== probeVersion) return
   if (!id) { probe.running = false; ElMessage.error('发起探测失败'); return }
 
   const startedAt = Date.now()
+  let polling = false
   pollTimer = setInterval(async () => {
+    if (disposed || version !== probeVersion) return
+    if (Date.now() - startedAt > 60000) {
+      stopPoll(); ++probeVersion; probe.running = false
+      ElMessage.error('探测超时（60s）：请确认设备 runner 在线且停留在目标页面')
+      return
+    }
+    if (polling) return
+    polling = true
     let r
-    try { r = await getProbe(id) } catch { return /* 单次轮询失败忽略，等下次 */ }
+    try { r = await getProbe(id) } catch { return /* 单次轮询失败忽略，等下次 */ } finally { polling = false }
+    if (disposed || version !== probeVersion) return
     if (r.status === 'done') {
       stopPoll()
       probe.running = false; probe.done = true; probe.result = r.result || {}
@@ -951,6 +998,7 @@ function openAddAsKey(el, frame) {
 }
 
 async function submitAddAsKey() {
+  if (add.saving) return
   if (!add.cand) { ElMessage.error('该元素没有可用候选'); return }
   if (add.mode === 'create' && !add.key.trim()) { ElMessage.warning('key 名不能为空'); return }
   if (add.mode === 'update' && !add.targetId) { ElMessage.warning('请选择要更新的已有 key'); return }

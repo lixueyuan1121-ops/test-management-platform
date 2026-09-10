@@ -2,13 +2,17 @@
   <div class="release-notes functional-workspace">
     <WorkspacePage title="发版记录">
       <template #actions>
-          <el-select v-model="pid" placeholder="全部项目" clearable size="small" style="width:200px" @change="onProjectChange">
+          <el-select v-model="pid" :disabled="dialog.visible || deleting" placeholder="全部项目" clearable size="small" style="width:200px" @change="onProjectChange">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
-          <el-button v-if="isAdmin" type="primary" size="small" :disabled="!pid" @click="openCreate">登记发版</el-button>
+          <el-button v-if="isAdmin" type="primary" size="small" :disabled="!pid || deleting" @click="openCreate">登记发版</el-button>
       </template>
       <template #selection><el-tabs v-model="activeView"><el-tab-pane label="版本列表" name="list" /><el-tab-pane label="质量概览" name="overview" /></el-tabs></template>
     <div v-show="activeView === 'overview'" class="board">
+      <el-result v-if="statsError" icon="error" title="质量概览加载失败"><template #extra><el-button @click="loadStats">重试概览</el-button></template></el-result>
+      <el-skeleton v-else-if="statsLoading" :rows="4" animated />
+      <div v-show="!statsError && !statsLoading">
+      <el-alert v-if="qualityError" title="版本质量档案加载失败" type="warning" :closable="false" show-icon><el-button link type="primary" @click="loadStats">重试档案</el-button></el-alert>
       <div class="stat-row">
         <div class="stat-card"><div class="stat-num">{{ stats.total_releases }}</div><div class="stat-label">发布版本总数</div></div>
         <div class="stat-card"><div class="stat-num">{{ stats.total_reqs }}</div><div class="stat-label">发布需求总数</div></div>
@@ -55,6 +59,7 @@
         <div class="chart-title">近 12 个月发版趋势</div>
         <div ref="chartEl" class="chart" />
       </div>
+      </div>
     </div>
 
     <section v-show="activeView === 'list'" class="list-card">
@@ -67,7 +72,8 @@
           <el-radio-button v-for="sp in subProducts" :key="sp" :value="sp">{{ sp }}</el-radio-button>
         </el-radio-group>
       </div>
-      <el-table v-if="pid" :data="rows" v-loading="loading" size="small" border stripe empty-text="该项目暂无发版记录">
+      <el-result v-if="listError" icon="error" title="版本列表加载失败"><template #extra><el-button @click="load">重试列表</el-button></template></el-result>
+      <el-table v-else-if="pid" :data="rows" v-loading="loading" size="small" border stripe empty-text="该项目暂无发版记录">
         <el-table-column prop="version" label="版本号" width="140" />
         <el-table-column label="子产品" width="150">
           <template #default="{ row }">
@@ -92,8 +98,8 @@
         <el-table-column label="操作" :width="isAdmin ? 180 : 70" align="center">
           <template #default="{ row }">
             <el-button link type="info" @click="openDetail(row)">详情</el-button>
-            <el-button v-if="isAdmin" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="isAdmin" link type="danger" @click="onDel(row)">删除</el-button>
+            <el-button v-if="isAdmin" link type="primary" :disabled="deleting" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="isAdmin" link type="danger" :disabled="deleting" @click="onDel(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -108,8 +114,10 @@
     </section>
     </WorkspacePage>
 
-    <el-drawer v-model="detail.visible" :title="`发版详情 · ${detail.row?.version || ''}`" size="min(720px, 100vw)">
-      <div v-if="detail.row" class="detail">
+    <el-drawer v-model="detail.visible" :title="`发版详情 · ${detail.version || ''}`" size="min(720px, 100vw)" @close="detailVersion++">
+      <el-skeleton v-if="detail.loading" :rows="6" animated />
+      <el-result v-else-if="detail.error" icon="error" title="发版详情加载失败"><template #extra><el-button @click="loadDetail">重试详情</el-button></template></el-result>
+      <div v-else-if="detail.row" class="detail">
         <p class="d-row"><span class="d-k">版本号</span> {{ detail.row.version }}</p>
         <p class="d-row"><span class="d-k">子产品</span> {{ detail.row.sub_product || '—' }}</p>
         <p v-if="isApp" class="d-row"><span class="d-k">发版渠道</span> {{ (detail.row.channel && detail.row.channel.length) ? detail.row.channel.join('、') : '—' }}</p>
@@ -124,8 +132,8 @@
       </div>
     </el-drawer>
 
-    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑发版' : '登记发版'" width="640px">
-      <el-form :model="form" label-width="90px">
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :show-close="!dialog.saving" :close-on-click-modal="!dialog.saving" :close-on-press-escape="!dialog.saving" :title="dialog.id ? '编辑发版' : '登记发版'" width="640px">
+      <el-form :model="form" :disabled="dialog.saving" label-width="90px">
         <el-form-item label="版本号" required><el-input v-model="form.version" placeholder="如 v2.3.0" /></el-form-item>
         <el-form-item label="子产品">
           <el-select v-model="form.sub_product" placeholder="（未指定）" clearable style="width:100%" @change="form.channel = []">
@@ -150,7 +158,7 @@
         <el-form-item label="备忘"><el-input v-model="form.memo" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialog.visible = false">取消</el-button>
+        <el-button :disabled="dialog.saving" @click="dialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="dialog.saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
@@ -201,6 +209,8 @@ function channelOptions(sub) {
   return [...CHANNELS_IOS, ...CHANNELS_ANDROID]
 }
 const loading = ref(false)
+const listError = ref(false), statsError = ref(false), statsLoading = ref(false), qualityError = ref(false)
+let listVersion = 0, statsVersion = 0, detailVersion = 0, disposed = false
 const stats = reactive({ total_releases: 0, total_reqs: 0, this_month: 0, latest_date: null, trend: [] })
 
 const page = ref(1)
@@ -235,32 +245,49 @@ function spType(sp) {
 }
 
 onMounted(async () => {
-  try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
-  pid.value = pickDefaultProjectId(projects.value)
-  await nextTick()
   window.addEventListener('resize', onResize)
-  await loadStats()
+  try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
+  if (disposed) return
+  pid.value = pickDefaultProjectId(projects.value)
   if (pid.value) await reload()
+  if (!disposed) await loadStats()
 })
-onBeforeUnmount(() => { window.removeEventListener('resize', onResize); chart?.dispose() })
+onBeforeUnmount(() => { disposed = true; ++listVersion; ++statsVersion; ++detailVersion; window.removeEventListener('resize', onResize); chart?.dispose() })
 function onResize() { chart?.resize() }
 
 async function onProjectChange() {
   if (pid.value) setLastProjectId(pid.value)
   subProduct.value = ''
-  await loadStats()
+  ++statsVersion
+  statsLoading.value = true
+  quality.value = []
+  chart?.clear()
   await reload()
+  if (!disposed) await loadStats()
 }
 
 async function loadStats() {
-  const s = await releaseStats(pid.value || undefined)
-  Object.assign(stats, s)
-  renderChart()
-  // 质量档案:选中具体项目才有(全部项目视图不出)。失败静默,不拖垮统计区。
-  if (pid.value) {
-    try { quality.value = (await releaseQuality(pid.value)).items } catch { quality.value = [] }
-  } else {
-    quality.value = []
+  const version = ++statsVersion, project = pid.value
+  statsLoading.value = true; statsError.value = false; qualityError.value = false
+  quality.value = []; chart?.clear()
+  try {
+    const s = await releaseStats(project || undefined)
+    if (disposed || version !== statsVersion) return
+    Object.assign(stats, s)
+    if (project) {
+      try {
+        const data = await releaseQuality(project)
+        if (disposed || version !== statsVersion) return
+        quality.value = data.items || []
+      } catch { if (!disposed && version === statsVersion) qualityError.value = true }
+    }
+  } catch { if (!disposed && version === statsVersion) statsError.value = true }
+  finally {
+    if (!disposed && version === statsVersion) {
+      statsLoading.value = false
+      await nextTick()
+      if (!disposed && version === statsVersion && !statsError.value) { renderChart(); onResize() }
+    }
   }
 }
 
@@ -291,6 +318,8 @@ function renderChart() {
 
 async function reload() { page.value = 1; await load() }
 async function load() {
+  const version = ++listVersion
+  listError.value = false; rows.value = []; total.value = 0; loading.value = false
   if (!pid.value) { rows.value = []; total.value = 0; return }
   loading.value = true
   try {
@@ -298,19 +327,31 @@ async function load() {
       project_id: pid.value, sub_product: subProduct.value || undefined,
       limit: pageSize.value, offset: (page.value - 1) * pageSize.value,
     })
+    if (disposed || version !== listVersion) return
     rows.value = items || []
     total.value = t || 0
-  } finally { loading.value = false }
+  } catch { if (!disposed && version === listVersion) listError.value = true }
+  finally { if (!disposed && version === listVersion) loading.value = false }
 }
 
-const detail = reactive({ visible: false, row: null })
+const detail = reactive({ visible: false, row: null, id: null, version: '', loading: false, error: false })
 async function openDetail(row) {
-  detail.row = { ...row }
+  detail.id = row.id; detail.version = row.version
   detail.visible = true
-  try { detail.row = await getRelease(row.id) } catch { /* handled */ }
+  await loadDetail()
+}
+async function loadDetail() {
+  const version = ++detailVersion, id = detail.id
+  detail.loading = true; detail.error = false; detail.row = null
+  try {
+    const data = await getRelease(id)
+    if (!disposed && version === detailVersion) detail.row = data
+  } catch { if (!disposed && version === detailVersion) detail.error = true }
+  finally { if (!disposed && version === detailVersion) detail.loading = false }
 }
 
 const dialog = reactive({ visible: false, id: null, saving: false })
+const deleting = ref(false)
 const form = reactive({ version: '', sub_product: '', channel: [], release_date: '', req_count: 0, content: '', memo: '' })
 function openCreate() {
   dialog.id = null
@@ -327,6 +368,7 @@ function openEdit(row) {
   dialog.visible = true
 }
 async function submit() {
+  if (dialog.saving || deleting.value) return
   if (!form.version.trim() || !form.release_date) { ElMessage.warning('版本号与发版日期必填'); return }
   dialog.saving = true
   try {
@@ -336,14 +378,20 @@ async function submit() {
     dialog.visible = false
     await loadStats()
     await load()
-  } finally { dialog.saving = false }
+  } catch { /* 请求拦截器已提示；保存失败保留输入。 */ }
+  finally { dialog.saving = false }
 }
 async function onDel(row) {
-  try { await ElMessageBox.confirm(`删除版本「${row.version}」？`, '确认', { type: 'warning' }) } catch { return }
-  await deleteRelease(row.id)
-  ElMessage.success('已删除')
-  await loadStats()
-  await load()
+  if (deleting.value || dialog.saving) return
+  deleting.value = true
+  try {
+    await ElMessageBox.confirm(`删除版本「${row.version}」？`, '确认', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' })
+    await deleteRelease(row.id)
+    ElMessage.success('已删除')
+    await loadStats()
+    await load()
+  } catch { /* 用户取消或请求拦截器已提示。 */ }
+  finally { deleting.value = false }
 }
 </script>
 

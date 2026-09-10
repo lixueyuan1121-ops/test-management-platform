@@ -33,7 +33,7 @@ const assert = require('node:assert/strict');
     assert(await page.locator('.trend svg path').count() > 0);
     await page.screenshot({ path: '/tmp/ai-wall-desktop.png' });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor();
     await page.getByRole('button', { name: '筛选', exact: true }).click();
     const sevenDayResponse = page.waitForResponse(response => response.url().includes('/stats/ai-funnel?days=7'));
     await page.getByText('近 7 天', { exact: true }).click();
