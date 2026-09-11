@@ -233,14 +233,15 @@ test("mock_route:已 unmock 的拦截器统计不丢(诊断按整条用例累计
   assert.ok(/未拦截到任何请求/.test(r.reason), `unmock 早于断言时也应点名 mock 未生效,实际:${r.reason}`);
 });
 
-test("mock_route:用例通过但 mock 全程 0 拦截 → 统计留痕(识别「假通过」),但不改判", async () => {
+test("mock_route:用例通过但 mock 全程 0 拦截 → 判为执行阻塞，不能假通过", async () => {
   const gui = fakeGui({ visibleOk: true, mockHits: 0 });
   const script = mockScript([
     { action: "assert_visible", target: { key: "emptyTip" }, desc: "看空态提示" },
     { action: "unmock_route", args: { url: "**/api/tasks" }, desc: "还原" },
   ]);
   const r = await runScript(gui, script, () => {}, null);
-  assert.equal(r.verdict, "pass", r.reason);
+  assert.equal(r.verdict, "fail", r.reason);
+  assert.equal(r.fail_kind, "selector");
   assert.deepEqual(r.mock_stats, [{ pattern: "**/api/tasks", status: 200, hits: 0 }]);
   assert.ok(/未拦截到任何请求/.test(r.reason), `假通过也要在结论里说清 mock 没生效,实际:${r.reason}`);
   assert.ok(/真实数据/.test(r.reason), `应点明本条实际跑在真实数据上,实际:${r.reason}`);

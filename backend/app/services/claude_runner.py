@@ -278,11 +278,11 @@ _SCENARIO_SPEC = """场景组合设计(**多场景覆盖的关键**——不要�
      不要假设环境天然就处于该状态;
    - expected 要写出该分支**特有的中间过程**与最终结果,而不是只写终态;
    - script 在中间过程处插 wait_for / wait_response 再断言,不要跳过中间态直接断终态。
-   正例(同一条路径「首页输入问题 + 选择专家 → 触发对话」按前置状态拆成三条并列用例):
+   正例(同一条路径「首页输入问题 + 选择专家 → 触发对话」按前置状态拆成独立用例):
    - A「专家已安装」:前置：专家 X 已安装 → 输入问题 → 选择 X → 发送 → **直接**进入 X 的会话并出现回复
    - B「专家未安装」:前置：专家 Y 未安装 → 输入问题 → 选择 Y → 发送 → **先**出现安装提示/安装进度 →
      等安装完成 → 自动进入 Y 的会话,且**刚才输入的问题被带过去并已发出**
-   - C「未安装且安装失败」:mock 安装接口返回失败 → 提示安装失败、不进入会话、**输入内容不丢失**
+   - C「未安装时取消安装」:仅当需求支持取消操作时，通过界面取消 → 不进入会话、验证需求规定的输入保留行为
    (上面的专家/安装只是**示意**,请按实际需求里真实存在的资源与状态,套用这套"前置状态分支"的设计思路。)"""
 
 _API_DESIGN_SPEC = """api 用例设计规范(接口测试口径——**逐条对照,别只写正例**):
@@ -298,13 +298,23 @@ _API_DESIGN_SPEC = """api 用例设计规范(接口测试口径——**逐条对
    - **有依赖关系的接口串进同一条用例**(创建→查询→更新→删除),中间用 extract 传 id;
      不要拆成多条互相依赖的用例(用例之间不保证执行顺序)。"""
 
+_AUTOMATION_FEASIBILITY_SPEC = """自动化可执行性约束:
+   - 优先覆盖需求明确的核心用户旅程：每个独立主流程设计完整 e2e，局部状态、输入校验和交互反馈设计 gui；不要为提高比例把 manual 改名或把单点用例凑成 e2e。
+   - kind_reason 写清可操作入口、可观察断言和前置数据来源；缺选择器只表示待补定位，不表示业务只能手工验证。
+   - 使用真实界面创建或选取测试数据。未提供的账号、权限、文件、设备状态不得假定已经具备；无法构造的场景不冒充可执行自动化。
+   - 当前自动生成禁止接口 mock：不生成依赖 mock_route/unmock_route、拦截请求、篡改响应、伪造故障数据的场景，也不能改写成“前置：接口返回500”来绕过。
+   - 接口 URL、返回字段与状态只能来自实际契约；接口契约不等于客户端请求可拦截的证明。无法通过真实操作触发的故障分支暂不生成，已有人工维护脚本不在此限制范围。
+   - steps 与 script 必须覆盖相同的操作和结果；每个异步结果先等待对应元素/回复，再断言业务结果，不只断言按钮或页面存在。
+   - 主流程完整性、断言有效性优先于固定步数和用例数量；优先生成已知选择器覆盖的路径，其余路径明确待补，不降低断言来换通过率。"""
+
+
 # gui/e2e 的 script DSL(原 prompt 条目 5+6)。抽成常量供分片按需拼装;api 分片不带此段。
 _GUI_SCRIPT_SPEC = """script(gui/e2e)——有序步骤数组,每步一个对象 {action, target?, args?, desc}:
-   - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route(拦截网络请求返回模拟数据)、unmock_route(取消拦截)
-   - target:定位元素,**优先用语义 key**:{"key":"<下方清单里的 key>"};清单没有的元素才用 {"selector":"<CSS>"}
+   - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - target:定位元素,**优先用语义 key**:{"key":"<下方清单里的 key>"};清单没有时给语义新 key 并描述元素，等待补齐；仅当输入提供已验证的 CSS 时才可用 {"selector":"<CSS>"}，不得臆造
    - **hover 用于"悬停才显示"的元素**(如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip):先 hover 到承载元素,再 wait_for 等浮层出现,然后 click/assert;hover 本身不做断言
    - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
-   - args:assert_text 用 {"expected":"...","contains":true};fill/type 用 {"text":"..."};press 用 {"key_name":"End"}(Playwright 按键名,如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {"timeout_ms":6000}(超时上限,仍需配 target);mock_route 用 {"url":"**/api/tasks","status":200,"body":{"code":0,"data":[]}};unmock_route 用 {"url":"**/api/tasks"}
+   - args:assert_text 用 {"expected":"...","contains":true};fill/type 用 {"text":"..."};press 用 {"key_name":"End"}(Playwright 按键名,如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {"timeout_ms":6000}(超时上限,仍需配 target)
    - **否定断言(极重要,别写反)**:验证"某文案**不显示** / 菜单**已关闭** / 某项**不含** / Chip/Tag **已移除/已消失**"这类**否定**预期时,**严禁**写成 `assert_text` 去 equals/contains 那个"不该出现的文案"(元素消失后 textContent 为空,equals 恒不等 → 必然假失败)。正确写法二选一:
      · 目标元素**整体应消失/不存在** → 用 `assert_absent`(target 指向该元素;定位不到即通过)。如"移除后专家 Tag 消失""关闭后菜单消失"。
      · 目标元素**还在、只是其文本不应等于/不应包含某值** → 用 `assert_text` 且 `args.negate=true`(如 {"expected":"纳米Work","negate":true} 表示"该处文本不应是纳米Work")。
@@ -322,19 +332,6 @@ _GUI_SCRIPT_SPEC = """script(gui/e2e)——有序步骤数组,每步一个对象
    正例(gui,单点,含进入):connect → click(navTasks) → wait_for(任务页锚点) → assert_visible(目标元素)
    正例(e2e,多步,含进入):connect → click(navTasks) → click(新建按钮) → fill(表单字段) → click(提交) → wait_for(结果锚点) → assert_text(结果文案,contains)
    登录单列(其它用例默认已登录):connect → fill(loginUserName) → fill(loginPassword) → click(loginAgree) → click(loginSubmit) → wait_for(homepageTitle) → assert_visible(homepageTitle)
-   - **mock_route 使用场景(重要——主动生成这类用例,覆盖真实请求难以构造的状态)**:凡依赖后端返回特定数据才能验证的前端行为,优先用 mock_route 注入数据、在客户端内断言渲染结果。典型场景:
-     · **空状态**:mock 接口返回空列表/空数据,验证前端展示"暂无数据"提示,如 {"code":0,"data":[]}
-     · **多数据/分页**:mock 返回大量条目(如 50 条),验证列表滚动、分页控件、数量展示是否正确
-     · **异常数据**:mock 返回超长文本、特殊字符、极端数值,验证前端截断/溢出/格式化是否健壮
-     · **后端报错**:mock 返回 {"code":-1,"msg":"服务器异常"} 或 HTTP 500,验证前端是否展示错误提示而非白屏/崩溃
-     · **权限不足**:mock 返回 {"code":403,"msg":"无权限"},验证无权限时的降级展示
-     · **字段缺失**:mock 返回缺少部分字段的对象,验证前端容错(不崩溃、字段缺失时有兜底展示)
-     · mock_route 必须在用例结尾前加 unmock_route 还原,避免影响后续用例
-     正例(mock空状态,gui):connect → mock_route(**/api/tasks) → click(navTasks) → wait_for(任务列表锚点) → assert_text("暂无数据",contains) → unmock_route(**/api/tasks)
-     正例(mock报错,gui):connect → mock_route(**/api/tasks,status=500) → click(navTasks) → wait_for(错误提示锚点) → assert_visible(错误提示) → unmock_route(**/api/tasks)
-     **mock 时序(重要)**:mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束;若断言依赖首屏接口数据,正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert,而非 connect → click → mock_route(拦截器注册晚于请求,必然无效)。
-     **URL 模式(重要)**:只写到接口路径为止,**不要**把查询参数写进模式(执行器会自动容忍 `?a=1` 这类查询串)。写 `**/api/tasks` 即可命中 `.../api/tasks?project_id=1`;一旦写成 `**/api/tasks?project_id=1` 就变成精确匹配,参数对不上就拦不到。要覆盖某路径下所有子接口用 `**/api/tasks/**`。
-     **body 写成 JSON 对象**(如 {"code":0,"data":[]}),不要写成字符串形式的 JSON。
      **时间敏感文本(重要)**:问候语时间段前缀(早上好/下午好/晚上好等)由客户端按本地时间实时计算,断言中**严禁**写死时间段,否则非对应时段执行必然失败。只断言稳定部分,如称呼"小马"(contains),或断言不含默认文案(negate)。"""
 
 
@@ -399,8 +396,9 @@ TESTCASE_SHARDS = [
         "id": "exception",
         "name": "异常容错与数据态",
         "kinds": "gui/e2e",
-        "focus": "后端报错/超时/空数据/超量数据/权限不足/字段缺失时前端的表现。"
-                 "**优先用 mock_route 注入这些数据态**,在客户端内断言渲染结果(空态提示、错误提示、不白屏)。",
+        "focus": "通过真实界面能够构造的数据态与恢复路径：无匹配搜索、清空筛选、取消操作后重试、"
+                 "已有测试数据下的空列表与分页。前置状态必须有可执行的准备步骤；"
+                 "无法通过真实界面或已提供测试夹具构造的后端报错/超时/字段缺失，不生成用例。",
         "exclude": "正常主流程、输入框边界值、接口层验证",
     },
     {
@@ -490,6 +488,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
    - P3：极端罕见场景 / 影响面很小的细节。""")
 
     secs.append(_kind_spec(has_contract))
+    secs.append(_AUTOMATION_FEASIBILITY_SPEC)
 
     # no_script:跳过 gui/api script 规格段(输出的最大头),script 一律 [] —— 显著减输出、提速。
     if not no_script:
@@ -501,9 +500,9 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
             keys = _load_selector_keys(project_id, pages)
             if keys:
                 lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
-                keys_block = "\n   可用语义 key 清单（script.target.key 只能取这里的 key）：\n" + lines
+                keys_block = "\n   可用语义 key 清单（已有匹配 key 必须复用；缺失时使用语义新 key 和元素描述，等待补齐）：\n" + lines
             else:
-                keys_block = "\n   （当前无可用语义 key 清单：gui/e2e 若无法用 key 表达，请改判 manual）"
+                keys_block = "\n   （当前无可用语义 key 清单：仍设计 GUI/E2E 脚本，使用语义新 key 并描述元素，进入选择器待补流程；不得编造 CSS）"
             secs.append(_GUI_SCRIPT_SPEC + keys_block)
             if not shard:   # 全量模式仍带 api 规范段(单片回退时一并产 api 用例)
                 secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
@@ -591,30 +590,8 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 输出要求:
 1. 只输出一个 JSON 数组(script),不要任何解释、不要 markdown 代码块标记。
 2. {_STEPS_TO_SCRIPT_RULE}
-3. 每步一个对象 {{action, target?, args?, desc}}:
-   - action 只能取:connect(第一步必须)、click、hover(鼠标悬停,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复)、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route(拦截网络请求返回模拟数据)、unmock_route(取消拦截)
-   - target:优先 {{"key":"<下方清单里的 key>"}};清单没有合适 key 时,起语义化新 key 名并在 desc 描述该元素(可见文案/角色/位置),走「选择器待补」,不要臆造 selector
-   - **hover 用于"悬停才显示"的元素**(列表项 hover 出的更多/菜单按钮、tooltip):先 hover 承载元素→wait_for 等浮层→再 click/assert;hover 本身不断言
-   - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
-   - args:assert_text 用 {{"expected":"...","contains":true}};fill/type 用 {{"text":"..."}};press 用 {{"key_name":"End"}}(Playwright 按键名，如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {{"timeout_ms":6000}}(超时上限,仍需配 target);mock_route 用 {{"url":"**/api/tasks","status":200,"body":{{"code":0,"data":[]}}}};unmock_route 用 {{"url":"**/api/tasks"}}
-   - **否定断言(别写反)**:验证"不显示/已关闭/不含/已移除/已消失"这类**否定**预期,严禁用 assert_text 去 equals/contains 那个不该出现的文案(元素消失后 textContent 为空,equals 恒假 → 假失败)。元素整体应消失 → 用 assert_absent(target 指向它,定位不到即通过);元素还在只是文本不应等于/含某值 → assert_text 加 args.negate=true。**expected 必须是真实可见文案,不得填类名(is-open)/key 名/占位符(/)**——判状态/存在性用 assert_visible/assert_absent
-   - desc:该步人读说明
-   - **至少含一个 assert_text / assert_visible / assert_absent**(否则无判定依据)
-   - {'e2e:多步端到端(≥5 步)、跨界面串联、异步处插 wait_response' if kind == 'e2e' else 'gui:单点聚焦,含进入通常 2-5 步'}
-   - **用例自治**:connect 后先用导航/入口 key 显式进入目标页(不假设当前页,默认已登录主界面),自治靠这一步自导航保证;**用例到操作与断言为止,不要加关弹窗/清输入/导航回首页之类的收尾还原步**(结尾还原步常因锚点不稳而整条失败)
-   - **进入段只写一步真实导航动作**,**严禁**"刷新页面/重新加载""确认当前在首页/确认已在主界面""确保已登录/检查登录状态""回到首页再开始"这类环境确认或复位步——它们不是被测点且锚点不稳,直接 connect→导航到目标页,不做任何页面状态前置确认或刷新
-   - **mock_route 使用场景(主动生成这类用例,覆盖真实请求难以构造的状态)**:凡依赖后端返回特定数据才能验证的前端行为,优先用 mock_route 注入数据、在客户端内断言渲染结果。典型场景:
-     · **空状态**:mock 接口返回空列表/空数据,验证前端展示"暂无数据"等提示,如 {{"code":0,"data":[]}}
-     · **多数据/分页**:mock 返回大量条目(如 50 条),验证列表滚动、分页控件、数量展示是否正确
-     · **异常数据**:mock 返回超长文本、特殊字符、极端数值,验证前端截断/溢出/格式化是否健壮
-     · **后端报错**:mock 返回 {{"code":-1,"msg":"服务器异常"}} 或 HTTP 500,验证前端是否展示错误提示而非白屏/崩溃
-     · **权限不足**:mock 返回 {{"code":403,"msg":"无权限"}},验证无权限时的降级展示
-     · **字段缺失**:mock 返回缺少部分字段的对象,验证前端容错(不崩溃、有兜底展示)
-     · mock_route 必须在用例结尾前加 unmock_route 还原,避免影响后续用例
-     **mock 时序（重要）**：mock_route 必须在触发目标请求的导航/点击**之前**注册。connect 时页面已加载完、首屏请求已结束；若断言依赖首屏接口数据，正确顺序是 connect → mock_route → click(进入页面) → wait_for → assert，而非 connect → click → mock_route（拦截器注册晚于请求，必然无效）。
-     **URL 模式（重要）**：只写到接口路径为止，**不要**把查询参数写进模式（执行器会自动容忍 `?a=1` 这类查询串）。写 `**/api/tasks` 即可命中 `.../api/tasks?project_id=1`；一旦写成 `**/api/tasks?project_id=1` 就变成精确匹配，参数对不上就拦不到。要覆盖某路径下所有子接口用 `**/api/tasks/**`。
-     **body 写成 JSON 对象**（如 {{"code":0,"data":[]}}），不要写成字符串形式的 JSON。
-     **时间敏感文本（重要）**：问候语时间段前缀（早上好/下午好/晚上好等）由客户端按本地时间实时计算，断言中**严禁**写死时间段，否则非对应时段执行必然失败。只断言稳定部分，如称呼"小马"（contains），或断言不含默认文案（negate）。
+3. {_AUTOMATION_FEASIBILITY_SPEC}
+{_GUI_SCRIPT_SPEC}
 4. target.key 优先取下方清单里的 key(**清单里已有能表达该元素的 key 必须直接复用其 key 名,不要为同一元素另造新名字**,否则重生后仍会缺 key);清单无合适 key 时起语义化新 key 名 + desc 描述元素(走「选择器待补」),不要臆造 selector:
 {lines}"""
 
@@ -674,7 +651,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     if kind == "api":
         script, err = _validate_api_script(arr)
     else:
-        script, err = _validate_script(arr, _registered_keys(project_id))
+        script, err = _validate_generated_gui_script(arr, _registered_keys(project_id))
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None
@@ -1703,6 +1680,9 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
     for it in arr:
         if not isinstance(it, dict):
             continue
+        if _contains_network_mock(it.get("script")):
+            logger.warning("忽略自动生成的接口 mock 用例；原始输出仍保留供复核")
+            continue
         title = str(it.get("title") or "").strip()[:512]
         if not title:
             continue
@@ -1719,6 +1699,7 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
             script, err = _validate_script(it.get("script"), valid_keys)
             if err:
                 kind = "manual"  # script 不合法/缺失/含未注册 key → 保守降级,避免执行机拿到坏 script
+                kind_reason = f"自动化脚本待修复：{err}"[:500]
                 # 标识"仅因选择器缺失而降级":收集脚本引用但未注册的 key。
                 # 若补齐这些 key 后能通过校验 → 明确告知"补齐即可执行",否则注明仍有其它问题。
                 missing = _unregistered_keys(it.get("script"), valid_keys)
@@ -1757,6 +1738,19 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
             "page": _pages_for_script(script_json, key_page_map) or None,  # 按 script 用到的 key 反查页面
         })
     return out
+
+
+def _contains_network_mock(script) -> bool:
+    return isinstance(script, list) and any(
+        isinstance(step, dict) and str(step.get("action") or "").strip() in ("mock_route", "unmock_route")
+        for step in script
+    )
+
+
+def _validate_generated_gui_script(script, valid_keys=None):
+    if _contains_network_mock(script):
+        return [], "自动生成暂不支持接口 mock，请改用真实界面可构造的场景"
+    return _validate_script(script, valid_keys)
 
 
 _VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot", "mock_route", "unmock_route"}

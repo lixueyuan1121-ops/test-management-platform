@@ -37,6 +37,7 @@ from app.services.claude_runner import (  # noqa: F401
     parse_eval_verdict,
     EVAL_JUDGE_SYSTEM_PROMPT,
     _validate_script,
+    _validate_generated_gui_script,
     _validate_api_script,
     _registered_keys,
     _FENCE_RE,
@@ -261,7 +262,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
     if kind == "api":
         script, err = _validate_api_script(arr)
     else:
-        script, err = _validate_script(arr, _registered_keys(project_id))
+        script, err = _validate_generated_gui_script(arr, _registered_keys(project_id))
     if err:
         return [], f"生成的 script 不合法：{err}"
     return script, None

@@ -82,6 +82,8 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
       result.reason = result.verdict === "fail"
         ? `${result.reason}（注意:${why},mock 数据未生效）`
         : `${result.reason}（注意:${why},本条实际是在真实数据上通过的,mock 场景未被验证）`;
+      result.verdict = "fail";
+      result.fail_kind = "selector"; // 测试前置未生效，不当作被测产品的功能失败。
     }
     return result;
   };
@@ -194,4 +196,3 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     report,
   });
 }
-

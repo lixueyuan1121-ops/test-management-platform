@@ -659,9 +659,8 @@ export function createGuiCore(opts = {}) {
     // urlPattern: glob 模式，如 "**/api/tasks" 或 "**/api/**"。
     // body: 对象则 JSON 序列化；已是字符串则原样透传。status: HTTP 状态码，默认 200。
     // 用 ctx.route（BrowserContext 级）而非 page.route：
-    //   Electron 客户端业务逻辑在嵌套 iframe（<vm_id>.work.n.cn）里发起 fetch，
-    //   page.route 只拦截顶层 Page 的请求，不覆盖跨域 iframe 内的请求；
-    //   ctx.route 覆盖整个 BrowserContext 下所有 Frame，才能真正拦截到 iframe 内请求。
+    //   ctx.route 覆盖整个 BrowserContext 的页面与 Frame，而不只绑定单个 Page。
+    //   这并不保证能拦截 Electron 主进程、远端代理或 Service Worker 接管的请求。
     // 匹配用 toUrlMatcher 编译出的正则而非原始 glob 串：Playwright 的 glob 要匹配**整个 URL**，
     //   `**/api/tasks` 对真实请求 `.../api/tasks?project_id=1` 匹配不上（详见 mock-route.mjs 根因①）。
     // 响应头由 buildMockResponse 补 CORS：fulfill 出去的响应不会自动带 Access-Control-Allow-Origin，
@@ -675,10 +674,9 @@ export function createGuiCore(opts = {}) {
       const matcher = toUrlMatcher(pattern);
       const stat = { pattern, status: Number(args.status ?? 200), hits: 0 };
       const handler = async (route) => {
-        stat.hits += 1;
         const { status, body, headers } = buildMockResponse(args, route.request().headers());
         // fulfill 可能因页面已跳走/请求已被别处处理而抛错；此时放行真实请求，别让这条请求悬着超时。
-        try { await route.fulfill({ status, body, headers }); }
+        try { await route.fulfill({ status, body, headers }); stat.hits += 1; }
         catch { try { await route.fallback(); } catch { /* 请求已终结,忽略 */ } }
       };
       await ctx.route(matcher, handler);
