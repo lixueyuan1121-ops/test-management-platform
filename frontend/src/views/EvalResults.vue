@@ -306,7 +306,7 @@
               :loading="judgingIds.has(row.run_id)"
               :disabled="!canJudge(row)"
               @click="judgeOne(row)"
-            >{{ row.verdict ? '重判' : '判定' }}</el-button>
+            >{{ judgeStages[row.run_id] || (row.verdict ? '重判' : '判定') }}</el-button>
             <span v-else class="dim-muted">逐轮判</span>
           </template>
         </el-table-column>
@@ -327,7 +327,7 @@
         <template v-if="inspectedRun">
           <el-checkbox :model-value="selectedRunIds.includes(inspectedRun.run_id)" :disabled="pushingMultica || !!inspectedRun.pushed_multica" @change="checked => selectPushRuns([inspectedRun], checked)">{{ inspectedRun.pushed_multica ? 'Multica 已推送' : '加入推送选择' }}</el-checkbox>
           <el-popconfirm v-if="inspectedRun.status === 'failed'" title="重跑该条执行？" @confirm="retryOne(inspectedRun)"><template #reference><el-button type="warning" plain>重跑</el-button></template></el-popconfirm>
-          <el-button v-else type="primary" :icon="DataAnalysis" :disabled="!canJudge(inspectedRun)" :loading="judgingIds.has(inspectedRun.run_id)" @click="judgeOne(inspectedRun)">{{ inspectedRun.verdict ? '重新判定' : '判定' }}</el-button>
+          <el-button v-else type="primary" :icon="DataAnalysis" :disabled="!canJudge(inspectedRun)" :loading="judgingIds.has(inspectedRun.run_id)" @click="judgeOne(inspectedRun)">{{ judgeStages[inspectedRun.run_id] || (inspectedRun.verdict ? '重新判定' : '判定') }}</el-button>
         </template>
       </template>
     </EvalRunInspector>
@@ -495,6 +495,7 @@ function selectPushRuns(runs, checked) {
     : selectedRunIds.value.filter(id => !ids.has(id))
 }
 const judgingIds = ref(new Set())
+const judgeStages = ref({})
 const batchJudging = ref(false)
 const batchProgress = ref('')   // 批量判定进度文案「判定中 done/total」
 const robustJudge = ref(false)
@@ -672,7 +673,9 @@ async function judgeOne(row) {
   if (judgingIds.value.has(row.run_id)) return
   judgingIds.value = new Set(judgingIds.value).add(row.run_id)
   try {
-    const res = await judgeEvalRun(row.run_id)
+    const res = await judgeEvalRun(row.run_id, undefined, { onTick: (job) => {
+      judgeStages.value[row.run_id] = job.status === 'pending' ? `排队 ${job.queue_position ?? ''}` : '判定中'
+    } })
     Object.assign(row, {
       status: res.status ?? row.status,
       verdict: res.verdict ?? null,
@@ -686,6 +689,7 @@ async function judgeOne(row) {
   } catch (e) { ElMessage.error(e?.message || '判定失败') }
   finally {
     const s = new Set(judgingIds.value); s.delete(row.run_id); judgingIds.value = s
+    delete judgeStages.value[row.run_id]
   }
 }
 

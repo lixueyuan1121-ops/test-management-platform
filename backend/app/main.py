@@ -138,6 +138,9 @@ def create_app() -> FastAPI:
             db = SessionLocal()
             try:
                 reap_stale_running_on_startup(db)
+                from app.services.eval_judge import recover_interrupted_judgments
+                recovered = recover_interrupted_judgments(db)
+                logger.info("启动恢复中断判定 count=%s", recovered)
             finally:
                 db.close()
         except Exception:

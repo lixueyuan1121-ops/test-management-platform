@@ -6,7 +6,9 @@ trace 存磁盘(uploads/eval_traces/{...}.json,子项2),按 run.trace URL 反解
 import json
 import logging
 import os
+import time
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.enums import EvalRunStatus, EvalVerdict
@@ -123,7 +125,43 @@ def _verdict_of(dims: dict) -> str:
     return EvalVerdict.error.value
 
 
+def recover_interrupted_judgments(db: Session, run_id: int | None = None, reason: str = "服务重启中断判定，请重新判定") -> int:
+    """Startup-only sweep, or targeted recovery after a failed invocation."""
+    stmt = update(EvalRun).where(EvalRun.status == EvalRunStatus.judging)
+    if run_id is not None:
+        stmt = stmt.where(EvalRun.id == run_id)
+    result = db.execute(stmt.values(status=EvalRunStatus.done, verdict=EvalVerdict.error.value,
+                                   verdict_reason=reason[:2000], score=None, verdict_dims=None,
+                                   is_abnormal=False))
+    db.commit()
+    return result.rowcount
+
+
 def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int = 1) -> dict:
+    run_id = run.id
+    started = time.monotonic()
+    logger.info("判定开始 run_id=%s provider=%s", run_id, provider)
+    try:
+        result = _judge_run(db, run, provider=provider, votes=votes)
+        logger.info("判定结束 run_id=%s verdict=%s elapsed=%.1fs", run_id, result.get("verdict"), time.monotonic() - started)
+        return result
+    except Exception:
+        logger.exception("判定异常 run_id=%s elapsed=%.1fs", run_id, time.monotonic() - started)
+        # Roll back before opening a fresh session: the original connection may be broken.
+        bind = db.get_bind()
+        try:
+            db.rollback()
+        except Exception:
+            logger.warning("判定旧连接回滚失败 run_id=%s", run_id, exc_info=True)
+        try:
+            with Session(bind=bind) as recovery:
+                recover_interrupted_judgments(recovery, run_id, "平台判定异常，未得出新结论，请重新判定；详情见服务日志")
+        except Exception:
+            logger.exception("判定状态恢复失败 run_id=%s", run_id)
+        raise
+
+
+def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int = 1) -> dict:
     """判定一条 eval_run:读 trace+expected+主考维度 → 引擎 → 多维 → 落库。返回判定结果 dict。
 
     votes>1 = 稳健判定(主流 multi-judge 多数决):独立判 N 次,pass/fail 按多数票定结论

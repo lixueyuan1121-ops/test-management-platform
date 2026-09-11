@@ -103,6 +103,9 @@ free_port
 
 # ---- 4. 后台重启 ----
 echo "==> 后台启动 uvicorn (端口 $PORT)"
+if [ -f "$LOGFILE" ]; then
+  mv "$LOGFILE" "${LOGFILE}.$(date +%Y%m%d-%H%M%S).$$"
+fi
 cd "$BACKEND"
 nohup "$VENV/bin/uvicorn" app.main:app --host 0.0.0.0 --port "$PORT" > "$LOGFILE" 2>&1 &
 NEW_PID=$!
