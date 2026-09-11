@@ -139,13 +139,14 @@ def _group_rows(db: Session, r: EvalRun) -> list[EvalRun]:
 
 
 def _can_take(r: EvalRun, runner: str, engine: str | None) -> bool:
-    # 同一设备身份可有两个 runner，自己的分片也必须按引擎隔离，不能抢另一个客户端的任务。
-    if engine and (r.target_engine or "namiwork") != engine:
+    from app.services.eval_engines import runner_supported_engines
+    # engine 是能力声明；workbuddy 额外支持 WorkBuddy，同时仍可执行纳米Work。
+    if (r.target_engine or "namiwork") not in runner_supported_engines(engine):
         return False
     if r.runner == runner:
         return True
     # A pinned VM may not be accessible from another desktop. Do not migrate it.
-    if r.target_device or not engine or (r.target_engine or "namiwork") != engine:
+    if r.target_device or not engine:
         return False
     return runner in json.loads(r.eligible_runners or "[]")
 
@@ -236,7 +237,7 @@ def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
                  dynamic: bool = Query(False),
                  db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
     # 本端点被测评 runner(run-eval.sh)轮询 → 刷 last_eval_at 记「该机当前在跑测评 runner」(运行时类型感知)。
-    # engine:该机在跑哪个被测产品(namiwork/workbuddy),随轮询上报,供多产品分机挑机(online_eval_runners(engine))。
+    # engine 是额外能力声明：默认纳米Work，workbuddy 表示同时支持两种产品。
     if ctx.device is not None:
         runner = ctx.device.runner_id
         now = datetime.utcnow()
@@ -255,8 +256,9 @@ def list_pending(runner: str = Query("mac-01"), limit: int = Query(5, le=20),
     rows = (db.query(EvalRun)
             .filter(EvalRun.status == EvalRunStatus.pending, ownership)
             .order_by(EvalRun.id).all())
-    if engine:
-        rows = [r for r in rows if (r.target_engine or "namiwork") == engine]
+    from app.services.eval_engines import runner_supported_engines
+    supported = runner_supported_engines(engine)
+    rows = [r for r in rows if (r.target_engine or "namiwork") in supported]
     if dynamic:
         rows = [r for r in rows if _can_take(r, runner, engine)]
         # Prefer our initial shard, then help other selected machines. Only
@@ -322,7 +324,8 @@ def claim(run_id: int, runner: str = Query(...), db: Session = Depends(get_db),
 
 @router.post("/{run_id}/heartbeat")
 def heartbeat(run_id: int, runner: str = Query(...), claim_token: str = Query(...),
-              db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
+              db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx),
+              engine: str | None = Query(None)):
     if ctx.device is not None:
         runner = ctx.device.runner_id
     query = db.query(EvalRun).filter(
@@ -332,19 +335,23 @@ def heartbeat(run_id: int, runner: str = Query(...), claim_token: str = Query(..
     run = query.first()
     if run is None:
         raise HTTPException(409, detail="认领已失效")
+    from app.services.eval_engines import runner_supported_engines
+    if engine is not None and (run.target_engine or "namiwork") not in runner_supported_engines(engine):
+        raise HTTPException(409, detail="执行引擎不在此 runner 声明的能力范围内")
     changed = query.update({EvalRun.heartbeat_at: func.now()}, synchronize_session=False)
     if not changed:
         db.rollback()
         raise HTTPException(409, detail="认领已失效")
-    # 执行期不再拉 pending，用已认领任务的真实引擎续期，不让另一个 runner 保活所有引擎。
-    if ctx.device is not None:
-        from app.services.runner_presence import touch_eval_engine
-        now = datetime.utcnow()
-        ctx.device.last_seen_at = ctx.device.last_eval_at = now
-        touch_eval_engine(db, ctx.device, run.target_engine, now)
-    else:
-        from app.services.dispatcher import touch_runner_heartbeat
-        touch_runner_heartbeat(db, runner, kind="eval", engine=run.target_engine)
+    # 续期 runner 的能力，而不是把正在执行的一条纳米任务误当成“只支持纳米”。
+    # 旧客户端不带 engine，沿用最近轮询声明；已认领 WorkBuddy 任务亦能证明该能力。
+    from app.models import RunnerDevice
+    from app.services.runner_presence import touch_eval_engine
+    devices = [ctx.device] if ctx.device is not None else db.query(RunnerDevice).filter_by(runner_id=runner).all()
+    now = datetime.utcnow()
+    for device in devices:
+        declaration = engine or ("workbuddy" if run.target_engine == "workbuddy" else device.eval_engine) or "namiwork"
+        device.last_seen_at = device.last_eval_at = now
+        touch_eval_engine(db, device, declaration, now)
     db.commit()
     return ok({"alive": True})
 

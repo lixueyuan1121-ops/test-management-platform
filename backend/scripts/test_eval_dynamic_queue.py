@@ -86,11 +86,20 @@ class DynamicQueueTests(unittest.TestCase):
                 r.target_device = None
             db.commit()
         self.assertEqual(self.pending("outsider"), [])
-        self.assertEqual(self.pending(engine="workbuddy"), [])
+        self.assertEqual([r["run_id"] for r in self.pending(engine="workbuddy")], ids)
+        self.assertEqual(self.pending(engine="unknown"), [])
         self.assertEqual(self.pending(dynamic=False), [])
         with self.sessions() as db:
             for r in db.query(EvalRun).all():
+                r.target_engine = "workbuddy"
+            db.commit()
+        self.assertEqual(self.pending(), [])
+        self.assertEqual(self.claim(ids[0]).status_code, 409)
+        self.assertEqual([r["run_id"] for r in self.pending(engine="workbuddy")], ids)
+        with self.sessions() as db:
+            for r in db.query(EvalRun).all():
                 r.eligible_runners = None
+                r.target_engine = "namiwork"
             db.commit()
         self.assertEqual(self.pending(), [])
         self.assertEqual(len(self.pending("r1", dynamic=False)), 2)

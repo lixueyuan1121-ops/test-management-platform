@@ -1,4 +1,4 @@
-"""同设备两个测评 runner：实际轮询→自动分机→按引擎认领，内存库隔离业务数据。"""
+"""默认纳米Work、额外开启 WorkBuddy：实际轮询→双引擎下发→认领，内存库隔离。"""
 import unittest
 from datetime import datetime, timedelta
 
@@ -72,33 +72,35 @@ class SameDeviceEnginesTest(unittest.TestCase):
         return self.client.post(f"/api/eval-queue/{run_id}/claim", params={
             "runner": "dual", "engine": engine, "whole_group": True})
 
-    def test_interleaved_polls_dispatch_and_claim_are_isolated(self):
-        for engine in ["namiwork", "workbuddy", "namiwork", "workbuddy"]:
-            self.poll(engine)
+    def test_one_workbuddy_runner_dispatches_and_claims_both_products(self):
+        self.poll("workbuddy")
         for engine in ["namiwork", "workbuddy"]:
             self.assertEqual(self.online(engine), ["dual"])
         self.assertEqual(len(self.dispatch()), 4)
         nami, wb = self.poll("namiwork"), self.poll("workbuddy")
         self.assertEqual(len(nami), 2)
-        self.assertEqual(len(wb), 2)
+        self.assertEqual(len(wb), 4)
         legacy_poll = self.client.get("/api/eval-queue", params={"runner": "dual", "engine": "namiwork"})
         self.assertTrue(all(r["target_engine"] == "namiwork" for r in legacy_poll.json()["data"]))
         self.assertTrue(all(r["target_engine"] == "namiwork" for r in nami))
-        self.assertTrue(all(r["target_engine"] == "workbuddy" for r in wb))
-        self.assertEqual(self.claim(wb[0]["run_id"], "namiwork").status_code, 409)
-        self.assertEqual(self.claim(nami[0]["run_id"], "namiwork").status_code, 200)
-        self.assertEqual(self.claim(wb[0]["run_id"], "workbuddy").status_code, 200)
+        self.assertEqual({r["target_engine"] for r in wb}, {"namiwork", "workbuddy"})
+        wb_run = next(r for r in wb if r["target_engine"] == "workbuddy")
+        self.assertEqual(self.claim(wb_run["run_id"], "namiwork").status_code, 409)
+        self.assertEqual(self.client.post(f'/api/eval-queue/{wb_run["run_id"]}/claim',
+                                         params={"runner": "dual"}).status_code, 409)
+        # 同一个启用 WorkBuddy 的客户端能认领两种产品，任务目标引擎仍独立。
+        for run in wb:
+            self.assertEqual(self.claim(run["run_id"], "workbuddy").status_code, 200)
 
-    def test_one_stopped_engine_expires_independently(self):
-        self.poll("namiwork")
+    def test_workbuddy_capability_expires_when_only_default_runner_remains(self):
         self.poll("workbuddy")
         with self.sessions() as db:
-            db.get(RunnerEvalHeartbeat, (1, "namiwork")).last_seen_at = datetime.utcnow() - timedelta(minutes=4)
+            db.get(RunnerEvalHeartbeat, (1, "workbuddy")).last_seen_at = datetime.utcnow() - timedelta(minutes=4)
             db.commit()
-        self.poll("workbuddy")
-        self.assertEqual(self.online("namiwork"), [])
-        self.assertEqual(self.online("workbuddy"), ["dual"])
-        with self.assertRaisesRegex(ValueError, "纳米Work.*无在线执行机"):
+        self.poll("namiwork")
+        self.assertEqual(self.online("namiwork"), ["dual"])
+        self.assertEqual(self.online("workbuddy"), [])
+        with self.assertRaisesRegex(ValueError, "WorkBuddy.*无在线执行机"):
             self.dispatch()
         with self.sessions() as db:
             self.assertEqual(db.query(EvalRun).count(), 0)
@@ -110,23 +112,42 @@ class SameDeviceEnginesTest(unittest.TestCase):
         self.assertEqual(self.online("namiwork"), ["dual"])
         self.assertEqual(self.online("workbuddy"), ["dual"])
 
-    def test_running_heartbeat_refreshes_its_engine_and_rejects_invalid_claim(self):
-        self.poll("namiwork")
+    def test_running_nami_heartbeat_preserves_both_capabilities_for_legacy_and_new_clients(self):
         self.poll("workbuddy")
         self.dispatch()
-        rid = self.poll("namiwork")[0]["run_id"]
-        token = self.claim(rid, "namiwork").json()["data"]["claim_token"]
-        old = datetime.utcnow() - timedelta(minutes=4)
+        rid = next(r["run_id"] for r in self.poll("workbuddy") if r["target_engine"] == "namiwork")
+        token = self.claim(rid, "workbuddy").json()["data"]["claim_token"]
+        for declaration in [None, "workbuddy"]:
+            with self.subTest(engine=declaration):
+                old = datetime.utcnow() - timedelta(minutes=4)
+                with self.sessions() as db:
+                    db.query(RunnerEvalHeartbeat).update({"last_seen_at": old})
+                    db.get(EvalRun, rid).heartbeat_at = old
+                    # 新客户端应使用显式声明，即使另一默认 runner 覆盖了旧字段。
+                    if declaration:
+                        db.get(RunnerDevice, 1).eval_engine = "namiwork"
+                    db.commit()
+                for engine in ["namiwork", "workbuddy"]:
+                    self.assertEqual(self.online(engine), [])
+                params = {"runner": "dual", "claim_token": token}
+                if declaration:
+                    params["engine"] = declaration
+                invalid = self.client.post(f"/api/eval-queue/{rid}/heartbeat", params={**params, "claim_token": "invalid"})
+                self.assertEqual(invalid.status_code, 409)
+                invalid_engine = self.client.post(f"/api/eval-queue/{rid}/heartbeat", params={**params, "engine": "unknown"})
+                self.assertEqual(invalid_engine.status_code, 409)
+                for engine in ["namiwork", "workbuddy"]:
+                    self.assertEqual(self.online(engine), [])
+                valid = self.client.post(f"/api/eval-queue/{rid}/heartbeat", params=params)
+                self.assertEqual(valid.status_code, 200, valid.text)
+                for engine in ["namiwork", "workbuddy"]:
+                    self.assertEqual(self.online(engine), ["dual"])
+
+    def test_older_workbuddy_heartbeat_also_implies_nami(self):
+        self.poll("workbuddy")
         with self.sessions() as db:
-            db.get(RunnerEvalHeartbeat, (1, "namiwork")).last_seen_at = old
-            db.get(EvalRun, rid).heartbeat_at = old
+            db.delete(db.get(RunnerEvalHeartbeat, (1, "namiwork")))
             db.commit()
-        self.assertEqual(self.online("namiwork"), [])
-        invalid = self.client.post(f"/api/eval-queue/{rid}/heartbeat", params={"runner": "dual", "claim_token": "invalid"})
-        self.assertEqual(invalid.status_code, 409)
-        self.assertEqual(self.online("namiwork"), [])
-        valid = self.client.post(f"/api/eval-queue/{rid}/heartbeat", params={"runner": "dual", "claim_token": token})
-        self.assertEqual(valid.status_code, 200, valid.text)
         self.assertEqual(self.online("namiwork"), ["dual"])
         self.assertEqual(self.online("workbuddy"), ["dual"])
 
@@ -134,6 +155,8 @@ class SameDeviceEnginesTest(unittest.TestCase):
         self.poll()
         self.assertEqual(self.online("namiwork"), ["dual"])
         self.assertEqual(self.online("workbuddy"), [])
+        with self.assertRaisesRegex(ValueError, "WorkBuddy.*无在线执行机"):
+            self.dispatch()
         self.poll("workbuddy")
         self.poll("unknown")
         with self.sessions() as db:

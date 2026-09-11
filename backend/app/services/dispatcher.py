@@ -129,7 +129,7 @@ def online_eval_runners(db: Session, engine: str | None = None) -> list[str]:
     真正在跑测评 runner 的机,从根上杜绝「派到只跑功能测试的机器」。
     返回按 runner_id 升序(稳定),供轮转分片时确定性分配。
 
-    engine 非空时按独立引擎心跳过滤，同一设备可同时承接纳米Work 和 WorkBuddy。
+    engine 非空时按能力心跳过滤；默认支持纳米Work，声明 workbuddy 时额外支持 WorkBuddy。
     尚未上报独立心跳的旧设备沿用 eval_engine。engine 为空=不按引擎过滤。
     """
     from app.api.devices import ONLINE_WINDOW_SEC

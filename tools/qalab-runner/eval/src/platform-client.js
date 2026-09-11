@@ -8,7 +8,7 @@ class PlatformClient {
     this.baseUrl = (config.baseUrl || process.env.BASE_URL || '').replace(/\/$/, '');
     this.token = config.token || process.env.RUNNER_TOKEN || '';
     this.runnerId = config.runnerId || process.env.RUNNER_ID || 'mac-01';
-    // 本机在跑哪个被测产品(namiwork/workbuddy),随 fetchPending 上报,供平台多产品分机挑机。默认 namiwork。
+    // 纳米Work 是默认能力；EVAL_ENGINE=workbuddy 额外开启 WorkBuddy，不替换纳米Work。
     this.engine = config.engine || process.env.EVAL_ENGINE || 'namiwork';
     this.claims = new Map();
     this.heartbeatTimer = null;
@@ -49,12 +49,15 @@ class PlatformClient {
     if (!this.heartbeatTimer) {
       this.heartbeatTimer = setInterval(() => {
         for (const [id, token] of this.claims) {
-          this._api('POST', `/api/eval-queue/${id}/heartbeat?runner=${encodeURIComponent(this.runnerId)}&claim_token=${token}`)
+          this.heartbeat(id, token)
             .catch(error => console.warn(`[eval-queue] run ${id} heartbeat failed: ${error.message}`));
         }
       }, 60000);
       this.heartbeatTimer.unref();
     }
+  }
+  heartbeat(runId, token) {
+    return this._api('POST', `/api/eval-queue/${runId}/heartbeat?runner=${encodeURIComponent(this.runnerId)}&claim_token=${encodeURIComponent(token)}&engine=${encodeURIComponent(this.engine)}`);
   }
   stopHeartbeat() {
     clearInterval(this.heartbeatTimer);
@@ -68,7 +71,7 @@ class PlatformClient {
   }
   claim(runId) {
     if (this.claims.has(runId)) return Promise.resolve();
-    return this._api('POST', `/api/eval-queue/${runId}/claim?runner=${encodeURIComponent(this.runnerId)}`);
+    return this._api('POST', `/api/eval-queue/${runId}/claim?runner=${encodeURIComponent(this.runnerId)}&engine=${encodeURIComponent(this.engine)}`);
   }
   async report(runId, body) {
     const data = await this._api('PATCH', `/api/eval-queue/${runId}?${this._executionQuery(runId)}`, body);

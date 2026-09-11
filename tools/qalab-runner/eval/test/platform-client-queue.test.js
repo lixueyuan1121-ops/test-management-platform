@@ -20,11 +20,14 @@ async function main() {
     res.end(JSON.stringify({ code: 0, data }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const client = new PlatformClient({ baseUrl: `http://127.0.0.1:${server.address().port}`, token: 'test', runnerId: 'r2' });
+  const config = { baseUrl: `http://127.0.0.1:${server.address().port}`, token: 'test', runnerId: 'r2' };
+  const client = new PlatformClient({ ...config, engine: 'namiwork' });
+  const workbuddy = new PlatformClient({ ...config, engine: 'workbuddy' });
   try {
     await client.fetchPending(1);
     assert.equal(requests.at(-1).url.searchParams.get('dynamic'), 'true');
     assert.equal(requests.at(-1).url.searchParams.get('limit'), '1');
+    assert.equal(requests.at(-1).url.searchParams.get('engine'), 'namiwork');
     await client.claimGroup([{ run_id: 1 }, { run_id: 2 }]);
     assert.equal(requests.at(-1).url.searchParams.get('whole_group'), 'true');
     assert.equal(client.claims.size, 2);
@@ -41,9 +44,21 @@ async function main() {
     client.stopHeartbeat();
     assert.equal(client.claims.size, 0);
     assert.equal(client.heartbeatTimer, null);
-    console.log('OK platform-client dynamic queue, token forwarding, HTTP 409, cleanup');
+    await workbuddy.fetchPending(20);
+    assert.equal(requests.at(-1).url.searchParams.get('engine'), 'workbuddy');
+    // WorkBuddy 能力声明随认领与执行期心跳保留，即使当前处理的是纳米Work。
+    await workbuddy.claimGroup([{ run_id: 1, target_engine: 'namiwork' }, { run_id: 2, target_engine: 'namiwork' }]);
+    assert.equal(requests.at(-1).url.searchParams.get('engine'), 'workbuddy');
+    await workbuddy.heartbeat(1, 'test-claim');
+    assert.equal(requests.at(-1).url.pathname, '/api/eval-queue/1/heartbeat');
+    assert.equal(requests.at(-1).url.searchParams.get('engine'), 'workbuddy');
+    assert.equal(requests.at(-1).url.searchParams.get('claim_token'), 'test-claim');
+    await workbuddy.claim(3);
+    assert.equal(requests.at(-1).url.searchParams.get('engine'), 'workbuddy');
+    console.log('OK platform-client dynamic queue, capabilities, token forwarding, HTTP 409, cleanup');
   } finally {
     client.stopHeartbeat();
+    workbuddy.stopHeartbeat();
     await new Promise(resolve => server.close(resolve));
   }
 }

@@ -24,7 +24,7 @@ try:
     nami = online_eval_runners(db, engine="namiwork")
     alle = online_eval_runners(db)
     assert "test-wb-01" in wb and "test-nami-01" not in wb, f"workbuddy 过滤错: {wb}"
-    assert "test-nami-01" in nami and "test-wb-01" not in nami, f"namiwork 过滤错: {nami}"
+    assert set(nami) == {"test-nami-01", "test-wb-01"}, f"启用 WorkBuddy 仍应支持纳米Work: {nami}"
     assert "test-wb-01" in alle and "test-nami-01" in alle, f"无参应全返回: {alle}"
     print("PASS: online_eval_runners 按 engine 过滤")
 finally:

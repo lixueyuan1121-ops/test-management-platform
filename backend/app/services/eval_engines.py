@@ -16,6 +16,18 @@ def is_valid_engine(engine: str) -> bool:
     return engine in EVAL_ENGINES
 
 
+def runner_supported_engines(declaration: str | None) -> tuple[str, ...]:
+    """runner 默认具备纳米Work能力；workbuddy 声明只增添能力，不替换默认能力。
+
+    保留现有 EVAL_ENGINE/engine 参数，已部署执行器无需修改配置或另启进程。
+    非法声明不授予任何执行能力。
+    """
+    declaration = declaration or DEFAULT_ENGINE
+    if not is_valid_engine(declaration):
+        return ()
+    return tuple(dict.fromkeys((DEFAULT_ENGINE, declaration)))
+
+
 def normalize_engines(engines: list[str] | None) -> list[str]:
     """去重、剔非法、保序;空/全非法 → [DEFAULT_ENGINE](向后兼容)。"""
     if not engines:
