@@ -13,10 +13,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.deps import assert_project_role, get_current_user
-from app.core.enums import AiTaskStatus, ProjectRole
+from app.core.enums import AiTaskStatus, EvalRunStatus, ProjectRole
 from app.db.session import get_db
 from app.models import AiTask, EvalQuery, Project, User
-from app.models.ai_eval import EvalTask
+from app.models.ai_eval import EvalRun, EvalTask
 from app.schemas.ai import EvalQueryGenIn
 from app.schemas.common import ok
 from app.services import claude_runner, extractors, feishu, generators
@@ -510,6 +510,15 @@ def delete_eval_query(query_id: int, db: Session = Depends(get_db), user: User =
     if not q:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评用例不存在")
     assert_project_role(db, user, q.project_id, _WRITE_ROLES)
+    if db.query(EvalRun.id).filter(
+        EvalRun.eval_query_id == query_id,
+        EvalRun.status.in_((EvalRunStatus.pending, EvalRunStatus.running, EvalRunStatus.judging)),
+    ).first():
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="该用例有排队、执行或判定中的测评，请结束后再删除")
+    for task in db.query(EvalTask).filter(EvalTask.project_id == q.project_id).with_for_update().all():
+        ids = json.loads(task.query_ids or "[]")
+        if query_id in ids:
+            task.query_ids = json.dumps([qid for qid in ids if qid != query_id])
     db.delete(q); db.commit()
     return ok({"deleted": query_id})
 

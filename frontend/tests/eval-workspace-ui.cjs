@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
     await page.route(url => url.pathname.startsWith('/api/'), async route => {
       const req = route.request(), path = new URL(req.url()).pathname;
       let data = [];
-      if (req.method() !== 'GET') writes.push({ path, body: req.postDataJSON() });
+      if (req.method() !== 'GET') writes.push({ path, body: req.postData() ? req.postDataJSON() : null });
       if (path.endsWith('/auth/me')) data = { user: { id: 1, name: 'Test' }, is_platform_admin: true, memberships: [] };
       if (path.endsWith('/projects')) data = [{ id: 1, name: '测评项目' }];
       if (path.endsWith('/eval-tasks')) data = [task];
@@ -76,6 +76,15 @@ const assert = require('node:assert/strict');
     const box = await dispatch.boundingBox();
     assert(box.x >= 0 && box.x + box.width <= 391);
     await page.screenshot({ path: '/tmp/eval-dispatch-mobile.png' });
+    await dispatch.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '删除用例 用例1', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '取消', exact: true }).click();
+    assert(!writes.some(w => w.path === '/api/ai/eval-queries/1'));
+    await page.getByRole('button', { name: '删除用例 用例1', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '确认删除', exact: true }).click();
+    await page.getByRole('button', { name: '用例1', exact: true }).waitFor({ state: 'hidden' });
+    assert.equal(writes.filter(w => w.path === '/api/ai/eval-queries/1').length, 1);
+    assert(await page.getByRole('button', { name: '用例2', exact: true }).isVisible());
     assert.deepEqual(errors, []);
     console.log('PASS: navigation, task filters, selection preservation, detail tabs, dispatch payload, mobile dialog');
   } finally { await browser.close(); }

@@ -73,11 +73,15 @@
         <el-table-column label="评审态" width="90" align="center">
           <template #default="{ row }"><el-tag size="small" :type="row.review_status==='adopted'?'success':(row.review_status==='rejected'?'danger':'info')" effect="plain">{{ RS_LABEL[row.review_status] || row.review_status || '待评审' }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="72" align="center">
+        <el-table-column label="操作" width="118" align="center">
           <template #default="{ row }">
             <el-tooltip :content="hasPlaceholder(row) ? '按 {{占位符}} 批量生成变体题' : 'AI 帮你把这题挖成 {{变量}} 模板，再批量生成变体'" placement="left">
               <el-button size="small" type="primary" text :loading="paramLoadingId === row.id"
                 @click="hasPlaceholder(row) ? openExpand(row) : openParameterize(row)">变体</el-button>
+            </el-tooltip>
+            <el-tooltip v-if="canDelete" content="删除用例" placement="top">
+              <el-button text type="danger" size="small" :icon="Delete" :aria-label="`删除用例 ${row.title}`"
+                :loading="deletingId === row.id" :disabled="deletingId !== null" @click="removeQuery(row)" />
             </el-tooltip>
           </template>
         </el-table-column>
@@ -189,9 +193,10 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Collection, Upload } from '@element-plus/icons-vue'
-import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Collection, Upload, Delete } from '@element-plus/icons-vue'
+import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks, deleteEvalQuery } from '@/api'
+import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions } from '@/utils/dialogOptions'
@@ -216,6 +221,24 @@ const RS_LABEL = { pending: '待评审', adopted: '已采纳', rejected: '已拒
 const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
+const auth = useAuthStore()
+const canDelete = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
+const deletingId = ref(null)
+async function removeQuery(row) {
+  if (!canDelete.value || deletingId.value !== null) return
+  deletingId.value = row.id
+  try {
+    await ElMessageBox.confirm(`确定删除“${row.title}”？将从关联测评任务中移除，历史执行结果保留。多轮对话仅删除当前这一条，删除后不可恢复。`, '删除测评用例', {
+      type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消',
+    })
+    await deleteEvalQuery(row.id)
+    queries.value = queries.value.filter(q => q.id !== row.id)
+    selected.value = selected.value.filter(q => q.id !== row.id)
+    if (inspectedCase.value?.id === row.id) caseVisible.value = false
+    ElMessage.success('用例已删除')
+  } catch { /* 取消不执行；接口失败由拦截器提示，保留列表。 */ }
+  finally { deletingId.value = null }
+}
 const queries = ref([])
 const loading = ref(false)
 const selected = ref([])

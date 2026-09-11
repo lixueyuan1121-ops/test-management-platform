@@ -20,6 +20,8 @@ from app.core.deps import get_current_user
 from app.db.session import Base, get_db
 from app.main import app
 from app.models import EvalQuery, Project, User
+from app.models.ai_eval import EvalRun, EvalTask
+from app.core.enums import EvalRunStatus
 from app.services import generators
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
@@ -181,7 +183,32 @@ def main():
     test_parameterize_returns_template()
     test_parameterize_engine_unavailable_503()
     test_parameterize_404()
+    test_delete_query()
     print("\n[PASS] AI 参数化→变体展开 端到端 全部通过")
+
+
+def test_delete_query():
+    base = _mk_concrete_case()
+    sibling = _mk_concrete_case()
+    task = EvalTask(project_id=1, name="删除回归", query_ids=json.dumps([base.id, sibling.id]))
+    run = EvalRun(project_id=1, eval_query_id=base.id, status=EvalRunStatus.pending,
+                  payload=json.dumps({"prompt": base.prompt}), answer="历史回答")
+    _s.add_all([task, run]); _s.commit()
+    for state in (EvalRunStatus.pending, EvalRunStatus.running, EvalRunStatus.judging):
+        run.status = state; _s.commit()
+        r = client.delete(f"/api/ai/eval-queries/{base.id}")
+        assert r.status_code == 409, r.text
+        _s.refresh(task)
+        assert json.loads(task.query_ids) == [base.id, sibling.id]
+    run.status = EvalRunStatus.judged; _s.commit()
+    r = client.delete(f"/api/ai/eval-queries/{base.id}")
+    assert r.status_code == 200, r.text
+    _s.refresh(task); _s.refresh(run)
+    assert json.loads(task.query_ids) == [sibling.id]
+    assert run.answer == "历史回答" and json.loads(run.payload)["prompt"] == base.prompt
+    assert _s.get(EvalQuery, sibling.id) is not None
+    assert client.delete(f"/api/ai/eval-queries/{base.id}").status_code == 404
+    print("OK delete:阻止活动用例删除，清理任务引用，保留历史执行与其他用例")
 
 
 if __name__ == "__main__":
