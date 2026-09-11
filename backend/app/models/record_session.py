@@ -22,7 +22,8 @@ class RecordSession(Base):
     runner: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
     # 已捕获操作步骤 JSON 数组;runner 每轮 drain 页面缓冲后增量 append(seq 续接)。
-    events: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), default="[]", server_default="[]")
+    # MySQL 5.6/5.7 的 TEXT/LONGTEXT 不支持数据库默认值；空数组由 ORM 插入时提供。
+    events: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), default="[]")
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
