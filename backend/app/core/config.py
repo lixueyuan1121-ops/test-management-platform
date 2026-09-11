@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # ---- QA Copilot（AI 生成测试点，subprocess 调 claude CLI）----
     AI_ENABLED: bool = True
     CLAUDE_BIN: str = ""            # 空则运行时 shutil.which("claude")
+    CLAUDE_PROXY_URL: str = ""      # Optional HTTP(S) proxy for Claude subprocesses only
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
     # 全局引擎并发上限(信号量)——控成本/机器负载;超限改为排队等待(非拒绝)。

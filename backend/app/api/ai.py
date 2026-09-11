@@ -677,6 +677,8 @@ def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str]
             meta = evt
             if evt.get("text"):
                 raw = evt["text"]
+            if evt.get("is_error"):
+                err = evt.get("error") or evt.get("text") or "模型服务返回错误，未提供原因"
         elif et == "error":
             err = evt.get("msg")
     return raw, meta, err
@@ -724,7 +726,7 @@ def run_testcase_gen_job(db: Session, job) -> dict:
         one = shards[0] if len(shards) == 1 else None
         raw, meta, err = _gen_once(engine, requirement, project_id, pages,
                                    shard=one, no_script=scenario_only)
-        cases = engine.parse_testcases(raw, project_id=project_id) if raw else []
+        cases = engine.parse_testcases(raw, project_id=project_id) if raw and not err else []
         part_errors: list[str] = []
     else:
         res = generate_sharded(engine, requirement, project_id=project_id, pages=pages,

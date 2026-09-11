@@ -49,6 +49,8 @@ def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, 
                 meta = evt
                 if evt.get("text"):
                     raw = evt["text"]
+                if evt.get("is_error"):
+                    err = evt.get("error") or evt.get("text") or "模型服务返回错误，未提供原因"
             elif et == "error":
                 err = evt.get("msg")
     except Exception as e:  # noqa: BLE001  单片失败不外溢
@@ -56,9 +58,17 @@ def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, 
         return {"shard": sid, "cases": [], "raw": raw, "meta": meta,
                 "error": f"分片「{shard['name']}」({sid})生成失败:{e}"}
 
-    cases = engine.parse_testcases(raw, project_id=project_id) if raw else []
+    if err:
+        return {"shard": sid, "cases": [], "raw": raw, "meta": meta,
+                "error": f"分片「{shard['name']}」({sid})生成失败:{err}"}
+    try:
+        cases = engine.parse_testcases(raw, project_id=project_id) if raw else []
+    except Exception as exc:
+        logger.exception("分片解析失败 shard=%s", sid)
+        return {"shard": sid, "cases": [], "raw": raw, "meta": meta,
+                "error": f"分片「{shard['name']}」({sid})解析异常:{exc}"}
     if not cases:
-        detail = err or ("引擎无任何输出" if not raw else f"输出 {len(raw)} 字但未解析出用例数组")
+        detail = "引擎无任何输出" if not raw else f"输出 {len(raw)} 字但未解析出用例数组；请查看生成任务原始输出"
         return {"shard": sid, "cases": [], "raw": raw, "meta": meta,
                 "error": f"分片「{shard['name']}」({sid})未产出用例:{detail}"}
     return {"shard": sid, "cases": cases, "raw": raw, "meta": meta, "error": None}

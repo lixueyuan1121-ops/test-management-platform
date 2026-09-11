@@ -13,6 +13,7 @@
 """
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -22,10 +23,33 @@ import time
 from collections import deque
 from queue import Empty, Queue
 from typing import Iterator
+from urllib.parse import urlsplit
 
 from app.core.config import settings
 
 logger = logging.getLogger("test_platform")
+
+
+def _claude_env() -> dict:
+    """Validate proxy protocols without leaking credentials or changing global networking."""
+    env = os.environ.copy()
+    keys = ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY")
+    override = settings.CLAUDE_PROXY_URL.strip()
+    candidates = {"CLAUDE_PROXY_URL": override} if override else {k: env[k] for k in keys if env.get(k)}
+    for key, value in candidates.items():
+        try:
+            parsed = urlsplit(value)
+            valid = parsed.scheme in ("http", "https") and bool(parsed.hostname) and parsed.port != 0
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError(f"Claude 代理配置 {key} 不兼容：需要有效的 HTTP/HTTPS 代理，不支持 SOCKS；请配置 CLAUDE_PROXY_URL 为代理服务实际提供的 HTTP/HTTPS 地址")
+    if override:
+        for key in keys:
+            env.pop(key, None)
+        env["HTTPS_PROXY"] = override
+        env["HTTP_PROXY"] = override
+    return env
 
 
 def _load_selector_keys(project_id: int | None = None, pages: list[str] | None = None) -> list[dict]:
@@ -615,10 +639,14 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     ]
     if settings.AI_MODEL:
         cmd += ["--model", settings.AI_MODEL]
+    try:
+        child_env = _claude_env()
+    except ValueError as exc:
+        return [], str(exc)
     if not _acquire_slot(_slots):
         return [], "AI 生成繁忙(等待超时,并发持续打满),请稍后重试"
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=tempfile.gettempdir())
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=tempfile.gettempdir(), env=child_env)
     except subprocess.TimeoutExpired:
         return [], f"生成超时(>{timeout}s)"
     except OSError as e:
@@ -714,13 +742,24 @@ def _parse_line(line: str) -> dict | None:
         return {"type": "delta", "text": text} if text else None
     if etype == "result":
         usage = evt.get("usage") or {}
+        errors = evt.get("errors") or []
+        if isinstance(errors, str):
+            errors = [errors]
+        detail = "；".join(str(item) for item in errors)
+        subtype = str(evt.get("subtype") or "")
+        proxy_error = "UnsupportedProxyProtocol" in str(evt.get("result") or "")
+        failed = bool(evt.get("is_error", False)) or subtype.startswith("error") or proxy_error
+        if proxy_error:
+            detail = "模型 API 连接失败（UnsupportedProxyProtocol）：Claude 代理协议不兼容，请检查代理配置或设置 CLAUDE_PROXY_URL 为有效 HTTP/HTTPS 代理"
         return {
             "type": "result",
             "text": evt.get("result", "") or "",
             "duration_ms": evt.get("duration_ms"),
             "cost_usd": evt.get("total_cost_usd"),
             "output_tokens": usage.get("output_tokens"),
-            "is_error": bool(evt.get("is_error", False)),
+            "is_error": failed,
+            "error": detail or (evt.get("result") if failed else None),
+            "subtype": subtype,
         }
     return None
 
@@ -737,6 +776,11 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     if not is_available():
         yield {"type": "error", "msg": "AI 功能未启用或未找到 claude 可执行文件"}
         return
+    try:
+        child_env = _claude_env()
+    except ValueError as exc:
+        yield {"type": "error", "msg": str(exc)}
+        return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
     via_stdin = len(prompt) > _PROMPT_ARGV_MAX  # 超长走 stdin,避开 Windows argv 32K 上限
@@ -750,6 +794,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     try:
         proc = subprocess.Popen(
             cmd,
+            env=child_env,
             stdin=subprocess.PIPE if via_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,   # 合并，非 JSON 行由 _parse_line 忽略，避免 PIPE 死锁
@@ -821,6 +866,10 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                 continue
             if evt["type"] == "result":
                 got_result = True
+                if evt.get("is_error"):
+                    yield evt
+                    yield {"type": "error", "msg": f"模型服务返回错误：{evt.get('error') or evt.get('subtype') or '未提供原因'}"}
+                    return
             elif evt["type"] == "delta":
                 out_chars += len(evt.get("text") or "")
             yield evt
