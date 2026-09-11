@@ -363,7 +363,7 @@ class EvalQueryExpandIn(BaseModel):
     """占位符模板展开(promptfoo 式参数化):title/prompt/expected 里写 {{变量}},
     variables 给每个变量的取值列表,笛卡尔积批量生成变体题——同一考点稳定产出 N 个变体。
 
-    template 覆盖(AI 参数化路径):给了就展开这份模板文本,base 只提供 project_id/dimension、
+    template 覆盖(AI 参数化路径):给了就展开这份模板文本,base 提供 project_id/dimension/attachments、
     其具体题原文**不被改写**;不给则读 base 自身的 title/prompt/expected(向后兼容老行为)。"""
     base_query_id: int
     variables: dict[str, list[str]]
@@ -426,6 +426,8 @@ def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), us
             project_id=base.project_id,
             title=row["title"], prompt=row["prompt"], expected=row["expected"],
             dimension=base.dimension,
+            # 附件引用原样继承，不对文件名、URL 或 token 做占位符替换。
+            attachments=base.attachments,
             turn_index=0,  # 变体各自单轮成组(多轮模板展开语义复杂,不支持;组名建完补)
             provider="template",
         )

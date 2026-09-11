@@ -9,6 +9,8 @@
 - POST /api/ai/eval-queries/parameterize:mock 引擎返回模板建议 → 返回 {title,prompt,expected,variables},不落库;
   引擎不可用 → 503;题不存在 → 404。
 """
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -91,6 +93,43 @@ def test_expand_template_over_limit():
     print("OK expand(template):上限 50 保护生效")
 
 
+def test_expand_preserves_attachments():
+    attachments = [
+        {"name": "图片{{目标}}.png", "file_token": "image-token", "mime_type": "image/png"},
+        {"name": "资料.pdf", "url": "https://example.com/files/doc.pdf?key={{目标}}", "size": 123},
+        {"name": "视频.mp4", "file_token": "video-token", "url": "https://example.com/video.mp4",
+         "mime_type": "video/mp4"},
+    ]
+    # 两个入口都必须继承完整附件；兼容无附件的 NULL 和空列表。
+    for template_mode in (False, True):
+        for stored in (json.dumps(attachments, ensure_ascii=False), None, "[]"):
+            base = EvalQuery(project_id=1, title="处理附件", prompt="把附件处理成{{目标}}",
+                             dimension="tool_use", attachments=stored)
+            if template_mode:
+                base.prompt = "把附件处理成摘要"
+            _s.add(base); _s.commit(); _s.refresh(base)
+            before = (base.title, base.prompt, base.attachments)
+            payload = {"base_query_id": base.id, "variables": {"目标": ["摘要", "表格"]}}
+            if template_mode:
+                payload["template"] = {"title": "处理{{目标}}", "prompt": "把附件处理成{{目标}}"}
+            response = client.post("/api/ai/eval-queries/expand", json=payload)
+            d = response.json()
+            assert response.status_code == 200 and d["code"] == 0, d
+            variants = _s.query(EvalQuery).filter(EvalQuery.id.in_(d["data"]["created"])).all()
+            assert len(variants) == 2
+            for variant in variants:
+                assert variant.attachments == stored
+                # 验证用例列表输出，而不只是数据库存储。
+                from app.api.ai_eval import _to_query_out
+                assert _to_query_out(variant)["attachments"] == (attachments if stored not in (None, "[]") else [])
+            # 每道变体独立存储附件引用，修改一题不能影响原题和其他变体。
+            variants[0].attachments = "[]"
+            _s.commit(); _s.refresh(base); _s.refresh(variants[1])
+            assert (base.title, base.prompt, base.attachments) == before
+            assert variants[1].attachments == stored
+    print("OK expand:两种变体入口保留图片/文件/视频完整附件，原题与变体相互独立")
+
+
 # ─── parameterize 端点 ───────────────────────────────────────────────────────
 
 class _Engine:
@@ -138,6 +177,7 @@ def main():
     test_expand_with_template_override_keeps_base_concrete()
     test_expand_without_template_still_reads_base()
     test_expand_template_over_limit()
+    test_expand_preserves_attachments()
     test_parameterize_returns_template()
     test_parameterize_engine_unavailable_503()
     test_parameterize_404()
