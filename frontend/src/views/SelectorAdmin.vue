@@ -293,9 +293,18 @@
             <span class="page-title">{{ grp.pageLabel }}</span>
             <el-tag size="small" type="info" effect="plain" class="page-count">{{ grp.keys.length }}</el-tag>
           </template>
-          <el-table :data="grp.keys" size="small" border stripe @selection-change="(sel) => onGroupSelect(grp.name, sel)">
+          <el-table :data="grp.keys" size="small" border stripe @row-click="markSelectorSeen" @selection-change="(sel) => onGroupSelect(grp.name, sel)">
             <el-table-column type="selection" width="40" />
-            <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="registry-key">
+                  <button v-if="unreadSelectorIds.has(row.id)" class="new-selector-dot" type="button"
+                          :aria-label="`${row.key} 最新添加，点击标为已读`" title="最新添加，点击标为已读"
+                          @click.stop="markSelectorSeen(row)"></button>
+                  <span>{{ row.key }}</span>
+                </span>
+              </template>
+            </el-table-column>
             <el-table-column prop="frame" label="frame" width="110">
               <template #default="{ row }">{{ row.frame || 'auto' }}</template>
             </el-table-column>
@@ -567,6 +576,25 @@ const projects = ref([])
 const pid = ref(null)
 const subProduct = ref('')   // '' = 项目级共享
 const rows = ref([])
+// 未查看的新 key 按用户保存在当前标签页，刷新或离开列表后仍可继续查看。
+const unreadStorageKey = `tp_selector_unread:${auth.user?.id || 'anonymous'}`
+const unreadSelectorIds = ref(new Set())
+try {
+  const saved = JSON.parse(sessionStorage.getItem(unreadStorageKey) || '[]')
+  if (Array.isArray(saved)) unreadSelectorIds.value = new Set(saved.filter(Number.isInteger))
+} catch { /* 存储不可用时仍保留本次页面内的提示 */ }
+function saveUnreadSelectors() {
+  try { sessionStorage.setItem(unreadStorageKey, JSON.stringify([...unreadSelectorIds.value])) }
+  catch { /* 存储失败不影响添加和查看 */ }
+}
+function markSelectorNew(row) {
+  if (!Number.isInteger(row?.id)) return
+  unreadSelectorIds.value.add(row.id)
+  saveUnreadSelectors()
+}
+function markSelectorSeen(row) {
+  if (unreadSelectorIds.value.delete(row.id)) saveUnreadSelectors()
+}
 const loading = ref(false)
 const importing = ref(false)
 const devices = ref([])   // 我的在线设备（探测目标）
@@ -786,6 +814,7 @@ function openCreate() {
   Object.assign(dialog, { id: null, key: '', frame: 'auto', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false, visible: true })
 }
 function openEdit(row) {
+  markSelectorSeen(row)
   Object.assign(dialog, {
     id: row.id, key: row.key, frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
     candidatesText: JSON.stringify(row.candidates || [], null, 2), platform: row.platform || 'web', saving: false, visible: true,
@@ -1529,10 +1558,11 @@ async function batchAddMatched() {
         const elem = inferControlType(m.el, m.el.text || '')
           || inferControlType({}, `${fixCtx.ctx || ''} ${m.key || ''}`)
         const desc = (probe.page || scene || elem) ? `[]-[${probe.page || ''}]-[${scene}]-[${elem}]` : ''
-        await createSelector({
+        const created = await createSelector({
           project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: m.key,
           frame: m.frame || 'auto', page: probe.page || '', desc, candidates: toCands(m.el),
         })
+        markSelectorNew(created)
         ok += 1
         if (!fixCtx.done.includes(m.key)) fixCtx.done.push(m.key)
       } catch { failed.push(m.key) }  // 单个失败(如 key 冲突)不阻断其余
@@ -1547,6 +1577,9 @@ async function batchAddMatched() {
 </script>
 
 <style scoped>
+.registry-key { display: inline-flex; align-items: center; gap: 6px; }
+.new-selector-dot { flex: 0 0 8px; width: 8px; height: 8px; padding: 0; border: 0; border-radius: 50%; background: var(--el-color-danger, #f56c6c); cursor: pointer; }
+.new-selector-dot:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; }
 .header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .header > span { flex-shrink: 0; }
 .header .filters { min-width: 0; }
