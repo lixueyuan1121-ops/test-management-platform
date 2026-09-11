@@ -453,7 +453,7 @@ CREATE TABLE `runner_device` (
   `last_seen_at` DATETIME DEFAULT NULL,
   `last_exec_at` DATETIME DEFAULT NULL,   -- 最近一次功能 runner 拉 exec-queue(运行时类型感知)
   `last_eval_at` DATETIME DEFAULT NULL,   -- 最近一次测评 runner 拉 eval-queue(运行时类型感知)
-  `eval_engine` VARCHAR(32) DEFAULT NULL, -- 该机支持的被测引擎(namiwork/workbuddy);NULL=兼容老机视作 namiwork
+  `eval_engine` VARCHAR(32) DEFAULT NULL, -- 最近上报引擎(兼容展示);调度使用 runner_eval_heartbeat
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_owner_runner` (`owner_id`,`runner_id`),
@@ -462,6 +462,15 @@ CREATE TABLE `runner_device` (
   KEY `idx_runnerdev_platform` (`platform`),
   KEY `idx_runnerdev_eval_engine` (`eval_engine`),
   CONSTRAINT `fk_device_owner` FOREIGN KEY (`owner_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 同机多引擎心跳。独立主键保证两个 runner 的在线状态互不覆盖。
+CREATE TABLE `runner_eval_heartbeat` (
+  `device_id` BIGINT NOT NULL,
+  `engine` VARCHAR(32) NOT NULL,
+  `last_seen_at` DATETIME NOT NULL,
+  PRIMARY KEY (`device_id`, `engine`),
+  CONSTRAINT `fk_eval_heartbeat_device` FOREIGN KEY (`device_id`) REFERENCES `runner_device`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- release records

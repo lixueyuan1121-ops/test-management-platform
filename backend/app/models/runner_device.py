@@ -44,7 +44,15 @@ class RunnerDevice(Base):
     # 「当前在跑哪类」= 对应时间戳在在线窗口内(叠加 running 补偿执行期不轮询的滞后)。看板/派单/拦截皆据此。
     last_exec_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)   # 最近一次功能 runner(exec-queue)拉取
     last_eval_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)   # 最近一次测评 runner(eval-queue)拉取
-    # 该执行机支持的被测引擎(测评分机跑):如 'namiwork' / 'workbuddy'。NULL=兼容老机,视作 namiwork。
-    # 挑机时 online_eval_runners(engine=X) 只返回声明支持 X 的在线机(随 list_pending 心跳上报刷新)。
+    # 最近一次上报的引擎，保留供旧客户端展示；实际在线引擎以独立心跳表为准。
     eval_engine: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RunnerEvalHeartbeat(Base):
+    """同一设备可同时运行多个引擎，各自刷新/过期，避免最后一次心跳覆盖其他引擎。"""
+    __tablename__ = "runner_eval_heartbeat"
+
+    device_id: Mapped[int] = mapped_column(ForeignKey("runner_device.id", ondelete="CASCADE"), primary_key=True)
+    engine: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

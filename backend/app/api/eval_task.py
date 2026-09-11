@@ -334,7 +334,7 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
 
     target_engines:被测产品集合(多产品横评)。对每题按 engine × A/B variant 各 fan-out 一条 run。
     runner 参数兼容三态:单个 runner_id 字符串(旧调用)、"auto"、或 runner_id 列表(多台分片)。
-    - runner=="auto":每个 engine 各自 online_eval_runners(engine) 挑机(分机跑,workbuddy 的 run 只落声明 workbuddy 的机)。
+    - runner=="auto":每个 engine 按独立心跳挑在线机，同设备启动两个引擎时可同时入选。
     - 显式指定 runner/runners:该列表对所有 engine 共用(调用方保证机器能跑对应产品)。
     多台时按「会话组」LPT 分片,同组必落同一台;会话组分机 key 带 engine 前缀,避免跨产品同名组被误判同机。
     batch_id 仍是一个(同批横评),结果页按批 + target_engine 聚合。

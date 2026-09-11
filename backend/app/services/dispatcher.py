@@ -84,7 +84,8 @@ def device_conflicts_kind(db: Session, runner_id: str, needed_kind: str) -> bool
     return cur is not None and cur != want
 
 
-def touch_runner_heartbeat(db: Session, runner_id: str | None, kind: str | None = None) -> int:
+def touch_runner_heartbeat(db: Session, runner_id: str | None, kind: str | None = None,
+                           engine: str | None = None) -> int:
     """共享 token 拉取时,按 runner_id 反查登记设备并刷新心跳。返回刷新条数。
 
     根因修复:心跳原本只在设备 token 分支(ctx.device 直接刷)更新,共享 token 拉取
@@ -113,6 +114,8 @@ def touch_runner_heartbeat(db: Session, runner_id: str | None, kind: str | None 
             d.last_exec_at = now
         elif kind == "eval":
             d.last_eval_at = now
+            from app.services.runner_presence import touch_eval_engine
+            touch_eval_engine(db, d, engine, now)
     db.commit()
     return len(devices)
 
@@ -126,8 +129,8 @@ def online_eval_runners(db: Session, engine: str | None = None) -> list[str]:
     真正在跑测评 runner 的机,从根上杜绝「派到只跑功能测试的机器」。
     返回按 runner_id 升序(稳定),供轮转分片时确定性分配。
 
-    engine 非空时再按被测引擎过滤:只返回声明 eval_engine==engine 的机(NULL 兼容老机视作 namiwork)。
-    多产品分机跑靠此:workbuddy 的 run 只派给声明 workbuddy 的机。engine 为空=不按引擎过滤(旧行为)。
+    engine 非空时按独立引擎心跳过滤，同一设备可同时承接纳米Work 和 WorkBuddy。
+    尚未上报独立心跳的旧设备沿用 eval_engine。engine 为空=不按引擎过滤。
     """
     from app.api.devices import ONLINE_WINDOW_SEC
 
@@ -138,13 +141,12 @@ def online_eval_runners(db: Session, engine: str | None = None) -> list[str]:
     exec_running = _exec_running_runners(db)
     eval_running = _eval_running_runners(db)   # 执行期心跳滞后补偿:正在跑测评的机必然在跑测评 runner
 
-    def _supports(d) -> bool:
-        if engine is None:
-            return True
-        return (d.eval_engine or "namiwork") == engine   # NULL 兼容老机=namiwork
+    from app.services.runner_presence import eval_engines_by_device
+    engines = eval_engines_by_device(db, devices, cutoff) if engine is not None else {}
 
     online = [d.runner_id for d in devices
-              if current_kind(d, cutoff, exec_running, eval_running) == "eval" and _supports(d)]
+              if current_kind(d, cutoff, exec_running, eval_running) == "eval"
+              and (engine is None or engine in engines[d.id])]
     return sorted(set(online))
 
 
