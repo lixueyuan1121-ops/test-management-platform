@@ -8,6 +8,7 @@ SUB_PRODUCTS 白名单。candidates 以 JSON 字符串落库（兼容 MySQL 5.6 
 
 后续 Task 4 会在本文件“追加区”末尾续加只读路由（GET resolved + import-legacy）。
 """
+from app.services.script_keys import referenced_keys
 import json
 import os
 from datetime import datetime
@@ -368,11 +369,8 @@ def _cases_using_key(db: Session, project_id: int, key: str) -> list[TestCase]:
             continue
         if not isinstance(steps, list):
             continue
-        for st in steps:
-            tgt = st.get("target") if isinstance(st, dict) else None
-            if isinstance(tgt, dict) and tgt.get("key") == key:
-                out.append(tc)
-                break
+        if key in referenced_keys(steps):
+            out.append(tc)
     return out
 
 

@@ -58,7 +58,7 @@ _s.add(TestCase(id=303, ai_task_id=1, project_id=1, title="接口用例", exec_k
 # 304 e2e 带 script(可导出,验证 e2e 放行)
 _s.add(TestCase(id=304, ai_task_id=1, project_id=1, title="端到端流程", exec_kind="e2e",
                 review_status="pending", is_regression=True,
-                script=json.dumps([{"action": "click", "target": {"key": "loginSubmit"}, "desc": "点"}], ensure_ascii=False)))
+                script=json.dumps([{"action": "click", "target": {"key": "loginSubmit"}, "desc": "点"}, {"action": "assert_visible", "target": {"key": "sendBtn"}}], ensure_ascii=False)))
 _s.commit()
 
 
@@ -81,11 +81,11 @@ def test_single_export():
     body = r.text
     assert "connectOverCDP" in body
     assert "127.0.0.1:9222" in body
-    # 注册表翻译:shell key → page.locator;vm key → vm.getByRole
-    assert "page.locator('input[type=submit]').first().click()" in body, body
-    assert "vm.getByRole('button', { name: '发送' })" in body, body
-    assert "toBeVisible()" in body
-    assert "登录并发送" in body
+    config = json.loads(next(line for line in body.splitlines() if line.startswith("const config = ")).removeprefix("const config = ").removesuffix(";"))
+    assert config["registry"]["loginSubmit"]["frame"] == "shell"
+    assert config["registry"]["sendBtn"]["candidates"][0]["by"] == "role"
+    assert config["title"] == "登录并发送"
+    assert "runtime.assertVisible(a)" in body
 
 
 def test_non_gui_rejected():

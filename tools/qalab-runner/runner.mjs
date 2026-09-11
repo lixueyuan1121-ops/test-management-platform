@@ -8,7 +8,9 @@
 
 import { spawn, execFile } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createGuiCore } from "./gui-mcp/gui-core.mjs";
@@ -21,6 +23,7 @@ import { summarizeBatch } from "./runner-summary.mjs";
 import { rawEventToStep, dedupeSteps } from "./record-capture.mjs";
 import { NAV_SYSTEM_PROMPT, parseNavOk } from "./precond-nav.mjs";
 import { selfUpdate } from "./self-update.mjs";
+import { runWithTrace } from "./exec-trace.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -124,6 +127,20 @@ async function uploadExecShot(runId, idx, buffer) {
   return j?.data?.screenshot_url || j?.screenshot_url || null;   // api() 未用,这里手解包
 }
 
+async function uploadExecTrace(runId, path) {
+  const fd = new FormData();
+  fd.append("file", new Blob([readFileSync(path)], { type: "application/zip" }), `exec-${runId}-trace.zip`);
+  const response = await fetch(`${BASE_URL}/api/exec-queue/${runId}/trace?runner=${encodeURIComponent(RUNNER_ID)}`, {
+    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd,
+  });
+  if (!response.ok) throw new Error(`Trace 上传 HTTP ${response.status}`);
+  const body = await response.json();
+  const url = body.data?.trace_url || body.trace_url;
+  if (!url) throw new Error("Trace 上传未返回下载地址");
+  await unlink(path).catch(() => {});
+  return url;
+}
+
 // 把 result.report 里各步的 shotBuf 逐张上传换成 shot(URL),返回可回写的纯 JSON report(无 Buffer)。
 // 上传失败的步只是没有截图 URL,不影响其余步与回写。无 report/无截图 → 返回 report 原样(去掉 Buffer)。
 async function uploadReportShots(runId, report) {
@@ -143,7 +160,7 @@ async function uploadReportShots(runId, report) {
 }
 
 // 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。三种情形都不清空内置兜底:
-//   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 跳过 setRegistry、保留内置 57 key;
+//   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 显式恢复内置表，避免串用上一项目;
 //   ② API 不可达(异常)→ 用缓存或 null;③ 拿到非空注册表 → 缓存并返回。
 // data 取法:api() 已解包 {code,msg,data} 返回 data 本身(见 fetchPending);`res?.data || res` 仅为防御。
 const _regCache = new Map();  // `${project_id}|${sub}` -> {version, registry, vmIframe}
@@ -161,7 +178,7 @@ async function fetchRegistry(projectId, sub = "") {
     return data;
   } catch (e) {
     log(`拉注册表失败(${ck}):${e.message};回落${_regCache.has(ck) ? "缓存" : "内置文件"}`);
-    return _regCache.get(ck) || null;   // 有缓存用缓存,否则 null→gui-core 用内置文件
+    return _regCache.get(ck) || null;   // 有缓存用缓存,否则 null→gui-core 恢复内置文件
   }
 }
 
@@ -235,6 +252,7 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 - GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect,再 gui_list_keys 看有哪些语义 key;
   定位元素**优先传 key**(gui_click/gui_fill/gui_get_text/gui_wait_for/gui_assert_text 都接 {key} 或 {selector}),
   注册表没覆盖的元素:先 gui_probe 探当前页拿候选选择器,再用其 best 当 {selector};gui_screenshot 存证。
+  发送消息前必须先 gui_capture_response，提交后 gui_wait_response，不能把旧回答当作本轮完成。
   禁止自己写 Playwright、禁止用鼠标坐标。
 - api 用例:用 curl / fetch 验证接口与响应。
 - cli 用例:起进程并校验退出码 / 输出。
@@ -263,6 +281,23 @@ function runClaudeRaw(stdinData, opts = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const timeoutMs = opts.timeoutMs || CLAUDE_TIMEOUT_MS;
+    // GUI execution and precondition navigation share the current project's registry.
+    // Pure judges keep the upstream empty MCP configuration.
+    let registryDir = null;
+    let mcpConfigPath = opts.mcpConfig === null ? EMPTY_MCP_CONFIG : (opts.mcpConfig || MCP_CONFIG);
+    if (mcpConfigPath === MCP_CONFIG) {
+      registryDir = mkdtempSync(join(tmpdir(), "qalab-gui-registry-"));
+      const registryPath = join(registryDir, "selectors.json");
+      writeFileSync(registryPath, JSON.stringify({ registry: guiCore.registry, vmIframe: guiCore.vmIframe, coreKeys: guiCore.coreKeys }), { mode: 0o600 });
+      const mcpConfig = JSON.parse(readFileSync(MCP_CONFIG, "utf8"));
+      mcpConfig.mcpServers.gui.args = [join(__rdir, "gui-mcp", "server.mjs")];
+      mcpConfig.mcpServers.gui.env = {
+        ...mcpConfig.mcpServers.gui.env,
+        GUI_REGISTRY_FILE: registryPath, QALAB_CDP_URL: `http://127.0.0.1:${CDP_PORT}`,
+      };
+      mcpConfigPath = join(registryDir, "mcp.json");
+      writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig), { mode: 0o600 });
+    }
     const args = [
       "-p",                                       // 不带参数值:prompt 从 stdin 读取(已实测支持)
       // 流式输出:claude 边执行边吐 JSON 事件,可逐条打进度(不再是"执行黑盒",能看到卡在哪步)。
@@ -280,7 +315,7 @@ function runClaudeRaw(stdinData, opts = {}) {
       // opts.mcpConfig===null(judge 纯判别)→ 用空 MCP 文件 + --strict-mcp-config,既隔离全局又不启动 gui server;
       // undefined(runClaude 整条执行)→ 用默认 MCP_CONFIG(含 gui server)+ strict。
       // 一律走"文件路径"(不传内联 JSON:win32 shell 会把 JSON 当路径,实测踩过);路径不含空格(目录已改名)。
-      "--mcp-config", opts.mcpConfig === null ? EMPTY_MCP_CONFIG : (opts.mcpConfig || MCP_CONFIG),
+      "--mcp-config", mcpConfigPath,
       "--strict-mcp-config",
       "--permission-mode", "acceptEdits",         // 无人值守:预授权,避免卡权限确认
     ];
@@ -289,6 +324,7 @@ function runClaudeRaw(stdinData, opts = {}) {
     // 单次结算:error / close / 超时 三条路径只认第一个,并清理定时器(避免重复 resolve)。
     const done = (extra) => {
       if (settled) return; settled = true; clearTimeout(timer);
+      if (registryDir) { try { rmSync(registryDir, { recursive: true, force: true }); } catch {} }
       resolve({ text: finalText, lastText, err, duration_ms: Date.now() - started, ...extra });
     };
     // 无人值守硬超时:claude 卡在被测页/工具时杀掉,避免该 run 永久 running、后续全停摆。
@@ -488,7 +524,7 @@ async function handleProbes() {
       // 加载完再扫元素,避免探到空白页/加载中元素。客户端已开着时 iframe 早就绪,首轮即命中、几乎零等待。
       await guiCore.connect();
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
-      if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
+      guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
       if ((p.params || {}).mode === "verify") {
         // verify:校验 key 是否还命中当前页。core=true 巡检核心 key 集(失效即在 failed 里告警)。
         if ((p.params || {}).core) {
@@ -589,48 +625,46 @@ async function tick() {
         result = { verdict: "fail", reason: "该用例为人工/不可自动化(manual),不应下发到执行机;请在平台改判类型或取消下发", duration_ms: 1 };
       } else if (item.kind === "gui" || item.kind === "e2e") {
         await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
-        // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则不换,沿用内置文件(回落)。
-        const reg = await fetchRegistry(item.payload?.project_id, "");
-        if (reg && reg.registry) guiCore.setRegistry(reg.registry, reg.vmIframe);
-        // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
-        // 复位失败或复位后掉登录 → 记 blocked(fail_kind=selector,环境阻塞,不计功能失败率),不空跑脏态用例。
-        // restartClientFn 作为兜底注入:reload 复位全失败 / 多轮自愈后仍未回稳时,退出客户端重新启动再复位一次。
-        const restartClientFn = async () => {
-          await guiCore.close?.();       // 断开 CDP 连接,让 ensureNamiclaw 重建
-          await coldStartClient();       // 杀旧进程 + 重新启动带 CDP 参数
-          for (let i = 0; i < 15; i++) {
-            await sleep(2000);
-            if (await cdpAlive()) { log(`  客户端 CDP 就绪(${(i + 1) * 2}s)`); return; }
-          }
-          throw new Error("重启后 CDP 超时,9222 未就绪");
-        };
-        const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log, { restartClientFn }) : { ok: true };
-        if (!gate.ok) {
-          result = gate.result;
-        } else {
-          const script = item.payload?.script;
-          const hasPrecond = !!(item.payload?.precondition && String(item.payload.precondition).trim());
-          const hasScript = Array.isArray(script) && script.length;
-          // 有前置条件 + 结构化 script → **两段式**:claude 先把界面导航到起始位置,再把 script 交 StepExecutor
-          // 确定性执行(走多候选自愈 + 选择器回填 + 跑通即固化)。这样 precondition 用例也能补全 DOM/选择器。
-          // 导航是**尽力而为**:claude 可能已到位却漏印 JSON 标记、或多点了一两步——都不硬阻塞,照常把 script
-          // 交 StepExecutor(它能从当前页自愈定位)。只有"根本没到起点"才由 StepExecutor 自己 fail,而非在此拦死。
-          let navNote = "";
-          if (hasPrecond && hasScript) {
-            const nav = await runClaudePrecondition(item.payload, log);
-            navNote = nav.reason || "";
-            log(`  ⇢ 前置导航${nav.ok ? "到位" : "未确认到位(仍尝试执行 script)"}:${navNote}`);
-          }
-          // 有 script → StepExecutor 确定性执行 + 回填(前置导航无论是否自报到位都执行);否则 → claude 兜底。
-          if (hasScript) {
-            const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
-            if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
-            else result = r;
+        // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则按当前项目回落缓存或内置文件，清除上个项目配置。
+        const reg = await fetchRegistry(item.payload?.project_id, item.payload?.sub_product || "");
+        guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
+        result = await runWithTrace(guiCore, async () => {
+          let result;
+          // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
+          // 复位失败或复位后掉登录 → 记 blocked(fail_kind=selector,环境阻塞,不计功能失败率),不空跑脏态用例。
+          // restartClientFn 作为兜底注入:reload 复位全失败 / 多轮自愈后仍未回稳时,退出客户端重新启动再复位一次。
+          const restartClientFn = async () => {
+            await guiCore.close?.();       // 断开 CDP 连接,让 ensureNamiclaw 重建
+            await coldStartClient();       // 杀旧进程 + 重新启动带 CDP 参数
+            for (let i = 0; i < 15; i++) {
+              await sleep(2000);
+              if (await cdpAlive()) { log(`  客户端 CDP 就绪(${(i + 1) * 2}s)`); return; }
+            }
+            throw new Error("重启后 CDP 超时,9222 未就绪");
+          };
+          const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log, { restartClientFn }) : { ok: true };
+          if (!gate.ok) {
+            result = gate.result;
           } else {
-            // 无 script:纯靠 claude 跑整条(含前置条件),沿用原 runClaude 路径。
-            result = await runClaude(item.payload, item.kind);
+            const script = item.payload?.script;
+            const hasPrecond = !!(item.payload?.precondition && String(item.payload.precondition).trim());
+            const hasScript = Array.isArray(script) && script.length;
+            // 保留前置导航：先导航到起始位置，再由共享执行器执行结构化步骤。
+            // 导航未返回到位结论时沿用远端的尽力执行策略，由步骤断言决定结果。
+            if (hasPrecond && hasScript) {
+              const nav = await runClaudePrecondition(item.payload, log);
+              log(`  ⇢ 前置导航${nav.ok ? "到位" : "未确认到位(仍尝试执行 script)"}:${nav.reason || ""}`);
+            }
+            if (hasScript) {
+              const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
+              if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
+              else result = r;
+            } else {
+              result = await runClaude(item.payload, item.kind);
+            }
           }
-        }
+          return result;
+        }, { runId: item.run_id, directory: join(__rdir, "evidence"), mode: process.env.GUI_TRACE || "failures" });
       } else if (item.kind === "api") {
         // api:有结构化 script → 确定性执行器(不经 LLM);无/降级 → claude(+Bash)兜底。
         const script = item.payload?.script;
@@ -648,6 +682,12 @@ async function tick() {
         result = { verdict: "fail", reason: `未知执行类型 kind=${item.kind},runner 不支持`, duration_ms: 1 };
       }
 
+      if (result.tracePath) {
+        result.report ||= [];
+        if (!result.report.length) result.report.push({ action: "diagnostics", desc: "执行追踪", ok: result.verdict === "pass" });
+        try { result.report.at(-1).trace_url = await uploadExecTrace(item.run_id, result.tracePath); }
+        catch (e) { result.report.at(-1).trace_error = `${e.message}；文件保留在执行机 ${result.tracePath}`; }
+      }
       // 有逐步报告(gui/e2e StepExecutor 产)→ 先把每步截图 Buffer 上传换成 URL,随回写落库。
       let reportJson = null;
       if (Array.isArray(result.report) && result.report.length) {
@@ -663,13 +703,13 @@ async function tick() {
         duration_ms: result.duration_ms ?? null,
         report: reportJson,
       });
-      // 运行时自学习上报:本条用例执行中若发生选择器自愈(全候选失败→按语义找回元素),
+      // 定位候选建议上报:本条用例定位失败后发现的候选只进入评审，不修改本条结果,
       // 把铸造的候选连同证据推给平台进「自学习待确认」评审队列。失败不影响回写主流程。
       try {
         const heals = guiCore.drainHeals?.() || [];
         if (heals.length) {
           await api("POST", "/api/selectors/learned", {
-            project_id: item.payload?.project_id, sub_product: "",
+            project_id: item.payload?.project_id, sub_product: item.payload?.sub_product || "",
             runner: RUNNER_ID, run_id: item.run_id, items: heals,
           });
           log(`  自学习上报 ${heals.length} 个 key: ${heals.map((h) => h.key).join(",")}`);

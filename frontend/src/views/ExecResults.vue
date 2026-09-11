@@ -123,6 +123,8 @@
               <span class="step-desc">{{ s.desc || '' }}</span>
             </div>
             <div v-if="s.error" class="step-err">{{ s.error }}</div>
+            <el-link v-if="s.trace_url" type="primary" @click="downloadTrace(rep.row.run_id)">下载执行追踪</el-link>
+            <div v-if="s.trace_error" class="step-err">执行追踪未保存：{{ s.trace_error }}</div>
             <div v-if="s.check" class="step-check">
               期望{{ s.check.negate ? '不' : '' }}{{ s.check.mode === 'contains' ? '包含' : '等于' }}
               <code class="exp">{{ s.check.expected }}</code>
@@ -203,11 +205,24 @@ import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, triageExecRun } from '@/api'
 import { useAppStore } from '@/store/app'
+import http from '@/api/http'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
 const router = useRouter()
 const route = useRoute()
+
+async function downloadTrace(runId) {
+  try {
+    const blob = await http.get(`/exec-queue/${runId}/trace`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `exec-${runId}-trace.zip`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch { /* http reports download errors */ }
+}
 
 const KIND_TYPE = { gui: 'success', api: 'primary', cli: 'warning', e2e: 'danger', manual: 'info' }
 const KIND_LABEL = { gui: 'GUI', api: 'API', cli: 'CLI', e2e: 'E2E', manual: '人工' }

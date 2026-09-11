@@ -15,11 +15,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createGuiCore } from "./gui-core.mjs";
 
-const gui = createGuiCore();
+const gui = createGuiCore({ selectorsPath: process.env.GUI_REGISTRY_FILE, cdpUrl: process.env.QALAB_CDP_URL || process.env.CDP_URL });
 
 const TARGET_PROPS = {
   key: { type: "string", description: "语义 key(优先;可先用 gui_list_keys 查看所有 key)" },
   selector: { type: "string", description: "原始 CSS selector(注册表未覆盖该元素时的兜底)" },
+  within: { type: "object", description: "所属记录的定位，如 {key:'taskRow',has_text:'任务A'}；必须唯一" },
+  has_text: { type: "string", description: "按业务文本过滤目标" },
+  nth: { type: "integer", minimum: 0, description: "仅在用例明确指定序号时使用，从0开始" },
+  frame: { type: "string", description: "shell/vm/url:子串；缺省使用注册表作用域" },
+  timeout_ms: { type: "number", minimum: 0 },
 };
 const TOOLS = [
   { name: "gui_connect", description: "连接到 namiclaw 的 CDP 调试端口,返回顶层标题/URL 及自动下钻到的内容 frame URL(in_iframe=true 表示已进入 <vm_id>.work.n.cn 业务 iframe)。GUI 用例第一步必须先调它。", inputSchema: { type: "object", properties: {} } },
@@ -31,7 +36,13 @@ const TOOLS = [
   { name: "gui_fill", description: "向输入框填入文本(会先清空)。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, text: { type: "string" } }, required: ["text"] } },
   { name: "gui_get_text", description: "返回元素的可见文本。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
   { name: "gui_wait_for", description: "等待元素在指定毫秒内变为可见;超时抛错。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, timeout_ms: { type: "number" } } } },
-  { name: "gui_assert_text", description: "断言元素文本等于(默认)或包含 expected;不满足则判定失败。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, expected: { type: "string" }, contains: { type: "boolean" } }, required: ["expected"] } },
+  { name: "gui_assert_text", description: "断言元素文本等于(默认)或包含 expected;不满足则判定失败。target 优先传 key,兜底 selector。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, expected: { type: "string" }, contains: { type: "boolean" }, negate: { type: "boolean" } }, required: ["expected"] } },
+  { name: "gui_type", description: "向明确目标追加文本，不清空原内容。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, text: { type: "string" } }, required: ["text"] } },
+  { name: "gui_press", description: "向指定目标发送按键；省略目标才发送全局按键。", inputSchema: { type: "object", properties: { ...TARGET_PROPS, key_name: { type: "string" } }, required: ["key_name"] } },
+  { name: "gui_assert_visible", description: "在超时内重试，确认目标可见。多匹配必须先缩小范围。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
+  { name: "gui_assert_absent", description: "在超时内确认所有匹配均已消失或隐藏。无效选择器/查询异常不会通过。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
+  { name: "gui_capture_response", description: "必须在发送消息/提交之前调用，记录本轮回复基线。", inputSchema: { type: "object", properties: { stop_key: { type: "string" }, complete_key: { type: "string" } } } },
+  { name: "gui_wait_response", description: "提交后等待本轮新增回复完成；此前必须在提交前调用 gui_capture_response，使用相同的信号配置。", inputSchema: { type: "object", properties: { timeout_ms: { type: "number" }, stop_key: { type: "string" }, complete_key: { type: "string" } } } },
   { name: "gui_screenshot", description: "对当前顶层页面截图并保存到 path,返回保存路径(用作 evidence)。", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
   { name: "gui_mock_route", description: "拦截匹配 url 的接口请求,直接返回 status+body(模拟后端返回,验证空态/异常/报错等真实请求难构造的状态)。url 用 glob 且**只写到路径为止**(如 **/api/tasks),查询串会自动容忍;必须在触发该请求的导航/点击**之前**调用,否则拦截器晚于请求必然无效。用完调 gui_unmock_route 还原。", inputSchema: { type: "object", properties: { url: { type: "string", description: "glob 模式,如 **/api/tasks" }, status: { type: "number", description: "HTTP 状态码,默认 200" }, body: { type: "object", description: "响应体(JSON 对象)" } }, required: ["url"] } },
   { name: "gui_unmock_route", description: "取消对 url 的拦截,恢复真实请求。返回 hits=该拦截器实际拦到的请求数——hits=0 说明这条 mock 全程没生效(url 模式没匹配上真实请求),据此纠正模式重试。", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
@@ -49,6 +60,12 @@ async function dispatch(name, args) {
     case "gui_click": return ok(await gui.click(args));
     case "gui_hover": return ok(await gui.hover(args));
     case "gui_fill": return ok(await gui.fill(args));
+    case "gui_type": return ok(await gui.type(args));
+    case "gui_press": return ok(await gui.pressKey(args));
+    case "gui_capture_response": return ok(await gui.captureResponse(args));
+    case "gui_wait_response": { const r = await gui.waitResponse(args); return r.done ? ok(r) : fail(r); }
+    case "gui_assert_visible": { const r = await gui.assertVisible(args); return r.pass ? ok(r) : fail(r); }
+    case "gui_assert_absent": { const r = await gui.assertAbsent(args); return r.pass ? ok(r) : fail(r); }
     case "gui_get_text": return ok(await gui.getText(args));
     case "gui_wait_for": { await gui.waitFor(args); return ok(`visible ${args.key || args.selector}`); }
     case "gui_assert_text": {

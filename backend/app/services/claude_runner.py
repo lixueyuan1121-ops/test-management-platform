@@ -11,6 +11,7 @@
   超时 kill 子进程）。
 - runner 只负责「跑 + 解析 + yield 事件」，不碰数据库；落库由 api 层完成。
 """
+from app.services.script_keys import referenced_keys
 import json
 import logging
 import os
@@ -107,14 +108,10 @@ def _pages_for_script(script, key_page_map: dict[str, str]) -> str:
     if not isinstance(steps, list):
         return ""
     pages: list[str] = []
-    for st in steps:
-        if not isinstance(st, dict):
-            continue
-        tgt = st.get("target") or {}
-        k = tgt.get("key") if isinstance(tgt, dict) else None
-        p = (key_page_map.get(k) or "").strip() if k else ""
-        if p and p not in pages:
-            pages.append(p)
+    for key in referenced_keys(steps):
+        page = (key_page_map.get(key) or "").strip()
+        if page and page not in pages:
+            pages.append(page)
     return ",".join(pages)
 
 
@@ -335,12 +332,14 @@ _AUTOMATION_FEASIBILITY_SPEC = """自动化可执行性约束:
 # gui/e2e 的 script DSL(原 prompt 条目 5+6)。抽成常量供分片按需拼装;api 分片不带此段。
 _GUI_SCRIPT_SPEC = """script(gui/e2e)——有序步骤数组,每步一个对象 {action, target?, args?, desc}:
    - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - 列表/重复控件必须缩小目标：target 可用 within:{key,has_text} 指定所属记录、has_text 过滤文本；只有用例明确按序号操作时才用 nth(从0开始)，不得默认取第一项。
    - target:定位元素,**优先用语义 key**:{"key":"<下方清单里的 key>"};清单没有时给语义新 key 并描述元素，等待补齐；仅当输入提供已验证的 CSS 时才可用 {"selector":"<CSS>"}，不得臆造
    - **hover 用于"悬停才显示"的元素**(如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip):先 hover 到承载元素,再 wait_for 等浮层出现,然后 click/assert;hover 本身不做断言
+   - wait_response 紧跟提交用的 click/press(可在中间插 wait_for)，执行器在提交前记录本轮基线；自定义完成信号用 args.complete_key/stop_key。
    - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
    - args:assert_text 用 {"expected":"...","contains":true};fill/type 用 {"text":"..."};press 用 {"key_name":"End"}(Playwright 按键名,如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {"timeout_ms":6000}(超时上限,仍需配 target)
    - **否定断言(极重要,别写反)**:验证"某文案**不显示** / 菜单**已关闭** / 某项**不含** / Chip/Tag **已移除/已消失**"这类**否定**预期时,**严禁**写成 `assert_text` 去 equals/contains 那个"不该出现的文案"(元素消失后 textContent 为空,equals 恒不等 → 必然假失败)。正确写法二选一:
-     · 目标元素**整体应消失/不存在** → 用 `assert_absent`(target 指向该元素;定位不到即通过)。如"移除后专家 Tag 消失""关闭后菜单消失"。
+     · 目标元素**整体应消失/不存在** → 用 `assert_absent`(target 指向该元素;有效查询确认不存在/隐藏才通过，查询异常不通过)。如"移除后专家 Tag 消失""关闭后菜单消失"。
      · 目标元素**还在、只是其文本不应等于/不应包含某值** → 用 `assert_text` 且 `args.negate=true`(如 {"expected":"纳米Work","negate":true} 表示"该处文本不应是纳米Work")。
    - **expected 必须是界面上真实可见的文案**,不得填 CSS 类名(如 is-open)、语义 key 名(如 composeAddMenuExpertChip)或占位符(如 "/")——要判元素状态/存在性,用 assert_visible / assert_absent,不要用 assert_text 断类名。
    - desc:该步人读说明
@@ -1818,15 +1817,7 @@ def _unregistered_keys(script, valid_keys) -> list[str]:
     """
     if not valid_keys or not isinstance(script, list):
         return []
-    missing: list[str] = []
-    for st in script:
-        if not isinstance(st, dict):
-            continue
-        tgt = st.get("target")
-        k = tgt.get("key") if isinstance(tgt, dict) else None
-        if k and k not in valid_keys and k not in missing:
-            missing.append(k)
-    return missing
+    return [key for key in referenced_keys(script) if key not in valid_keys]
 
 
 # 从 kind_reason 抽"缺哪些 key"/"原意图类型"的正则(与 parse_testcases 写入格式配套)。
@@ -1870,14 +1861,34 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
         if action not in _VALID_ACTIONS:
             return [], f"非法 action「{action}」"
         target = st.get("target") or {}
-        if action in ("click", "hover", "fill", "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent"):
+        args = st.get("args") or {}
+        if not isinstance(args, dict) or not isinstance(target, dict):
+            return [], "args/target 必须是对象"
+        if action == "wait_response":
+            for key in referenced_keys([st]):
+                if valid_keys and key not in valid_keys:
+                    return [], f"step「wait_response」用了未注册的 key「{key}」"
+
+        if action in ("click", "hover", "fill", "type", "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent") or (action == "press" and target):
             if not (isinstance(target, dict) and (target.get("key") or target.get("selector"))):
                 return [], f"step「{action}」缺 target.key/selector"
-            # key 必须在注册表内(仅当提供了 valid_keys 且非空);selector(裸 CSS)不校验
-            k = isinstance(target, dict) and target.get("key")
-            if k and valid_keys and k not in valid_keys:
-                return [], f"step「{action}」用了未注册的 key「{k}」(不在 selectors.json 注册表内)"
-        if action == "assert_text" and not (st.get("args") or {}).get("expected"):
+            current, depth = target, 0
+            while current:
+                if not isinstance(current, dict) or not (current.get("key") or current.get("selector")):
+                    return [], f"step「{action}」的 within 缺少 key/selector"
+                if depth > 3:
+                    return [], "within 最多嵌套三层"
+                k = current.get("key")
+                if k and valid_keys and k not in valid_keys:
+                    return [], f"step「{action}」用了未注册的 key「{k}」(不在 selectors.json 注册表内)"
+                if "nth" in current and (type(current["nth"]) is not int or current["nth"] < 0):
+                    return [], "nth 必须是非负整数"
+                if "has_text" in current and not isinstance(current["has_text"], str):
+                    return [], "has_text 必须是字符串"
+                current, depth = current.get("within"), depth + 1
+        if action == "press" and not (st.get("args") or {}).get("key_name"):
+            return [], "press 缺少 args.key_name"
+        if action == "assert_text" and not isinstance((st.get("args") or {}).get("expected"), str):
             return [], "assert_text 缺 args.expected"
         if action in ("mock_route", "unmock_route") and not (st.get("args") or {}).get("url"):
             return [], f"{action} 缺 args.url"

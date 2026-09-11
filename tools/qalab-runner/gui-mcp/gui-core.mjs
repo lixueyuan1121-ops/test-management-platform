@@ -8,11 +8,9 @@ import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { validCands, pickCandidates } from "./candidates.mjs";
-import { elementTextValue } from "./element-text.mjs";
-import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { rectInsideRatio } from "./probe-collect.mjs";
-import { toUrlMatcher, buildMockResponse } from "./mock-route.mjs";
+import { createAutomationRuntime } from "./runtime-loader.mjs";
+import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
 import { CAPTURE_INIT, DRAIN_SCRIPT, STOP_SCRIPT } from "../record-capture.mjs";
@@ -137,7 +135,7 @@ export function createGuiCore(opts = {}) {
   const DEFAULT_TIMEOUT = Number(opts.timeout || process.env.GUI_TIMEOUT_MS || 10000);
   // 冷启动时等页面 target 在 CDP 注册出来的上限(端口活≠页面就绪,见 ensureConnected)。
   const PAGE_READY_TIMEOUT = Number(opts.pageReadyTimeout || process.env.CDP_PAGE_READY_MS || 15000);
-  // let(非 const):setRegistry 就地换表后,闭包引用它的 resolveKey/isKeyVisible/scopesFor/contentFrame 立即生效。
+  // let(非 const):setRegistry 就地换表后,共享 runtime 通过 getter 读取新注册表。
   let REGISTRY, VM_IFRAME;
   if (opts.registry) {
     REGISTRY = opts.registry; VM_IFRAME = opts.vmIframe || "";
@@ -146,64 +144,46 @@ export function createGuiCore(opts = {}) {
     REGISTRY = j.registry; VM_IFRAME = j.vmIframe;
   }
 
-  // 内置兜底副本(始终从仓库 selectors.json 读一份):DB 某 key 候选全坏/缺时逐 key 回落到内置同名 key。
-  let BUILTIN = {};
-  try { BUILTIN = JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8")).registry || {}; }
-  catch { BUILTIN = {}; }
+  const DEFAULT_REGISTRY = REGISTRY;
+  const DEFAULT_VM_IFRAME = VM_IFRAME;
 
   // 核心 key 清单(进入/首页/登录类):单一事实源在 selectors.json 顶层 coreKeys(见 core-keys.mjs)。
   // 供 verify 巡检默认目标 + 失效告警。读不到 → []（巡检退化为按传入 keys,不误报）。
   let CORE_KEYS = [];
   try { CORE_KEYS = pickCoreKeys(JSON.parse(readFileSync(opts.selectorsPath || SELECTORS_PATH, "utf-8"))); }
   catch { CORE_KEYS = []; }
+  CORE_KEYS = (opts.coreKeys || CORE_KEYS).filter((key) => REGISTRY[key]);
+  const DEFAULT_CORE_KEYS = CORE_KEYS.slice();
 
   let browser = null;
   let page = null;
 
-  // 运行时自学习(self-healing):本实例累计的自愈记录,runner 每条用例执行完 drainHeals() 上报平台。
-  // GUI_HEAL=0 可整体关闭(回到纯候选回落行为)。
+  let ctx = null;
+  let traceContext = null;
   const HEALS = [];
-  const HEAL_ENABLED = String(process.env.GUI_HEAL ?? "1") !== "0";
-  let ctx = null;   // BrowserContext — 与 browser/page 同生命周期; mockRoute/unmockRoute 需要 context 级拦截
-  let testidInjected = false;   // 测试模式开关只需注入一次(addInitScript + 首连 reload),后续 ensureConnected 跳过
-
-  // 被测应用(openclaw360-web)默认不注入 data-testid;仅当 localStorage["openclaw.testids"]==="1"
-  // 时,main.ts 启动才加载观察器把 testid 打到 DOM 上。见上方模块级 injectTestIdMode 说明。
+  let testidInjected = false;
   async function enableTestIdMode() {
     if (testidInjected) return;
-    testidInjected = true;
     await injectTestIdMode(ctx, page, { reloadTimeout: PAGE_READY_TIMEOUT });
+    testidInjected = true;
   }
-
-  // 已注册的网络拦截:pattern -> { matcher, handler, stat:{pattern,status,hits} }。
-  // 必须记账,原因有二:①注册用的是编译后的正则,ctx.unroute 只认同一个 matcher 对象,拿原始 glob 撤不掉;
-  // ②用例中途失败会跳过 unmock_route 步,拦截器残留下来会污染后续每一条用例(上一条的 mock 数据串台),
-  //   故 StepExecutor 收尾与用例前复位都调 unmockAll 兜底清干净。
-  const MOCKS = new Map();
-
-  // 撤销单条拦截并返回其命中次数。没记账过 → 尽力按原串撤一次(兼容手工注册),不抛错。
-  async function unregisterMock(pattern) {
-    const rec = MOCKS.get(pattern);
-    MOCKS.delete(pattern);
-    try {
-      if (rec) await ctx?.unroute(rec.matcher, rec.handler);
-      else await ctx?.unroute(pattern);
-    } catch { /* 连接已断/本就没注册,忽略 */ }
-    return { unrouted: pattern, hits: rec ? rec.stat.hits : 0, registered: !!rec };
-  }
-
-  // 撤销本实例注册的全部拦截(用例收尾/复位前调)。返回逐条命中统计,供上层诊断"mock 有没有真拦到"。
-  async function unregisterAllMocks() {
-    const stats = [];
-    for (const p of [...MOCKS.keys()]) stats.push(await unregisterMock(p));
-    return stats;
-  }
+  const runtime = createAutomationRuntime({
+    page: () => page, registry: () => REGISTRY, vmIframe: () => VM_IFRAME,
+    timeout: DEFAULT_TIMEOUT,
+  });
 
   async function ensureConnected() {
     if (browser && browser.isConnected() && page && !page.isClosed()) {
-      await enableTestIdMode();   // 复用连接时也确保开关已注入(幂等,已注入即刻返回)
+      await enableTestIdMode();
       return;
     }
+    if (browser) {
+      try { await runtime.unmockAll(); } catch {}
+      try { await browser.close(); } catch {}
+      runtime.resetConnection();
+      traceContext = null;
+    }
+    testidInjected = false;
     browser = await chromium.connectOverCDP(CDP_URL);
     ctx = browser.contexts()[0] || (await browser.newContext());
     // 冷启动竞态:CDP 端口先活、渲染进程的页面 target 后注册,刚连上时 ctx.pages() 可能仍空。
@@ -221,163 +201,66 @@ export function createGuiCore(opts = {}) {
     await enableTestIdMode();
   }
 
-  function contentFrame() {
-    const main = page.mainFrame();
-    const frames = page.frames();
-    const embed = frames.find((f) => f !== main && /\.work\.n\.cn/i.test(f.url() || ""));
-    return embed || frames.find((f) => f !== main) || main;
+  async function contentFrame() {
+    if (VM_IFRAME) {
+      const frames = page.locator(VM_IFRAME);
+      const count = await frames.count();
+      if (count > 1) throw new Error("业务 iframe 匹配多个目标");
+      if (count === 1) {
+        const handle = await frames.elementHandle();
+        try {
+          const frame = await handle?.contentFrame();
+          if (frame) return frame;
+        } finally { await handle?.dispose(); }
+      }
+    }
+    return page.mainFrame();
   }
 
   async function waitForContentFrame(timeoutMs = 8000) {
     const start = Date.now();
     for (;;) {
-      const f = contentFrame();
+      const f = await contentFrame();
       if (f !== page.mainFrame()) return f;
       if (Date.now() - start > timeoutMs) return f;
       await new Promise((r) => setTimeout(r, 500));
     }
   }
 
-  function byToLocator(scope, cand) {
-    switch (cand.by) {
-      case "testid": return scope.getByTestId(cand.value);
-      case "xpath": return scope.locator(cand.value.startsWith("xpath=") ? cand.value : `xpath=${cand.value}`);
-      case "role": return scope.getByRole(cand.value, cand.name ? { name: cand.name } : undefined);
-      case "label": return scope.getByLabel(cand.value);
-      case "text": return scope.getByText(cand.value);
-      case "placeholder": return scope.getByPlaceholder(cand.value);
-      case "css":
-      default: return scope.locator(cand.value);
-    }
-  }
+  const resolveKey = (key, options = {}) => runtime.resolve({ key, timeout_ms: options.timeout ?? DEFAULT_TIMEOUT }, options);
+  const isKeyVisible = (key) => runtime.isKeyVisible(key);
 
-  function scopesFor(frame) {
-    const shell = { name: "shell", scope: page };
-    const vm = { name: "vm", scope: page.frameLocator(VM_IFRAME) };
-    if (frame === "shell") return [shell];
-    // vm:业务 iframe(现状 <vm_id>.work.n.cn 嵌在顶层 work.n.cn/claw 里)。兼容"子域名扁平化"——
-    // 若客户端改成顶层直接加载 <vm_id>.work.n.cn(业务上顶层、无内嵌 iframe),vm iframe 不存在时
-    // 回退 shell(顶层 page)兜底,vm key 照常定位,无需改 selectors.json 的 frame 归属。
-    // 现状(业务在 iframe)零副作用:iframe 里能命中就不会走到 shell。
-    if (frame === "vm") return [vm, shell];
-    // url:<子串> —— 从 page.frames() 扁平列表(含任意深度嵌套)找 url 含该子串的首个 Frame,
-    // 直接作为定位 scope(Frame 与 Page/FrameLocator 同一套定位 API,byToLocator 无需分支)。
-    // 找不到(目标 frame 未加载/页面结构变)→ 回退 [shell, vm] 再试一遍(与 auto 一致的容错)。
-    if (typeof frame === "string" && frame.startsWith("url:")) {
-      const pat = frame.slice(4);
-      const f = pat && page.frames().find((fr) => (fr.url() || "").includes(pat));
-      if (f) return [{ name: "urlframe", scope: f }];
-      return [shell, vm];
-    }
-    return [shell, vm];
-  }
-
-  async function resolveKey(key, { timeout = DEFAULT_TIMEOUT, requireVisible = true } = {}) {
+  // Discovery produces review suggestions; it never changes the failing test's
+  // target or verdict. Standalone exports therefore keep the same semantics.
+  async function suggestMissingKey(key) {
     const entry = REGISTRY[key];
-    if (!entry) throw new Error(`未定义语义 key "${key}"(selectors.json 无此项;先看 listKeys)`);
-    const plan = [];
-    const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
-    for (const s of scopesFor(entry.frame)) for (const cand of cands) plan.push({ s, cand });
-    const end = Date.now() + timeout;
-    // 一个候选可能匹配多个元素(尤其 by:text 子串,如"首页"命中导航项+页面别处文案+隐藏面板)。
-    // 不锁死 .first():要求可见时在前若干个匹配里挑第一个"可见"的,避免 first 恰好是隐藏/错位元素时
-    // 明明有可见的目标却判"未命中"。单匹配 key 行为不变(scan=1,即原 first)。
-    const MAX_MATCH_SCAN = 5;
-    for (;;) {
-      for (const { s, cand } of plan) {
-        try {
-          const base = byToLocator(s.scope, cand);
-          const total = await base.count();
-          if (total === 0) continue;
-          const hit = { scope: s.name, by: cand.by, value: cand.value || cand.name };
-          if (!requireVisible) return { loc: base.first(), hit };
-          const scan = Math.min(total, MAX_MATCH_SCAN);
-          for (let i = 0; i < scan; i++) {
-            const one = base.nth(i);
-            if (await one.isVisible().catch(() => false)) return { loc: one, hit };
-          }
-        } catch { /* 试下一个候选 */ }
-      }
-      if (Date.now() >= end) break;
-      await new Promise((r) => setTimeout(r, 200));
+    if (!entry || HEALS.some((item) => item.key === key) || process.env.GUI_HEAL === "0") return;
+    const args = tokensForKey(key, entry);
+    const frameName = entry.frame;
+    const frames = frameName === "shell" ? [page.mainFrame()]
+      : frameName === "vm" ? [await contentFrame()]
+      : typeof frameName === "string" && frameName.startsWith("url:")
+        ? page.frames().filter((f) => f.url().includes(frameName.slice(4))) : page.frames();
+    const proposals = [];
+    for (const frame of frames) {
+      const best = pickConfident(await frame.evaluate(discoverInPage, args));
+      if (best) proposals.push({ best, frame });
     }
-    // 全候选失败 → 运行时自学习兜底(保守:高置信唯一匹配才自愈,否则维持原 fail)。
-    const healed = HEAL_ENABLED ? await healKey(key, entry).catch(() => null) : null;
-    if (healed) return healed;
-    const tried = plan.map(({ s, cand }) => `${s.name}:${cand.by}=${cand.value || cand.name}`).join(" | ");
-    throw new Error(`未命中 key "${key}"(${entry.desc || ""});已试(含 iframe): ${tried} → 更新 selectors.json 的 "${key}".candidates`);
+    if (proposals.length !== 1) return;
+    const { best, frame } = proposals[0];
+    const candidates = mintedToCandidates(best.minted);
+    if (candidates.length) HEALS.push({ key, candidates, evidence: {
+      applied: false, matched: best.why, text: best.text, tag: best.tag, score: best.score,
+      frame_url: frame.url().slice(0, 200), reason: "定位失败后的候选建议，未用于改变测试结果",
+    } });
   }
-
-  // 运行时自学习:按 key 语义(key 名拆词 + desc 引号文案 + 旧候选文案)在各 frame 内发现候选元素,
-  // 高置信唯一匹配 → 铸造新候选定位执行,并记入 HEALS(runner 每条用例执行完 drainHeals 上报平台评审)。
-  // 失败/不置信一律返回 null(调用方维持原「未命中」错误,不冒险自愈错元素)。
-  async function healKey(key, entry) {
-    const args = tokensForKey(key, {
-      ...entry,
-      candidates: pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates),
-    });
-    if (!args.idTokens.length && !args.textTokens.length) return null;
-    // 逐 frame 发现(page.frames() 扁平含任意深度;FrameLocator 不能 evaluate,故用 Frame 对象)
-    let best = null;
-    let bestFrame = null;
-    for (const f of page.frames()) {
-      let matches = [];
-      try { matches = await f.evaluate(discoverInPage, args); } catch { continue; }
-      const top = pickConfident(matches);
-      if (top && (!best || top.score > best.score)) { best = top; bestFrame = f; }
+  async function operate(method, args) {
+    await ensureConnected();
+    try { return await runtime[method](args); }
+    catch (e) {
+      if (e.code === "TARGET_TIMEOUT" && args?.key && !args.within) await suggestMissingKey(args.key).catch(() => {});
+      throw e;
     }
-    if (!best || !bestFrame) return null;
-    const learned = mintedToCandidates(best.minted);
-    if (!learned.length) return null;
-    // 用铸造的最优候选在该 frame 内真实定位一次(要求可见),定位不上就放弃自愈。
-    for (const cand of learned) {
-      try {
-        const base = byToLocator(bestFrame, cand);
-        const scan = Math.min(await base.count(), 5);
-        for (let i = 0; i < scan; i++) {
-          const one = base.nth(i);
-          if (await one.isVisible().catch(() => false)) {
-            HEALS.push({
-              key,
-              candidates: learned,
-              evidence: {
-                matched: best.why, text: best.text, tag: best.tag, score: best.score,
-                frame_url: (bestFrame.url() || "").slice(0, 200),
-              },
-            });
-            return { loc: one, hit: { scope: "healed", by: cand.by, value: cand.value || cand.name, healed: true } };
-          }
-        }
-      } catch { /* 试下一个铸造候选 */ }
-    }
-    return null;
-  }
-
-  async function resolveTarget(args, { requireVisible = true } = {}) {
-    if (args.key) return await resolveKey(args.key, { requireVisible, timeout: args.timeout_ms || DEFAULT_TIMEOUT });
-    if (args.selector) return { loc: contentFrame().locator(args.selector).first(), hit: { scope: "content", by: "css", value: args.selector } };
-    throw new Error("需要提供 key(语义,优先)或 selector(原始 CSS)之一");
-  }
-
-  // 某语义 key 当前在页面上是否可见(不抛错,快速探一次;用于 waitResponse 轮询生成态)。
-  async function isKeyVisible(key) {
-    const entry = REGISTRY[key];
-    if (!entry) return false;
-    const cands = pickCandidates(entry.candidates, (BUILTIN[key] || {}).candidates);
-    for (const s of scopesFor(entry.frame)) {
-      for (const cand of cands) {
-        try {
-          // 与 resolveKey 同口径:不锁死 .first(),扫前若干个匹配,任一可见即算命中
-          // (by:text 子串常多匹配,first 恰是隐藏元素时不应误判"不可见")。
-          const base = byToLocator(s.scope, cand);
-          const scan = Math.min(await base.count(), 5);
-          for (let i = 0; i < scan; i++) {
-            if (await base.nth(i).isVisible().catch(() => false)) return true;
-          }
-        } catch { /* 试下一个 */ }
-      }
-    }
-    return false;
   }
 
   // reload 后确保回到首页:探首页锚点(多别名),已在首页直接返回;不在则点侧栏『首页』导航回去,再等就绪。
@@ -409,14 +292,21 @@ export function createGuiCore(opts = {}) {
   // ---- 对外操作(server 和 StepExecutor 共用)----
   return {
     get registry() { return REGISTRY; },
+    get vmIframe() { return VM_IFRAME; },
     get coreKeys() { return CORE_KEYS.slice(); },
     // 就地换注册表(runner 每条 gui/e2e 用例执行前按 project_id 从 API 拉后调):只换 REGISTRY/VM_IFRAME,
-    // 不动 browser/page 连接态。闭包引用它俩的 resolveKey/isKeyVisible/scopesFor/contentFrame 随即生效。
-    setRegistry(registry, vmIframe) { REGISTRY = registry || {}; VM_IFRAME = vmIframe || VM_IFRAME; },
+    // 不动 browser/page 连接态。共享 runtime 的定位和回复基线同步更新。
+    setRegistry(registry, vmIframe, coreKeys) {
+      REGISTRY = registry ?? DEFAULT_REGISTRY;
+      VM_IFRAME = vmIframe ?? DEFAULT_VM_IFRAME;
+      CORE_KEYS = (Array.isArray(coreKeys) ? coreKeys : DEFAULT_CORE_KEYS).filter((key) => REGISTRY[key]);
+      runtime.resetResponse();
+      HEALS.length = 0;
+    },
     ensureConnected,
     contentFrame,
     // 取走并清空本轮自愈记录(runner 每条用例执行完调用,POST /api/selectors/learned 上报评审)。
-    drainHeals() { return HEALS.splice(0, HEALS.length); },
+    drainHeals() { return HEALS.splice(0); },
 
     // ---- 录制:注入事件捕获 / 排空缓冲 / 停止(见 record-capture.mjs)----
     async startRecording() {
@@ -436,7 +326,7 @@ export function createGuiCore(opts = {}) {
     async drainRecordEvents() {
       await ensureConnected();
       const main = page.mainFrame();
-      const vm = contentFrame();
+      const vm = await contentFrame();
       const out = [];
       for (const f of page.frames()) {
         let raw;
@@ -472,7 +362,7 @@ export function createGuiCore(opts = {}) {
       // 多级页面:遍历页面所有 frame(Playwright 的 page.frames() 已含任意深度的嵌套 iframe),
       // 逐 frame 跑发现脚本。主框架标 shell;主 vm iframe(.work.n.cn)标 vm;其余嵌套 iframe 标 iframe。
       const main = page.mainFrame();
-      const vm = contentFrame();   // 主内容 iframe(与执行侧 contentFrame 同源)
+      const vm = await contentFrame();   // 主内容 iframe(与执行侧 contentFrame 同源)
       const frameLabel = (f) =>
         f === main ? "shell" : f === vm ? "vm" : "iframe";
       // frameMatch:加为 key 时写入 selector_key.frame 的值。shell/vm 沿用旧语义;深层 iframe
@@ -548,9 +438,9 @@ export function createGuiCore(opts = {}) {
       for (const k of core) out[k] = await isKeyVisible(k);
       return { verify: out, failed: failedCoreKeys(core, out), core };
     },
-    async goto(url) {
+    async goto(url, args = {}) {
       await ensureConnected();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: Math.max(1, args.timeout_ms ?? DEFAULT_TIMEOUT) });
       return { url: page.url(), title: await page.title() };
     },
     // 用例间硬复位:reload 顶层清前端瞬态(选中/展开/弹窗/输入残留/焦点),等 vm iframe 就绪,再**主动
@@ -559,76 +449,18 @@ export function createGuiCore(opts = {}) {
     // 让进入段自导航从首页开始。首页锚点尽力等,探不到不抛(交上层就绪门禁/自愈裁决)。
     async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
       await ensureConnected();
-      await unregisterAllMocks();   // 清上一条用例遗留的网络拦截:残留 mock 会让本条用例拿到串台的假数据
+      await runtime.unmockAll();   // 清上一条遗留拦截，失败时阻塞复位
+      runtime.resetResponse();
       await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       await waitForContentFrame();
       await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);
       return { reset: true, url: page.url() };
     },
-    async click(args) {
-      await ensureConnected();
-      const { loc, hit } = await resolveTarget(args);
-      await loc.click({ timeout: DEFAULT_TIMEOUT });
-      return { clicked: args.key || args.selector, via: hit };
-    },
-    // 鼠标悬停到目标元素(触发 mouseover/mouseenter + CSS :hover);常用于"悬停才显示"的
-    // 菜单/浮层:hover → wait_for(浮层出现) → click/assert。定位与 click 同一套引擎(语义 key 优先)。
-    async hover(args) {
-      await ensureConnected();
-      const { loc, hit } = await resolveTarget(args);
-      await loc.hover({ timeout: DEFAULT_TIMEOUT });
-      return { hovered: args.key || args.selector, via: hit };
-    },
-    async fill(args) {
-      await ensureConnected();
-      const { loc, hit } = await resolveTarget(args);
-      try {
-        await loc.fill(args.text, { timeout: DEFAULT_TIMEOUT });
-      } catch (e) {
-        // 富文本/自定义元素(如纳米 Work 的 <chat-compose-rich-textarea>)不是标准 <input>/<textarea>,
-        // Playwright 的 fill 直接拒绝。兜底:先找元素内部的 contenteditable/textarea 填;找不到就
-        // click 聚焦后用键盘逐字输入。兜底再失败则抛原错(退化为当前的 selector 阻塞,不比原来差)。
-        if (!/not an\b|contenteditable|is not an <input>|Element is not/i.test(e.message || "")) throw e;
-        const inner = loc.locator('[contenteditable="true"], [contenteditable=""], textarea, input').first();
-        if (await inner.count().catch(() => 0)) {
-          try { await inner.fill(args.text, { timeout: DEFAULT_TIMEOUT }); }
-          catch { await inner.click({ timeout: DEFAULT_TIMEOUT }); await page.keyboard.type(args.text); }
-        } else {
-          await loc.click({ timeout: DEFAULT_TIMEOUT });
-          await page.keyboard.press("Control+A").catch(() => {});   // 清空已有内容再输入
-          await page.keyboard.type(args.text);
-        }
-        return { filled: args.key || args.selector, via: hit, fallback: "contenteditable" };
-      }
-      return { filled: args.key || args.selector, via: hit };
-    },
-    // type —— 逐字符追加输入（不清空原有内容）。
-    // 先 click 聚焦目标；支持 key/selector 定位；文本末尾不发送，只模拟键盘打字。
-    // 适用于：需要在输入框现有内容后追加文本、或对 fill 兼容性差的富文本组件二次输入。
-    async type(args) {
-      await ensureConnected();
-      const { loc, hit } = await resolveTarget(args);
-      await loc.click({ timeout: DEFAULT_TIMEOUT });   // 聚焦，光标保留原位（通常末尾）
-      await page.keyboard.type(String(args.text ?? ""));
-      return { typed: args.key || args.selector, via: hit };
-    },
-    // pressKey —— 向目标元素（或全局页面）发送单个按键（如 End / Home / Enter / Escape / Tab）。
-    // args.key_name: 必填，Playwright 按键名（如 "End"/"Home"/"Enter"/"Escape"/"Tab"/"Control+A"）。
-    // args.target_key / args.selector: 可选；有值时先 click 聚焦再按键，无值时向全局页面发。
-    // 常与 type 配合：pressKey(End) → type(追加文字)，或 pressKey(Enter) 提交表单。
-    async pressKey(args) {
-      await ensureConnected();
-      const key = String(args.key_name || "");
-      if (!key) throw new Error("pressKey: 缺少 key_name（如 End / Enter / Escape）");
-      // 有定位目标时先聚焦；target_key 是选择器语义 key，selector 是 CSS/XPath。
-      if (args.target_key || args.selector) {
-        const targetArgs = args.target_key ? { key: args.target_key } : { selector: args.selector };
-        const { loc } = await resolveTarget(targetArgs);
-        await loc.click({ timeout: DEFAULT_TIMEOUT });
-      }
-      await page.keyboard.press(key);
-      return { pressed: key };
-    },
+    click: (args) => operate("click", args),
+    hover: (args) => operate("hover", args),
+    fill: (args) => operate("fill", args),
+    type: (args) => operate("type", args),
+    pressKey: (args) => operate("pressKey", args),
     // 页面层 ESC:page.keyboard 发 Escape,关网页模态/浮层/下拉(只作用于被测页面内部)。快、无害。
     // 复位自愈第一招:首页疑似被网页弹窗挡住时先按它清障再重探。
     async pressEscapePage() {
@@ -643,85 +475,25 @@ export function createGuiCore(opts = {}) {
       const os = await pressOsEscape();
       return { escaped: os, layer: "os" };
     },
-    async getText(args) {
+    async getText(args) { await ensureConnected(); return runtime.getText(args); },
+    async waitFor(args) { await ensureConnected(); return runtime.waitFor(args); },
+    async captureResponse(args) { await ensureConnected(); return runtime.captureResponse(args); },
+    async waitResponse(args) { await ensureConnected(); return runtime.waitResponse(args); },
+    async assertText(args) { await ensureConnected(); return runtime.assertText(args); },
+    async assertVisible(args) { await ensureConnected(); return runtime.assertVisible(args); },
+    async assertAbsent(args) { await ensureConnected(); return runtime.assertAbsent(args); },
+    async startTrace() {
       await ensureConnected();
-      const { loc, hit } = await resolveTarget(args, { requireVisible: false });
-      // 表单控件取 .value、其余取 textContent(见 element-text.mjs;修输入框恒读空的假失败)
-      return { text: (await loc.evaluate(elementTextValue)) ?? "", via: hit };
+      if (traceContext) throw new Error("上一条执行 Trace 尚未结束");
+      await ctx.tracing.start({ screenshots: true, snapshots: true, sources: false });
+      traceContext = ctx;
     },
-    async waitFor(args) {
-      await ensureConnected();
-      const timeout = args.timeout_ms || DEFAULT_TIMEOUT;
-      if (args.key) await resolveKey(args.key, { timeout, requireVisible: true });
-      else await contentFrame().locator(args.selector).first().waitFor({ state: "visible", timeout });
-      return { visible: args.key || args.selector };
-    },
-    // 等 AI 回复生成完成(e2e 关键):发消息后调。判据 = stopBtn(生成中标志)消失 且 出现带 has-copy 的
-    // answerBubble(流式输出完成)。带上限 timeout_ms(默认 90s),超时不抛崩溃、返回 {done:false} 由调用方判 fail。
-    // 逻辑:先等生成"起来"(stopBtn 出现,最多 quietMs 内没起来就认为无需等),再等它"结束"(stopBtn 消失 + answerBubble 就绪)。
-    async waitResponse({ timeout_ms = 90000 } = {}) {
-      await ensureConnected();
-      const start = Date.now();
-      const stopKey = REGISTRY.stopBtn ? "stopBtn" : null;
-      const doneKey = REGISTRY.answerBubble ? "answerBubble" : null;
-      let sawGenerating = false;
-      for (;;) {
-        const generating = stopKey ? await isKeyVisible(stopKey) : false;
-        if (generating) sawGenerating = true;
-        const answered = doneKey ? await isKeyVisible(doneKey) : false;
-        // 完成判据:不在生成中 且 已出现完成的回复气泡(has-copy)
-        if (!generating && answered && (sawGenerating || Date.now() - start > 3000)) {
-          return { done: true, elapsed_ms: Date.now() - start, saw_generating: sawGenerating };
-        }
-        if (Date.now() - start > timeout_ms) {
-          return { done: false, elapsed_ms: Date.now() - start, saw_generating: sawGenerating, reason: `等待回复超时(>${timeout_ms}ms):generating=${generating} answered=${answered}` };
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    },
-    // 断言文本:返回 {pass, actual, expected, mode, negate, via}(不抛错,由调用方按 pass 判定)。
-    // negate=true 表示「否定断言」:期望文本**不**等于/不包含 expected(用于"不显示/已关闭/不含 X")。
-    // 物理上无法用正向 equals 表达否定(元素不存在时 textContent 为空,equals 恒失败 → 假 fail),故显式支持。
-    async assertText(args) {
-      await ensureConnected();
-      const { loc, hit } = await resolveTarget(args, { requireVisible: false });
-      // 表单控件(input/textarea/select)取 .value、其余取 textContent —— 见 element-text.mjs。
-      // 早期一律用 textContent,对输入框恒读空串 → "输入框含 X"必然假失败(tc15/tc14 实证)。
-      const actual = ((await loc.evaluate(elementTextValue)) ?? "").trim();
-      const matched = args.contains ? actual.includes(args.expected) : actual === args.expected;
-      const pass = args.negate ? !matched : matched;
-      return { pass, actual: actual.slice(0, 200), expected: args.expected, mode: args.contains ? "contains" : "equals", negate: !!args.negate, via: hit };
-    },
-    // 断言元素可见。失败时区分两种性质(供调用方归类 fail_kind):
-    //   - locatable=false:元素在 DOM 里压根定位不到(key 未注册/候选没覆盖/selector 0 匹配)→ 选择器阻塞(selector)。
-    //   - locatable=true :元素在 DOM 里但不可见(隐藏/未渲染出来)→ 真功能问题(business,"该可见却没可见")。
-    // 基于 count()+isVisible() 判定,对 key 与裸 selector 都可靠(裸 selector 经 resolveTarget 不抛错,
-    // 必须显式查 count,否则会误判"可见")。
-    async assertVisible(args) {
-      await ensureConnected();
-      let loc;
-      try { ({ loc } = await resolveTarget(args, { requireVisible: false })); }
-      catch (e) { return { pass: false, target: args.key || args.selector, error: e.message, locatable: false }; }
-      const cnt = await loc.count().catch(() => 0);
-      if (cnt === 0) return { pass: false, target: args.key || args.selector, error: "元素定位不到(选择器/key 未覆盖)", locatable: false };
-      const visible = await loc.isVisible().catch(() => false);
-      if (visible) return { pass: true, target: args.key || args.selector, locatable: true };
-      return { pass: false, target: args.key || args.selector, error: "元素已定位但不可见", locatable: true };
-    },
-    // 断言元素「不存在/不可见」(否定式可见断言)。定位不到 / 0 匹配 / 存在但不可见 → 通过(这正是期望);
-    // 仍可见 → 不通过(business:本应消失却还在)。对 key 与裸 selector 都可靠。
-    // 用短超时:不存在的元素不必等满 DEFAULT_TIMEOUT(它本就该没有)。用于"移除后 Chip 消失""菜单关闭后消失"。
-    async assertAbsent(args) {
-      await ensureConnected();
-      let loc;
-      try { ({ loc } = await resolveTarget({ ...args, timeout_ms: Math.min(args.timeout_ms || 1500, 2000) }, { requireVisible: false })); }
-      catch { return { pass: true, target: args.key || args.selector, locatable: false }; }  // 定位不到 → 已不存在
-      const cnt = await loc.count().catch(() => 0);
-      if (cnt === 0) return { pass: true, target: args.key || args.selector, locatable: false };  // 0 匹配 → 不存在
-      const visible = await loc.isVisible().catch(() => false);
-      return visible
-        ? { pass: false, target: args.key || args.selector, locatable: true }   // 仍可见 → 未消失
-        : { pass: true, target: args.key || args.selector, locatable: false };  // 存在但隐藏 → 视作已消失
+    async stopTrace(path) {
+      const recording = traceContext;
+      traceContext = null;
+      if (!recording) throw new Error("Trace 未启动或连接已重建");
+      await recording.tracing.stop(path ? { path } : {});
+      return path;
     },
     async screenshot(path) {
       await ensureConnected();
@@ -737,54 +509,18 @@ export function createGuiCore(opts = {}) {
         return null;
       }
     },
-    // mockRoute —— 拦截匹配 urlPattern 的 fetch/XHR 请求，直接返回 args 指定的 status+body。
-    // urlPattern: glob 模式，如 "**/api/tasks" 或 "**/api/**"。
-    // body: 对象则 JSON 序列化；已是字符串则原样透传。status: HTTP 状态码，默认 200。
-    // 用 ctx.route（BrowserContext 级）而非 page.route：
-    //   ctx.route 覆盖整个 BrowserContext 的页面与 Frame，而不只绑定单个 Page。
-    //   这并不保证能拦截 Electron 主进程、远端代理或 Service Worker 接管的请求。
-    // 匹配用 toUrlMatcher 编译出的正则而非原始 glob 串：Playwright 的 glob 要匹配**整个 URL**，
-    //   `**/api/tasks` 对真实请求 `.../api/tasks?project_id=1` 匹配不上（详见 mock-route.mjs 根因①）。
-    // 响应头由 buildMockResponse 补 CORS：fulfill 出去的响应不会自动带 Access-Control-Allow-Origin，
-    //   跨域场景下浏览器会直接拦掉 mock 响应（根因②）。
-    // 同 pattern 重复注册先撤旧的（避免叠加后第一个 handler 恒定生效、改了 body 却不变）。
-    async mockRoute(args) {
-      await ensureConnected();
-      const pattern = String(args.url || "");
-      if (!pattern) throw new Error("mockRoute: 缺少 url（glob 模式，如 **/api/tasks）");
-      if (MOCKS.has(pattern)) await unregisterMock(pattern);
-      const matcher = toUrlMatcher(pattern);
-      const stat = { pattern, status: Number(args.status ?? 200), hits: 0 };
-      const handler = async (route) => {
-        const { status, body, headers } = buildMockResponse(args, route.request().headers());
-        // fulfill 可能因页面已跳走/请求已被别处处理而抛错；此时放行真实请求，别让这条请求悬着超时。
-        try { await route.fulfill({ status, body, headers }); stat.hits += 1; }
-        catch { try { await route.fallback(); } catch { /* 请求已终结,忽略 */ } }
-      };
-      await ctx.route(matcher, handler);
-      MOCKS.set(pattern, { matcher, handler, stat });
-      return { mocked: pattern, status: stat.status };
-    },
-    // unmockRoute —— 取消对 urlPattern 的拦截，恢复真实请求。返回 hits=该拦截器实际命中的请求数，
-    // 0 即"这条 mock 全程没拦到任何请求"（URL 模式没匹配上），是排查 mock 不生效的第一手证据。
-    async unmockRoute(args) {
-      const pattern = String(args.url || "");
-      if (!pattern) throw new Error("unmockRoute: 缺少 url");
-      return await unregisterMock(pattern);
-    },
-    // 清空本实例注册的全部拦截（用例收尾/用例前复位调）。不需要连接也可安全调用。
-    async unmockAll() {
-      return { unrouted: await unregisterAllMocks() };
-    },
-    // 当前存活拦截器的命中统计（[{pattern,status,hits}]），供 StepExecutor 判断 mock 是否真生效。
-    mockStats() {
-      return [...MOCKS.values()].map((r) => ({ ...r.stat }));
-    },
+    async mockRoute(args) { await ensureConnected(); return runtime.mockRoute(args); },
+    async unmockRoute(args) { return runtime.unmockRoute(args); },
+    async unmockAll() { return runtime.unmockAll(); },
+    mockStats() { return runtime.mockStats(); },
     async close() {
       // connectOverCDP 的 close 只断开连接,不关被测客户端
+      try { await runtime.unmockAll(); } catch { /* disconnected context */ }
+      if (traceContext) { try { await traceContext.tracing.stop(); } catch {} }
       if (browser) { try { await browser.close(); } catch { /* 已断开 */ } }
-      MOCKS.clear();   // 连接已断,旧 ctx 上的拦截器随之失效,记账一并作废(免得下次误撤/误报命中数)
-      browser = null; page = null; ctx = null;
+      traceContext = null;
+      runtime.resetConnection();
+      browser = null; page = null; ctx = null; testidInjected = false;
     },
   };
 }

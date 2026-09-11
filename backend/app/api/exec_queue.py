@@ -9,13 +9,16 @@
 沿用全项目约定：{code,msg,data} 信封（ok/fail）、手写 _to_out、体外 assert_project_role。
 """
 import json
+import io
 import logging
 import os
 import secrets
 import time
+import zipfile
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from starlette.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -1013,3 +1016,65 @@ async def upload_exec_screenshot(
         f.write(data)
     _cleanup_old_exec_shots()   # 顺手清过期旧批(惰性)
     return ok({"screenshot_url": f"/uploads/{rel}"})
+
+
+# Traces may contain request/DOM details. Keep them outside public /uploads and
+# require project access on download, with the same retention window as screenshots.
+_EXEC_TRACE_ROOT = os.path.join(os.path.dirname(_UPLOADS_DIR), "artifacts", "exec-traces")
+_MAX_TRACE_BYTES = 100 * 1024 * 1024
+
+
+@router.post("/{run_id}/trace")
+async def upload_exec_trace(
+    run_id: int, file: UploadFile = File(...), runner: str = Query(...),
+    db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx),
+):
+    if ctx.device is not None:
+        runner = ctx.device.runner_id
+    run = db.get(ExecRun, run_id)
+    if not run:
+        raise HTTPException(404, detail="执行项不存在")
+    if run.runner != runner or (run.runner_device_id is not None and (not ctx.device or ctx.device.id != run.runner_device_id)):
+        raise HTTPException(403, detail="该执行项未派给此执行机")
+    data = await file.read(_MAX_TRACE_BYTES + 1)
+    if len(data) > _MAX_TRACE_BYTES:
+        raise HTTPException(400, detail="Trace 超过 100MB")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            if not any(name.endswith(".trace") for name in archive.namelist()):
+                raise ValueError("missing trace")
+    except (ValueError, zipfile.BadZipFile):
+        raise HTTPException(400, detail="文件不是 Playwright Trace ZIP")
+    os.makedirs(_EXEC_TRACE_ROOT, exist_ok=True)
+    path = os.path.join(_EXEC_TRACE_ROOT, f"{run_id}.zip")
+    temporary = f"{path}.{secrets.token_hex(6)}.tmp"
+    try:
+        with open(temporary, "wb") as output:
+            output.write(data)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    if _SHOT_RETENTION_DAYS > 0:
+        cutoff = time.time() - _SHOT_RETENTION_DAYS * 86400
+        for name in os.listdir(_EXEC_TRACE_ROOT):
+            old = os.path.join(_EXEC_TRACE_ROOT, name)
+            try:
+                if name.endswith(".zip") and os.path.getmtime(old) < cutoff:
+                    os.remove(old)
+            except OSError:
+                pass
+    return ok({"trace_url": f"/api/exec-queue/{run_id}/trace"})
+
+
+@router.get("/{run_id}/trace")
+def download_exec_trace(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    run = db.get(ExecRun, run_id)
+    if not run:
+        raise HTTPException(404, detail="执行项不存在")
+    assert_project_role(db, user, run.project_id, tuple(ProjectRole))
+    path = os.path.join(_EXEC_TRACE_ROOT, f"{run_id}.zip")
+    if not os.path.isfile(path):
+        raise HTTPException(404, detail="Trace 不存在或已超过保留期")
+    return FileResponse(path, media_type="application/zip", filename=f"exec-{run_id}-trace.zip",
+                        headers={"Cache-Control": "private, no-store"})

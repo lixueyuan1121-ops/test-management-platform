@@ -1,231 +1,149 @@
-"""把一条结构化用例 script 翻译成自包含的 Playwright .spec.mjs 文本（供开发本地自测）。
+"""Export GUI scripts with the exact runtime distributed to execution devices.
 
-纯函数、无 DB、无网络：registry / vmIframe 由调用方（api 层）从 selectors 服务取好后传入，
-便于单测（见 scripts/test_playwright_export.py）。
-
-翻译契约与执行侧保持一致：
-- key→locator 映射镜像 tools/qalab-runner/gui-mcp/gui-core.mjs::byToLocator
-  （testid/role/label/text/placeholder/css）；一个 key 的多个 candidates 用 .or() 串成自愈链。
-- frame 作用域：'shell'→顶层 page；其余（'vm'/'auto'/'url:...'）→ 业务 iframe（frameLocator(vmIframe)），
-  执行侧 vm 会回退 shell，导出脚本从简只落 iframe 作用域（业务页现状在 iframe 内）。
-- step→语句：connect（连接头已在模板，转注释）/goto/click/hover/fill/wait_for/get_text/
-  assert_visible/assert_text；wait_response/judge 无通用 Playwright 对应 → 生成 TODO 占位注释。
-- 未登记 key（选择器待补）→ 生成抛错占位 + TODO 注释（点名缺失 key），其余步照常翻译。
-
-只支持 gui/e2e（其余 kind / 空 script 抛 ValueError，由 api 层转 400 或在 zip 中跳过）。
+Unsupported steps fail export explicitly; no executable test silently drops a check.
+The shared JS asset is packaged with backend/, so backend-only deployments work too.
 """
 from __future__ import annotations
 
-import re
+import json
+from pathlib import Path
 
-from app.services.selector_ranking import order_candidates
-
-# JS 行终止符全集:除换行(CR/LF)外,U+2028(LINE SEPARATOR)/U+2029(PARAGRAPH SEPARATOR)
-# 在 JS 里同样终止单行注释(ES2019 前还会中断字符串字面量)。用例文本(成员可控)含它们会
-# 逃出 // 注释变成 live JS,导出脚本在开发机 `npx playwright test` 时被执行(存储型注入)。
-# 注释侧(_js_comment)与字符串侧(_js_str)一并消除,保持对称。
-_JS_LINE_TERMS = re.compile("[\r\n\u2028\u2029]")
-
-
-def _js_str(s: str) -> str:
-    """把 Python 字符串安全嵌进 JS 单引号字符串（转义 \\ 和 '，去掉换行）。"""
-    s = str(s or "")
-    s = s.replace("\\", "\\\\").replace("'", "\\'")
-    s = _JS_LINE_TERMS.sub(" ", s)
-    return s
+_RUNTIME = Path(__file__).with_name("playwright_runtime.mjs")
+_ACTIONS = {"connect", "goto", "click", "hover", "fill", "type", "press", "wait_for",
+            "wait_response", "get_text", "screenshot", "assert_visible", "assert_absent",
+            "assert_text", "mock_route", "unmock_route"}
+_TARGET_ACTIONS = {"click", "hover", "fill", "type", "wait_for", "get_text",
+                   "assert_visible", "assert_absent", "assert_text"}
 
 
-def _js_comment(s) -> str:
-    """把值安全嵌入 // 单行注释：消除换行（\\r/\\n → 空格）。
-
-    注释里的值（desc/title/action/key 等来自用例文本）若含换行，会逃出 // 行注释，
-    使后续内容变成 live JS——导出脚本在开发本机 `npx playwright test` 运行时即被执行
-    （存储型注入 → 开发机代码执行）。字符串字面量走 _js_str 已消除换行，注释侧须对称处理。
-    """
-    return _JS_LINE_TERMS.sub(" ", str(s or ""))
-
-
-def _cand_expr(scope: str, cand: dict) -> str:
-    """单个 candidate → Playwright locator 表达式（不含 scope 前缀的调用），镜像 byToLocator。"""
-    by = cand.get("by", "css")
-    val = _js_str(cand.get("value", ""))
-    if by == "testid":
-        return f"{scope}.getByTestId('{val}')"
-    if by == "role":
-        name = cand.get("name")
-        if name:
-            return f"{scope}.getByRole('{val}', {{ name: '{_js_str(name)}' }})"
-        return f"{scope}.getByRole('{val}')"
-    if by == "label":
-        return f"{scope}.getByLabel('{val}')"
-    if by == "text":
-        return f"{scope}.getByText('{val}')"
-    if by == "placeholder":
-        return f"{scope}.getByPlaceholder('{val}')"
-    # css 及未知 by 一律 locator（与 byToLocator 的 default 一致）
-    return f"{scope}.locator('{val}')"
-
-
-def _scope_var(frame) -> str:
-    """frame 归属 → 作用域变量名。shell=顶层 page；其余走业务 iframe 变量 vm。"""
-    return "page" if frame == "shell" else "vm"
-
-
-def _locator_expr(entry: dict, key: str, registry: dict, vm_iframe: str) -> str:
-    """一个已登记 key 的 entry → 多候选 .or() 链（稳定优先、脆弱降尾）+ 末尾 .first()。
-
-    镜像 runner resolveKey：runner 逐候选 byToLocator(scope,cand).first()；导出侧把整条
-    .or() 链收敛为 .first()，避免多个候选（尤其 getByText 子串匹配）同时命中触发
-    Playwright strict 违例。候选排序见 selector_ranking.order_candidates（脆弱 text/role 降尾）。
-    """
-    scope = _scope_var(entry.get("frame"))
-    cands = order_candidates(entry.get("candidates") or [])
-    if not cands:
-        # 登记了 key 但无候选：占位（调用侧一般不会走到，candidates 通常非空）。
-        return f"{scope}.locator('')"
-    exprs = [_cand_expr(scope, c) for c in cands]
-    head = exprs[0]
-    for e in exprs[1:]:
-        head = f"{head}.or({e})"
-    return f"{head}.first()"
-
-
-def _resolve_target(target: dict, registry: dict, vm_iframe: str):
-    """把 step 的 target 解析成 (locator_expr, todo)。
-
-    - target.selector（原始 CSS）→ 顶层 page.locator，无 todo（执行侧 selector 走 contentFrame，
-      导出从简用 page 作用域；开发可按需改 vm）。
-    - target.key 已登记 → (.or() 链, None)。
-    - target.key 未登记 → (None, 缺失说明)：调用侧生成抛错占位。
-    - 无 key 也无 selector → (None, 说明)。
-    """
-    if not isinstance(target, dict):
-        target = {}
-    if target.get("selector"):
-        return f"page.locator('{_js_str(target['selector'])}')", None
-    key = target.get("key")
-    if not key:
-        return None, "该步无 key/selector，无法定位"
-    entry = registry.get(key)
-    if not entry:
-        return None, f'未登记语义 key "{key}"（选择器待补）'
-    return _locator_expr(entry, key, registry, vm_iframe), None
-
-
-# 需要定位目标的动作（其余动作如 connect/goto/wait_response/judge 不走 _resolve_target）
-def _step_lines(idx: int, step: dict, registry: dict, vm_iframe: str) -> list[str]:
-    """单个 step → 若干行 JS（含前置 desc 注释）。返回的行不含缩进（调用方统一缩进）。"""
-    action = str(step.get("action") or "")
-    desc = step.get("desc") or action
-    args = step.get("args") or {}
-    target = step.get("target") or {}
-    # 两行注释：序号定位（step N/动作）+ 用例原始 desc 独立成行（便于搜索/对照）
-    lines = [f"// step{idx + 1} [{_js_comment(action)}]", f"// {_js_comment(desc)}"]
-
-    if action == "connect":
-        lines.append("// 连接已在文件头完成（connectOverCDP），此步无需额外操作")
-        return lines
-
-    if action == "goto":
-        url = args.get("url") or target.get("url") or ""
-        lines.append(f"await page.goto('{_js_str(url)}');")
-        return lines
-
-    if action in ("wait_response", "judge"):
-        q = args.get("question") or desc
-        lines.append(f"// TODO: 「{_js_comment(action)}」无通用 Playwright 对应，请手写。判定点：{_js_str(q)}")
-        return lines
-
-    # 以下动作都需要定位
-    loc, todo = _resolve_target(target, registry, vm_iframe)
-    if todo:
-        lines.append(f"// TODO: {_js_comment(todo)}；请在平台补 selector 后重新导出，或手写下面这步的定位")
-        lines.append("throw new Error('用例导出：该步选择器待补，见上方 TODO 注释');")
-        return lines
-
-    if action == "click":
-        lines.append(f"await {loc}.click();")
-    elif action == "hover":
-        lines.append(f"await {loc}.hover();")
-    elif action == "fill":
-        text = _js_str(args.get("text", ""))
-        lines.append(f"await {loc}.fill('{text}');")
-    elif action == "wait_for":
-        timeout = args.get("timeout_ms")
-        if timeout:
-            lines.append(f"await {loc}.waitFor({{ state: 'visible', timeout: {int(timeout)} }});")
-        else:
-            lines.append(f"await {loc}.waitFor({{ state: 'visible' }});")
-    elif action == "get_text":
-        lines.append(f"const _t{idx + 1} = await {loc}.textContent();")
-    elif action == "screenshot":
-        path = args.get("path") or f"evidence/step{idx + 1}.png"
-        lines.append(f"await page.screenshot({{ path: '{_js_str(path)}' }});")
-    elif action == "assert_visible":
-        lines.append(f"await expect({loc}).toBeVisible();")
-    elif action == "assert_text":
-        expected = _js_str(args.get("expected", ""))
-        if args.get("contains"):
-            lines.append(f"await expect({loc}).toContainText('{expected}');")
-        else:
-            lines.append(f"await expect({loc}).toHaveText('{expected}');")
-    else:
-        lines.append(f"// TODO: 未支持的动作「{_js_comment(action)}」，请手写")
-    return lines
-
-
-def _safe_test_name(title: str) -> str:
-    """用例标题 → 可放进 test('...') 的字符串。"""
-    return _js_str(title or "未命名用例")
+def _validate_target(target, registry, depth=0):
+    if not isinstance(target, dict) or not (target.get("key") or target.get("selector")):
+        raise ValueError("定位步骤缺少 target.key/selector")
+    if depth > 3:
+        raise ValueError("within 最多嵌套三层")
+    if target.get("key") and target["key"] not in registry:
+        raise ValueError(f"未登记语义 key：{target['key']}，请先补齐选择器")
+    if "nth" in target and (type(target["nth"]) is not int or target["nth"] < 0):
+        raise ValueError("nth 必须是非负整数")
+    if "within" in target:
+        _validate_target(target["within"], registry, depth + 1)
 
 
 def export_case_to_playwright(case: dict, registry: dict, vm_iframe: str) -> str:
-    """一条 gui/e2e 用例 → 自包含 Playwright .spec.mjs 文本。
-
-    case 需含：exec_kind、script（已解析为 list）、title/steps/expected（可选，写进注释）。
-    非 gui/e2e 或空 script → ValueError。
-    """
-    kind = (case.get("exec_kind") or "gui")
-    if kind not in ("gui", "e2e"):
-        raise ValueError(f"仅 gui/e2e 用例支持导出 Playwright 脚本（当前 {kind}）")
+    if (case.get("exec_kind") or "gui") not in ("gui", "e2e"):
+        raise ValueError("仅 gui/e2e 用例支持导出 Playwright 脚本")
     script = case.get("script")
     if not isinstance(script, list) or not script:
-        raise ValueError("该用例无结构化 script，无法导出（可在平台先「生成 script」）")
+        raise ValueError("用例没有结构化 script")
+    budget = 30000
+    for i, step in enumerate(script):
+        if not isinstance(step, dict) or step.get("action") not in _ACTIONS:
+            raise ValueError(f"第 {i + 1} 步无法等价导出（动作未支持），请先补齐执行实现")
+        action = step["action"]
+        args, target = step.get("args") or {}, step.get("target") or {}
+        if not isinstance(args, dict) or not isinstance(target, dict):
+            raise ValueError(f"第 {i + 1} 步 args/target 必须是对象")
+        if action in _TARGET_ACTIONS or (action == "press" and target):
+            _validate_target(target, registry)
+        if action == "assert_text" and not isinstance(args.get("expected"), str):
+            raise ValueError("assert_text 缺少字符串 expected")
+        if action == "press" and not args.get("key_name"):
+            raise ValueError("press 缺少 key_name")
+        if action in ("mock_route", "unmock_route") and not args.get("url"):
+            raise ValueError(f"{action} 缺少 url")
+        step_timeout = args.get("timeout_ms", 90000 if action == "wait_response" else 10000)
+        if type(step_timeout) not in (int, float) or not 0 <= step_timeout < float("inf"):
+            raise ValueError("timeout_ms 必须是有限非负数")
+        budget += max(1000, step_timeout) * 2
+    if not any(s["action"].startswith("assert_") for s in script):
+        raise ValueError("用例缺少断言，不能导出为可通过的测试")
 
-    title = case.get("title") or "未命名用例"
-    steps_txt = _js_str(case.get("steps") or "")
-    expected_txt = _js_str(case.get("expected") or "")
-    vm = _js_str(vm_iframe)
+    # JSON encoding preserves multiline inputs and treats all user data as data.
+    config = json.dumps({"title": case.get("title") or "未命名用例", "registry": registry,
+                         "vmIframe": vm_iframe, "script": script, "budget": budget}, ensure_ascii=True, allow_nan=False)
+    runtime = _RUNTIME.read_text(encoding="utf-8").replace("export function ", "function ")
+    return '''// 由测试管理平台导出。与平台共用定位、断言、回复等待及 Mock 实现。
+// npm i -D @playwright/test
+// 启动被测客户端并启用 --remote-debugging-port=9222，然后运行 npx playwright test。
+// CDP_URL 可覆盖调试地址；同一客户端上的测试必须串行运行（--workers=1）。
+// 执行前需恢复与平台一致的登录态、首页和业务测试数据；此文件导出用例步骤。
+import { test, chromium } from '@playwright/test';
 
-    body_lines: list[str] = []
-    for i, st in enumerate(script):
-        body_lines.extend(_step_lines(i, st or {}, registry, vm_iframe))
-        body_lines.append("")  # 步与步之间空行
-
-    indented = "\n".join(("  " + ln if ln else "") for ln in body_lines).rstrip()
-
-    header = f"""// 由测试管理平台导出：{_js_comment(title)}
-// 用例意图（steps）：{steps_txt}
-// 预期（expected）：{expected_txt}
-//
-// 【本地运行前置】
-// 1) 安装依赖：  npm i -D @playwright/test
-// 2) 带调试端口启动被测客户端（Electron）：  <客户端可执行文件> --remote-debugging-port=9222
-//    （客户端须先跑起来并开着调试端口，脚本通过 CDP 连它、驱动其内嵌业务页）
-// 3) 运行：  npx playwright test 本文件
-//
-// 说明：业务页在客户端内嵌 iframe（{vm}）里，下方用 vm 作为其作用域。
-// 一个语义定位用 .or() 串了多个候选（自愈）；标了 TODO 的步骤需你手动补全。
-import {{ test, expect, chromium }} from '@playwright/test';
-
-test('{_safe_test_name(title)}', async () => {{
-  const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const context = browser.contexts()[0];
-  const page = context.pages()[0] || (await context.newPage());
-  // 业务页所在 iframe 的作用域（frame:shell 的定位用顶层 page，其余用 vm）
-  const vm = page.frameLocator('{vm}');
-
-{indented}
-}});
-"""
-    return header
+''' + runtime + "\nconst config = " + config + ";\n" + r'''
+test(config.title, async ({}, testInfo) => {
+  test.setTimeout(config.budget);
+  const browser = await chromium.connectOverCDP(process.env.CDP_URL || 'http://127.0.0.1:9222');
+  let runtime, context, tracing = false, passed = false;
+  const mocksSeen = new Map();
+  try {
+    context = browser.contexts()[0];
+    if (!context) throw new Error('CDP 未提供可用 context');
+    const deadline = Date.now() + 15000;
+    let page;
+    while (!page && Date.now() < deadline) {
+      const pages = context.pages().filter(p => !p.isClosed());
+      page = pages.find(p => p.url().includes('work.n.cn')) || pages[0];
+      if (!page) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!page) throw new Error('CDP 没有就绪的业务页面');
+    runtime = createAutomationRuntime({ page, registry: config.registry, vmIframe: config.vmIframe });
+    await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+    tracing = true;
+    for (let i = 0; i < config.script.length; i++) {
+      const { action, target = {}, args = {}, desc = '' } = config.script[i];
+      await test.step(desc || `${i + 1}. ${action}`, async () => {
+        const responseArgs = responseArgsBeforeAction(config.script, i);
+        if (responseArgs !== null) await runtime.captureResponse(responseArgs);
+        const a = { ...target, ...args };
+        let result;
+        switch (action) {
+          case 'connect': break;
+          case 'goto': await page.goto(args.url || target.url, { waitUntil: 'domcontentloaded', timeout: args.timeout_ms ?? 10000 }); break;
+          case 'click': await runtime.click(a); break;
+          case 'hover': await runtime.hover(a); break;
+          case 'fill': await runtime.fill(a); break;
+          case 'type': await runtime.type(a); break;
+          case 'press': await runtime.pressKey(a); break;
+          case 'wait_for': await runtime.waitFor(a); break;
+          case 'get_text': await runtime.getText(a); break;
+          case 'wait_response':
+            result = await runtime.waitResponse(args);
+            if (!result.done) throw new Error(result.reason);
+            break;
+          case 'assert_text': result = await runtime.assertText(a); break;
+          case 'assert_visible': result = await runtime.assertVisible(a); break;
+          case 'assert_absent': result = await runtime.assertAbsent(a); break;
+          case 'screenshot': await page.screenshot({ path: args.path || testInfo.outputPath(`step-${i + 1}.png`) }); break;
+          case 'mock_route':
+            await runtime.mockRoute(args);
+            mocksSeen.set(args.url, { pattern: args.url, hits: 0 });
+            break;
+          case 'unmock_route': {
+            const r = await runtime.unmockRoute(args);
+            if (mocksSeen.has(args.url)) mocksSeen.set(args.url, { pattern: args.url, hits: r.hits });
+            break;
+          }
+          default: throw new Error(`未支持动作：${action}`);
+        }
+        if (result && result.pass === false) throw new Error(`断言失败：${JSON.stringify(result)}`);
+      });
+    }
+    for (const stat of runtime.mockStats()) mocksSeen.set(stat.pattern, stat);
+    const missed = [...mocksSeen.values()].filter(s => !s.hits);
+    if (missed.length) throw new Error(`Mock 未命中：${missed.map(s => s.pattern).join(', ')}`);
+    passed = true;
+  } finally {
+    try {
+      try { await runtime?.unmockAll(); }
+      catch (e) { passed = false; throw e; }
+      finally {
+        if (tracing) {
+          const path = passed ? undefined : testInfo.outputPath('trace.zip');
+          await context.tracing.stop(path ? { path } : {});
+          if (path) await testInfo.attach('Playwright Trace', { path, contentType: 'application/zip' });
+        }
+      }
+    } finally { await browser.close(); }
+  }
+});
+'''

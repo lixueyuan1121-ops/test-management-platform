@@ -9,12 +9,5 @@
 // el:DOM 元素(浏览器上下文)或形如 { tagName, value, textContent } 的对象(测试)。
 // 注意:本函数会被 Playwright 的 loc.evaluate 序列化后送进浏览器上下文执行,
 // 故**不能引用任何外部作用域变量**(常量集合必须内联),否则 evaluate 时 ReferenceError。
-export function elementTextValue(el) {
-  if (!el) return "";
-  const tag = String(el.tagName || "").toUpperCase();
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
-    // 表单控件:值在 .value(空串是合法值,直接返回,不回落 textContent 以免读到无关文本)
-    return el.value == null ? "" : String(el.value);
-  }
-  return el.textContent == null ? "" : String(el.textContent);
-}
+// 与执行器/导出脚本使用同一个实现。
+export { elementTextValue } from "./runtime-loader.mjs";

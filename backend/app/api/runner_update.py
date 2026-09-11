@@ -59,6 +59,11 @@ def _iter_bundle_files():
             ap = os.path.join(root, fn)
             rp = os.path.relpath(ap, _RUNNER_DIR)
             out.append((ap, rp))
+    # A single runtime is used by the backend exporter and by distributed runners.
+    runtime = os.path.join(os.path.dirname(os.path.dirname(__file__)), "services", "playwright_runtime.mjs")
+    target = "gui-mcp/playwright-runtime.mjs"
+    out = [(ap, rp) for ap, rp in out if rp.replace(os.sep, "/") != target]
+    out.append((runtime, target))
     out.sort(key=lambda t: t[1])
     return out
 

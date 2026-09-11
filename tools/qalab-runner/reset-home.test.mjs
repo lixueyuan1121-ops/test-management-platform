@@ -59,14 +59,15 @@ test("resetOrBlock:复位成功但掉登录(loginModal 可见) → ok:false + �
   assert.ok(/登录/.test(r.result.reason), r.result.reason);
 });
 
-test("resetOrBlock:verifyKeys 抛错不影响放行(就绪检测尽力而为)", async () => {
+test("resetOrBlock:verifyKeys 抛错必须阻塞(无法确认就绪)", async () => {
   const gui = {
     registry: { homepageTitle: {} },
     async resetHome() {},
     async verifyKeys() { throw new Error("verify 不可用"); },
   };
   const r = await resetOrBlock(gui, () => {}, { readyTimeout: 200, pollMs: 20 });
-  assert.equal(r.ok, true, "就绪检测失败不应阻断已成功的复位");
+  assert.equal(r.ok, false, "就绪检查异常不能放行");
+  assert.match(r.result.reason, /就绪检查失败/);
 });
 
 // ---- 首页就绪门禁:reload 复位后必须确认首页锚点(homepageTitle)可见才放行 ----
@@ -154,14 +155,15 @@ test("resetOrBlock:注册表用 homeGreetingTitle、首页未就绪(超时) → 
   assert.ok(/首页/.test(r.result.reason), r.result.reason);
 });
 
-test("resetOrBlock:注册表未登记任何首页/登录锚点 → 放行(不误杀)", async () => {
+test("resetOrBlock:注册表未登记首页锚点 → 配置阻塞", async () => {
   const gui = {
     registry: { someBusinessKey: { candidates: [{ by: "css", value: ".y" }] } },
     async resetHome() {},
     async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
   };
   const r = await resetOrBlock(gui, () => {}, { readyTimeout: 200, pollMs: 20 });
-  assert.equal(r.ok, true, "注册表无就绪锚点时无从判断,应尽力而为放行而非阻塞");
+  assert.equal(r.ok, false, "无就绪锚点不能证明复位成功");
+  assert.match(r.result.reason, /未配置首页就绪锚点/);
 });
 
 // ---- 复位自愈(本次修复):首页 reload 后没停稳时,点侧栏「新建任务/新建对话」开干净会话再探一次 ----
@@ -440,7 +442,7 @@ test("resetOrBlock:一轮内所有招式都不生效→提前止损,不空转多
   assert.equal(osCalls, 1, "一轮内无任一招生效应提前止损,OS ESC 不该被反复调 3 轮");
 });
 
-test("resetOrBlock:多轮点『首页』导航仍探不到锚点→降级放行(疑似锚点失效,非阻塞)", async () => {
+test("resetOrBlock:多轮点『首页』导航仍探不到锚点→阻塞", async () => {
   const gui = {
     registry: { homepageTitle: {}, navHome: {} },
     async resetHome() {},
@@ -449,8 +451,8 @@ test("resetOrBlock:多轮点『首页』导航仍探不到锚点→降级放行(
     async verifyKeys(keys) { const v = {}; for (const k of keys) v[k] = false; return { verify: v }; },
   };
   const r = await resetOrBlock(gui, () => {}, { readyTimeout: 30, pollMs: 10, maxHealRounds: 2 });
-  assert.equal(r.ok, true, "点过『首页』导航但锚点探不到→疑似锚点失效,应降级放行而非 blocked");
-  assert.equal(r.degraded, true, "降级放行应标记 degraded");
+  assert.equal(r.ok, false, "点击成功不能代替就绪检查");
+  assert.equal(r.result.fail_kind, "selector");
 });
 
 test("resetOrBlock:无导航手段(navHome 未注册)、点新建会话仍不就绪→保守阻塞(未点过首页导航)", async () => {
@@ -464,3 +466,17 @@ test("resetOrBlock:无导航手段(navHome 未注册)、点新建会话仍不就
   assert.equal(r.ok, false, "从没点成『首页』导航→无从确认回首页,应保守阻塞");
   assert.equal(r.result.fail_kind, "selector");
 });
+
+for (const ready of [false, true]) {
+  test(`restart fallback rechecks readiness (${ready})`, async () => {
+    let restarted = false;
+    const gui = {
+      registry: { homeGreetingTitle: {} },
+      async resetHome() { if (!restarted) throw new Error('reload failed'); },
+      async verifyKeys() { return { verify: { homeGreetingTitle: ready } }; },
+    };
+    const r = await resetOrBlock(gui, () => {}, { readyTimeout: 20, pollMs: 5, restartClientFn: async () => { restarted = true; } });
+    assert.equal(restarted, true);
+    assert.equal(r.ok, ready, 'a successful restart alone is not readiness');
+  });
+}

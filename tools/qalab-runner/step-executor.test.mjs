@@ -246,3 +246,27 @@ test("mock_route:用例通过但 mock 全程 0 拦截 → 判为执行阻塞，�
   assert.ok(/未拦截到任何请求/.test(r.reason), `假通过也要在结论里说清 mock 没生效,实际:${r.reason}`);
   assert.ok(/真实数据/.test(r.reason), `应点明本条实际跑在真实数据上,实际:${r.reason}`);
 });
+
+test('missing assertions fail before any mutation', async () => {
+  let clicked = false;
+  const r = await runScript({ async click() { clicked = true; } }, [{ action: 'click', target: { key: 'button' } }]);
+  assert.equal(r.verdict, 'fail'); assert.equal(clicked, false);
+});
+test('absence query errors are blocked rather than passed', async () => {
+  const gui = fakeGui();
+  gui.assertAbsent = async () => { throw new Error('invalid selector'); };
+  const r = await runScript(gui, [{ action: 'assert_absent', target: { selector: '[' } }]);
+  assert.equal(r.verdict, 'fail'); assert.equal(r.fail_kind, 'selector');
+});
+test('business absence of required UI is not mislabeled as selector coverage', async () => {
+  const gui = fakeGui();
+  gui.assertVisible = async () => ({ pass: false, locatable: false, fail_kind: 'business' });
+  const r = await runScript(gui, [{ action: 'assert_visible', target: { key: 'status' } }]);
+  assert.equal(r.fail_kind, 'business');
+});
+test('mock cleanup failure cannot be reported as a clean pass', async () => {
+  const gui = fakeGui();
+  gui.unmockAll = async () => { throw new Error('unroute failed'); };
+  const r = await runScript(gui, [{ action: 'assert_visible', target: { key: 'status' } }]);
+  assert.equal(r.verdict, 'fail'); assert.match(r.reason, /清理失败/);
+});

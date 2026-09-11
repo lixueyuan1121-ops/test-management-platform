@@ -14,6 +14,8 @@
 //   截图策略「关键步 + 失败必截」:显式 screenshot 步、assert_* 通过后、以及任一步失败时,截当前视口为
 //   PNG Buffer 挂在该步 shotBuf。runner 负责把 shotBuf 逐张上传换成 URL(step-executor 不碰网络)。
 
+import { responseArgsBeforeAction } from "./gui-mcp/runtime-loader.mjs";
+
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press",
   "wait_for", "wait_response", "get_text", "screenshot", "goto",
@@ -31,6 +33,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     const a = String(st?.action || "");
     if (!DETERMINISTIC.has(a)) return { needClaude: true, reason: `未知 step action「${a}」,退回 claude` };
     if (a === "judge" && typeof judgeFn !== "function") return { needClaude: true, reason: "含 judge 步但未注入 judgeFn,整条退回 claude" };
+  }
+  if (!script.some((step) => step.action.startsWith("assert_") || step.action === "judge")) {
+    return { verdict: "fail", fail_kind: "selector", reason: "用例缺少断言，未执行操作", report: [], steps: [] };
   }
 
   const started = Date.now();
@@ -68,7 +73,11 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
       catch { counted = false; }
     }
     if (typeof gui.unmockAll === "function") {
-      try { await gui.unmockAll(); } catch (e) { log(`  mock 收尾清理失败(不影响本条判定):${e.message || e}`); }
+      try { await gui.unmockAll(); } catch (e) {
+        result.verdict = "fail";
+        result.fail_kind = "selector";
+        result.reason += `；mock 清理失败：${e.message || e}`;
+      }
     }
     if (!counted || !mocksSeen.size) return result;
     const stats = [...mocksSeen.values()];
@@ -99,35 +108,38 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   for (let i = 0; i < script.length; i++) {
     const st = script[i];
     const { action, target = {}, args = {}, desc = "" } = st;
+    const operationArgs = { ...target, ...args };
     const tag = `step${i + 1}/${script.length} ${action}${desc ? "(" + desc + ")" : ""}`;
     log(`  [+${sec()}s] ▶ ${tag}`);
     try {
+      const responseArgs = responseArgsBeforeAction(script, i);
+      if (responseArgs !== null) await gui.captureResponse(responseArgs);
       switch (action) {
         case "connect": { const r = await gui.connect(); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "goto": { const r = await gui.goto(args.url || target.url); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "click": { const r = await gui.click(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "hover": { const r = await gui.hover(target); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "fill": { const r = await gui.fill({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "goto": { const r = await gui.goto(args.url || target.url, args); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "click": { const r = await gui.click(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "hover": { const r = await gui.hover(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "fill": { const r = await gui.fill(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         // type: 逐字符追加输入，不清空原有内容。先 click 聚焦元素，再模拟键盘打字。
         // 用于：在已有内容末尾追加、或对 fill 不兼容的富文本组件输入。
-        case "type": { const r = await gui.type({ ...target, text: args.text }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "type": { const r = await gui.type(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         // press: 向目标元素（或全局页面）发送单个按键（如 End / Home / Enter / Escape / Tab）。
         // target 有值时先 click 聚焦再按键；用 args.key_name 指定按键名。
-        case "press": { const r = await gui.pressKey({ ...target, key_name: args.key_name }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "press": { const r = await gui.pressKey(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         // mock_route: 拦截匹配 args.url 的 fetch/XHR 请求，直接返回 args.status + args.body。
         // 用于模拟后端返回数据，验证前端在各种响应下的行为。
         // unmock_route: 取消拦截，恢复真实请求。
         case "mock_route": { const r = await gui.mockRoute(args); mocksSeen.set(String(args.url || ""), { pattern: String(args.url || ""), status: Number(args.status ?? 200), hits: 0 }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "unmock_route": { const r = await gui.unmockRoute(args); const seen = mocksSeen.get(String(args.url || "")); if (seen) seen.hits = Number(r?.hits ?? seen.hits); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "wait_for": { const r = await gui.waitFor({ ...target, timeout_ms: args.timeout_ms }); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "wait_for": { const r = await gui.waitFor(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "wait_response": {
-          const r = await gui.waitResponse({ timeout_ms: args.timeout_ms });
+          const r = await gui.waitResponse(args);
           steps.push({ action, ...r, desc });
           if (!r.done) return await failAt(i, action, desc, `step${i + 1} 等待 AI 回复未完成:${r.reason || ""}`);
           rec(i, action, desc, true);
           break;
         }
-        case "get_text": { const r = await gui.getText(target); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "get_text": { const r = await gui.getText(operationArgs); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "screenshot": {
           // 显式截图步:既落本地文件(兼容旧证据),又挂 Buffer 进报告。
           const r = await gui.screenshot(args.path || `evidence/step${i + 1}.png`);
@@ -146,13 +158,12 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
           break;
         }
         case "assert_visible": {
-          const r = await gui.assertVisible(target);
+          const r = await gui.assertVisible(operationArgs);
           steps.push({ action, ...r, desc });
           if (!r.pass) {
-            // 定位不到(locatable=false)= 选择器/候选没覆盖 → selector(阻塞,不计功能失败率);
-            // 定位到但不可见(locatable=true 或未提供)= 该可见却没可见 → business(真功能问题)。
-            const kind = r.locatable === false ? "selector" : "business";
-            const why = r.locatable === false ? "元素定位不到(选择器/key 未覆盖)" : (r.error || "");
+            // 新 runtime 区分有效查询后的断言失败与基础设施异常；兼容旧 gui 的 locatable 字段。
+            const kind = r.fail_kind || (r.locatable === false ? "selector" : "business");
+            const why = r.locatable === false ? (kind === "business" ? "超时后仍未出现预期元素" : "选择器无法完成检查") : (r.error || "");
             return await failAt(i, action, desc, `step${i + 1} 断言可见失败:${desc || target.key || target.selector}(${why})`, kind);
           }
           const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
@@ -160,14 +171,14 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         }
         case "assert_absent": {
           // 否定式可见断言:元素消失即通过。仍可见 → business(本应消失却还在)。
-          const r = await gui.assertAbsent(target);
+          const r = await gui.assertAbsent(operationArgs);
           steps.push({ action, ...r, desc });
           if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言消失失败:${desc || target.key || target.selector}(元素仍可见,未按预期消失)`, "business");
           const rep = rec(i, action, desc, true); await capShot(rep);
           break;
         }
         case "assert_text": {
-          const r = await gui.assertText({ ...target, expected: args.expected, contains: args.contains, negate: args.negate });
+          const r = await gui.assertText(operationArgs);
           steps.push({ action, ...r, desc });
           if (!r.pass) {
             const rel = `${r.negate ? "不" : ""}${r.mode === "contains" ? "包含" : "等于"}`;
