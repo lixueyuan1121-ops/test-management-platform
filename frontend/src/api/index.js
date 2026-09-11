@@ -334,6 +334,13 @@ export const getProbe = (id) => http.get(`/probe/${id}`)
 
 export const listMyDevices = () => http.get('/devices')
 export const registerDevice = (runner_id, name, platform = 'web') => http.post('/devices', { runner_id, name, platform })
+// ===== 录制生成 e2e 脚本 =====
+// 发起录制 → runner 注入捕获;轮询看实时步骤;停止;保存为用例(组装 script+回填选择器+建 e2e)。
+export const startRecord = (body) => http.post('/record', body)
+export const getRecord = (id) => http.get(`/record/${id}`)
+export const stopRecord = (id) => http.post(`/record/${id}/stop`)
+export const saveRecordAsCase = (id, body) => http.post(`/record/${id}/save-as-case`, body)
+export const deleteRecord = (id) => http.delete(`/record/${id}`)
 export const updateDevice = (id, patch) => http.patch(`/devices/${id}`, patch)
 export const resetDeviceToken = (id) => http.post(`/devices/${id}/reset-token`)
 export const deleteDevice = (id) => http.delete(`/devices/${id}`)

@@ -253,6 +253,7 @@ CREATE TABLE `test_case` (
   `script` TEXT NULL,
   `last_gen_error` TEXT NULL,
   `page` VARCHAR(255) NULL,
+  `precondition` TEXT NULL,
   `is_regression` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -542,6 +543,24 @@ CREATE TABLE IF NOT EXISTS `probe_request` (
   KEY `idx_probe_project` (`project_id`),
   KEY `idx_probe_runner` (`runner`),
   KEY `idx_probe_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 录制会话：手动操作被测客户端 → runner 增量回传操作步骤 → 停止 → 保存为 e2e 用例
+CREATE TABLE IF NOT EXISTS `record_session` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `runner` VARCHAR(64) NOT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `events` LONGTEXT,   -- 操作步骤 JSON 数组，runner 增量 append，可能较大用 LONGTEXT
+  `error` VARCHAR(500) DEFAULT NULL,
+  `created_by` INT DEFAULT NULL,
+  `created_at` DATETIME DEFAULT NULL,
+  `updated_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_record_project` (`project_id`),
+  KEY `idx_record_runner` (`runner`),
+  KEY `idx_record_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 项目级 api 测试环境（被测业务系统的 base_url + 鉴权 + 接口契约）

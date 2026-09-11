@@ -79,7 +79,11 @@ class TestCase(Base):
     last_gen_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 关联的选择器页面（逗号分隔多页，仿 channel 惯例兼容 MySQL5.6 无 JSON）。
     # 生成/重生时按 script 用到的 key 自动推断；无 key 用例回落生成时所选页面；用例库可手动改。
+    # 语义=本用例 DOM 涉及哪些页面（仅用于分组/prompt 注入），不再用于执行入口导航（见 precondition）。
     page: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 前置条件（起始位置 + 可手写前置步骤，自由文本）：标记本用例从哪进入、跑前需先做什么，
+    # 执行时注入 runner 提示，让用例先到正确起点再跑（替代早期"用 page 当执行入口"的做法）。
+    precondition: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 是否纳入「回归用例库」：长期稳定复用、可按页面勾选直接执行(不依赖任务/采纳)。老库缺省 0。
     is_regression: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
     adopted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")

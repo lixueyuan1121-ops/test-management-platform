@@ -43,10 +43,10 @@ import { visibleNavigation } from '@/utils/navigation'
 import { Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning, DataAnalysis, CaretBottom, Grid,
   Histogram, Setting, Fold, Expand, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch,
   Promotion, Aim, Connection, RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard,
-  Checked, Tickets, Calendar, Link, Filter, Search } from '@element-plus/icons-vue'
+  Checked, Tickets, Calendar, Link, Filter, Search, VideoCamera } from '@element-plus/icons-vue'
 import TargetMark from '@/components/TargetMark.vue'
 
-const icons = { Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning, DataAnalysis, Grid, Histogram,
+const icons = { VideoCamera, Monitor, Files, List, User, EditPen, DataLine, TrendCharts, Warning, DataAnalysis, Grid, Histogram,
   Setting, MagicStick, Trophy, Collection, Select, Finished, Odometer, Stopwatch, Promotion, Aim, Connection,
   RefreshRight, ChatDotRound, ChatLineSquare, UploadFilled, Cpu, DataBoard, Checked, Tickets, Calendar, Link, Filter }
 const auth = useAuthStore()

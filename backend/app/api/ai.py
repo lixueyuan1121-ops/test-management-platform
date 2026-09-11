@@ -66,6 +66,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "selector_fix_keys": sel_fix_keys,  # 待补的选择器 key 列表(直接展示,免 hover)
         "last_gen_error": getattr(tc, "last_gen_error", None),  # 上次重生 script 失败原因(成功清空;列表瘦身 Row 无此列→None)
         "page": getattr(tc, "page", None),  # 关联选择器页面(逗号分隔多页)
+        "precondition": getattr(tc, "precondition", None),  # 前置条件(起始位置+手写前置步骤)
         "is_regression": bool(getattr(tc, "is_regression", False)),  # 是否在回归用例库
         "adopted": tc.adopted,
         "review_status": getattr(rs, "value", rs),
@@ -318,7 +319,7 @@ def list_cases(
             TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
             TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
             TestCase.priority, TestCase.exec_kind, TestCase.platform, TestCase.provider, TestCase.kind_reason,
-            TestCase.page, TestCase.is_regression,
+            TestCase.page, TestCase.precondition, TestCase.is_regression,
             TestCase.adopted, TestCase.review_status, TestCase.reviewed_at, TestCase.created_at,
         )
     )

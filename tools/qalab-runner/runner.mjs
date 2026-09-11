@@ -18,6 +18,8 @@ import { pollPerfOnce, uploadLocalSessions } from "./perf-collect.mjs";
 import { existsSync } from "node:fs";
 import { resetOrBlock } from "./reset-home.mjs";
 import { summarizeBatch } from "./runner-summary.mjs";
+import { rawEventToStep, dedupeSteps } from "./record-capture.mjs";
+import { NAV_SYSTEM_PROMPT, parseNavOk } from "./precond-nav.mjs";
 import { selfUpdate } from "./self-update.mjs";
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
@@ -56,6 +58,8 @@ const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 240000);
 // 只加载本目录 .mcp.json 的 gui server,屏蔽执行机上用户全局 MCP(context7/figma/playwright…)。
 // 绝对路径(相对 runner.mjs),不依赖启动 cwd。
 const MCP_CONFIG   = join(dirname(fileURLToPath(import.meta.url)), ".mcp.json");
+// 空 MCP 配置(judge 纯判别用):配合 --strict-mcp-config 隔离执行机全局 MCP/插件,不启动任何 server。
+const EMPTY_MCP_CONFIG = join(dirname(fileURLToPath(import.meta.url)), "gui-mcp", "empty-mcp.json");
 const DRY          = process.argv.includes("--dry");
 const RESET_BETWEEN_CASES = (process.env.RESET_BETWEEN_CASES ?? "1") !== "0";  // 用例间 reload 复位(默认开)
 
@@ -92,6 +96,9 @@ const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${enc
 // PATCH /api/probe/{id}?runner= 回写 {result} 或 {error}。镜像上面的 exec 封装。
 const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
 const reportProbe  = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
+// 录制会话(与 exec/probe 队列并列):拉本机待录/录制中会话,增量上报捕获步骤。
+const fetchRecords = () => api("GET", `/api/record/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
+const reportRecordEvents = (id, events) => api("POST", `/api/record/${id}/events?runner=${encodeURIComponent(RUNNER_ID)}`, { events });
 // 上传探测整页截图(PNG 二进制)到独立端点:multipart/form-data(不用 api() 封装——那是 JSON)。
 // 只带 Authorization,不设 Content-Type——让 fetch 按 FormData 自动补 multipart boundary。
 // Node 18+ 内置 FormData/Blob/fetch。截图不塞 result TEXT(MySQL 5.6 TEXT 64KB 会截断 base64)。
@@ -220,6 +227,10 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 反例(禁止): 用 **PASS** ✅、"The test passes"、分点报告等自然语言表达结论。
 
 【执行规则】
+- **payload.precondition(前置条件/起始位置)若非空,先执行它再跑步骤**:它描述本用例应从哪里开始
+  (如"在左侧栏会话记录里选一个含文件产物的会话进入")以及跑前需先做的准备步骤。你要先用 gui 工具
+  把页面带到这个起点(找不到精确目标就选最符合描述的:如"合适的会话"取列表里第一个符合条件的),
+  到位后再按 payload.steps 执行。precondition 为空则直接从 steps 开始(默认已在主界面)。
 - 严格按 payload.steps 操作,对照 payload.expected 判定;禁止联网搜索,只在本地执行。
 - GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect,再 gui_list_keys 看有哪些语义 key;
   定位元素**优先传 key**(gui_click/gui_fill/gui_get_text/gui_wait_for/gui_assert_text 都接 {key} 或 {selector}),
@@ -235,100 +246,168 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 - 工具边界:GUI/E2E 用例只用 mcp__gui__*;api 用例用 Bash 跑 curl/fetch;cli 用例用 Bash 起进程。别越界。
 再次强调:最后一行必须是纯 JSON,这是机器解析的唯一依据。`;
 
-function runClaude(payload, kind) {
+// ---- claude CLI 调用底座(runClaude / makeJudge 共用,DRY)----
+// 封装 claude headless 的正确 spawn 姿势:-p + prompt 走 stdin(不进 argv,防注入)、
+// stream-json 流式解析、--allowedTools 单值白名单 + --disallowedTools 硬禁内置工具、
+// 只挂本目录 gui MCP、无人值守硬超时 SIGKILL、spawn error 转 resolve(不 crash runner)。
+// **只负责跑 claude 拿最终文本**,不解释语义(verdict / selector 由调用方各自解析)——
+// 这样 runClaude(整条执行判 verdict)与 makeJudge(挑元素拿 selector)复用同一 spawn 逻辑而互不耦合。
+//
+// 入参:stdinData(喂给 claude 的 prompt 文本,走 stdin);opts:
+//   { systemPrompt, allowedTools, disallowedTools:[], mcpConfig, timeoutMs, onEvent? }
+// onEvent(ev):可选,每个 stream-json 事件回调一次(runClaude 用它做实时进度日志)。
+// 返回(始终 resolve,不 reject):
+//   { text, lastText, err, code, timedOut, spawnError, duration_ms }
+//   text=result 事件最终文本;lastText=最后一段 assistant 文本(result 取不到时的兜底)。
+function runClaudeRaw(stdinData, opts = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const sec = () => ((Date.now() - started) / 1000).toFixed(1);   // 相对起始的秒数,标在每条进度前
-    // 按 kind 给最小工具集:gui/e2e 只给 gui-mcp(不给 Bash,杜绝 claude 跑去翻代码/执行命令);
-    // api/cli 才给 Bash(curl/fetch/起进程)。工具越权是之前 claude 跑偏去研究平台源码的口子。
-    const allowed = (kind === "api" || kind === "cli") ? "Bash" : "mcp__gui__*";
-    // **硬禁内置工具**(关键):--allowedTools 只是"额外允许",不排除 Bash/Read/Grep 等内置工具——
-    // 光靠 SYSTEM_PROMPT 软约束拦不住,claude 会去 grep/Read 翻本地仓库源码而不调 gui(实测踩过)。
-    // gui/e2e 一个内置工具都不给;api/cli 保留 Bash 但禁掉一切"翻代码/联网/改文件"的工具。
-    const READ_CODE_TOOLS = ["Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "TodoWrite"];
-    const disallowed = (kind === "api" || kind === "cli")
-      ? READ_CODE_TOOLS                                       // 留 Bash,禁翻代码/联网/改文件
-      : ["Bash", "BashOutput", "KillShell", ...READ_CODE_TOOLS]; // gui/e2e:内置工具全禁,只剩 mcp__gui__*
-    // 安全:用例 payload(用户可控 —— steps/expected 等自由文本,经平台入队流入)通过 stdin 传入,
-    // **不进命令行 argv**。否则在 Windows(执行 claude.cmd 必须 shell:true)下,payload 里的
-    // " & | % 等元字符会被 cmd.exe 解释导致命令注入(能编辑用例的成员即可在执行机上 RCE)。
-    // 移到 stdin 后,argv 只剩固定 flag 与固定 SYSTEM_PROMPT(攻击者不可控),shell 引用不完美也无法被利用。
+    const timeoutMs = opts.timeoutMs || CLAUDE_TIMEOUT_MS;
     const args = [
       "-p",                                       // 不带参数值:prompt 从 stdin 读取(已实测支持)
-      // 流式输出:claude 边执行边吐 JSON 事件,runner 逐条打进度(不再是"执行黑盒",能看到卡在哪步)。
+      // 流式输出:claude 边执行边吐 JSON 事件,可逐条打进度(不再是"执行黑盒",能看到卡在哪步)。
       "--output-format", "stream-json",
       "--verbose",                                // stream-json 在 -p 下必须配 --verbose
-      "--append-system-prompt", SYSTEM_PROMPT,
-      // 白名单必须是**一个**空格分隔的值;写成 "Bash","mcp__gui__*" 两个 arg 会让 --allowedTools
-      // 只收到 "Bash"、另一个游离,约束失效→claude 回退到可用任意工具(含 WebSearch),
-      // 导致跑偏、不聚焦执行、不输出结论 JSON(实测踩过)。按 kind 收敛见上方 allowed。
-      "--allowedTools", allowed,
-      // 硬禁内置工具(见上方 disallowed):这是拦住 claude 跑偏去翻代码的关键,比 prompt 软约束可靠。
-      "--disallowedTools", ...disallowed,
-      // 只加载 gui 这一个 MCP server(见 MCP_CONFIG),屏蔽执行机上用户全局 MCP;否则 claude 启动会
-      // 连带 spawn 一堆无关 server(context7/figma/playwright…),拖慢启动甚至长挂(Mac 实测踩过)。
-      "--mcp-config", MCP_CONFIG,
+      ...(opts.systemPrompt ? ["--append-system-prompt", opts.systemPrompt] : []),
+      // 白名单必须是**一个**空格分隔的值;拆成多个 arg 会让 --allowedTools 只收到第一个、其余游离,
+      // 约束失效→claude 回退到可用任意工具(含 WebSearch),导致跑偏(实测踩过)。
+      ...(opts.allowedTools ? ["--allowedTools", opts.allowedTools] : []),
+      // 硬禁内置工具:这是拦住 claude 跑偏去翻代码的关键,比 prompt 软约束可靠。
+      ...(Array.isArray(opts.disallowedTools) && opts.disallowedTools.length
+        ? ["--disallowedTools", ...opts.disallowedTools] : []),
+      // MCP 配置(关键:隔离执行机全局 MCP/插件,否则 claude 启动会连 context7/playwright 等一堆 server +
+      // 跑 SessionStart hook + 载几十个 skill,judge 每次白耗 30s 在 bootstrap 上,实测踩过)。
+      // opts.mcpConfig===null(judge 纯判别)→ 用空 MCP 文件 + --strict-mcp-config,既隔离全局又不启动 gui server;
+      // undefined(runClaude 整条执行)→ 用默认 MCP_CONFIG(含 gui server)+ strict。
+      // 一律走"文件路径"(不传内联 JSON:win32 shell 会把 JSON 当路径,实测踩过);路径不含空格(目录已改名)。
+      "--mcp-config", opts.mcpConfig === null ? EMPTY_MCP_CONFIG : (opts.mcpConfig || MCP_CONFIG),
       "--strict-mcp-config",
       "--permission-mode", "acceptEdits",         // 无人值守:预授权,避免卡权限确认
     ];
     const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
     let err = "", buf = "", finalText = "", lastText = "", settled = false;
     // 单次结算:error / close / 超时 三条路径只认第一个,并清理定时器(避免重复 resolve)。
-    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); resolve(r); };
-    // 无人值守硬超时:claude 卡在被测页/工具时杀掉并回写 fail,避免该 run 永久 running、后续全停摆。
+    const done = (extra) => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      resolve({ text: finalText, lastText, err, duration_ms: Date.now() - started, ...extra });
+    };
+    // 无人值守硬超时:claude 卡在被测页/工具时杀掉,避免该 run 永久 running、后续全停摆。
     const timer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
-      done({ verdict: "fail", reason: `claude 执行超时(>${CLAUDE_TIMEOUT_MS}ms)已终止`, duration_ms: Date.now() - started });
-    }, CLAUDE_TIMEOUT_MS);
+      done({ timedOut: true });
+    }, timeoutMs);
     // spawn 失败(claude 未安装/PATH 不对)走异步 'error' 事件,不监听会 crash 整个 runner。
-    // 转成一次 fail 结论回写,而非拖垮进程。
-    child.on("error", (e) => done({ verdict: "fail", reason: `无法启动 claude(${CLAUDE_BIN}): ${e.message}`, duration_ms: Date.now() - started }));
+    child.on("error", (e) => done({ spawnError: e.message }));
 
-    // 逐个 stream 事件 → 实时进度日志(看清"执行到哪步、每步多久")。
-    const onEvent = (ev) => {
-      if (ev.type === "system" && ev.subtype === "init") {
-        log(`  [+${sec()}s] claude 就绪 MCP=${JSON.stringify((ev.mcp_servers || []).map((s) => s.name))}`);
-      } else if (ev.type === "assistant") {
-        for (const b of ev.message?.content || []) {
-          if (b.type === "tool_use") log(`  [+${sec()}s] → ${b.name} ${JSON.stringify(b.input || {}).slice(0, 160)}`);
-          else if (b.type === "text" && b.text?.trim()) { lastText = b.text; log(`  [+${sec()}s] 💭 ${b.text.trim().replace(/\s+/g, " ").slice(0, 120)}`); }
-        }
-      } else if (ev.type === "user") {
-        for (const b of ev.message?.content || []) {   // 工具返回只在出错时打(否则太吵)
-          if (b.type === "tool_result" && b.is_error) {
-            const tx = Array.isArray(b.content) ? b.content.map((c) => c.text || "").join(" ") : String(b.content || "");
-            log(`  [+${sec()}s] ⚠ 工具报错 ${tx.replace(/\s+/g, " ").slice(0, 160)}`);
-          }
-        }
-      } else if (ev.type === "result") {
-        finalText = ev.result ?? "";
-        log(`  [+${sec()}s] claude 结束 turns=${ev.num_turns} is_error=${ev.is_error}`);
-      }
-    };
-    // stdout 是按行的 JSON 事件;跨 chunk 缓冲,只处理完整行。
+    // stdout 是按行的 JSON 事件;跨 chunk 缓冲,只处理完整行。记录 result / 末段 assistant 文本,
+    // 并把每个事件回调给调用方(实时进度日志各自实现)。
     child.stdout.on("data", (d) => {
       buf += d.toString();
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
-        if (line.trim()) { try { onEvent(JSON.parse(line)); } catch { /* 半行/非 JSON,忽略 */ } }
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }   // 半行/非 JSON,忽略
+        if (ev.type === "result") finalText = ev.result ?? "";
+        else if (ev.type === "assistant") {
+          for (const b of ev.message?.content || []) {
+            if (b.type === "text" && b.text?.trim()) lastText = b.text;
+          }
+        }
+        if (typeof opts.onEvent === "function") { try { opts.onEvent(ev); } catch { /* 日志回调异常不影响解析 */ } }
       }
     });
     child.stderr.on("data", (d) => (err += d));
-    child.on("close", (code) => {
-      const duration_ms = Date.now() - started;
-      // 结论取自 result 事件的最终文本(取不到再退到最后一段 assistant 文本);解析出约定的 verdict JSON。
-      const verdict = parseVerdict(finalText || lastText);
-      if (!verdict) {
-        const tail = String(finalText || lastText || err || "").replace(/\s+/g, " ").slice(-500);
-        return done({ verdict: "fail", reason: `无法解析Claude输出(exit ${code}): ${tail}`, duration_ms });
-      }
-      done({ ...verdict, duration_ms });
-    });
-    // 用例 payload 从 stdin 喂入(见上方安全说明);写完即关闭,claude 读到 EOF 开始执行。
-    child.stdin.write(JSON.stringify(payload));
+    child.on("close", (code) => done({ code }));
+    // prompt 从 stdin 喂入(不进 argv,防 Windows 下 shell 元字符注入);写完即关闭,claude 读到 EOF 开跑。
+    child.stdin.write(stdinData);
     child.stdin.end();
   });
+}
+
+// 前置条件导航器:有 precondition 的用例,先让 claude 把界面**导航到起始位置**(不跑测试步),
+// 到位后由调用方把结构化 script 交给 StepExecutor 执行 —— 这样 precondition 用例也能走
+// 多候选自愈 + 选择器回填 + 跑通即固化,而不是像纯 claude 路径那样完全不回填。
+// claude 的 gui-mcp 与 runner 的 guiCore 都 connectOverCDP 同一 Electron(9222),导航状态共享,故可接力。
+// NAV_SYSTEM_PROMPT / parseNavOk 抽到 precond-nav.mjs(纯逻辑,便于单测)。
+
+async function runClaudePrecondition(payload, log) {
+  const started = Date.now();
+  const sec = () => ((Date.now() - started) / 1000).toFixed(1);
+  const DENY = ["Bash", "BashOutput", "KillShell", "Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "TodoWrite"];
+  // 只喂 precondition + title(不喂 steps/expected,避免 claude 顺手把测试也跑了)。
+  const input = JSON.stringify({ precondition: payload?.precondition || "", title: payload?.title || "" });
+  const onEvent = (ev) => {
+    if (ev.type === "assistant") for (const b of ev.message?.content || []) {
+      if (b.type === "tool_use") log(`  [+${sec()}s] [前置导航] → ${b.name} ${JSON.stringify(b.input || {}).slice(0, 120)}`);
+      else if (b.type === "text" && b.text?.trim()) log(`  [+${sec()}s] [前置导航] 💭 ${b.text.trim().replace(/\s+/g, " ").slice(0, 100)}`);
+    }
+  };
+  const raw = await runClaudeRaw(input, {
+    systemPrompt: NAV_SYSTEM_PROMPT, allowedTools: "mcp__gui__*", disallowedTools: DENY,
+    timeoutMs: CLAUDE_TIMEOUT_MS, onEvent,
+  });
+  const duration_ms = raw.duration_ms;
+  if (raw.timedOut) return { ok: false, reason: "前置导航超时", duration_ms };
+  if (raw.spawnError) return { ok: false, reason: `无法启动 claude: ${raw.spawnError}`, duration_ms };
+  const nav = parseNavOk(raw.text || raw.lastText);
+  if (!nav) return { ok: false, reason: "claude 未返回可解析的到位结论", duration_ms };
+  return { ...nav, duration_ms };
+}
+
+async function runClaude(payload, kind) {
+  const started = Date.now();
+  const sec = () => ((Date.now() - started) / 1000).toFixed(1);   // 相对起始的秒数,标在每条进度前
+  // 按 kind 给最小工具集:gui/e2e 只给 gui-mcp(不给 Bash,杜绝 claude 跑去翻代码/执行命令);
+  // api/cli 才给 Bash(curl/fetch/起进程)。工具越权是之前 claude 跑偏去研究平台源码的口子。
+  const allowed = (kind === "api" || kind === "cli") ? "Bash" : "mcp__gui__*";
+  // **硬禁内置工具**(关键):--allowedTools 只是"额外允许",不排除 Bash/Read/Grep 等内置工具——
+  // 光靠 SYSTEM_PROMPT 软约束拦不住,claude 会去 grep/Read 翻本地仓库源码而不调 gui(实测踩过)。
+  // gui/e2e 一个内置工具都不给;api/cli 保留 Bash 但禁掉一切"翻代码/联网/改文件"的工具。
+  const READ_CODE_TOOLS = ["Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "TodoWrite"];
+  const disallowed = (kind === "api" || kind === "cli")
+    ? READ_CODE_TOOLS                                       // 留 Bash,禁翻代码/联网/改文件
+    : ["Bash", "BashOutput", "KillShell", ...READ_CODE_TOOLS]; // gui/e2e:内置工具全禁,只剩 mcp__gui__*
+  // 逐个 stream 事件 → 实时进度日志(看清"执行到哪步、每步多久")。
+  const onEvent = (ev) => {
+    if (ev.type === "system" && ev.subtype === "init") {
+      log(`  [+${sec()}s] claude 就绪 MCP=${JSON.stringify((ev.mcp_servers || []).map((s) => s.name))}`);
+    } else if (ev.type === "assistant") {
+      for (const b of ev.message?.content || []) {
+        if (b.type === "tool_use") log(`  [+${sec()}s] → ${b.name} ${JSON.stringify(b.input || {}).slice(0, 160)}`);
+        else if (b.type === "text" && b.text?.trim()) log(`  [+${sec()}s] 💭 ${b.text.trim().replace(/\s+/g, " ").slice(0, 120)}`);
+      }
+    } else if (ev.type === "user") {
+      for (const b of ev.message?.content || []) {   // 工具返回只在出错时打(否则太吵)
+        if (b.type === "tool_result" && b.is_error) {
+          const tx = Array.isArray(b.content) ? b.content.map((c) => c.text || "").join(" ") : String(b.content || "");
+          log(`  [+${sec()}s] ⚠ 工具报错 ${tx.replace(/\s+/g, " ").slice(0, 160)}`);
+        }
+      }
+    } else if (ev.type === "result") {
+      log(`  [+${sec()}s] claude 结束 turns=${ev.num_turns} is_error=${ev.is_error}`);
+    }
+  };
+  // 安全:用例 payload(用户可控 —— steps/expected 等自由文本,经平台入队流入)通过 stdin 传入,
+  // **不进命令行 argv**。否则在 Windows(执行 claude.cmd 必须 shell:true)下,payload 里的
+  // " & | % 等元字符会被 cmd.exe 解释导致命令注入(能编辑用例的成员即可在执行机上 RCE)。
+  const raw = await runClaudeRaw(JSON.stringify(payload), {
+    systemPrompt: SYSTEM_PROMPT, allowedTools: allowed, disallowedTools: disallowed,
+    timeoutMs: CLAUDE_TIMEOUT_MS, onEvent,
+  });
+  const duration_ms = raw.duration_ms;
+  // 无人值守硬超时:claude 卡在被测页/工具时已杀掉,回写 fail,避免该 run 永久 running、后续全停摆。
+  if (raw.timedOut) return { verdict: "fail", reason: `claude 执行超时(>${CLAUDE_TIMEOUT_MS}ms)已终止`, duration_ms };
+  // spawn 失败(claude 未安装/PATH 不对):转一次 fail 结论回写,而非拖垮进程。
+  if (raw.spawnError) return { verdict: "fail", reason: `无法启动 claude(${CLAUDE_BIN}): ${raw.spawnError}`, duration_ms };
+  // 结论取自 result 事件的最终文本(取不到再退到最后一段 assistant 文本);解析出约定的 verdict JSON。
+  const verdict = parseVerdict(raw.text || raw.lastText);
+  if (!verdict) {
+    const tail = String(raw.text || raw.lastText || raw.err || "").replace(/\s+/g, " ").slice(-500);
+    return { verdict: "fail", reason: `无法解析Claude输出(exit ${raw.code}): ${tail}`, duration_ms };
+  }
+  return { ...verdict, duration_ms };
 }
 
 // judge 步专用:让 claude 只对**一个主观问题**做判定(如"AI 回复是否合理"),喂前面步骤捕获的 context。
@@ -439,6 +518,44 @@ async function handleProbes() {
   }
 }
 
+// ---- 录制队列(与 exec/probe 并列)----
+// 首次见到某会话 → startRecording(注入捕获);每轮 drain 页面缓冲 → rawEventToStep 规整 → 去抖 → 增量上报。
+// 会话不再出现在 recording 列表(被 stop/删) → stopRecording 并清本地跟踪。
+const _recActive = new Set();   // 本机已注入捕获的录制会话 id
+async function handleRecordings() {
+  let list = [];
+  try {
+    const res = await fetchRecords();
+    list = res?.data || res || [];
+  } catch (e) { log("拉录制队列失败:", e.message); return; }
+  const liveIds = new Set(list.map((s) => s.id));
+  // 已停止/消失的会话:停捕获,移出跟踪
+  for (const id of [..._recActive]) {
+    if (!liveIds.has(id)) { try { await guiCore.stopRecording(); } catch {} _recActive.delete(id); }
+  }
+  if (!list.length) return;
+  for (const s of list) {
+    try {
+      await ensureNamiclaw();
+      if (!_recActive.has(s.id)) {
+        await guiCore.startRecording();
+        _recActive.add(s.id);
+        log(`开始录制 id=${s.id}(在客户端操作;Alt+点击=标断言)`);
+      }
+      const drained = await guiCore.drainRecordEvents();   // [{ev, frame}]
+      if (drained.length) {
+        const steps = dedupeSteps(drained.map(({ ev, frame }) => rawEventToStep(ev, frame)).filter(Boolean));
+        if (steps.length) {
+          await reportRecordEvents(s.id, steps);
+          log(`  录制 id=${s.id} 上报 ${steps.length} 步`);
+        }
+      }
+    } catch (e) {
+      log(`录制 id=${s.id} 异常:`, e.message);
+    }
+  }
+}
+
 // perf 采集:与 exec/probe 并列的第三条队列(独立 try,异常不影响其他轮询)。
 async function handlePerf() {
   await pollPerfOnce({ api, log, RUNNER_ID, PERFDOG_DIR, SESSIONS_DIR, REPORT_SET_ID });
@@ -492,12 +609,25 @@ async function tick() {
           result = gate.result;
         } else {
           const script = item.payload?.script;
-          // 有结构化 script → StepExecutor 确定性执行(不经 LLM);无/需降级 → 回退 claude 兜底。
-          if (Array.isArray(script) && script.length) {
+          const hasPrecond = !!(item.payload?.precondition && String(item.payload.precondition).trim());
+          const hasScript = Array.isArray(script) && script.length;
+          // 有前置条件 + 结构化 script → **两段式**:claude 先把界面导航到起始位置,再把 script 交 StepExecutor
+          // 确定性执行(走多候选自愈 + 选择器回填 + 跑通即固化)。这样 precondition 用例也能补全 DOM/选择器。
+          // 导航是**尽力而为**:claude 可能已到位却漏印 JSON 标记、或多点了一两步——都不硬阻塞,照常把 script
+          // 交 StepExecutor(它能从当前页自愈定位)。只有"根本没到起点"才由 StepExecutor 自己 fail,而非在此拦死。
+          let navNote = "";
+          if (hasPrecond && hasScript) {
+            const nav = await runClaudePrecondition(item.payload, log);
+            navNote = nav.reason || "";
+            log(`  ⇢ 前置导航${nav.ok ? "到位" : "未确认到位(仍尝试执行 script)"}:${navNote}`);
+          }
+          // 有 script → StepExecutor 确定性执行 + 回填(前置导航无论是否自报到位都执行);否则 → claude 兜底。
+          if (hasScript) {
             const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
             if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
             else result = r;
           } else {
+            // 无 script:纯靠 claude 跑整条(含前置条件),沿用原 runClaude 路径。
             result = await runClaude(item.payload, item.kind);
           }
         }
@@ -572,6 +702,8 @@ async function main() {
     try { await tick(); } catch (e) { log("轮询异常:", e.message); }
     // exec 轮询之后并列处理设备探测队列(独立 try,探测异常不影响下一轮 exec 轮询)。
     try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
+    // 并列处理录制队列(独立 try)。
+    try { await handleRecordings(); } catch (e) { log("录制轮询异常:", e.message); }
     // 再并列处理 perf 采集队列(独立 try,采集异常不影响下一轮其他轮询)。
     try { await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
     await sleep(POLL_MS);

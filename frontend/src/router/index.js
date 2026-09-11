@@ -45,6 +45,7 @@ const routes = [
       { path: 'tool-admin', name: 'tool-admin', component: () => import('@/views/ToolAdmin.vue'), meta: { platformAdmin: true } },
       { path: 'releases', name: 'releases', component: () => import('@/views/ReleaseNotes.vue'), meta: { title: '发版记录' } },
       { path: 'selectors', name: 'selectors', component: () => import('@/views/SelectorAdmin.vue'), meta: { title: '选择器管理', platformAdmin: true } },
+      { path: 'recorder', name: 'recorder', component: () => import('@/views/Recorder.vue'), meta: { title: '录制脚本', platformAdmin: true } },
       { path: 'api-env', name: 'api-env', component: () => import('@/views/ApiEnvAdmin.vue'), meta: { title: 'api 环境', platformAdmin: true } },
       { path: 'perf-report', name: 'perf-report', component: () => import('@/views/PerfReport.vue'), meta: { title: '性能报告' } },
       { path: 'perf-dispatch', name: 'perf-dispatch', component: () => import('@/views/PerfDispatch.vue'), meta: { title: '性能任务下发' } },

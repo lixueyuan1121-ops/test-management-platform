@@ -10,6 +10,11 @@ test("validCands: 只留 by+value 齐全且 by 合法的候选", () => {
   assert.deepEqual(validCands(null), []);
 });
 
+test("validCands: xpath 是合法 by", () => {
+  const xp = { by: "xpath", value: "//button[normalize-space(.)='打开文件夹']" };
+  assert.deepEqual(validCands([xp, { by: "xpath" }]), [xp], "xpath 有 value 保留、缺 value 剔除");
+});
+
 test("pickCandidates: DB 坏/空 → 回落内置同名 key；DB 有效 → 用 DB", () => {
   const builtin = [{ by: "css", value: "h1.home" }];
   assert.deepEqual(pickCandidates([{}], builtin), builtin, "DB 坏 → 回落内置");

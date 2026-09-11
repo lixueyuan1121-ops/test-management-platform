@@ -8,9 +8,10 @@ from app.schemas.selector import SelectorKeyIn, SelectorKeyPatch
 
 
 def main():
-    assert VALID_BYS == {"testid", "role", "label", "text", "placeholder", "css"}, VALID_BYS
+    assert VALID_BYS == {"testid", "xpath", "role", "label", "text", "placeholder", "css"}, VALID_BYS
     # is_valid_candidate
     assert is_valid_candidate({"by": "css", "value": "h1.x"}) is True
+    assert is_valid_candidate({"by": "xpath", "value": "//button[normalize-space(.)='打开文件夹']"}) is True
     assert is_valid_candidate({"by": "role", "value": "button", "name": "登录"}) is True
     assert is_valid_candidate({}) is False                              # 本次 case 的坏值 [{}]
     assert is_valid_candidate({"by": "css"}) is False                   # 缺 value

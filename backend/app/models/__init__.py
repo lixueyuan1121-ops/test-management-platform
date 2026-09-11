@@ -1,3 +1,4 @@
+from app.models.record_session import RecordSession
 """导入所有模型，便于 Base.metadata.create_all 一次性建全表。"""
 from app.models.user import User
 from app.models.project import Project, Team, ProjectMember
@@ -27,6 +28,7 @@ from app.models.fail_cluster import FailCluster
 from app.models.rts import RtsRecommendation
 
 __all__ = [
+    "RecordSession",
     "User",
     "Project",
     "Team",

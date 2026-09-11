@@ -406,6 +406,7 @@ def _payload_of(tc: TestCase | None, db: Session) -> dict:
         "expected": tc.expected,
         "priority": tc.priority,
         "script": script,
+        "precondition": (tc.precondition or "").strip() or None,  # 前置条件(起始位置+手写前置步骤)→ runner 提示先到起点
         "project_id": tc.project_id,   # runner 按此拉该项目的合并选择器注册表(DB 单源)
     }
     # 仅 api 用例注入 api_env 快照（省 payload 体积;执行不需要 contract）。

@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.db.migrate import ensure_exec_run_kind, ensure_exec_run_report_columns, ensure_exec_run_release_column, ensure_exec_run_retry_columns, ensure_testcase_requirement_column, ensure_issue_columns, ensure_perf_indexes, ensure_perf_run_columns, ensure_perf_set_thresholds_column, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column, ensure_probe_result_longtext, ensure_api_env_table, ensure_eval_query_dimension, ensure_eval_run_target_engine, ensure_eval_run_payload, ensure_eval_run_target_device, ensure_eval_run_raw_message_column, ensure_eval_task_tables, ensure_platform_columns, ensure_runner_device_capabilities, ensure_runner_device_runner_kind, ensure_fail_cluster_table, ensure_rts_recommendation_table, ensure_eval_run_history_table, ensure_eval_task_status_enum, ensure_eval_run_status_enum, ensure_eval_task_target_engines, ensure_runner_device_eval_engine
+from app.db.migrate import ensure_exec_run_kind, ensure_exec_run_report_columns, ensure_exec_run_release_column, ensure_exec_run_retry_columns, ensure_testcase_requirement_column, ensure_issue_columns, ensure_perf_indexes, ensure_perf_run_columns, ensure_perf_set_thresholds_column, ensure_project_columns, ensure_release_columns, ensure_task_columns, ensure_testcase_columns, migrate_task_status, ensure_ai_provider_columns, ensure_selector_tables, ensure_selector_page_column, ensure_selector_frame_width, ensure_probe_screenshot_column, ensure_probe_result_longtext, ensure_api_env_table, ensure_eval_query_dimension, ensure_eval_run_target_engine, ensure_eval_run_payload, ensure_eval_run_target_device, ensure_eval_run_raw_message_column, ensure_eval_task_tables, ensure_platform_columns, ensure_runner_device_capabilities, ensure_runner_device_runner_kind, ensure_fail_cluster_table, ensure_rts_recommendation_table, ensure_eval_run_history_table, ensure_eval_task_status_enum, ensure_eval_run_status_enum, ensure_eval_task_target_engines, ensure_runner_device_eval_engine, ensure_testcase_precondition_column, ensure_record_session_table
 from app.models import User  # noqa: F401  (触发模型注册)
 
 logger = logging.getLogger("test_platform")
@@ -41,6 +41,8 @@ def init_db() -> None:
     _SKIP_TABLES = {"integration", "api_token", "integration_event"}
     tables = [t for t in Base.metadata.sorted_tables if t.name not in _SKIP_TABLES]
     Base.metadata.create_all(bind=engine, tables=tables)
+    ensure_testcase_precondition_column()
+    ensure_record_session_table()
     ensure_task_columns()
     ensure_testcase_columns()
     migrate_task_status()

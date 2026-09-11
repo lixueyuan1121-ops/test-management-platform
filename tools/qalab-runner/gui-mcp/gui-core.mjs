@@ -9,11 +9,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validCands, pickCandidates } from "./candidates.mjs";
+import { elementTextValue } from "./element-text.mjs";
 import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { rectInsideRatio } from "./probe-collect.mjs";
 import { toUrlMatcher, buildMockResponse } from "./mock-route.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
+import { CAPTURE_INIT, DRAIN_SCRIPT, STOP_SCRIPT } from "../record-capture.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
@@ -90,6 +92,26 @@ export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
   return out;
 };
 
+// 开启被测应用的 test-id 注入模式(localStorage "openclaw.testids"="1")。
+// ctx.addInitScript:此后本 context 所有 frame/所有加载在页面脚本运行前即带 flag(reset-home reload、
+// 重连、vm iframe 各 origin 一次配置全程生效)。首连时当前页已加载(错过 main.ts 启动时机):对现有各
+// frame 即时 setItem;若之前未开过(localStorage 非 "1")则 reload 一次让 main.ts 重跑、观察器当场启动,
+// 已开过则跳过 reload 不折腾。抽成模块级纯函数(注入行为不依赖 gui-core 闭包)便于单测。
+const TESTID_SET = () => { try { localStorage.setItem("openclaw.testids", "1"); } catch { /* SSR/隐私模式 */ } };
+
+export async function injectTestIdMode(ctx, page, { reloadTimeout = 15000 } = {}) {
+  try { await ctx.addInitScript(TESTID_SET); } catch { /* 接口不可用则仅靠下方即时注入 + 后续导航兜底 */ }
+  let already = false;
+  try { already = await page.evaluate(() => localStorage.getItem("openclaw.testids") === "1"); } catch { /* 取不到按未开 */ }
+  for (const f of page.frames()) {
+    await f.evaluate(TESTID_SET).catch(() => { /* 跨域/未就绪 frame 忽略,addInitScript 在其下次加载兜底 */ });
+  }
+  if (!already) {
+    try { await page.reload({ waitUntil: "domcontentloaded", timeout: reloadTimeout }); } catch { /* reload 失败不阻断,靠后续导航生效 */ }
+  }
+  return { reloaded: !already };
+}
+
 // 从 CDP context 的 pages() 结果里挑"就绪可用"的页面:优先 url 含业务域 work.n.cn 的页,
 // 否则首个未关闭页;一个可用页都没有(冷启动时页面 target 尚未在 CDP 注册)→ null,由调用方
 // 继续轮询等待。纯函数(无 playwright 依赖),单测见 pick-ready-page.test.mjs。
@@ -135,6 +157,15 @@ export function createGuiCore(opts = {}) {
   const HEALS = [];
   const HEAL_ENABLED = String(process.env.GUI_HEAL ?? "1") !== "0";
   let ctx = null;   // BrowserContext — 与 browser/page 同生命周期; mockRoute/unmockRoute 需要 context 级拦截
+  let testidInjected = false;   // 测试模式开关只需注入一次(addInitScript + 首连 reload),后续 ensureConnected 跳过
+
+  // 被测应用(openclaw360-web)默认不注入 data-testid;仅当 localStorage["openclaw.testids"]==="1"
+  // 时,main.ts 启动才加载观察器把 testid 打到 DOM 上。见上方模块级 injectTestIdMode 说明。
+  async function enableTestIdMode() {
+    if (testidInjected) return;
+    testidInjected = true;
+    await injectTestIdMode(ctx, page, { reloadTimeout: PAGE_READY_TIMEOUT });
+  }
 
   // 已注册的网络拦截:pattern -> { matcher, handler, stat:{pattern,status,hits} }。
   // 必须记账,原因有二:①注册用的是编译后的正则,ctx.unroute 只认同一个 matcher 对象,拿原始 glob 撤不掉;
@@ -161,7 +192,10 @@ export function createGuiCore(opts = {}) {
   }
 
   async function ensureConnected() {
-    if (browser && browser.isConnected() && page && !page.isClosed()) return;
+    if (browser && browser.isConnected() && page && !page.isClosed()) {
+      await enableTestIdMode();   // 复用连接时也确保开关已注入(幂等,已注入即刻返回)
+      return;
+    }
     browser = await chromium.connectOverCDP(CDP_URL);
     ctx = browser.contexts()[0] || (await browser.newContext());
     // 冷启动竞态:CDP 端口先活、渲染进程的页面 target 后注册,刚连上时 ctx.pages() 可能仍空。
@@ -171,11 +205,12 @@ export function createGuiCore(opts = {}) {
     const end = Date.now() + PAGE_READY_TIMEOUT;
     for (;;) {
       const p = pickReadyPage(ctx.pages());
-      if (p) { page = p; return; }
+      if (p) { page = p; await enableTestIdMode(); return; }
       if (Date.now() >= end) break;
       await new Promise((r) => setTimeout(r, 300));
     }
     page = await ctx.newPage();
+    await enableTestIdMode();
   }
 
   function contentFrame() {
@@ -198,6 +233,7 @@ export function createGuiCore(opts = {}) {
   function byToLocator(scope, cand) {
     switch (cand.by) {
       case "testid": return scope.getByTestId(cand.value);
+      case "xpath": return scope.locator(cand.value.startsWith("xpath=") ? cand.value : `xpath=${cand.value}`);
       case "role": return scope.getByRole(cand.value, cand.name ? { name: cand.name } : undefined);
       case "label": return scope.getByLabel(cand.value);
       case "text": return scope.getByText(cand.value);
@@ -373,6 +409,41 @@ export function createGuiCore(opts = {}) {
     contentFrame,
     // 取走并清空本轮自愈记录(runner 每条用例执行完调用,POST /api/selectors/learned 上报评审)。
     drainHeals() { return HEALS.splice(0, HEALS.length); },
+
+    // ---- 录制:注入事件捕获 / 排空缓冲 / 停止(见 record-capture.mjs)----
+    async startRecording() {
+      await ensureConnected();
+      // addInitScript 先注册:保证 testid 注入若触发 reload,reload 后的新页/新 iframe 在脚本运行前即带捕获钩子。
+      // (顺序坑:之前先 injectTestIdMode 后 addInitScript → reload 早发生、捕获脚本没覆盖到,vm iframe 无钩子→录不到)。
+      try { await ctx.addInitScript(CAPTURE_INIT); } catch { /* 老版本回退:仅靠下方即时注入 */ }
+      const { reloaded } = await injectTestIdMode(ctx, page, { reloadTimeout: PAGE_READY_TIMEOUT });  // 保证元素带 testid
+      // reload 过 → 等业务 iframe 重新就绪,再逐 frame 即时注入(现有帧;addInitScript 覆盖首次加载的帧)。
+      if (reloaded) { try { await waitForContentFrame(PAGE_READY_TIMEOUT); } catch { /* 尽力而为 */ } }
+      for (const f of page.frames()) {
+        await f.evaluate(CAPTURE_INIT).catch(() => { /* 跨域/未就绪 frame 忽略,addInitScript 兜底 */ });
+      }
+      return { recording: true };
+    },
+    // 排空各 frame 的捕获缓冲,带上 frame 标签(shell/vm/url:host,与 probe frameMatch 同口径)。
+    async drainRecordEvents() {
+      await ensureConnected();
+      const main = page.mainFrame();
+      const vm = contentFrame();
+      const out = [];
+      for (const f of page.frames()) {
+        let raw;
+        try { raw = await f.evaluate(DRAIN_SCRIPT); } catch { continue; }
+        if (!Array.isArray(raw) || !raw.length) continue;
+        const label = f === main ? "shell" : f === vm ? "vm"
+          : (() => { try { const h = new URL(f.url()).hostname; return h ? "url:" + h : "auto"; } catch { return "auto"; } })();
+        for (const ev of raw) out.push({ ev, frame: label });
+      }
+      return out;   // [{ev(原始捕获), frame}] —— runner 侧再经 rawEventToStep 规整
+    },
+    async stopRecording() {
+      try { for (const f of page.frames()) await f.evaluate(STOP_SCRIPT).catch(() => {}); } catch { /* ignore */ }
+      return { recording: false };
+    },
 
     async connect() {
       await ensureConnected();
@@ -567,7 +638,8 @@ export function createGuiCore(opts = {}) {
     async getText(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args, { requireVisible: false });
-      return { text: (await loc.textContent()) ?? "", via: hit };
+      // 表单控件取 .value、其余取 textContent(见 element-text.mjs;修输入框恒读空的假失败)
+      return { text: (await loc.evaluate(elementTextValue)) ?? "", via: hit };
     },
     async waitFor(args) {
       await ensureConnected();
@@ -605,7 +677,9 @@ export function createGuiCore(opts = {}) {
     async assertText(args) {
       await ensureConnected();
       const { loc, hit } = await resolveTarget(args, { requireVisible: false });
-      const actual = ((await loc.textContent()) ?? "").trim();
+      // 表单控件(input/textarea/select)取 .value、其余取 textContent —— 见 element-text.mjs。
+      // 早期一律用 textContent,对输入框恒读空串 → "输入框含 X"必然假失败(tc15/tc14 实证)。
+      const actual = ((await loc.evaluate(elementTextValue)) ?? "").trim();
       const matched = args.contains ? actual.includes(args.expected) : actual === args.expected;
       const pass = args.negate ? !matched : matched;
       return { pass, actual: actual.slice(0, 200), expected: args.expected, mode: args.contains ? "contains" : "equals", negate: !!args.negate, via: hit };

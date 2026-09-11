@@ -59,6 +59,19 @@ def ensure_task_columns() -> None:
             conn.execute(text("ALTER TABLE task ADD COLUMN close_note TEXT NULL"))
 
 
+def ensure_testcase_precondition_column() -> None:
+    """test_case 表补列 precondition（前置条件:起始位置 + 手写前置步骤，自由文本）。
+
+    老库补列后存量行 precondition=NULL（未设）；新库由 create_all 依模型建表即含。幂等:ADD 前先探列。
+    """
+    cols = _columns("test_case")
+    if not cols:
+        return  # 表尚未建，交给 create_all
+    if "precondition" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE test_case ADD COLUMN precondition TEXT NULL"))
+
+
 def ensure_testcase_columns() -> None:
     """test_case 表补列 review_status / reviewed_at（如缺失），并回填老数据。
 
@@ -441,6 +454,15 @@ def ensure_selector_tables(engine=None) -> None:
     SelectorKey.__table__.create(bind=eng, checkfirst=True)
     SelectorScope.__table__.create(bind=eng, checkfirst=True)
     ProbeRequest.__table__.create(bind=eng, checkfirst=True)
+
+
+def ensure_record_session_table(engine=None) -> None:
+    """建 record_session 表(幂等)。create_all 已能建;此处显式 CREATE(checkfirst)保证
+    老库无需依赖模型 import 时机也能补出该表(与 ensure_selector_tables 一致)。"""
+    from app.db.session import engine as _default_engine
+    from app.models.record_session import RecordSession
+    eng = engine if engine is not None else _default_engine
+    RecordSession.__table__.create(bind=eng, checkfirst=True)
 
 
 def ensure_api_env_table(engine=None) -> None:

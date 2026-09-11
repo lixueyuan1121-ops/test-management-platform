@@ -20,14 +20,25 @@ def is_fragile(cand: dict) -> bool:
     return (cand.get("by") or "css") in FRAGILE_BYS
 
 
+# 候选优先级排序权重（越小越先试）：testid 最稳 > xpath（class+文本等精确定位，人工/自动纠正用）
+# > css/label/placeholder（一般稳定，含缺省 by）> text/role（脆弱，降链尾）。
+# 同权重内保持相对顺序（稳定排序）。xpath 介于 testid 与 css 之间：CSS 类名多命中时用 XPath 精确区分。
+_BY_RANK: dict[str, int] = {"testid": 0, "xpath": 1, "text": 3, "role": 3}
+
+
+def _rank(cand: dict) -> int:
+    return _BY_RANK.get(cand.get("by") or "css", 2)
+
+
 def order_candidates(cands: list[dict]) -> list[dict]:
-    """稳定候选在前、脆弱候选在后，各自保持相对顺序（稳定排序，返回新列表）。"""
-    stable = [c for c in cands if not is_fragile(c)]
-    fragile = [c for c in cands if is_fragile(c)]
-    return stable + fragile
+    """按 by 优先级稳定排序（testid > xpath > css/label/placeholder > text/role），返回新列表。
+
+    历史行为（脆弱降尾、稳定保持相对序）是本规则的子集——升级为显式分档以给 xpath 固定档位。
+    """
+    return sorted(cands, key=_rank)
 
 
-VALID_BYS: set[str] = {"testid", "role", "label", "text", "placeholder", "css"}
+VALID_BYS: set[str] = {"testid", "xpath", "role", "label", "text", "placeholder", "css"}
 
 
 def is_valid_candidate(cand: dict) -> bool:

@@ -5,7 +5,7 @@
 order_candidates 把脆弱降到链尾、其余保持相对顺序（稳定排序）。
 镜像前端 frontend/src/utils/selector-ranking.js，参照 gui-core.mjs::genCandidates 分梯。
 """
-from app.services.selector_ranking import is_fragile, order_candidates, FRAGILE_BYS
+from app.services.selector_ranking import is_fragile, order_candidates, FRAGILE_BYS, is_valid_candidate
 
 
 def main():
@@ -41,6 +41,20 @@ def main():
     stable = [{"by": "testid", "value": "a"}, {"by": "css", "value": "#b"}]
     assert order_candidates(stable) == stable
     assert order_candidates([]) == []
+
+    # xpath 档位：testid > xpath > css/label/placeholder > text/role
+    assert order_candidates([{"by": "css", "value": ".x"}, {"by": "xpath", "value": "//b"}]) \
+        == [{"by": "xpath", "value": "//b"}, {"by": "css", "value": ".x"}], "xpath 应排在 css 之前"
+    mixed = [
+        {"by": "text", "value": "打开文件夹"},
+        {"by": "css", "value": ".task-files__preview-office-local-btn"},
+        {"by": "xpath", "value": "//button[normalize-space(.)='打开文件夹']"},
+        {"by": "testid", "value": "open-folder"},
+    ]
+    assert [c["by"] for c in order_candidates(mixed)] == ["testid", "xpath", "css", "text"], order_candidates(mixed)
+    # xpath 视为有效 by
+    assert is_valid_candidate({"by": "xpath", "value": "//button"}) is True
+    assert is_valid_candidate({"by": "xpath", "value": ""}) is False
 
     print("OK test_selector_ranking")
 

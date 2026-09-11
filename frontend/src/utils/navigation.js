@@ -35,6 +35,7 @@ export const navigationGroups = [
   { id: 'settings', label: '系统管理', icon: 'Setting', items: [
     entry('/projects', '项目管理', 'Files', { admin: true }), entry('/users', '用户管理', 'User', { admin: true }),
     entry('/selectors', '选择器管理', 'Aim', { admin: true }), entry('/api-env', 'API 环境', 'Connection', { admin: true }),
+    entry('/recorder', '录制脚本', 'VideoCamera', { admin: true }),
     entry('/tool-admin', '工具配置', 'Grid', { admin: true }),
   ] },
 ]
