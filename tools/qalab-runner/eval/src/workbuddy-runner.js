@@ -3,6 +3,17 @@
 // 对外接口对齐 DesktopRunner（runOne/runConversationTurns/result 形状），使 bin/ai-eval.js 的 reportRun 无缝复用。
 const { WorkbuddyDomTrace } = require('./workbuddy-dom-trace');
 const { setClipboardFiles } = require('./clipboard-file');
+const { randomUUID } = require('crypto');
+
+function workbuddyShareUrl(text) {
+  for (const candidate of String(text || '').match(/https?:\/\/[^\s"'<>]+/g) || []) {
+    try {
+      const url = new URL(candidate);
+      if (url.hostname === 'workbuddy.link' && /^\/p\/[^/]+/.test(url.pathname)) return url.href;
+    } catch (_) {}
+  }
+  return '';
+}
 
 function looksIncomplete(answer) {
   const t = (answer || '').trim();
@@ -31,8 +42,10 @@ class WorkbuddyRunner {
   getDomTrace() { return this.trace; }
 
   async _openCleanConversation() {
+    if (!(await this._dismissShareUi())) throw new Error('分享底栏未关闭，无法新建任务');
     const nt = this.page.locator(this.wb.newTaskSelector).first();
-    if (await nt.count()) { await nt.click().catch(() => {}); await this.page.waitForTimeout(1200); }
+    await nt.click({ timeout: 10000 });  // 点击失败必须报错，不能把下一题发进上一会话
+    await this.page.waitForTimeout(1200);
     await this.page.locator(this.wb.inputSelector).first().waitFor({ state: 'visible', timeout: 15000 });
     return true;
   }
@@ -53,6 +66,8 @@ class WorkbuddyRunner {
   async _footerCount() { return await this.page.locator(this.wb.footerSelector).count(); }
 
   async _sendOne(testCase) {
+    // 多轮对话不会经过 _openCleanConversation，发送前也要清理上轮分享态。
+    if (!(await this._dismissShareUi())) throw new Error('分享底栏未关闭，无法发送下一轮');
     await this._applyDialogOptions();
     const input = this.page.locator(this.wb.inputSelector).first();
     // 附件(如有):必须先粘贴附件、确认「附件卡片挂上」再输 query,绝不「无附件裸发 query」——那样是
@@ -118,17 +133,139 @@ class WorkbuddyRunner {
     }, sel);
   }
 
-  // 等本轮完成：footer 数量到达 baseline+1（本轮 footer 出现即收口）。
-  async _waitComplete(baselineFooterCount) {
-    const timeout = this.execution.responseTimeout || 180000;
-    try {
-      await this.page.locator(this.wb.footerSelector).nth(baselineFooterCount).waitFor({ timeout });
-      await this.page.waitForTimeout(1500); // 让答案/元信息渲染稳定
-      return { completed: true, reason: 'footer' };
-    } catch (e) { return { completed: false, reason: 'timeout' }; }
+  _questionCard() {
+    const sel = this.wb.questionSelector || '[class*="_questionFloating_"]:not([class*="_confirmVariant_"])';
+    return this.page.locator(`:is(${sel}):visible`).first();
   }
 
-  // 抓对话分享链接:点气泡"分享"按钮 → 分享面板"复制链接"渠道 → 读剪贴板(链接不在 DOM)。
+  // 只处理反问卡片，不在整页搜索“继续/允许”等按钮。保留预选答案；无预选时选第一项。
+  // 5.5.6 单选中间题没有提交按钮，点击当前选项会自动翻页；末题/多选需点发送或下一题。
+  async _handleQuestion() {
+    const card = this._questionCard();
+    if (!(await card.count())) return false;
+    try {
+      const options = card.locator(this.wb.questionOptionSelector || '[class*="_optionItem_"]');
+      let choice = null;
+      for (let i = 0; i < await options.count(); i++) {
+        const option = options.nth(i);
+        if (!(await option.isVisible()) || !(await option.isEnabled())) continue;
+        const chosen = await option.evaluate(el => el.getAttribute('aria-checked') === 'true'
+          || el.getAttribute('aria-selected') === 'true' || /(?:^|\s)_selected_/.test(el.className)
+          || !!el.querySelector('[aria-checked="true"], input:checked'));
+        if (chosen) { choice = option; break; }
+      }
+      const hadSelection = !!choice;
+      if (!choice) {
+        for (let i = 0; i < await options.count(); i++) {
+          const option = options.nth(i);
+          if (await option.isVisible() && await option.isEnabled()) { choice = option; break; }
+        }
+      }
+      // 纯自由输入题没有默认答案，保持待回答，不能编造答案或误判完成。
+      if (!choice) return true;
+      const advance = card.getByRole('button', { name: /^(继续|下一步|下一题|发送|提交|完成|Continue|Next|Next question|Send|Submit|Done)$/i });
+      if (hadSelection) {
+        for (let i = 0; i < await advance.count(); i++) {
+          const btn = advance.nth(i);
+          if (await btn.isVisible() && await btn.isEnabled()) {
+            await btn.click({ timeout: 2000 });
+            this._log('   反问：保留默认选项并继续');
+            return true;
+          }
+        }
+        if (await advance.count()) return true;  // 按钮暂禁用时等待，不能反选已勾选的多选项
+      }
+      await choice.click({ timeout: 2000 });
+      // 本次仅做一次动作。单选可能已翻页/提交，多选在下一轮点击继续，避免误点下一题。
+      this._log('   反问：已选择默认项，等待继续/下一题');
+    } catch (e) { this._warn(`   反问交互待重试: ${(e.message || '').split('\n')[0]}`); }
+    return true;  // 卡片存在就不能按完成处理，包括按钮暂不可点的情况
+  }
+
+  // 工作流/计划执行确认不是普通反问：已选的“开始执行”本身就是提交动作。
+  // 底部“发送”用于调整计划，不应被通用按钮文案匹配误点。
+  async _handleWorkflow() {
+    const sel = this.wb.workflowSelector || '.exit-plan-mode-floating, .conversation-exit-plan-panel, .pending-plan-panel';
+    const optionSel = this.wb.workflowOptionSelector || '.exit-plan-mode-floating__option, .conversation-exit-plan-panel__option, .pending-plan-panel__option';
+    const resolvedSel = this.wb.workflowResolvedSelector || '.exit-plan-mode-floating__decision--approved, .exit-plan-mode-floating__decision--keep-planning, .conversation-exit-plan-panel__decision--approved, .conversation-exit-plan-panel__decision--adjusted';
+    const cards = this.page.locator(`:is(${sel}):visible`);
+    for (let i = 0; i < await cards.count(); i++) {
+      const card = cards.nth(i);
+      try {
+        // 已批准的结果面板可能仍可见；跳过它，继续查找后续待确认面板。
+        if (await card.locator(`:is(${resolvedSel}):visible`).count()) continue;
+        const options = card.locator(`:is(${optionSel}):visible`);
+        const count = await options.count();
+        if (!count) return true;  // 加载/状态转换期间不把旧 footer 当成任务完成
+        let choice = options.first();
+        for (let j = 0; j < count; j++) {
+          const option = options.nth(j);
+          if (await option.evaluate(el => el.getAttribute('aria-checked') === 'true'
+            || el.getAttribute('aria-selected') === 'true' || /__option--selected(?:\s|$)/.test(el.className))) {
+            choice = option; break;
+          }
+        }
+        // 旧版仅用 tabindex=-1 表示正在提交；新版还设置 aria-disabled。
+        if (!(await choice.isEnabled()) || await choice.getAttribute('tabindex') === '-1') return true;
+        await choice.click({ timeout: 2000 });
+        this._log('   工作流确认：已选择默认执行项，等待任务继续');
+      } catch (e) { this._warn(`   工作流确认待重试: ${(e.message || '').split('\n')[0]}`); }
+      return true;
+    }
+    return false;
+  }
+
+  // 持续处理反问及工作流确认；本轮 footer 稳定出现且没有待处理交互后才收口。
+  async _waitComplete(baselineFooterCount) {
+    const timeout = this.execution.responseTimeout || 180000;
+    const deadline = Date.now() + timeout;
+    let stableSince = 0;
+    while (Date.now() < deadline) {
+      if (await this._handleQuestion() || await this._handleWorkflow()) stableSince = 0;
+      else if (await this.page.locator(this.wb.footerSelector).nth(baselineFooterCount).isVisible()) {
+        if (!stableSince) stableSince = Date.now();
+        if (Date.now() - stableSince >= 1500) return { completed: true, reason: 'footer' };
+      } else stableSince = 0;
+      await this.page.waitForTimeout(Math.min(500, Math.max(0, deadline - Date.now())));
+    }
+    return { completed: false, reason: 'timeout' };
+  }
+
+  async _dismissShareUi() {
+    const barSel = this.wb.shareBarSelector || '.wb-share-bar__inner';
+    const bar = this.page.locator(`:is(${barSel}):visible`).first();
+    for (let i = 0; i < 2; i++) {
+      if (!(await bar.count())) return true;
+      try {
+        const close = bar.locator(this.wb.shareCloseSelector || 'button[aria-label="退出分享"]');
+        if (await close.count()) await close.first().click({ timeout: 2000 });
+        else await this.page.keyboard.press('Escape');
+        await bar.waitFor({ state: 'hidden', timeout: 2000 });
+      } catch (_) { await this.page.keyboard.press('Escape').catch(() => {}); }
+    }
+    const closed = !(await bar.count());
+    if (!closed) this._warn('   分享底栏仍可见，下一轮发送前将重试关闭');
+    return closed;
+  }
+
+  // 分享入口可能只预选部分消息，甚至没有选择；复制按钮仍可点击，不能据此认定可分享。
+  async _ensureShareAllSelected(bar) {
+    const selector = this.wb.shareSelectAllSelector || '.wb-share-bar__left [role="checkbox"]';
+    const timeout = this.wb.shareClickTimeout || 5000;
+    const all = bar.locator(`:is(${selector}):visible`).first();
+    try {
+      await all.waitFor({ state: 'visible', timeout });
+      if (await all.getAttribute('aria-checked') === 'true') return;  // 已全选时不能再点成取消全选
+      await all.click({ timeout });
+      // 点击完成不代表选择已生效；等客户端确认全选后才能复制，不反复点击切换状态。
+      await bar.locator(`:is(${selector})[aria-checked="true"]:visible`).first().waitFor({ state: 'visible', timeout });
+      this._log('   分享：已确认全选对话内容');
+    } catch (e) {
+      throw new Error(`分享全选未确认: ${(e.message || '').split('\n')[0]}`);
+    }
+  }
+
+  // 抓对话分享链接:点气泡"分享" → 确认全选 → "复制链接" → 读剪贴板(链接不在 DOM)。
   // 真机坐实:剪贴板形如「【WorkBuddy】<标题>\nhttps://workbuddy.link/p/xxx?ext2=copy_link」。
   // 失败(无分享按钮/剪贴板读不到)返回空串,不阻断流程(分享链接非硬性字段)。
   async _captureShareLink() {
@@ -140,27 +277,36 @@ class WorkbuddyRunner {
       // CDP attach 的页面默认无剪贴板读权限(readText 报 NotAllowedError:Read permission denied),
       // 而分享链接只在剪贴板(不进 DOM) → 先给本 context 授权(幂等,失败不阻断)。真机坐实:授权后 readText 正常。
       try { await this.page.context().grantPermissions(['clipboard-read', 'clipboard-write']); } catch (_) {}
-      const share = this.page.locator(btnSel).last();
-      if (!(await share.count())) return '';
-      // 哨兵清剪贴板,便于确认"复制链接"确实写入(区分"没点到"与"链接是旧值")
-      await this.page.evaluate(() => navigator.clipboard.writeText('__WB_SHARE_SENTINEL__')).catch(() => {});
-      await share.click({ timeout: 5000 }).catch(() => {});
-      await this.page.waitForTimeout(1000);
-      const copyBtn = this.page.locator(chanSel, { hasText: copyText }).first();
-      if (!(await copyBtn.count())) { await this.page.keyboard.press('Escape').catch(() => {}); return ''; }
-      await copyBtn.click({ timeout: 5000, force: true }).catch(() => {});
-      // 轮询剪贴板(复制异步,最多 8s)
-      let clip = '__WB_SHARE_SENTINEL__';
-      for (let i = 0; i < 16; i++) {
-        await this.page.waitForTimeout(500);
-        try { clip = await this.page.evaluate(() => navigator.clipboard.readText()); } catch (_) {}
-        if (clip && clip !== '__WB_SHARE_SENTINEL__') break;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (!(await this._dismissShareUi())) return '';
+        try {
+          const share = this.page.locator(`:is(${btnSel}):visible`).last();
+          const clickTimeout = this.wb.shareClickTimeout || 5000;
+          await share.waitFor({ state: 'visible', timeout: clickTimeout });
+          // 写入必须成功，否则无法区分旧链接。每次尝试独立哨兵，拒收无关剪贴板内容。
+          const sentinel = `__WB_SHARE_${randomUUID()}__`;
+          await this.page.evaluate(value => navigator.clipboard.writeText(value), sentinel);
+          await share.click({ timeout: clickTimeout });
+          const bar = this.page.locator(`:is(${this.wb.shareBarSelector || '.wb-share-bar__inner'}):visible`).first();
+          await bar.waitFor({ state: 'visible', timeout: clickTimeout });
+          await this._ensureShareAllSelected(bar);
+          const copyId = bar.locator(this.wb.shareCopySelector || '[data-track-id="share_copy_link"]');
+          const copy = await copyId.count() ? copyId.first()
+            : bar.locator(`:is(${chanSel}):visible`).filter({ hasText: copyText }).first();
+          await copy.click({ timeout: clickTimeout });  // 等可见、稳定、可点击；不 force、不吞点击失败
+          const deadline = Date.now() + (this.wb.shareCopyTimeout || 15000);
+          while (Date.now() < deadline) {
+            const clip = await this.page.evaluate(() => navigator.clipboard.readText());
+            const url = clip !== sentinel && workbuddyShareUrl(clip);
+            if (url) return url;
+            await this.page.waitForTimeout(250);
+          }
+          throw new Error('点复制链接后未获得本次分享 URL');
+        } catch (e) { this._warn(`   对话分享链接第 ${attempt + 1} 次失败: ${(e.message || '').split('\n')[0]}`); }
       }
-      await this.page.keyboard.press('Escape').catch(() => {});  // 关分享面板
-      if (!clip || clip === '__WB_SHARE_SENTINEL__') { this._warn('   对话分享链接:点复制链接后剪贴板未更新'); return ''; }
-      const m = String(clip).match(/https?:\/\/[^\s]+/);
-      return m ? m[0] : '';
+      return '';
     } catch (e) { this._warn(`   抓对话分享链接失败: ${(e.message || '').split('\n')[0]}`); return ''; }
+    finally { await this._dismissShareUi(); }  // 成功、点击失败、复制超时均退出分享模式
   }
 
   // 抓「复制 message」原始结构化 JSON:点消息气泡「更多操作」→ 菜单「复制 message」→ 读剪贴板。
@@ -229,8 +375,8 @@ class WorkbuddyRunner {
       await this._sendOne(testCase);
       const done = await this._waitComplete(baseline);
       await this.trace.captureTurn(this.page);
-      const rawMessage = await this._captureRawMessage();        // 抓「复制 message」原始 JSON(点更多操作→复制 message→剪贴板)
-      this.trace.setShareLink(await this._captureShareLink());   // 抓对话分享链接(点分享→复制链接→剪贴板)
+      const rawMessage = done.completed ? await this._captureRawMessage() : '';
+      if (done.completed) this.trace.setShareLink(await this._captureShareLink());
       const trace = this.trace.buildTrace(testCase.run_id);
       return this._buildResult(testCase, trace, { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now(), rawMessage });
     } catch (e) {
@@ -256,10 +402,11 @@ class WorkbuddyRunner {
         await this._sendOne(testCase);                 // 后续轮不新建对话，在同一对话追加
         const done = await this._waitComplete(baseline);
         await this.trace.captureTurn(this.page);
-        const rawMessage = await this._captureRawMessage();        // 抓「复制 message」原始 JSON
-        this.trace.setShareLink(await this._captureShareLink());   // 抓对话分享链接
+        const rawMessage = done.completed ? await this._captureRawMessage() : '';
+        if (done.completed) this.trace.setShareLink(await this._captureShareLink());
         const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now(), rawMessage });
         results.push(r); if (onTurnDone) await onTurnDone(r, testCase).catch(() => {});
+        if (!done.completed) { aborted = true; abortMsg = '上一轮未完成，后续轮跳过，避免在反问或生成中追加任务'; }
       } catch (e) {
         const msg = (e.message || '').split('\n')[0];
         const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: false, completeReason: 'exception', errorMsg: msg, startTime, endTime: Date.now() });

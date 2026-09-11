@@ -389,10 +389,24 @@ module.exports = {
     sourcesCountSelector: '.artifact-slot-panel__source-count',
     sourcesPanelTitleSelector: '.sources-panel__title',          // 「引用来源 (N)」
     sourcesListSelector: '.sources-panel__list',
-    // 对话分享链接:气泡工具栏分享按钮 → 分享面板"复制链接"渠道 → 链接写入剪贴板(不在 DOM)
+    // 对话分享链接:气泡分享按钮 → 确认全选 → 复制链接 → 链接写入剪贴板(不在 DOM)
     shareBtnSelector: '[class*="assistantFeedback"] button[aria-label="分享"]',
     shareCopyLinkText: '复制链接',                               // 分享面板里"复制链接"渠道按钮的文本
     shareChannelSelector: '.wb-share-channel-btn',               // 渠道按钮(配合 hasText 定位复制链接)
+    shareCopySelector: '.wb-share-channel-btn[data-track-id="share_copy_link"]',
+    shareBarSelector: '.wb-share-bar__inner',
+    shareSelectAllSelector: '.wb-share-bar__left [role="checkbox"]', // aria-checked=true 后才能复制，已全选不反选
+    shareCloseSelector: 'button[aria-label="退出分享"]',           // Esc 不能保证退出，必须验证底栏消失
+    shareClickTimeout: 5000,
+    shareCopyTimeout: 15000,                                    // 异步生成链接，失败后退出并重试一次
+    // 2026-09-11 / 5.5.6 真机反问：单选默认第一项，多题分页；末题点发送，多选先勾选。
+    // 只匹配问题卡，不自动确认其他授权弹窗；CSS Module 仅用语义前缀，不依赖版本哈希。
+    questionSelector: '[class*="_questionFloating_"]:not([class*="_confirmVariant_"])',
+    questionOptionSelector: '[class*="_optionItem_"]',
+    // 工作流/计划执行确认（5.5.6 客户端组件）；选“开始执行”直接提交，底部发送用于修改计划。
+    workflowSelector: '.exit-plan-mode-floating, .conversation-exit-plan-panel, .pending-plan-panel',
+    workflowOptionSelector: '.exit-plan-mode-floating__option, .conversation-exit-plan-panel__option, .pending-plan-panel__option',
+    workflowResolvedSelector: '.exit-plan-mode-floating__decision--approved, .exit-plan-mode-floating__decision--keep-planning, .conversation-exit-plan-panel__decision--approved, .conversation-exit-plan-panel__decision--adjusted',
     // 完成/元信息
     footerSelector: '.conversation-finished-footer',
     // 附件粘贴就绪标志:粘贴后 Slate 编辑器把文件渲染成 file inline block(真机坐实 2026-09-08)。
