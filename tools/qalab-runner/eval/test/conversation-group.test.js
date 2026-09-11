@@ -47,6 +47,8 @@ function test_empty_group_treated_as_singleton() {
 }
 
 function main() {
+  assert.deepStrictEqual(groupIntoConversations([item(1, 'g1', 0), item(2, 'g1', 0)])
+    .map(c => c.map(x => x.run_id)), [[1], [2]], '同名首轮不能误串成多轮');
   const scoped = ['a', 'b'].flatMap(batch_id => [0, 1].map(turn => ({
     ...item(`${batch_id}-${turn}`, 'same', turn), batch_id,
   })));

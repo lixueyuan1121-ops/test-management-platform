@@ -341,7 +341,7 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
 
     校验失败抛 ValueError(端点转 400,定时 job 记日志跳过);调用方负责 commit。
     """
-    from app.api.eval_queue import _new_batch_id, _payload_of
+    from app.api.eval_queue import _new_batch_id, _payload_of, _dispatch_conversation_groups
     from app.core.enums import EvalDeviceKind
     from app.services.eval_engines import EVAL_ENGINES, normalize_engines
     from app.services.dispatcher import online_eval_runners
@@ -384,12 +384,14 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
     group_weight: dict[str, dict[str, int]] = {}        # engine -> {group_key: run 数}
     group_order: dict[str, list[str]] = {}              # engine -> group_key 出现顺序
 
+    conversation_groups = _dispatch_conversation_groups(list(found.values()))
     for engine in engines:
         group_weight.setdefault(engine, {}); group_order.setdefault(engine, [])
         for qid in qids:
             q = found[qid]
             for tag, vopts in variants:
                 payload = _payload_of(q, vopts)
+                payload["conversation_group"] = conversation_groups[qid]
                 if tag:
                     payload["compare_group"] = tag
                     if payload.get("conversation_group"):

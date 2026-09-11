@@ -27,7 +27,9 @@ function groupIntoConversations(pending) {
   for (const conv of conversations) {
     conv.sort((a, b) => ((a.payload || {}).turn_index || 0) - ((b.payload || {}).turn_index || 0));
   }
-  return conversations;
+  // 兼容旧队列：同名且全部 turn_index=0 不能证明是多轮，各自新建对话。
+  return conversations.flatMap(conv => conv.every(it => Number((it.payload || {}).turn_index || 0) === 0)
+    ? conv.map(it => [it]) : [conv]);
 }
 
 // 判定一个会话(conv=该会话各轮 item 数组)是否含带附件轮次。

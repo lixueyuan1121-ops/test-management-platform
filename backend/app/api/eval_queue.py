@@ -67,6 +67,27 @@ def _payload_of(q: EvalQuery, dialog_options: dict | None = None) -> dict:
     }
 
 
+def _dispatch_conversation_groups(queries: list[EvalQuery]) -> dict[int, str | None]:
+    """隔离生成批次；全为首轮的同名组是独立单轮，不能按名称串联。"""
+    groups = {}
+    for q in queries:
+        group = (q.conversation_group or "").strip()
+        groups.setdefault((q.project_id, q.ai_task_id, group), []).append(q)
+    result = {}
+    for (_, source, group), rows in groups.items():
+        turns = [q.turn_index or 0 for q in rows]
+        if not group or all(turn == 0 for turn in turns):
+            result.update({q.id: None for q in rows})
+            continue
+        if len(turns) != len(set(turns)):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                detail=f"对话组 {group} 存在重复轮次，请修正分组后再下发，避免不同对话串联")
+        # JSON 元组避免模型生成的组名恰好撞到拼接前缀。
+        key = json.dumps(["ai", source, group], ensure_ascii=False) if source is not None else group
+        result.update({q.id: key for q in rows})
+    return result
+
+
 def _conv_group(r: EvalRun) -> str | None:
     """从 run 的 payload 快照里读多轮会话分组键;单轮(空/无)返回 None。"""
     try:
@@ -188,14 +209,17 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
     created = []
     batch_id = _new_batch_id()
     opts = _clean_dialog_options(body.dialog_options)
+    conversation_groups = _dispatch_conversation_groups(qs)
     for qid in ids:
         q = found[qid]
+        payload = _payload_of(q, opts)
+        payload["conversation_group"] = conversation_groups[qid]
         row = EvalRun(
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
             runner=body.runner, target_engine=body.target_engine,
             target_device=body.target_device,
             device_kind=EvalDeviceKind.desktop,
-            status=EvalRunStatus.pending, payload=json.dumps(_payload_of(q, opts), ensure_ascii=False),
+            status=EvalRunStatus.pending, payload=json.dumps(payload, ensure_ascii=False),
             enqueued_by=user.id,
         )
         db.add(row); db.flush(); created.append(row.id)
