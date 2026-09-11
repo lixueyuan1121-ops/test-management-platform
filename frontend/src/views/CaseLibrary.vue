@@ -47,6 +47,9 @@
         <el-button size="small" plain @click="bulkSetRegressionFlag(false)">取消回归</el-button>
         <el-button size="small" @click="bulkReview('adopted')">批量采纳</el-button>
         <el-button size="small" type="danger" plain @click="bulkDelete">批量删除</el-button>
+        <el-divider direction="vertical" />
+        <el-button v-if="selectedFixCount" size="small" type="warning" plain :loading="fixing"
+                   @click="bulkFixSelectors">批量补选择器({{ selectedFixCount }} 条待补)</el-button>
       </div>
       </template>
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
@@ -212,7 +215,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
@@ -221,6 +224,7 @@ import { useRouter } from 'vue-router'
 import { useAppStore } from '@/store/app'
 import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
+import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -275,6 +279,8 @@ const myDevices = ref([])
 const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
+const fixing = ref(false)
+const selectedFixCount = computed(() => selected.value.filter((r) => r.selector_fix).length)
 
 // 某行能否下发:必须已采纳(attachChecklist 要求)+ 有关联任务 + 非 manual。
 function canDispatch(row) {
@@ -420,6 +426,45 @@ function locateMissingKeys(row) {
       ctx: `${row.title || ''} ${row.steps || ''}`.trim().slice(0, 200),
     },
   })
+}
+
+// 「批量补选择器」:汇总选中待补用例缺的 key(去重、剔除已注册 key=遵循已有覆盖),带全部缺 key +
+// 合并上下文跳「选择器管理」,在那批量探测+匹配+建 key(候选来自真实探测)。补齐后自动回填复活。
+async function bulkFixSelectors() {
+  const fixCases = selected.value.filter((r) => r.selector_fix)
+  if (!fixCases.length) { ElMessage.warning('选中的用例里没有「选择器待补」的'); return }
+  fixing.value = true
+  try {
+    // 读当前项目已注册 key(共享 + 各子产品),剔除已覆盖的(遵循已有覆盖,不重复建)。
+    const registered = new Set()
+    try {
+      const sel = await listSelectors(pid.value)
+      for (const k of (sel?.shared || [])) registered.add(k.key)
+      for (const arr of Object.values(sel?.by_sub || {})) for (const k of arr) registered.add(k.key)
+    } catch { /* 读不到就不剔除,交由探测阶段 matchStatus 兜底判已存在 */ }
+    const { keys, skipped, caseCount, ctx } = collectMissingKeys(fixCases, registered)
+    if (!keys.length) {
+      ElMessage.info(skipped.length
+        ? `选中 ${caseCount} 条待补用例的 key 均已注册,试试「批量回填」或去选择器管理确认`
+        : '选中的待补用例没有可补的 key')
+      return
+    }
+    const msg = `将为选中的 ${caseCount} 条待补用例补齐 ${keys.length} 个缺失选择器 key`
+      + `${skipped.length ? `(另 ${skipped.length} 个已注册,跳过)` : ''}。`
+      + `\n即将跳转「选择器管理」:请在被测客户端切到目标页/弹窗后探测,系统会自动把探测元素匹配到这些 key,一键批量建。`
+    try { await ElMessageBox.confirm(msg, '批量补选择器', { confirmButtonText: '去探测补齐', type: 'info' }) }
+    catch { return }
+    router.push({
+      name: 'selectors',
+      query: {
+        project_id: pid.value,
+        page: (fixCases.map((r) => (r.page || '').split(',').filter(Boolean)[0]).find(Boolean)) || '',
+        fix_keys: keys.join(','),
+        ctx: ctx.slice(0, 200),
+        bulk: '1',   // 标记批量模式:SelectorAdmin 展示待补清单 + 批量匹配/建 key
+      },
+    })
+  } finally { fixing.value = false }
 }
 
 // ---- 编辑 ----
