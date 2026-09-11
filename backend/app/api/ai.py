@@ -481,16 +481,41 @@ def review_testcase(
         tc.is_regression = body.is_regression
 
     # 直接编辑结构化 script:按用例当前(含本次可能刚改的)exec_kind 分流校验,合法才入库,
-    # 并按新 script 用到的 key 重推关联页面(与重生逻辑一致)。不合法 → 400 附原因。
+    # 并按新 script 用到的 key 重推关联页面(与重生逻辑一致)。
+    # key 未注册 → 不拒绝,而是降级「选择器待补」保存(与生成侧一致:补齐 key 即可执行);
+    # 其它硬错误(action 非法/无断言/非数组)→ 仍 400。
     if body.script is not None:
         eff_kind = getattr(tc, "exec_kind", "gui") or "gui"
         norm, verr = validate_script_for_edit(eff_kind, body.script, project_id=tc.project_id, db=db)
         if verr is not None:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"script 不合法:{verr}")
-        tc.script = json.dumps(norm, ensure_ascii=False)
-        p = pages_for_script(norm, tc.project_id)
-        if p:
-            tc.page = p   # 按新 script 的 key 重推页面(推断为空则保留原页面,不清)
+            # 判断是否"仅因未注册 key"(可补齐)——用当前可用 key 集找缺的 key,
+            # 若"假设补齐这些 key"后能通过校验,则是纯缺 key → 降级待补保存;否则是硬错误 → 拒绝。
+            fixed = None
+            if eff_kind in ("gui", "e2e"):
+                from app.services.selectors import usable_key_set
+                from app.services.claude_runner import _unregistered_keys, _validate_script
+                valid_keys = usable_key_set(db, tc.project_id) if tc.project_id else set()
+                missing = _unregistered_keys(body.script, valid_keys)
+                if missing:
+                    norm2, err2 = _validate_script(body.script, (valid_keys or set()) | set(missing))
+                    if err2 is None:
+                        fixed = (norm2, missing)
+            if fixed is None:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"script 不合法:{verr}")
+            # 纯缺 key:降级 manual + 标「选择器待补」,保留规范化 script(补齐 key 后可一键复活)
+            norm2, missing = fixed
+            tc.exec_kind = "manual"
+            keys_txt = ", ".join(missing)
+            tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {eff_kind}"[:500]
+            tc.script = json.dumps(norm2, ensure_ascii=False)
+            p = pages_for_script(norm2, tc.project_id)
+            if p:
+                tc.page = p
+        else:
+            tc.script = json.dumps(norm, ensure_ascii=False)
+            p = pages_for_script(norm, tc.project_id)
+            if p:
+                tc.page = p   # 按新 script 的 key 重推页面(推断为空则保留原页面,不清)
 
     db.commit()
     db.refresh(tc)

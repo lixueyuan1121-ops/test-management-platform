@@ -84,9 +84,10 @@
             <el-table-column label="执行时间" width="150">
               <template #default="{ row }">{{ fmtTime(row.updated_at || row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="120" align="center" fixed="right">
+            <el-table-column label="操作" width="180" align="center" fixed="right">
               <template #default="{ row }">
                 <el-link type="primary" @click="openCorrect(row)">纠偏</el-link>
+                <el-link type="warning" class="op-retry" @click="onRetry(row)">重试</el-link>
                 <el-link v-if="canTriage(row)" type="warning" class="triage-btn"
                          :class="{ busy: row._triaging }" @click="doTriage(row)">
                   {{ row._triaging ? `归因中${row._pos > 0 ? `（排队第 ${row._pos + 1} 位）` : '…'}` : 'AI归因' }}
@@ -170,8 +171,11 @@
             <el-form-item label="步骤">
               <el-input v-model="correct.steps" type="textarea" :rows="2" placeholder="如步骤也变了才改，否则留空不动" />
             </el-form-item>
+            <el-form-item label="script(JSON)">
+              <el-input v-model="correct.script" type="textarea" :rows="6" spellcheck="false" style="font-family:monospace" placeholder="结构化步骤 JSON 数组;留空则不改 script。手改此处将优先于按正文重生 script" />
+            </el-form-item>
           </el-form>
-          <span class="correct-hint">保存后按新正文重新生成该用例的 script(gui/e2e/api)，让下次执行断言新文案。</span>
+          <span class="correct-hint">改了「预期/步骤」而未手改 script → 保存后按新正文重新生成 script;若手改了上面的 script → 直接保存你写的 script(不再 AI 重生)。仅 gui/e2e/api。</span>
         </div>
         <span v-else-if="correct.maintain" class="correct-hint">该用例类型不支持重生 script(仅 gui/e2e/api)。</span>
         <p class="correct-hint" style="margin-top:10px">纠偏后结果说明会打「[人工纠偏]」前缀，并同步回填对应验收清单项。</p>
@@ -197,7 +201,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
-import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, triageExecRun } from '@/api'
+import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, triageExecRun } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -223,7 +227,7 @@ const loading = ref(false)
 const ev = ref({ visible: false, path: '' })
 const rep = ref({ visible: false, row: null })
 const shot = ref({ visible: false, url: '' })
-const correct = ref({ visible: false, row: null, verdict: 'pass', reason: '', saving: false, maintain: false, expected: '', steps: '' })
+const correct = ref({ visible: false, row: null, verdict: 'pass', reason: '', saving: false, maintain: false, expected: '', steps: '', script: '', scriptOrig: '' })
 const activeBatches = ref([])
 const app = useAppStore()
 
@@ -366,22 +370,40 @@ function fixSelector(row) {
   })
 }
 
+// 重试:对该条执行记录的用例重新入队,执行机会重跑。run 标识为 run_id(与纠偏一致),老记录回落 id。
+async function onRetry(row) {
+  const runId = row.run_id || row.id
+  try {
+    await retryExecRun(runId)
+    ElMessage.success('已重新入队,执行机将重跑该用例')
+  } catch { /* http 拦截器已提示 */ }
+}
+
+// script 存库为 JSON 字符串(也可能是对象);格式化成缩进 JSON 供编辑,坏值原样兜底。
+function prettyScript(s) {
+  if (!s) return ''
+  try { return JSON.stringify(typeof s === 'string' ? JSON.parse(s) : s, null, 2) } catch { return String(s) }
+}
 // 人工纠偏:预置为"当前判定的反面"更符合直觉——通过则默认改失败,否则默认改通过。
 function openCorrect(row) {
   correct.value = {
     visible: true, row, saving: false, reason: '',
     verdict: row.verdict === 'pass' ? 'fail' : 'pass',
-    maintain: false, expected: '', steps: '',
+    maintain: false, expected: '', steps: '', script: '', scriptOrig: '',
   }
   // 预填用例正文(供"维护用例"编辑):列表行 payload 里有 steps/expected 快照,取不到再单查详情。
   const cid = row.case_id ?? row.test_case_id
   correct.value.expected = row.payload?.expected || ''
   correct.value.steps = row.payload?.steps || ''
-  if (cid && !correct.value.expected) {
+  // script 不在 payload 快照里,单查用例详情取(顺带补 payload 缺失的 expected/steps)。
+  if (cid) {
     getTestcase(cid).then((tc) => {
       if (correct.value.row === row) {
-        correct.value.expected = tc.expected || ''
-        correct.value.steps = tc.steps || ''
+        if (!correct.value.expected) correct.value.expected = tc.expected || ''
+        if (!correct.value.steps) correct.value.steps = tc.steps || ''
+        const pretty = prettyScript(tc.script)
+        correct.value.script = pretty
+        correct.value.scriptOrig = pretty
       }
     }).catch(() => {})
   }
@@ -398,14 +420,31 @@ async function saveCorrect() {
   try {
     // 1) 先纠偏本次执行结果
     await correctExecVerdict(c.row.run_id, c.verdict, c.reason.trim() || undefined)
-    // 2) 维护用例(可选):更新正文 → 按新正文重生 script,闭环"文案变了"这类真失败
+    // 2) 手改 script(可选):非空且相对原值有变更才提交。手写 script 优先于 AI 重生
+    //    (两者都改 script,会互相覆盖),故本次跳过下面的 genTestcaseScript。
+    const scriptText = (c.script || '').trim()
+    let scriptEdited = false
+    if (cid && scriptText && !sameScript(scriptText, c.scriptOrig)) {
+      let parsed
+      try { parsed = JSON.parse(scriptText) } catch { ElMessage.error('script 不是合法 JSON'); c.saving = false; return }
+      if (!Array.isArray(parsed)) { ElMessage.error('script 必须是步骤数组(以 [ 开头)'); c.saving = false; return }
+      await updateTestcase(cid, { script: parsed })   // 后端按 kind 校验;不合法弹 msg
+      scriptEdited = true
+    }
+    // 3) 维护用例(可选):更新正文 → 按新正文重生 script,闭环"文案变了"这类真失败
     if (c.maintain && canMaintain(c.row) && cid) {
       const patch = {}
       if (c.expected.trim()) patch.expected = c.expected.trim()
       if (c.steps.trim()) patch.steps = c.steps.trim()
       if (Object.keys(patch).length) await updateTestcase(cid, patch)
-      await genTestcaseScript(cid)   // 后端按最新 steps/expected 重生并写回
-      ElMessage.success('已纠偏，并已更新用例、重生 script')
+      if (!scriptEdited) {
+        await genTestcaseScript(cid)   // 后端按最新 steps/expected 重生并写回(手改 script 时跳过,避免覆盖)
+        ElMessage.success('已纠偏，并已更新用例、重生 script')
+      } else {
+        ElMessage.success('已纠偏，并已更新用例正文与手改 script')
+      }
+    } else if (scriptEdited) {
+      ElMessage.success('已纠偏，并已保存手改 script')
     } else {
       ElMessage.success('已纠偏')
     }
@@ -413,6 +452,11 @@ async function saveCorrect() {
     await load()
   } catch { /* http 拦截器已提示 */ }
   finally { c.saving = false }
+}
+// 比较两段 script 文本是否语义等价(忽略缩进/键序差异);解析失败则按文本原样比。
+function sameScript(a, b) {
+  try { return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b || 'null')) }
+  catch { return (a || '').trim() === (b || '').trim() }
 }
 </script>
 
@@ -436,6 +480,7 @@ async function saveCorrect() {
 .batch-stat .flk { color: #b88230; }
 .chain-tag { margin-left: 4px; }
 .fix-link { margin-left: 10px; font-size: 12px; }
+.op-retry { margin-left: 10px; }
 .triage-tag { margin-right: 6px; }
 .triage-btn { margin-left: 8px; font-size: 12px; }
 .triage-btn.busy { pointer-events: none; opacity: .6; }

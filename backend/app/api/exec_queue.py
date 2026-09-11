@@ -379,6 +379,19 @@ def _kind_of(tc: TestCase | None) -> ExecKind:
         return ExecKind.gui
 
 
+def _effective_kind(tc: TestCase | None) -> ExecKind:
+    """下发用的**有效** kind:「选择器待补」降级(manual 但保留了原意图 gui/e2e + script)的用例,
+    按其原意图 gui/e2e 下发——让 runner 用结构化 script + 自愈探测执行,命中缺失元素时探测补齐并回写选择器,
+    实现"生成→缺元素→模型探测执行补全"的闭环。纯 manual(无原意图,主观判断类)保持 manual、仍拒派。"""
+    kind = _kind_of(tc)
+    if kind == ExecKind.manual and tc is not None:
+        from app.services.claude_runner import selector_fix_info
+        sel_fix, _keys, intended = selector_fix_info(getattr(tc, "kind_reason", None))
+        if sel_fix and intended in ("gui", "e2e"):
+            return ExecKind(intended)
+    return kind
+
+
 def _payload_of(tc: TestCase | None, db: Session) -> dict:
     """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params + 结构化 script）。
 
@@ -885,6 +898,49 @@ def correct_verdict(
     db.commit()
     db.refresh(r)
     return ok(_to_out(r))
+
+
+# ---- ⑧ 重试:对一条已执行的记录重新入队(用户 JWT,非 runner)----
+# 执行结果页「重试」按钮调:失败/阻塞(乃至通过)的记录可原样再跑一次。不覆盖原记录,
+# 新增一条 pending run(重新快照 payload,避免用例改动后仍跑旧快照),沿用原 run 的
+# runner/kind/task_id/checklist_item_id——有清单项时结果照旧回流该清单项(见 report)。
+@router.post("/{run_id}/retry")
+def retry_run(
+    run_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把一条已执行的 exec_run 重新入队。项目 admin/member 可操作（按 run 所属项目鉴权）。"""
+    r = db.get(ExecRun, run_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行记录不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    tc = db.get(TestCase, r.test_case_id)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="用例不存在或已删除，无法重试")
+    if _effective_kind(tc) == ExecKind.manual:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="该用例为『人工/不可自动化(manual)』,不能下发到执行机",
+        )
+    tc_platform = getattr(tc, "platform", "web") or "web"
+    _check_platform(r.runner, tc_platform, db, owner_id=user.id)
+    new = ExecRun(
+        checklist_item_id=r.checklist_item_id,   # 沿用原清单项 → 回写照旧回流(无则裸执行)
+        test_case_id=r.test_case_id,
+        task_id=r.task_id,
+        project_id=r.project_id,
+        batch_id=_new_batch_id(),                # 重试单独成批(结果页可区分为一次新执行)
+        runner=r.runner,
+        kind=_effective_kind(tc),                # 待补按原意图 gui/e2e 派(见 _effective_kind)
+        status=ExecStatus.pending,
+        payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),   # 重新快照,跑最新用例
+        enqueued_by=user.id,
+    )
+    db.add(new)
+    db.commit()
+    db.refresh(new)
+    return ok({"run_id": new.id, "batch_id": new.batch_id})
 
 
 # ---- ⑦ runner 上传执行截图（二进制,独立于 report TEXT 通道)----

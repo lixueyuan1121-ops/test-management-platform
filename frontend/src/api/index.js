@@ -285,6 +285,9 @@ export const listExecHistory = (params) => http.get('/exec-queue/history', { par
 export const correctExecVerdict = (runId, verdict, reason) =>
   http.patch(`/exec-queue/${runId}/verdict`, { verdict, reason })
 
+// 重试:对该 run 的用例重新入队,执行机将重跑。返回 { run_id, batch_id }。
+export const retryExecRun = (runId) => http.post(`/exec-queue/${runId}/retry`)
+
 // 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
 export const listReleases = (params) => http.get('/releases', { params })
 export const releaseStats = (project_id) => http.get('/releases/stats', { params: { project_id } })
