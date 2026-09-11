@@ -9,10 +9,14 @@ export function isFragile(cand) {
   return FRAGILE_BYS.has(cand?.by || 'css')
 }
 
-// 稳定候选在前、脆弱候选在后，各自保持相对顺序（返回新数组）。
+// 候选优先级权重（越小越先试）：testid > xpath（class+文本等精确定位）> css/label/placeholder（含缺省 by）
+// > text/role（脆弱降尾）。镜像后端 selector_ranking._BY_RANK。CSS 类名多命中时用 XPath 精确区分。
+const BY_RANK = { testid: 0, xpath: 1, text: 3, role: 3 }
+function rankOf(cand) {
+  return BY_RANK[cand?.by || 'css'] ?? 2
+}
+
+// 按 by 优先级稳定排序（testid > xpath > css/label/placeholder > text/role），返回新数组。
 export function orderCandidates(cands) {
-  const list = cands || []
-  const stable = list.filter((c) => !isFragile(c))
-  const fragile = list.filter((c) => isFragile(c))
-  return [...stable, ...fragile]
+  return [...(cands || [])].sort((a, b) => rankOf(a) - rankOf(b))
 }

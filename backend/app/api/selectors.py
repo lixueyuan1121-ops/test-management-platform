@@ -20,8 +20,12 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import SelectorKey, SelectorScope, TestCase, User
 from app.schemas.common import ok
-from app.schemas.selector import SelectorKeyIn, SelectorKeyPatch, SelectorScopeIn
+from app.schemas.selector import (
+    SelectorKeyIn, SelectorKeyPatch, SelectorScopeIn,
+    SelectorBatchDeleteIn, SelectorBatchPageIn, SelectorImportIn,
+)
 from app.services.selectors import resolved_registry
+from app.services.selector_ranking import is_valid_candidate
 from app.services.claude_runner import _SELECTOR_FIX_MARK
 from app.api.release import SUB_PRODUCTS  # 复用子产品白名单
 
@@ -45,14 +49,21 @@ def _key_out(r: SelectorKey) -> dict:
 
 
 @router.get("/manage")
-def manage(project_id: int = Query(...), db: Session = Depends(get_db),
-           user: User = Depends(get_current_user)):
+def manage(project_id: int = Query(...), sub_product: str = Query(""),
+           db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, project_id, _RW)
     rows = db.query(SelectorKey).filter(SelectorKey.project_id == project_id).order_by(SelectorKey.key).all()
     shared, by_sub = [], {}
     for r in rows:
         (shared if r.sub_product == "" else by_sub.setdefault(r.sub_product, [])).append(_key_out(r))
-    return ok({"shared": shared, "by_sub": by_sub})
+    # 当前作用域的 scope 配置（vm_iframe + 主动探测扫描分支），供前端回显/编辑。
+    sub = _valid_sub(sub_product)
+    sc = (db.query(SelectorScope)
+          .filter(SelectorScope.project_id == project_id, SelectorScope.sub_product == sub).first())
+    scope = {"sub_product": sub,
+             "vm_iframe": sc.vm_iframe if sc else "",
+             "scan_branch": sc.scan_branch if sc else ""}
+    return ok({"shared": shared, "by_sub": by_sub, "scope": scope})
 
 
 @router.post("")
@@ -272,6 +283,20 @@ def patch_key(kid: int, body: SelectorKeyPatch, db: Session = Depends(get_db),
     return ok(_key_out(r))
 
 
+def _downgrade_cases_for_key(db: Session, r: SelectorKey) -> int:
+    """删 key 前把仍引用它的可执行 gui/e2e 用例降为 manual + 写标准「选择器待补」标。
+
+    而非任由 script 静默失效(执行机跑到才 fail)。格式与 parse_testcases 一致 → 待补筛选/
+    badge/一键重生/批量回填自动适用;script 保留,重新加回 key 即可批量回填复活。
+    返回被降级的用例数（不 commit，由调用方统一提交）。
+    """
+    affected = _cases_using_key(db, r.project_id, r.key)
+    for tc in affected:
+        tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{r.key} 后即可执行 {tc.exec_kind}"[:500]
+        tc.exec_kind = "manual"
+    return len(affected)
+
+
 @router.delete("/{kid}")
 def delete_key(kid: int, db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
@@ -279,15 +304,49 @@ def delete_key(kid: int, db: Session = Depends(get_db),
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key 不存在")
     assert_project_role(db, user, r.project_id, _RW)
-    # 联动降级:删 key 前把仍引用它的可执行 gui/e2e 用例降为 manual + 写标准「选择器待补」标,
-    # 而非任由 script 静默失效(执行机跑到才 fail)。格式与 parse_testcases 一致 → 待补筛选/
-    # badge/一键重生/批量回填自动适用;script 保留,重新加回 key 即可批量回填复活。
-    affected = _cases_using_key(db, r.project_id, r.key)
-    for tc in affected:
-        tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{r.key} 后即可执行 {tc.exec_kind}"[:500]
-        tc.exec_kind = "manual"
+    downgraded = _downgrade_cases_for_key(db, r)
     db.delete(r); db.commit()
-    return ok({"deleted": kid, "downgraded": len(affected)})
+    return ok({"deleted": kid, "downgraded": downgraded})
+
+
+@router.post("/batch-delete")
+def batch_delete(body: SelectorBatchDeleteIn, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """批量删除选择器 key。逐个复用单删的联动降级(引用它的可执行用例降为「选择器待补」)。
+
+    权限:按每个 key 各自项目校验(通常同项目)。返回 {deleted:实际删除数, downgraded:降级用例总数,
+    missing:不存在的 id 列表}。整批尽力而为——不存在的 id 跳过计入 missing,不中断其余。
+    """
+    deleted, downgraded, missing = 0, 0, []
+    for kid in dict.fromkeys(body.ids):   # 去重保序
+        r = db.get(SelectorKey, kid)
+        if not r:
+            missing.append(kid); continue
+        assert_project_role(db, user, r.project_id, _RW)
+        downgraded += _downgrade_cases_for_key(db, r)
+        db.delete(r)
+        deleted += 1
+    db.commit()
+    return ok({"deleted": deleted, "downgraded": downgraded, "missing": missing})
+
+
+@router.post("/batch-page")
+def batch_set_page(body: SelectorBatchPageIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """批量设置选择器 key 的 page（页面分组）；空串→清空为未分类。按各自项目校验权限。"""
+    page = (body.page or "").strip()[:64]
+    updated, missing = 0, []
+    for kid in dict.fromkeys(body.ids):
+        r = db.get(SelectorKey, kid)
+        if not r:
+            missing.append(kid); continue
+        assert_project_role(db, user, r.project_id, _RW)
+        r.page = page
+        r.updated_by = user.id
+        r.updated_at = datetime.utcnow()
+        updated += 1
+    db.commit()
+    return ok({"updated": updated, "page": page, "missing": missing})
 
 
 def _cases_using_key(db: Session, project_id: int, key: str) -> list[TestCase]:
@@ -341,9 +400,12 @@ def set_scope(body: SelectorScopeIn, db: Session = Depends(get_db),
         sc = SelectorScope(project_id=body.project_id, sub_product=sub)
         db.add(sc)
     sc.vm_iframe = body.vm_iframe or ""
+    if body.scan_branch is not None:   # None=本次不改（仅保存 vm_iframe 时不清分支）
+        sc.scan_branch = body.scan_branch.strip()
     sc.updated_at = datetime.utcnow()
     db.commit(); db.refresh(sc)
-    return ok({"id": sc.id, "project_id": sc.project_id, "sub_product": sc.sub_product, "vm_iframe": sc.vm_iframe})
+    return ok({"id": sc.id, "project_id": sc.project_id, "sub_product": sc.sub_product,
+               "vm_iframe": sc.vm_iframe, "scan_branch": sc.scan_branch})
 
 
 # ---- Task 4 追加区：GET /resolved（合并解析）+ POST /import-legacy（迁移旧常量）----
@@ -393,3 +455,77 @@ def import_legacy(project_id: int = Query(...), db: Session = Depends(get_db),
         sc.vm_iframe = vm; sc.updated_at = datetime.utcnow()
     db.commit()
     return ok({"imported": imported, "skipped": skipped})
+
+
+# ---- 主动探测 / 手动导入：扫描分支配置读取 + 通用注册表导入（任意作用域）----
+
+
+@router.get("/scan-config")
+def scan_config(project_id: int = Query(...), sub_product: str = Query(""),
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """读取某作用域的主动探测配置（扫描分支 + vm_iframe）。
+
+    供前端回显，以及本地扫描脚本 scan_selectors_from_branch.py 取分支——分支集中配在平台，
+    脚本不写死分支、发给他人即可用（git 凭据用本机已有的，不需在服务端配凭据）。
+    """
+    assert_project_role(db, user, project_id, _RW)
+    sub = _valid_sub(sub_product)
+    sc = (db.query(SelectorScope)
+          .filter(SelectorScope.project_id == project_id, SelectorScope.sub_product == sub).first())
+    return ok({"project_id": project_id, "sub_product": sub,
+               "vm_iframe": sc.vm_iframe if sc else "",
+               "scan_branch": sc.scan_branch if sc else ""})
+
+
+@router.post("/import")
+def import_selectors(body: SelectorImportIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """手动/脚本导入注册表到指定作用域 (project_id, sub_product)。
+
+    格式见 docs/选择器格式说明.md：registry={key:{frame,page,desc,candidates}}。
+    同名 key：overwrite=False 跳过、True 则 PATCH 覆盖。逐 key 校验候选合法性，
+    非法(候选结构不对/key 名超 64/值非对象)只跳过该 key 计入 invalid，不整批失败。
+    vm_iframe 非空时写入该作用域 scope。返回 {imported, updated, skipped, invalid}。
+    """
+    assert_project_role(db, user, body.project_id, _RW)
+    sub = _valid_sub(body.sub_product)
+    reg = body.registry or {}
+    have = {r.key: r for r in db.query(SelectorKey).filter(
+        SelectorKey.project_id == body.project_id, SelectorKey.sub_product == sub).all()}
+    imported = updated = skipped = 0
+    invalid = []
+    for k, v in reg.items():
+        key = (k or "").strip()
+        cands = v.get("candidates", []) if isinstance(v, dict) else None
+        if (not key or len(key) > 64 or not isinstance(v, dict)
+                or not isinstance(cands, list) or not all(is_valid_candidate(c) for c in cands)):
+            invalid.append(k)
+            continue
+        plat = v.get("platform", "web")
+        plat = plat if plat in ("web", "android", "ios") else "web"
+        payload = dict(frame=v.get("frame") or "auto", page=v.get("page") or "",
+                       desc=v.get("desc") or "", platform=plat,
+                       candidates=json.dumps(cands, ensure_ascii=False))
+        existing = have.get(key)
+        if existing:
+            if not body.overwrite:
+                skipped += 1
+                continue
+            existing.frame, existing.page = payload["frame"], payload["page"]
+            existing.desc, existing.platform = payload["desc"], payload["platform"]
+            existing.candidates = payload["candidates"]
+            existing.updated_by, existing.updated_at = user.id, datetime.utcnow()
+            updated += 1
+        else:
+            db.add(SelectorKey(project_id=body.project_id, sub_product=sub, key=key,
+                               updated_by=user.id, updated_at=datetime.utcnow(), **payload))
+            imported += 1
+    vm = (body.vm_iframe or "").strip()
+    if vm:
+        sc = (db.query(SelectorScope).filter(SelectorScope.project_id == body.project_id,
+                                             SelectorScope.sub_product == sub).first())
+        if not sc:
+            sc = SelectorScope(project_id=body.project_id, sub_product=sub); db.add(sc)
+        sc.vm_iframe = vm; sc.updated_at = datetime.utcnow()
+    db.commit()
+    return ok({"imported": imported, "updated": updated, "skipped": skipped, "invalid": invalid})

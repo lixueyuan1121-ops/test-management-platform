@@ -30,8 +30,13 @@ export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
   const isHash = (cls) => /[A-Za-z0-9]{6,}$/.test(cls) && !/[-_]/.test(cls.slice(-8));
   const genCandidates = (el) => {
     const cands = [];
-    const testid = el.getAttribute("data-testid") || el.getAttribute("data-test");
-    if (testid) cands.push({ sel: `[data-testid="${testid}"]`, score: 100, by: "testid", value: testid });
+    // 测试专用锚点(最稳,开发提测约定):兼容三种属性名 data-testid/data-test-id/data-test。
+    // 用命中的**实际属性名**生成 CSS 属性选择器(by=css 走 locator();不用 by=testid/getByTestId——
+    // 那个只认 data-testid,开发用 data-test-id 会定位不到)。score 100=最高优先。
+    for (const attr of ["data-testid", "data-test-id", "data-test"]) {
+      const v = el.getAttribute(attr);
+      if (v) { const s = `[${attr}="${v}"]`; cands.push({ sel: s, score: 100, by: "css", value: s }); break; }
+    }
     if (el.id && !/^\d/.test(el.id) && el.id.length < 50) cands.push({ sel: `#${CSS.escape(el.id)}`, score: 90, by: "css", value: `#${el.id}` });
     const aria = el.getAttribute("aria-label");
     if (aria && aria.length < 60) cands.push({ sel: `[aria-label="${aria}"]`, score: 80, by: "label", value: aria });
@@ -68,7 +73,10 @@ export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
     elements = all;
   } else {
     // 全页扫描:白名单选择器 + cursor:pointer 补充,再按父级同文本去重(原逻辑,但采集根已穿 shadow)。
-    const sel = "a, button, [role=button], [role=tab], [role=menuitem], input, textarea, select, [contenteditable=true], [onclick], [class*=btn], [class*=action], [class*=nav__item], [class*=menu-item]";
+    // 白名单:可交互元素 + 展示文本类(section-title/分组标题/标签/heading——纯展示 div 不可交互,
+    // 但常是断言目标,如"最近任务"分组标题。加它们让 probe/自愈能采到、能断言/定位。
+    // 父级同文本去重 + isVisible + 有候选 三重兜底,故加宽白名单不会灌垃圾。
+    const sel = "a, button, [role=button], [role=tab], [role=menuitem], input, textarea, select, [contenteditable=true], [onclick], [class*=btn], [class*=action], [class*=nav__item], [class*=menu-item], [class*=section-title], [class*=__title], [class*=__label], [class*=__header], [role=heading], h1, h2, h3";
     const set = new Set();
     for (const el of all) {
       try { if (el.matches(sel) || getComputedStyle(el).cursor === "pointer") set.add(el); } catch { /* 忽略 */ }

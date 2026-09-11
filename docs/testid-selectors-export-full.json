@@ -1,0 +1,4589 @@
+{
+  "_comment": "openclaw360-web data-testid 选择器导出(全量)。合并 feature-add-testid-attr_20260907(415 个) 与 feature-fix-1015726_20260908 的 chat-work-continuation,共 416 个 testid。运行时由 src/test-ids 机制注入(默认关闭,localStorage openclaw.testids=1 开启;open shadow 组件由 907 分支穿透注入)。格式见「选择器格式说明.md」。",
+  "vmIframe": "iframe[src*=\".work.n.cn\"]",
+  "coreKeys": [
+    "navHome",
+    "navHistory",
+    "navAgents",
+    "messageInput",
+    "sendButton"
+  ],
+  "registry": {
+    "messageInput": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "聊天消息输入框(ProseMirror 编辑器)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "message-input"
+        }
+      ]
+    },
+    "slashMenu": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 技能菜单容器(输入 / 弹出)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu"
+        }
+      ]
+    },
+    "slashMenuSearch": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单内搜索输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-search"
+        }
+      ]
+    },
+    "slashMenuSearchClear": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单搜索清除按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-search-clear"
+        }
+      ]
+    },
+    "slashMenuTabSkills": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单 Tab:技能",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-tab-skills"
+        }
+      ]
+    },
+    "slashMenuTabFiles": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单 Tab:文件",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-tab-files"
+        }
+      ]
+    },
+    "slashMenuTabKnowledge": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单 Tab:知识库",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-tab-knowledge"
+        }
+      ]
+    },
+    "slashMenuItem": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-item"
+        }
+      ]
+    },
+    "slashMenuEmpty": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单空状态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-empty"
+        }
+      ]
+    },
+    "slashMenuViewAllSkills": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "Slash 菜单「查看全部技能」",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "slash-menu-view-all-skills"
+        }
+      ]
+    },
+    "composeAttachments": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "附件区容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "compose-attachments"
+        }
+      ]
+    },
+    "attachmentItem": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "文件附件项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "attachment-item"
+        }
+      ]
+    },
+    "imageAttachmentItem": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "图片附件项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "image-attachment-item"
+        }
+      ]
+    },
+    "attachmentUploadButton": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "附件上传按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "attachment-upload-button"
+        }
+      ]
+    },
+    "sendButton": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "发送消息按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "send-button"
+        }
+      ]
+    },
+    "abortButton": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "停止生成按钮(生成中时的发送按钮态)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "abort-button"
+        }
+      ]
+    },
+    "taskSearchModal": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-modal"
+        }
+      ]
+    },
+    "taskSearchInput": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-input"
+        }
+      ]
+    },
+    "taskSearchSectionTitle": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索分组标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-section-title"
+        }
+      ]
+    },
+    "taskSearchRow": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索结果列表项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-row"
+        }
+      ]
+    },
+    "taskSearchRowTitle": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索结果列表项标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-row-title"
+        }
+      ]
+    },
+    "taskSearchEmpty": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索空状态文案",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-empty"
+        }
+      ]
+    },
+    "taskSearchEmptyPanel": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索空状态容器(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-empty-panel"
+        }
+      ]
+    },
+    "taskSearchClose": {
+      "frame": "vm",
+      "page": "任务搜索",
+      "desc": "任务搜索关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-search-close"
+        }
+      ]
+    },
+    "navHome": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:首页",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-home"
+        }
+      ]
+    },
+    "navHistory": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:任务",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-history"
+        }
+      ]
+    },
+    "navAgents": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:专家",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-agents"
+        }
+      ]
+    },
+    "navProjects": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:项目",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-projects"
+        }
+      ]
+    },
+    "navCloudDrive": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:文件",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-cloud-drive"
+        }
+      ]
+    },
+    "navKnowledgeBase": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:知识库",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-knowledge-base"
+        }
+      ]
+    },
+    "navAutomation": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:自动化",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-automation"
+        }
+      ]
+    },
+    "navLinks": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:连接器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-links"
+        }
+      ]
+    },
+    "navSpark": {
+      "frame": "vm",
+      "page": "侧边导航",
+      "desc": "一级导航:巧思",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "nav-spark"
+        }
+      ]
+    },
+    "homeGreetingTitle": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页问候标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-greeting-title"
+        }
+      ]
+    },
+    "homeMain": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页主内容区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-main"
+        }
+      ]
+    },
+    "homeCompose": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页输入区容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-compose"
+        }
+      ]
+    },
+    "homeSkillChip": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页技能 chip(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-skill-chip"
+        }
+      ]
+    },
+    "homeSuggestion": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页推荐问题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-suggestion"
+        }
+      ]
+    },
+    "homeSuggestionsRefresh": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页推荐问题换一批按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-suggestions-refresh"
+        }
+      ]
+    },
+    "homeCaseSection": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页案例区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-case-section"
+        }
+      ]
+    },
+    "homeCaseChip": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页案例分类 chip(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-case-chip"
+        }
+      ]
+    },
+    "homeCaseCard": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页案例卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-case-card"
+        }
+      ]
+    },
+    "taskList": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "左侧栏任务列表容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-list"
+        }
+      ]
+    },
+    "taskItem": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item"
+        }
+      ]
+    },
+    "taskItemTitle": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-title"
+        }
+      ]
+    },
+    "taskItemTime": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项时间(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-time"
+        }
+      ]
+    },
+    "taskItemStatus": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项进行中状态(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-status"
+        }
+      ]
+    },
+    "taskItemUnread": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项未读红点(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-unread"
+        }
+      ]
+    },
+    "taskItemMenuButton": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项「...」菜单按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-menu-button"
+        }
+      ]
+    },
+    "taskItemMenu": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项菜单浮层",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-menu"
+        }
+      ]
+    },
+    "taskItemMenuItem": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表项菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-item-menu-item"
+        }
+      ]
+    },
+    "taskListEmpty": {
+      "frame": "vm",
+      "page": "任务列表",
+      "desc": "任务列表筛选空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "task-list-empty"
+        }
+      ]
+    },
+    "automationPage": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-page"
+        }
+      ]
+    },
+    "automationPageTitle": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-page-title"
+        }
+      ]
+    },
+    "automationCreateBtn": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "新建自动化按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-create-btn"
+        }
+      ]
+    },
+    "automationCreateFromTemplateBtn": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "从模板创建按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-create-from-template-btn"
+        }
+      ]
+    },
+    "automationTaskList": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务列表",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-list"
+        }
+      ]
+    },
+    "automationTaskCard": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-card"
+        }
+      ]
+    },
+    "automationTaskCardTitle": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务卡片标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-card-title"
+        }
+      ]
+    },
+    "automationTaskCardStatus": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务卡片状态(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-card-status"
+        }
+      ]
+    },
+    "automationTaskCardEditBtn": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务卡片编辑按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-card-edit-btn"
+        }
+      ]
+    },
+    "automationTaskCardRun": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务卡片运行按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-card-run"
+        }
+      ]
+    },
+    "automationTaskCardRunMore": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化任务卡片运行更多按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-task-card-run-more"
+        }
+      ]
+    },
+    "automationTemplateCard": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化模板卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "automation-template-card"
+        }
+      ]
+    },
+    "acmModal": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化创建/编辑弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-modal"
+        }
+      ]
+    },
+    "acmTitle": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化创建/编辑弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-title"
+        }
+      ]
+    },
+    "acmClose": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化创建/编辑弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-close"
+        }
+      ]
+    },
+    "acmNameInput": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化名称输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-name-input"
+        }
+      ]
+    },
+    "acmPromptInput": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化提示词输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-prompt-input"
+        }
+      ]
+    },
+    "acmAgentSelect": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化专家选择触发按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-agent-select"
+        }
+      ]
+    },
+    "acmFrequencyField": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化频率字段",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-frequency-field"
+        }
+      ]
+    },
+    "acmSubmit": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化弹窗提交按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-submit"
+        }
+      ]
+    },
+    "acmCancel": {
+      "frame": "vm",
+      "page": "自动化",
+      "desc": "自动化弹窗取消按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "acm-cancel"
+        }
+      ]
+    },
+    "expertList": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片流容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-list"
+        }
+      ]
+    },
+    "expertCard": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-card"
+        }
+      ]
+    },
+    "expertCardName": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片名称(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-card-name"
+        }
+      ]
+    },
+    "expertCardDesc": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片技能描述(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-card-desc"
+        }
+      ]
+    },
+    "expertCardAvatar": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片头像(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-card-avatar"
+        }
+      ]
+    },
+    "expertCardUpdateBtn": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片更新按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-card-update-btn"
+        }
+      ]
+    },
+    "expertCardPrivateTag": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "专家卡片私有标签(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-card-private-tag"
+        }
+      ]
+    },
+    "expertPickerModal": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "更多专家选择弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-picker-modal"
+        }
+      ]
+    },
+    "expertPickerTitle": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "更多专家选择弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-picker-title"
+        }
+      ]
+    },
+    "expertPickerClose": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "更多专家选择弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-picker-close"
+        }
+      ]
+    },
+    "expertPickerSearch": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "更多专家选择弹窗搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-picker-search"
+        }
+      ]
+    },
+    "expertPickerTab": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "更多专家选择弹窗 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-picker-tab"
+        }
+      ]
+    },
+    "expertPickerCard": {
+      "frame": "vm",
+      "page": "专家",
+      "desc": "更多专家选择弹窗卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "expert-picker-card"
+        }
+      ]
+    },
+    "projectSidebar": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目侧栏容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-sidebar"
+        }
+      ]
+    },
+    "projectCreateBtn": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "新建项目按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-create-btn"
+        }
+      ]
+    },
+    "projectCard": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-card"
+        }
+      ]
+    },
+    "projectCardName": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目卡片名称(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-card-name"
+        }
+      ]
+    },
+    "projectCardNewChat": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目卡片新建任务按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-card-new-chat"
+        }
+      ]
+    },
+    "projectPage": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目中间页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-page"
+        }
+      ]
+    },
+    "projectPageTitle": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目中间页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-page-title"
+        }
+      ]
+    },
+    "projectCompose": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目中间页输入区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-compose"
+        }
+      ]
+    },
+    "projectContentTabs": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目内容面板 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-content-tabs"
+        }
+      ]
+    },
+    "projectContentTab": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目内容面板 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-content-tab"
+        }
+      ]
+    },
+    "projectSessionRow": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目会话行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-session-row"
+        }
+      ]
+    },
+    "projectSessionRowTitle": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目会话行标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-session-row-title"
+        }
+      ]
+    },
+    "projectTasksEmpty": {
+      "frame": "vm",
+      "page": "项目",
+      "desc": "项目任务空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "project-tasks-empty"
+        }
+      ]
+    },
+    "cloudDrivePage": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-drive-page"
+        }
+      ]
+    },
+    "cloudDriveTitle": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-drive-title"
+        }
+      ]
+    },
+    "cloudDriveTabs": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件页筛选 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-drive-tabs"
+        }
+      ]
+    },
+    "cloudDriveTab": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件页筛选 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-drive-tab"
+        }
+      ]
+    },
+    "cloudDriveSearchInput": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件页搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-drive-search-input"
+        }
+      ]
+    },
+    "cloudDriveUploadBtn": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件页上传按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-drive-upload-btn"
+        }
+      ]
+    },
+    "cloudDiskList": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件列表容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-disk-list"
+        }
+      ]
+    },
+    "cloudDiskRow": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件列表行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-disk-row"
+        }
+      ]
+    },
+    "cloudDiskRowName": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件列表行名称(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-disk-row-name"
+        }
+      ]
+    },
+    "cloudDiskRowMore": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件列表行更多按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-disk-row-more"
+        }
+      ]
+    },
+    "cloudDiskEmpty": {
+      "frame": "vm",
+      "page": "文件",
+      "desc": "文件列表空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cloud-disk-empty"
+        }
+      ]
+    },
+    "kbYunpanEmpty": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "云盘知识库列表空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-yunpan-empty"
+        }
+      ]
+    },
+    "kbPanel": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "项目知识 Tab 面板容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-panel"
+        }
+      ]
+    },
+    "kbToolbar": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "项目知识 Tab 工具栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-toolbar"
+        }
+      ]
+    },
+    "kbRow": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "项目知识条目行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-row"
+        }
+      ]
+    },
+    "kbRowTitle": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "项目知识条目行标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-row-title"
+        }
+      ]
+    },
+    "kbRowMore": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "项目知识条目行更多按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-row-more"
+        }
+      ]
+    },
+    "kbListEmpty": {
+      "frame": "vm",
+      "page": "知识库",
+      "desc": "项目知识列表空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "kb-list-empty"
+        }
+      ]
+    },
+    "linksView": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "links-view"
+        }
+      ]
+    },
+    "linksSearchInput": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "links-search-input"
+        }
+      ]
+    },
+    "linksCategoryTabs": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器分类 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "links-category-tabs"
+        }
+      ]
+    },
+    "linksCategoryTab": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器分类 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "links-category-tab"
+        }
+      ]
+    },
+    "linksList": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器列表",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "links-list"
+        }
+      ]
+    },
+    "channelCard": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "channel-card"
+        }
+      ]
+    },
+    "channelCardTitle": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器卡片标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "channel-card-title"
+        }
+      ]
+    },
+    "channelCardAddBtn": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器卡片添加按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "channel-card-add-btn"
+        }
+      ]
+    },
+    "linksSearchEmpty": {
+      "frame": "vm",
+      "page": "连接器",
+      "desc": "连接器搜索空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "links-search-empty"
+        }
+      ]
+    },
+    "modalDelete": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "删除确认弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-delete"
+        }
+      ]
+    },
+    "modalDeleteCancel": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "删除确认取消按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-delete-cancel"
+        }
+      ]
+    },
+    "modalDeleteConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "删除确认确定按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-delete-confirm"
+        }
+      ]
+    },
+    "modalConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "通用确认弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-confirm"
+        }
+      ]
+    },
+    "modalConfirmTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "通用确认弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-confirm-title"
+        }
+      ]
+    },
+    "modalConfirmCancel": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "通用确认弹窗取消按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-confirm-cancel"
+        }
+      ]
+    },
+    "modalConfirmOk": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "通用确认弹窗确定按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-confirm-ok"
+        }
+      ]
+    },
+    "modalConfirmClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "通用确认弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-confirm-close"
+        }
+      ]
+    },
+    "modalRedeem": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "兑换码弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-redeem"
+        }
+      ]
+    },
+    "modalRedeemClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "兑换码弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-redeem-close"
+        }
+      ]
+    },
+    "modalShareLink": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "文件分享链接弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-share-link"
+        }
+      ]
+    },
+    "modalShareLinkTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "文件分享链接弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-share-link-title"
+        }
+      ]
+    },
+    "modalShareLinkClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "文件分享链接弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-share-link-close"
+        }
+      ]
+    },
+    "modalShareLinkUrl": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "文件分享链接 URL",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-share-link-url"
+        }
+      ]
+    },
+    "modalShareLinkCopy": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "文件分享链接复制按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-share-link-copy"
+        }
+      ]
+    },
+    "modalSettings": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "设置弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-settings"
+        }
+      ]
+    },
+    "modalSettingsClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "设置弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-settings-close"
+        }
+      ]
+    },
+    "modalSettingsTab": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "设置弹窗 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-settings-tab"
+        }
+      ]
+    },
+    "asideSearchBtn": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏搜索按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-search-btn"
+        }
+      ]
+    },
+    "asideFilterBtn": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏筛选按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-filter-btn"
+        }
+      ]
+    },
+    "asideCollapseBtn": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏收起按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-collapse-btn"
+        }
+      ]
+    },
+    "asideNewTaskBtn": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏新建任务按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-new-task-btn"
+        }
+      ]
+    },
+    "asideFilterMenu": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏筛选浮层",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-filter-menu"
+        }
+      ]
+    },
+    "asideFilterOption": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏筛选选项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-filter-option"
+        }
+      ]
+    },
+    "asideFilterReset": {
+      "frame": "vm",
+      "page": "左侧栏",
+      "desc": "左侧栏筛选重置按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "aside-filter-reset"
+        }
+      ]
+    },
+    "homeComposeLead": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页输入框左侧引导区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-compose-lead"
+        }
+      ]
+    },
+    "homeComposeActions": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页输入框动作区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-compose-actions"
+        }
+      ]
+    },
+    "homeComposeAddMenu": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页输入框「+」菜单宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-compose-add-menu"
+        }
+      ]
+    },
+    "homeModeTrigger": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页会话模式下拉宿主(边想边做)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-mode-trigger"
+        }
+      ]
+    },
+    "homeOutputFormat": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页输出格式选择器宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-output-format"
+        }
+      ]
+    },
+    "homeModelTrigger": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页模型切换下拉宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-model-trigger"
+        }
+      ]
+    },
+    "homeComposeMic": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页语音输入宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-compose-mic"
+        }
+      ]
+    },
+    "homeComposeBar": {
+      "frame": "vm",
+      "page": "首页",
+      "desc": "首页输入框底栏(工作目录/模式)宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "home-compose-bar"
+        }
+      ]
+    },
+    "historyPage": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page"
+        }
+      ]
+    },
+    "historyPageTitle": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-title"
+        }
+      ]
+    },
+    "historyPageTabs": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页筛选 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-tabs"
+        }
+      ]
+    },
+    "historyPageTab": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页筛选 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-tab"
+        }
+      ]
+    },
+    "historyPageSearchInput": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-search-input"
+        }
+      ]
+    },
+    "historyPageMoreBtn": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页「...」更多按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-more-btn"
+        }
+      ]
+    },
+    "historyPageMoreDropdown": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页更多下拉菜单",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-more-dropdown"
+        }
+      ]
+    },
+    "historyPageMoreDropdownItem": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页更多下拉菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-more-dropdown-item"
+        }
+      ]
+    },
+    "historyPageEmpty": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-empty"
+        }
+      ]
+    },
+    "historyPageLoadMore": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页加载更多",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-page-load-more"
+        }
+      ]
+    },
+    "historyCard": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card"
+        }
+      ]
+    },
+    "historyCardAvatar": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片头像(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-avatar"
+        }
+      ]
+    },
+    "historyCardAgentName": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片智能体名(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-agent-name"
+        }
+      ]
+    },
+    "historyCardStatusGenerating": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片生成中状态点(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-status-generating"
+        }
+      ]
+    },
+    "historyCardStatusUnread": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片未读状态点(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-status-unread"
+        }
+      ]
+    },
+    "historyCardMore": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片「...」按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-more"
+        }
+      ]
+    },
+    "historyCardTitle": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-title"
+        }
+      ]
+    },
+    "historyCardPreview": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片预览(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-preview"
+        }
+      ]
+    },
+    "historyCardCron": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片定时信息(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-cron"
+        }
+      ]
+    },
+    "historyCardCronName": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片定时名称(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-cron-name"
+        }
+      ]
+    },
+    "historyCardCronTime": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片定时时间(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-cron-time"
+        }
+      ]
+    },
+    "historyCardDropdown": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片下拉菜单(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-dropdown"
+        }
+      ]
+    },
+    "historyCardDropdownDelete": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片下拉删除项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-card-dropdown-delete"
+        }
+      ]
+    },
+    "historyBatchCheckbox": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务卡片批量选择框(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-batch-checkbox"
+        }
+      ]
+    },
+    "historyBatchBar": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页批量选择底栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-batch-bar"
+        }
+      ]
+    },
+    "historyBatchSelectAll": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页批量全选",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-batch-select-all"
+        }
+      ]
+    },
+    "historyBatchCount": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页批量已选数量",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-batch-count"
+        }
+      ]
+    },
+    "historyBatchDelete": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页批量删除",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-batch-delete"
+        }
+      ]
+    },
+    "historyBatchClose": {
+      "frame": "vm",
+      "page": "任务页",
+      "desc": "任务页批量关闭",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "history-batch-close"
+        }
+      ]
+    },
+    "chatRightIterm": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-iterm"
+        }
+      ]
+    },
+    "chatRightTabs": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-tabs"
+        }
+      ]
+    },
+    "chatRightTabsList": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板 Tab 列表",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-tabs-list"
+        }
+      ]
+    },
+    "chatRightTab": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-tab"
+        }
+      ]
+    },
+    "chatRightTabTitle": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板 Tab 标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-tab-title"
+        }
+      ]
+    },
+    "chatRightTabClose": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板 Tab 关闭按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-tab-close"
+        }
+      ]
+    },
+    "chatRightTabAdd": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板新增 Tab 按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-tab-add"
+        }
+      ]
+    },
+    "chatRightContent": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板内容区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-content"
+        }
+      ]
+    },
+    "chatRightFrame": {
+      "frame": "vm",
+      "page": "会话右侧",
+      "desc": "终端面板 iframe(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-right-frame"
+        }
+      ]
+    },
+    "swarmPanel": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作面板容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-panel"
+        }
+      ]
+    },
+    "swarmPanelTitle": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作面板标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-panel-title"
+        }
+      ]
+    },
+    "swarmStageMenu": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "阶段菜单宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-stage-menu"
+        }
+      ]
+    },
+    "swarmStageMenuItem": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "阶段菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-stage-menu-item"
+        }
+      ]
+    },
+    "swarmTabs": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作面板专家 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-tabs"
+        }
+      ]
+    },
+    "swarmTab": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作面板专家 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-tab"
+        }
+      ]
+    },
+    "swarmTabRole": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作专家 Tab 角色(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-tab-role"
+        }
+      ]
+    },
+    "swarmTabStatus": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作专家 Tab 状态(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-tab-status"
+        }
+      ]
+    },
+    "swarmTaskList": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作任务列表",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-task-list"
+        }
+      ]
+    },
+    "swarmTaskRow": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作任务行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-task-row"
+        }
+      ]
+    },
+    "swarmTaskRowTitle": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作任务行标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-task-row-title"
+        }
+      ]
+    },
+    "swarmTaskRowDesc": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作任务行描述(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-task-row-desc"
+        }
+      ]
+    },
+    "swarmTaskRowProgress": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作任务行进度(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-task-row-progress"
+        }
+      ]
+    },
+    "swarmWelcome": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作欢迎区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-welcome"
+        }
+      ]
+    },
+    "swarmWelcomeTitle": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作欢迎区标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-welcome-title"
+        }
+      ]
+    },
+    "swarmWelcomeDescription": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作欢迎区描述",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-welcome-description"
+        }
+      ]
+    },
+    "swarmWelcomeMembers": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作欢迎区成员区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-welcome-members"
+        }
+      ]
+    },
+    "swarmWelcomeMemberCard": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作欢迎区成员卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-welcome-member-card"
+        }
+      ]
+    },
+    "swarmWelcomeMemberTitle": {
+      "frame": "vm",
+      "page": "智能体协作",
+      "desc": "协作欢迎区成员标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "swarm-welcome-member-title"
+        }
+      ]
+    },
+    "creatorRoot": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-root"
+        }
+      ]
+    },
+    "creatorBackBtn": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑返回按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-back-btn"
+        }
+      ]
+    },
+    "creatorTitle": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-title"
+        }
+      ]
+    },
+    "creatorTitleName": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑页标题名称",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-title-name"
+        }
+      ]
+    },
+    "creatorDoneBtn": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑完成按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-done-btn"
+        }
+      ]
+    },
+    "creatorCols": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑三栏容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-cols"
+        }
+      ]
+    },
+    "creatorColResizer": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "创建/编辑栏分隔拖拽(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-col-resizer"
+        }
+      ]
+    },
+    "creatorCoachPanel": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "教练面板",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-coach-panel"
+        }
+      ]
+    },
+    "creatorCoachCompose": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "教练输入区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-coach-compose"
+        }
+      ]
+    },
+    "creatorCoachVersionHistoryBtn": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "教练版本历史按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-coach-version-history-btn"
+        }
+      ]
+    },
+    "creatorVersionPopover": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本历史浮层",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-popover"
+        }
+      ]
+    },
+    "creatorVersionRow": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本历史行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-row"
+        }
+      ]
+    },
+    "creatorVersionEditIconBtn": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑图标按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-icon-btn"
+        }
+      ]
+    },
+    "creatorVersionEditOverlay": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑弹窗遮罩",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-overlay"
+        }
+      ]
+    },
+    "creatorVersionEditModal": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-modal"
+        }
+      ]
+    },
+    "creatorVersionEditTitle": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-title"
+        }
+      ]
+    },
+    "creatorVersionEditClose": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-close"
+        }
+      ]
+    },
+    "creatorVersionEditNavItem": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑弹窗导航项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-nav-item"
+        }
+      ]
+    },
+    "creatorVersionEditNameInput": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑名称输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-name-input"
+        }
+      ]
+    },
+    "creatorVersionEditDescInput": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑描述输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-desc-input"
+        }
+      ]
+    },
+    "creatorVersionEditMdEditor": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑 Markdown 编辑器宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-md-editor"
+        }
+      ]
+    },
+    "creatorVersionEditCancel": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑取消按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-cancel"
+        }
+      ]
+    },
+    "creatorVersionEditConfirm": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "版本编辑确认按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-version-edit-confirm"
+        }
+      ]
+    },
+    "creatorConfigPanel": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "配置面板",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-config-panel"
+        }
+      ]
+    },
+    "creatorConfigMainTab": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "配置面板主 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-config-main-tab"
+        }
+      ]
+    },
+    "creatorConfigPreviewToggle": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "配置面板预览开关",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-config-preview-toggle"
+        }
+      ]
+    },
+    "creatorConfigNameInput": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "配置名称输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-config-name-input"
+        }
+      ]
+    },
+    "creatorConfigDesc": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "配置描述输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-config-desc"
+        }
+      ]
+    },
+    "creatorPreviewPanel": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "预览面板",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-preview-panel"
+        }
+      ]
+    },
+    "creatorPreviewCollapseBtn": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "预览面板收起按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-preview-collapse-btn"
+        }
+      ]
+    },
+    "creatorPreviewEmpty": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "预览面板空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-preview-empty"
+        }
+      ]
+    },
+    "creatorPreviewCompose": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "预览面板输入区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-preview-compose"
+        }
+      ]
+    },
+    "creatorAgentEditRoot": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-root"
+        }
+      ]
+    },
+    "creatorAgentEditBack": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑页返回按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-back"
+        }
+      ]
+    },
+    "creatorAgentEditTitle": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-title"
+        }
+      ]
+    },
+    "creatorAgentEditSave": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑页保存按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-save"
+        }
+      ]
+    },
+    "creatorAgentEditNameInput": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑名称输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-name-input"
+        }
+      ]
+    },
+    "creatorAgentEditBlocks": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑块容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-blocks"
+        }
+      ]
+    },
+    "creatorAgentEditBlock": {
+      "frame": "vm",
+      "page": "专家创建编辑",
+      "desc": "独立专家编辑块(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "creator-agent-edit-block"
+        }
+      ]
+    },
+    "skillsView": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-view"
+        }
+      ]
+    },
+    "skillsScroll": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场滚动区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-scroll"
+        }
+      ]
+    },
+    "skillsTabs": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场 Tab 栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-tabs"
+        }
+      ]
+    },
+    "skillsTab": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-tab"
+        }
+      ]
+    },
+    "skillsCategories": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场分类栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-categories"
+        }
+      ]
+    },
+    "skillsCategory": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场分类(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-category"
+        }
+      ]
+    },
+    "skillsCategoryMore": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场分类更多按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-category-more"
+        }
+      ]
+    },
+    "skillsSearchInput": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-search-input"
+        }
+      ]
+    },
+    "skillsSearchClear": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场搜索清除按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-search-clear"
+        }
+      ]
+    },
+    "skillsCreateBtn": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "创建技能按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-create-btn"
+        }
+      ]
+    },
+    "skillsCreateMenu": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "创建技能菜单",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-create-menu"
+        }
+      ]
+    },
+    "skillsCreateMenuItem": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "创建技能菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-create-menu-item"
+        }
+      ]
+    },
+    "skillsCard": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能商店卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-card"
+        }
+      ]
+    },
+    "skillsCardTitle": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能商店卡片标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-card-title"
+        }
+      ]
+    },
+    "skillsCardCopy": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能商店卡片复制按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-card-copy"
+        }
+      ]
+    },
+    "skillsCardUse": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能商店卡片使用按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-card-use"
+        }
+      ]
+    },
+    "skillsMyCard": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "我创建的技能卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-my-card"
+        }
+      ]
+    },
+    "skillsMyCardUse": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "我创建的技能使用按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-my-card-use"
+        }
+      ]
+    },
+    "skillsMyCardMore": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "我创建的技能更多按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-my-card-more"
+        }
+      ]
+    },
+    "skillsMyCardMenu": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "我创建的技能菜单(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-my-card-menu"
+        }
+      ]
+    },
+    "skillsMyCardMenuItem": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "我创建的技能菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-my-card-menu-item"
+        }
+      ]
+    },
+    "skillsMyCardDelete": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "我创建的技能删除项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-my-card-delete"
+        }
+      ]
+    },
+    "skillsEmpty": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-empty"
+        }
+      ]
+    },
+    "skillsEmptyAction": {
+      "frame": "vm",
+      "page": "技能广场",
+      "desc": "技能广场空态操作(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "skills-empty-action"
+        }
+      ]
+    },
+    "sessionsPanel": {
+      "frame": "vm",
+      "page": "会话列表",
+      "desc": "会话列表面板容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "sessions-panel"
+        }
+      ]
+    },
+    "sessionsList": {
+      "frame": "vm",
+      "page": "会话列表",
+      "desc": "会话列表表格",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "sessions-list"
+        }
+      ]
+    },
+    "sessionsEmpty": {
+      "frame": "vm",
+      "page": "会话列表",
+      "desc": "会话列表空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "sessions-empty"
+        }
+      ]
+    },
+    "sessionsItem": {
+      "frame": "vm",
+      "page": "会话列表",
+      "desc": "会话列表行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "sessions-item"
+        }
+      ]
+    },
+    "sessionsItemKey": {
+      "frame": "vm",
+      "page": "会话列表",
+      "desc": "会话列表 key 单元格(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "sessions-item-key"
+        }
+      ]
+    },
+    "sessionsItemLink": {
+      "frame": "vm",
+      "page": "会话列表",
+      "desc": "会话列表链接(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "sessions-item-link"
+        }
+      ]
+    },
+    "usagePageHeader": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量页头",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-page-header"
+        }
+      ]
+    },
+    "usagePageTitle": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-page-title"
+        }
+      ]
+    },
+    "usagePageSubtitle": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量页副标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-page-subtitle"
+        }
+      ]
+    },
+    "usageHeader": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量头部控制卡",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-header"
+        }
+      ]
+    },
+    "usageControls": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量控制区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-controls"
+        }
+      ]
+    },
+    "usagePresets": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量预设区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-presets"
+        }
+      ]
+    },
+    "usageMetricBadge": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量指标徽标(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-metric-badge"
+        }
+      ]
+    },
+    "usageRefreshBtn": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量刷新按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-refresh-btn"
+        }
+      ]
+    },
+    "usageQueryBar": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量查询栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-query-bar"
+        }
+      ]
+    },
+    "usageQueryInput": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量查询输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-query-input"
+        }
+      ]
+    },
+    "usageQueryActions": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量查询动作区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-query-actions"
+        }
+      ]
+    },
+    "usageFilterRow": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量过滤行",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-filter-row"
+        }
+      ]
+    },
+    "usageFilterSelect": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量过滤下拉(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-filter-select"
+        }
+      ]
+    },
+    "usageSummaryGrid": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量概览网格",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-summary-grid"
+        }
+      ]
+    },
+    "usageSummaryCard": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量概览卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-summary-card"
+        }
+      ]
+    },
+    "usageSummaryValue": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量概览数值(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-summary-value"
+        }
+      ]
+    },
+    "usageSessionsCard": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量会话卡",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-sessions-card"
+        }
+      ]
+    },
+    "usageSessionDetail": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量会话明细面板",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-session-detail"
+        }
+      ]
+    },
+    "usageSessionDetailTitle": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量会话明细标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-session-detail-title"
+        }
+      ]
+    },
+    "usageSessionDetailClose": {
+      "frame": "vm",
+      "page": "用量计费",
+      "desc": "用量会话明细关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "usage-session-detail-close"
+        }
+      ]
+    },
+    "userMenuRoot": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "头像菜单容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-root"
+        }
+      ]
+    },
+    "userMenuAvatarEntry": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "头像入口(点击目标)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-avatar-entry"
+        }
+      ]
+    },
+    "userMenuSettingsBtn": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "设置按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-settings-btn"
+        }
+      ]
+    },
+    "userMenuMoreAccountsBtn": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "更多账号按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-more-accounts-btn"
+        }
+      ]
+    },
+    "userMenuContent": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "头像菜单内容区",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-content"
+        }
+      ]
+    },
+    "userMenuPersonalUserInfo": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "个人版用户信息",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-personal-user-info"
+        }
+      ]
+    },
+    "userMenuEnterpriseUserInfo": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "企业版用户信息",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-enterprise-user-info"
+        }
+      ]
+    },
+    "userMenuLegacyUserInfo": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "旧版用户信息",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-legacy-user-info"
+        }
+      ]
+    },
+    "userMenuMembership": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "会员行",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-membership"
+        }
+      ]
+    },
+    "userMenuItemPersonal": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "个人版菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-item-personal"
+        }
+      ]
+    },
+    "userMenuItem": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "菜单项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-item"
+        }
+      ]
+    },
+    "userMenuLocaleOption": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "语言选项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-locale-option"
+        }
+      ]
+    },
+    "userMenuWorkEnvSelector": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "工作环境选择器宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-work-env-selector"
+        }
+      ]
+    },
+    "userMenuAccountSwitcher": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "账号切换面板",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-account-switcher"
+        }
+      ]
+    },
+    "userMenuAccountItem": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "账号切换项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-account-item"
+        }
+      ]
+    },
+    "userMenuAccountAdd": {
+      "frame": "vm",
+      "page": "头像菜单",
+      "desc": "账号添加(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "user-menu-account-add"
+        }
+      ]
+    },
+    "modalAddSkill": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill"
+        }
+      ]
+    },
+    "modalAddSkillTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-title"
+        }
+      ]
+    },
+    "modalAddSkillClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-close"
+        }
+      ]
+    },
+    "modalAddSkillSearch": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-search"
+        }
+      ]
+    },
+    "modalAddSkillCategory": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗分类(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-category"
+        }
+      ]
+    },
+    "modalAddSkillCard": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-card"
+        }
+      ]
+    },
+    "modalAddSkillCardBtn": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗卡片按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-card-btn"
+        }
+      ]
+    },
+    "modalAddSkillEmpty": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "添加技能弹窗空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-add-skill-empty"
+        }
+      ]
+    },
+    "modalSelectCloudFile": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file"
+        }
+      ]
+    },
+    "modalSelectCloudFileSearch": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-search"
+        }
+      ]
+    },
+    "modalSelectCloudFileList": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗列表",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-list"
+        }
+      ]
+    },
+    "modalSelectCloudFileRow": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-row"
+        }
+      ]
+    },
+    "modalSelectCloudFileName": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗文件名(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-name"
+        }
+      ]
+    },
+    "modalSelectCloudFileEmpty": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-empty"
+        }
+      ]
+    },
+    "modalSelectCloudFileCancel": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗取消按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-cancel"
+        }
+      ]
+    },
+    "modalSelectCloudFileConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "选择云文件弹窗确定按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-select-cloud-file-confirm"
+        }
+      ]
+    },
+    "modalFeedback": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "意见反馈弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-feedback"
+        }
+      ]
+    },
+    "modalFeedbackTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "意见反馈弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-feedback-title"
+        }
+      ]
+    },
+    "modalFeedbackClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "意见反馈弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-feedback-close"
+        }
+      ]
+    },
+    "modalFeedbackTextarea": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "意见反馈内容输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-feedback-textarea"
+        }
+      ]
+    },
+    "modalFeedbackContactInput": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "意见反馈联系方式输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-feedback-contact-input"
+        }
+      ]
+    },
+    "modalFeedbackSubmit": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "意见反馈提交按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-feedback-submit"
+        }
+      ]
+    },
+    "modalWorkflowSave": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "工作流保存弹窗宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-workflow-save"
+        }
+      ]
+    },
+    "modalWorkflowProgress": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "工作流进度弹窗宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-workflow-progress"
+        }
+      ]
+    },
+    "modalWorkflowQueue": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "工作流队列面板宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-workflow-queue"
+        }
+      ]
+    },
+    "chatMsgActions": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "AI 消息底部动作条(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-msg-actions"
+        }
+      ]
+    },
+    "chatMsgCopy": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "AI 消息复制按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-msg-copy"
+        }
+      ]
+    },
+    "chatMsgShare": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "AI 消息分享按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-msg-share"
+        }
+      ]
+    },
+    "chatMsgRetry": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "AI 消息重试按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-msg-retry"
+        }
+      ]
+    },
+    "chatMsgLike": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "AI 消息点赞按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-msg-like"
+        }
+      ]
+    },
+    "chatMsgDislike": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "AI 消息点踩按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-msg-dislike"
+        }
+      ]
+    },
+    "filePreviewActions": {
+      "frame": "vm",
+      "page": "文件预览",
+      "desc": "产物预览操作栏(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "file-preview-actions"
+        }
+      ]
+    },
+    "filePreviewDownload": {
+      "frame": "vm",
+      "page": "文件预览",
+      "desc": "产物预览下载按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "file-preview-download"
+        }
+      ]
+    },
+    "filePreviewShare": {
+      "frame": "vm",
+      "page": "文件预览",
+      "desc": "产物预览分享按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "file-preview-share"
+        }
+      ]
+    },
+    "filePreviewFullscreen": {
+      "frame": "vm",
+      "page": "文件预览",
+      "desc": "产物预览全屏按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "file-preview-fullscreen"
+        }
+      ]
+    },
+    "filePreviewClose": {
+      "frame": "vm",
+      "page": "文件预览",
+      "desc": "产物预览关闭按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "file-preview-close"
+        }
+      ]
+    },
+    "chatGroup": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "消息分组容器(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-group"
+        }
+      ]
+    },
+    "chatUserQuery": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "用户提问气泡(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-user-query"
+        }
+      ]
+    },
+    "chatToolCard": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "工具调用卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-tool-card"
+        }
+      ]
+    },
+    "chatMessageImages": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "消息图片容器(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-message-images"
+        }
+      ]
+    },
+    "sparkView": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思页容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-view"
+        }
+      ]
+    },
+    "sparkTitle": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思页标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-title"
+        }
+      ]
+    },
+    "sparkPageTab": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思页分页 Tab(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-page-tab"
+        }
+      ]
+    },
+    "sparkSearch": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思页搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-search"
+        }
+      ]
+    },
+    "sparkCard": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思案例卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-card"
+        }
+      ]
+    },
+    "sparkCardTitle": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思案例卡片标题(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-card-title"
+        }
+      ]
+    },
+    "sparkEmpty": {
+      "frame": "vm",
+      "page": "巧思",
+      "desc": "巧思页空态",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "spark-empty"
+        }
+      ]
+    },
+    "cashRegister": {
+      "frame": "vm",
+      "page": "收银台",
+      "desc": "收银台页面容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "cash-register"
+        }
+      ]
+    },
+    "securitySection": {
+      "frame": "vm",
+      "page": "安全设置",
+      "desc": "安全设置分区(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "security-section"
+        }
+      ]
+    },
+    "securityRow": {
+      "frame": "vm",
+      "page": "安全设置",
+      "desc": "安全设置行(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "security-row"
+        }
+      ]
+    },
+    "securityRowToggle": {
+      "frame": "vm",
+      "page": "安全设置",
+      "desc": "安全设置开关(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "security-row-toggle"
+        }
+      ]
+    },
+    "securityScanBtn": {
+      "frame": "vm",
+      "page": "安全设置",
+      "desc": "安全设置扫描按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "security-scan-btn"
+        }
+      ]
+    },
+    "configLayout": {
+      "frame": "vm",
+      "page": "设置页",
+      "desc": "独立设置页布局容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "config-layout"
+        }
+      ]
+    },
+    "configSearchInput": {
+      "frame": "vm",
+      "page": "设置页",
+      "desc": "独立设置页搜索框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "config-search-input"
+        }
+      ]
+    },
+    "configSectionCard": {
+      "frame": "vm",
+      "page": "设置页",
+      "desc": "独立设置页分区卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "config-section-card"
+        }
+      ]
+    },
+    "modalAgentImLink": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "专家 IM 连接弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-agent-im-link"
+        }
+      ]
+    },
+    "modalAgentImLinkTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "专家 IM 连接弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-agent-im-link-title"
+        }
+      ]
+    },
+    "modalAgentImLinkClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "专家 IM 连接弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-agent-im-link-close"
+        }
+      ]
+    },
+    "modalAgentImLinkCard": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "专家 IM 连接卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-agent-im-link-card"
+        }
+      ]
+    },
+    "modalAgentImLinkCardBtn": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "专家 IM 连接卡片按钮(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-agent-im-link-card-btn"
+        }
+      ]
+    },
+    "modalExpirePop": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员到期弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-expire-pop"
+        }
+      ]
+    },
+    "modalExpirePopTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员到期弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-expire-pop-title"
+        }
+      ]
+    },
+    "modalExpirePopConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员到期弹窗确认按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-expire-pop-confirm"
+        }
+      ]
+    },
+    "modalEntHostExpire": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "企业云主机到期弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-ent-host-expire"
+        }
+      ]
+    },
+    "modalEntHostExpireClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "企业云主机到期弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-ent-host-expire-close"
+        }
+      ]
+    },
+    "modalEntHostExpireConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "企业云主机到期弹窗确认按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-ent-host-expire-confirm"
+        }
+      ]
+    },
+    "modalVipPop": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "VIP 提示弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-vip-pop"
+        }
+      ]
+    },
+    "modalVipPopClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "VIP 提示弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-vip-pop-close"
+        }
+      ]
+    },
+    "modalMembershipGuide": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员引导弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-membership-guide"
+        }
+      ]
+    },
+    "modalMembershipGuideTitle": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员引导弹窗标题",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-membership-guide-title"
+        }
+      ]
+    },
+    "modalMembershipGuideClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员引导弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-membership-guide-close"
+        }
+      ]
+    },
+    "modalMembershipGuideConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "会员引导弹窗确认按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-membership-guide-confirm"
+        }
+      ]
+    },
+    "modalUrlOpen": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "外链打开确认弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-url-open"
+        }
+      ]
+    },
+    "modalUrlOpenClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "外链打开确认弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-url-open-close"
+        }
+      ]
+    },
+    "modalWelfareCode": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "福利码兑换弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-welfare-code"
+        }
+      ]
+    },
+    "modalWelfareCodeInput": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "福利码兑换输入框",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-welfare-code-input"
+        }
+      ]
+    },
+    "modalWelfareCodeSubmit": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "福利码兑换提交按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-welfare-code-submit"
+        }
+      ]
+    },
+    "modalWelfareCodeError": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "福利码兑换错误提示",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-welfare-code-error"
+        }
+      ]
+    },
+    "modalLinkSuccess": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "连接成功弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-link-success"
+        }
+      ]
+    },
+    "modalLinkSuccessClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "连接成功弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-link-success-close"
+        }
+      ]
+    },
+    "modalLinkSuccessConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "连接成功弹窗确认按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-link-success-confirm"
+        }
+      ]
+    },
+    "modalPromoDownload": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "推广下载弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-promo-download"
+        }
+      ]
+    },
+    "modalPromoDownloadClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "推广下载弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-promo-download-close"
+        }
+      ]
+    },
+    "modalPromoDownloadCta": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "推广下载弹窗下载按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-promo-download-cta"
+        }
+      ]
+    },
+    "modalDiskSpace": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "磁盘空间提示弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-disk-space"
+        }
+      ]
+    },
+    "modalDiskSpaceClose": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "磁盘空间提示弹窗关闭按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-disk-space-close"
+        }
+      ]
+    },
+    "modalDiskSpaceConfirm": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "磁盘空间提示弹窗确认按钮",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-disk-space-confirm"
+        }
+      ]
+    },
+    "modalHelpManual": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "企业帮助手册弹窗容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-help-manual"
+        }
+      ]
+    },
+    "modalHelpManualSidebar": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "企业帮助手册弹窗侧栏",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-help-manual-sidebar"
+        }
+      ]
+    },
+    "modalHelpManualTocItem": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "企业帮助手册目录项(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-help-manual-toc-item"
+        }
+      ]
+    },
+    "modalNamiDetail": {
+      "frame": "vm",
+      "page": "弹窗",
+      "desc": "算力豆明细弹窗宿主",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "modal-nami-detail"
+        }
+      ]
+    },
+    "fdeService": {
+      "frame": "vm",
+      "page": "工程师服务",
+      "desc": "工程师服务页滚动容器",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "fde-service"
+        }
+      ]
+    },
+    "fdeCapabilityCard": {
+      "frame": "vm",
+      "page": "工程师服务",
+      "desc": "工程师服务能力卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "fde-capability-card"
+        }
+      ]
+    },
+    "fdeCaseCard": {
+      "frame": "vm",
+      "page": "工程师服务",
+      "desc": "工程师服务案例卡片(多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "fde-case-card"
+        }
+      ]
+    },
+    "chatWorkContinuation": {
+      "frame": "vm",
+      "page": "会话",
+      "desc": "继续工作卡片宿主(轮次底部,多个)",
+      "candidates": [
+        {
+          "by": "testid",
+          "value": "chat-work-continuation"
+        }
+      ]
+    }
+  }
+}

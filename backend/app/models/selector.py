@@ -45,6 +45,8 @@ class SelectorScope(Base):
     project_id: Mapped[int] = mapped_column(Integer, index=True)
     sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
     vm_iframe: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    # 主动探测:本地扫描脚本按此分支拉取被测前端代码扫 testid（空=未配置）。
+    scan_branch: Mapped[str] = mapped_column(String(128), default="", server_default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -299,11 +299,19 @@ export const deleteRelease = (id) => http.delete(`/releases/${id}`)
 export const evalDimensionStats = (project_id, days = 30, byEngine = false) =>
   http.get('/eval-judge/dimension-stats', { params: { project_id, days, ...(byEngine ? { by_engine: true } : {}) } })
 // ===== 选择器注册表（语义选择器单源）=====
-// listSelectors 返回 { shared:[...], by_sub:{ 子产品: [...] } }；每个 key_out 含 candidates(数组)。
-export const listSelectors = (project_id) => http.get('/selectors/manage', { params: { project_id } })
+// listSelectors 返回 { shared:[...], by_sub:{ 子产品: [...] }, scope:{sub_product,vm_iframe,scan_branch} }；每个 key_out 含 candidates(数组)。
+// 传 sub_product 使返回的 scope 对应该作用域（回显扫描分支/vm_iframe）。
+export const listSelectors = (project_id, sub_product = '') => http.get('/selectors/manage', { params: { project_id, sub_product } })
 export const createSelector = (body) => http.post('/selectors', body)
 export const patchSelector = (id, body) => http.patch(`/selectors/${id}`, body)
 export const deleteSelector = (id) => http.delete(`/selectors/${id}`)
+// 批量删除选择器 key（逐个联动降级引用它的可执行用例）。返回 { deleted, downgraded, missing }
+export const batchDeleteSelectors = (ids) => http.post('/selectors/batch-delete', { ids })
+// 批量设置选择器 key 的 page（页面分组，逗号分隔多页；空串=清空）。返回 { updated, page, missing }
+export const batchSetSelectorPage = (ids, page) => http.post('/selectors/batch-page', { ids, page })
+// 手动/脚本导入注册表到 (project_id, sub_product) 作用域。body: { project_id, sub_product, registry, vm_iframe?, overwrite? }
+// 返回 { imported, updated, skipped, invalid }
+export const importSelectors = (body) => http.post('/selectors/import', body)
 export const setSelectorScope = (body) => http.put('/selectors/scope', body)
 // 删除前影响范围预览：该 key 被哪些可执行用例引用。返回 { count, cases:[{id,title,exec_kind}] }
 export const selectorUsage = (id) => http.get(`/selectors/${id}/usage`)
@@ -311,6 +319,11 @@ export const selectorUsage = (id) => http.get(`/selectors/${id}/usage`)
 export const backfillTestcases = (project_id) => http.post('/ai/testcases/backfill', null, { params: { project_id } })
 // 导入内置纳米Work注册表（仅项目 admin）；返回 { imported, skipped }
 export const importLegacySelectors = (project_id) => http.post('/selectors/import-legacy', null, { params: { project_id } })
+
+// 模块入口:登记每个模块从首页到达的导航链(nav_keys + ready_key)。
+export const listModules = (project_id, sub_product = '') => http.get('/modules', { params: { project_id, sub_product } })
+export const saveModule = (body) => http.post('/modules', body)
+export const deleteModule = (mid) => http.delete(`/modules/${mid}`)
 
 // ===== 项目级 api 测试环境（base_url/鉴权/接口契约，供 api 用例生成与执行）=====
 // readApiEnv 返回 { base_url, auth_type, auth, contract } 或 null（仅项目 admin，含被测系统凭据）。

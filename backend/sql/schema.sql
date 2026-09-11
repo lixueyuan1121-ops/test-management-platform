@@ -519,6 +519,7 @@ CREATE TABLE IF NOT EXISTS `selector_scope` (
   `project_id` INT NOT NULL,
   `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
   `vm_iframe` VARCHAR(255) NOT NULL DEFAULT '',
+  `scan_branch` VARCHAR(128) NOT NULL DEFAULT '',
   `updated_at` DATETIME DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_selscope` (`project_id`,`sub_product`)
@@ -752,6 +753,21 @@ CREATE TABLE `release_checklist_item` (
 -- bcrypt 哈希需由后端生成；这里建议首次启动后端自动种入，而非手写哈希。
 -- 若需手动种入，可执行后端：python -c "from app.core.security import hash_password; print(hash_password('admin123'))"
 -- ============================================================
+
+-- ---------- 模块入口注册（每个 module = selector_key.page 从首页确定性到达的导航配置） ----------
+CREATE TABLE `module_entry` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `project_id` INT NOT NULL,
+  `sub_product` VARCHAR(32) NOT NULL DEFAULT '',
+  `page` VARCHAR(64) NOT NULL,
+  `nav_keys` TEXT,
+  `ready_key` VARCHAR(64) NOT NULL DEFAULT '',
+  `desc` VARCHAR(255) NOT NULL DEFAULT '',
+  `updated_by` INT NULL,
+  `updated_at` DATETIME NULL,
+  UNIQUE KEY `uq_modentry_scope_page` (`project_id`,`sub_product`,`page`),
+  KEY `idx_modentry_scope` (`project_id`,`sub_product`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------- 测试计划（主用例库可保存集合 + 定时回归，对位 feedback_regression_set 泛化） ----------
 CREATE TABLE `test_plan` (

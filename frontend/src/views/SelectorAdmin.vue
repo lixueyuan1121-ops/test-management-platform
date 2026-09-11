@@ -55,7 +55,33 @@
       </div>
 
       <!-- 「定位缺失 key」待办条：从用例库跳来时列出待补 key，选中后按语义匹配高亮元素，点「加为 key」预填该 key 名 -->
-      <el-alert v-if="fixCtx.keys.length" type="warning" :closable="false" class="fix-bar">
+      <!-- 批量模式(bulk):展示待补清单(已补/未补) + 一键「批量加为 key」把本次探测匹配上的 key 一次建好 -->
+      <el-alert v-if="fixCtx.bulk && fixCtx.keys.length" type="warning" :closable="false" class="fix-bar">
+        <div class="fix-bar-in">
+          <span class="fix-bar-hint">批量补选择器：在客户端切到目标页/弹窗后「探测」，系统自动把探测元素匹配到下列待补 key，核对后一键批量建（分几次覆盖不同弹窗状态）：</span>
+          <div class="fix-keys-chips">
+            <el-tag v-for="k in fixCtx.keys" :key="k" size="small"
+                    :type="fixCtx.done.includes(k) ? 'success' : (bulkChipInfo.has(k) ? 'primary' : 'info')"
+                    :effect="(fixCtx.done.includes(k) || (bulkChipInfo.get(k) && bulkChipInfo.get(k).uid === hoverKey)) ? 'dark' : 'plain'"
+                    :class="{ 'chip-hover': bulkChipInfo.get(k) && bulkChipInfo.get(k).uid === hoverKey }"
+                    style="cursor:default"
+                    @mouseenter="hoverKey = bulkChipInfo.get(k) ? bulkChipInfo.get(k).uid : ''"
+                    @mouseleave="hoverKey = ''">
+              <template v-if="fixCtx.done.includes(k)">✓ {{ k }}</template>
+              <template v-else-if="bulkChipInfo.has(k)">#{{ bulkChipInfo.get(k).no }} {{ k }}<span v-if="bulkChipInfo.get(k).label" class="chip-tid"> · {{ bulkChipInfo.get(k).label }}</span></template>
+              <template v-else>{{ k }}</template>
+            </el-tag>
+          </div>
+          <div class="fix-bar-actions">
+            <el-button type="primary" size="small" :loading="bulkAdding" :disabled="!bulkMatches.length" @click="batchAddMatched">
+              批量加为 key（本次匹配 {{ bulkMatches.length }} 个）
+            </el-button>
+            <span class="form-hint">已补 {{ fixCtx.done.length }} / {{ fixCtx.keys.length }}</span>
+            <el-button link type="info" size="small" @click="fixCtx.keys = []; fixCtx.bulk = false">退出批量</el-button>
+          </div>
+        </div>
+      </el-alert>
+      <el-alert v-else-if="fixCtx.keys.length" type="warning" :closable="false" class="fix-bar">
         <div class="fix-bar-in">
           <span class="fix-bar-hint">待补选择器 key（选一个 → 下方高亮页面上最可能的元素 → 点该元素「加为 key」新建）：</span>
           <el-radio-group v-model="fixCtx.activeKey" size="small">
@@ -95,11 +121,11 @@
                   <div v-if="probe.mode === 'box' && selectedRegionStyle" class="box-selected-region" :style="selectedRegionStyle"></div>
                   <div
                     v-for="box in shotBoxes" :key="box.uid"
-                    class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx }]"
+                    class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx, 'box-fix': box.fixKey }]"
                     :style="box.style" :title="box.label"
                     @mouseenter="hoverKey = box.uid" @mouseleave="hoverKey = ''"
                     @click="openAddAsKey(box.el, box.frameMatch)"
-                  ></div>
+                  ><span v-if="box.fixNo" class="box-fix-no">{{ box.fixNo }}</span></div>
                   <!-- 框选中的矩形(拖拽实时) -->
                   <div v-if="boxRect" class="box-select-rect" :style="boxRect"></div>
                 </div>
@@ -128,7 +154,7 @@
               </el-table-column>
               <el-table-column label="best 候选" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <code v-if="row.best">{{ row.best.by }}={{ row.best.value }}</code>
+                  <code v-if="row.best">{{ candLabel(row.best) }}</code>
                   <span v-else class="form-hint">—</span>
                 </template>
               </el-table-column>
@@ -146,10 +172,10 @@
                         <div class="cand-preview-title">命中库 key「{{ row._status.key }}」<span v-if="row._hitFrame" class="form-hint">（{{ row._hitFrame }}）</span></div>
                         <div class="form-hint">现有候选（{{ row._hitCands.length }}）</div>
                         <ul class="cand-list">
-                          <li v-for="(c, ci) in row._hitCands" :key="ci"><code>{{ c.by }} = {{ c.value }}</code></li>
+                          <li v-for="(c, ci) in row._hitCands" :key="ci"><code>{{ candLabel(c) }}</code></li>
                         </ul>
                         <div class="cand-preview-best">
-                          本次 best：<code>{{ row.best.by }} = {{ row.best.value }}</code>
+                          本次 best：<code>{{ candLabel(row.best) }}</code>
                           <div class="form-hint" :class="row._status.type === 'exists' ? 'hint-ok' : 'hint-warn'">{{ row._status.type === 'exists' ? '→ 已在库中，无需再加' : '→ 新候选，加为 key 时将追加到头部' }}</div>
                         </div>
                       </div>
@@ -192,14 +218,72 @@
       </template>
     </section>
 
+    <el-card v-if="pid" class="module-card">
+      <template #header>
+        <div class="header"><span>模块入口（从首页确定性到达各模块）</span>
+          <el-button size="small" type="primary" @click="openModuleEdit(null)">新增模块入口</el-button></div>
+      </template>
+      <el-table :data="modules" size="small" border empty-text="尚未配置模块入口（配置后执行时会先确定性导航到该模块再跑用例）">
+        <el-table-column prop="page" label="模块(page)" width="140" />
+        <el-table-column label="入口导航 key(依次点)" min-width="200">
+          <template #default="{ row }"><el-tag v-for="k in row.nav_keys" :key="k" size="small" class="nav-key-tag">{{ k }}</el-tag>
+            <span v-if="!row.nav_keys.length" class="form-hint">（未设）</span></template>
+        </el-table-column>
+        <el-table-column prop="ready_key" label="就绪锚点 key" width="180" show-overflow-tooltip />
+        <el-table-column prop="key_count" label="该模块 key 数" width="110" align="center" />
+        <el-table-column label="操作" width="240" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openModuleEdit(row)">编辑</el-button>
+            <el-button link type="warning" size="small" @click="refreshModule(row)">刷新选择器</el-button>
+            <el-button link type="danger" size="small" @click="onDeleteModule(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-dialog v-model="moduleDlg.visible" title="模块入口" width="520px">
+      <el-form label-width="120px">
+        <el-form-item label="模块(page)">
+          <el-select v-model="moduleDlg.page" filterable allow-create default-first-option
+                     placeholder="选或输入模块名，须与选择器 page 一致" style="width:100%">
+            <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="入口导航 key"><el-input v-model="moduleDlg.navText" placeholder="逗号分隔，依次点，如 navAutomation" /></el-form-item>
+        <el-form-item label="就绪锚点 key"><el-input v-model="moduleDlg.readyKey" placeholder="导航后等它可见=到达，如 automationPageTitle" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="moduleDlg.visible = false">取消</el-button>
+        <el-button type="primary" :loading="moduleDlg.saving" @click="submitModule">保存</el-button>
+      </template>
+    </el-dialog>
+
     <section v-show="activeView === 'registry'" class="registry-card">
         <div class="header">
           <div class="filters">
+            <el-button size="small" :disabled="!pid" @click="openImport">手动导入</el-button>
+            <el-button
+              v-if="selectedIds.length" type="danger" size="small" :loading="batchDeleting" @click="onBatchDelete"
+            >批量删除（{{ selectedIds.length }}）</el-button>
+            <el-button
+              v-if="selectedIds.length" size="small" :loading="batchPaging" @click="onBatchSetPage"
+            >批量设页面（{{ selectedIds.length }}）</el-button>
             <el-button
               v-if="canImport" size="small" :disabled="!pid || contextLocked" :loading="importing" @click="onImport"
             >导入内置纳米Work注册表</el-button>
           </div>
         </div>
+
+      <!-- 主动探测:配置扫描分支(本地脚本据此拉代码扫 testid)。分支存在平台,脚本发给别人也能用、免配凭据。 -->
+      <div v-if="pid" class="scan-bar">
+        <span class="scan-label">扫描分支</span>
+        <el-input
+          v-model="scanBranch" size="small" style="width:280px" clearable
+          placeholder="如 feature-add-testid_20260903（当前作用域）"
+        />
+        <el-button size="small" type="primary" plain :loading="savingBranch" @click="saveScanBranch">保存分支</el-button>
+        <span class="form-hint">本机 backend 目录运行：<code>python -m scripts.scan_selectors_from_branch --base-url … --project {{ pid }} --repo &lt;openclaw360-web 本地路径&gt; --import</code> 自动拉此分支扫描并导入</span>
+      </div>
 
       <el-result v-if="loadError" icon="error" title="注册表加载失败"><template #extra><el-button @click="reload">重试注册表</el-button></template></el-result>
       <el-empty v-else-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
@@ -209,7 +293,8 @@
             <span class="page-title">{{ grp.pageLabel }}</span>
             <el-tag size="small" type="info" effect="plain" class="page-count">{{ grp.keys.length }}</el-tag>
           </template>
-          <el-table :data="grp.keys" size="small" border stripe>
+          <el-table :data="grp.keys" size="small" border stripe @selection-change="(sel) => onGroupSelect(grp.name, sel)">
+            <el-table-column type="selection" width="40" />
             <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip />
             <el-table-column prop="frame" label="frame" width="110">
               <template #default="{ row }">{{ row.frame || 'auto' }}</template>
@@ -273,12 +358,42 @@
       </template>
     </el-dialog>
 
+    <!-- 手动导入选择器：粘贴/上传 JSON（registry 或数组格式）→ 导入当前作用域 -->
+    <el-dialog v-model="imp.visible" title="手动导入选择器" width="640px">
+      <div class="form-hint" style="margin-bottom:8px">
+        导入到作用域：<b>{{ subProduct || '项目级共享' }}</b>。支持两种格式：
+        ① 注册表 <code>{ registry: { key: { frame, page, desc, candidates } } }</code>（见 选择器格式说明.md，扫描脚本输出即此格式）；
+        ② 提测清单数组 <code>[{ key, testid, desc, page }]</code>（自动转成 testid 候选）。
+      </div>
+      <div class="imp-toolbar">
+        <el-upload :auto-upload="false" :show-file-list="false" accept=".json" :on-change="onImpFile">
+          <el-button size="small">选择 .json 文件</el-button>
+        </el-upload>
+        <el-checkbox v-model="imp.overwrite" size="small">同名 key 覆盖（默认跳过）</el-checkbox>
+      </div>
+      <el-input
+        v-model="imp.text" type="textarea" :rows="12"
+        placeholder='粘贴 JSON。例如 {"vmIframe":"...","registry":{"navHome":{"frame":"vm","page":"首页","desc":"[全局]-[左侧导航栏]-[进入首页]-[导航按钮]","candidates":[{"by":"testid","value":"nav-home"}]}}}'
+      />
+      <template #footer>
+        <el-button @click="imp.visible = false">取消</el-button>
+        <el-button type="primary" :loading="imp.saving" @click="submitImport">导入</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 加为 key：探测元素 → 落库为选择器（新建 / 更新已有 key 追加候选到头部）-->
     <el-dialog v-model="add.visible" :show-close="!add.saving" :close-on-click-modal="!add.saving" :close-on-press-escape="!add.saving" title="加为 key" width="560px">
       <div class="add-preview">
         <div class="form-hint">来源元素（{{ add.frame }} frame）</div>
         <div><el-tag size="small" type="info" effect="plain">{{ add.tag }}{{ add.type ? `[${add.type}]` : '' }}</el-tag> <span class="probe-el-text">{{ add.text || '（无文本）' }}</span></div>
-        <div class="add-cand">best 候选：<code>{{ add.cand ? `${add.cand.by}=${add.cand.value}` : '—' }}</code></div>
+        <div class="add-cand">best 候选：<code>{{ add.cand ? candLabel(add.cand) : '—' }}</code></div>
+        <div v-if="add.mode === 'create' && add.cands.length" class="add-cands">
+          <span class="form-hint">新建将存 {{ add.cands.length }} 个候选（testid 优先 + css 兜底，执行期可回落）：</span>
+          <el-tag v-for="(c, ci) in add.cands" :key="ci" size="small" effect="plain"
+                  :type="c.by === 'testid' ? 'success' : (c.by === 'css' ? 'primary' : 'info')" class="cand-chip">
+            {{ candLabel(c) }}
+          </el-tag>
+        </div>
         <div v-if="add.status && add.status.type !== 'new'" class="add-status">
           <el-tag :type="STATUS_META[add.status.type].tag" size="small" effect="plain">{{ STATUS_META[add.status.type].label }}</el-tag>
           <span class="form-hint">已匹配库中 key「{{ add.status.key }}」，{{ add.status.type === 'exists' ? '该候选已登记' : '建议更新已有以补充候选' }}</span>
@@ -303,8 +418,20 @@
               <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
             </el-select>
           </el-form-item>
-          <el-form-item label="说明">
-            <el-input v-model="add.desc" placeholder="可选：这个 key 找的是什么元素" />
+          <el-form-item label="说明(四段式)">
+            <div class="seg-row">
+              <el-input v-model="add.segTab" placeholder="导航Tab，如 自动化" />
+              <span class="seg-sep">-</span>
+              <el-input :model-value="add.page" disabled placeholder="页面(取上方)" />
+              <span class="seg-sep">-</span>
+              <el-input v-model="add.segScene" placeholder="场景，如 新建任务" />
+              <span class="seg-sep">-</span>
+              <el-input v-model="add.segElem" placeholder="控件类型，如 输入框/下拉列表/按钮" />
+            </div>
+            <div class="form-hint">
+              格式 [导航Tab]-[页面]-[场景]-[元素:输入框还是下拉列表]；控件类型已按元素/用例步骤自动推断，可改。
+              预览：<code>{{ addComposedDesc || '（四段皆空=不填说明）' }}</code>
+            </div>
           </el-form-item>
         </template>
         <el-form-item v-else label="目标 key" required>
@@ -315,13 +442,28 @@
           <div v-if="addTarget" class="add-compare">
             <div class="form-hint">「{{ addTarget.key }}」现有候选（{{ (addTarget.candidates || []).length }}）</div>
             <ul class="cand-list">
-              <li v-for="(c, ci) in (addTarget.candidates || [])" :key="ci"><code>{{ c.by }} = {{ c.value }}</code></li>
+              <li v-for="(c, ci) in (addTarget.candidates || [])" :key="ci"><code>{{ candLabel(c) }}</code></li>
               <li v-if="!(addTarget.candidates || []).length" class="form-hint">（空）</li>
             </ul>
             <div class="form-hint">合并后顺序（稳定优先，脆弱文案候选降到末尾）</div>
             <ol class="cand-list merged">
-              <li v-for="(c, ci) in addMergedPreview" :key="ci"><code>{{ c.by }} = {{ c.value }}</code> <el-tag v-if="c._new" type="warning" size="small" effect="plain">新</el-tag></li>
+              <li v-for="(c, ci) in addMergedPreview" :key="ci"><code>{{ candLabel(c) }}</code> <el-tag v-if="c._new" type="warning" size="small" effect="plain">新</el-tag></li>
             </ol>
+          </div>
+        </el-form-item>
+        <!-- XPath 定位:新建/更新两种模式都可用。CSS 满足不了(同 class 多命中)时用它按文本精确定位。 -->
+        <el-form-item label="XPath 定位">
+          <el-alert v-if="add.cssCount >= 2" type="warning" :closable="false" show-icon class="xpath-alert">
+            该元素的 CSS 类在本次探测命中 <b>{{ add.cssCount }}</b> 个（多为同 class、仅文本不同的控件），CSS 会定位串到别的元素。建议用下方 XPath 按文本精确定位。
+          </el-alert>
+          <el-input v-model="add.xpath" clearable placeholder='可选：CSS 满足不了时填 XPath，如 //button[normalize-space(.)="打开文件夹"]'>
+            <template #append>
+              <el-button :disabled="!add.xpathAuto" @click="add.xpath = add.xpathAuto">自动生成</el-button>
+            </template>
+          </el-input>
+          <div class="form-hint">
+            填了就并入候选并<b>排在 CSS 之前</b>（testid &gt; xpath &gt; css）；{{ add.mode === 'update' ? '合并进所选已有 key' : '随新 key 一起存' }}。留空则不加。
+            <span v-if="add.xpathAuto">建议：<code class="xpath-suggest" @click="add.xpath = add.xpathAuto" title="点击采纳">{{ add.xpathAuto }}</code></span>
           </div>
         </el-form-item>
       </el-form>
@@ -395,19 +537,24 @@
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 const activeView = ref('registry')
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import {
   listSelectors, createSelector, patchSelector, deleteSelector, importLegacySelectors,
+  batchDeleteSelectors, importSelectors, setSelectorScope, batchSetSelectorPage,
   selectorUsage, backfillTestcases,
   listMyDevices, startProbe, getProbe,
+  listModules, saveModule, deleteModule,
   listLearnedSelectors, reviewLearnedSelector,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { isFragile, orderCandidates } from '@/utils/selector-ranking'
+import { autoXPath, cssSelectorValue, countCssMatches } from '@/utils/xpath-locator'
 import { rankElements } from '@/utils/selector-match'
+import { matchElementsToKeys } from '@/utils/bulk-fix-selectors'
+import { keysOfModule, staleKeysFromVerify } from '@/utils/module-refresh'
 import { useRoute } from 'vue-router'
 
 // 子产品固定枚举，须与后端 api/release.py 的 SUB_PRODUCTS 一致（选择器按 (项目, 子产品) 分域）。
@@ -424,6 +571,24 @@ const loading = ref(false)
 const importing = ref(false)
 const devices = ref([])   // 我的在线设备（探测目标）
 const activePages = ref([])   // 管理页展开的分组(page name 列表)
+
+// ---- 主动探测：扫描分支配置（当前作用域）----
+const scanBranch = ref('')          // 输入框绑定的扫描分支
+const scopeVmIframe = ref('')       // 当前作用域的 vm_iframe（保存分支时一并回传，避免被清空）
+const savingBranch = ref(false)
+
+// ---- 批量删除：跨分组收集选中行 ----
+const selectedByPage = reactive({})   // 分组名 → 该组选中的 row 数组
+const batchDeleting = ref(false)
+const selectedIds = computed(() => {
+  const ids = []
+  for (const name of Object.keys(selectedByPage)) {
+    for (const r of (selectedByPage[name] || [])) ids.push(r.id)
+  }
+  return ids
+})
+function onGroupSelect(name, sel) { selectedByPage[name] = sel }
+function clearSelection() { for (const k of Object.keys(selectedByPage)) delete selectedByPage[k] }
 
 // 页面历史建议:当前作用域 rows 的非空 page 去重(供新增/编辑/探测/加 key 的下拉建议)。
 const pageOptions = computed(() => {
@@ -466,12 +631,17 @@ onMounted(async () => {
     fixCtx.keys = String(q.fix_keys || '').split(',').filter(Boolean)
     if (fixCtx.keys.length) activeView.value = 'probe'
     fixCtx.ctx = String(q.ctx || '')
-    fixCtx.activeKey = fixCtx.keys[0] || ''
+    fixCtx.bulk = q.bulk === '1'
+    fixCtx.done = []
+    // 批量模式不预选单个 activeKey(整批一起匹配);单条模式仍激活第一个 key 走原高亮排序。
+    fixCtx.activeKey = fixCtx.bulk ? '' : (fixCtx.keys[0] || '')
     if (q.page) probe.page = String(q.page)
-    // 有在线设备则自动发起 discover（无设备时留给用户手动选设备后点探测）。
+    // 预选在线设备。单条「定位缺失 key」自动探一次(用户通常已停在目标页);批量模式**不自动探**——
+    // 页面加载时客户端多半还在首页(没切到目标页/没开弹窗),自动探是空跑,且批量需分多次切换弹窗状态探测,
+    // 故预选设备后由用户切到目标页/弹窗再手动点「探测」。
     if (fixCtx.keys.length && devices.value.length) {
       probe.runner = devices.value[0].runner_id || probe.runner
-      if (probe.runner) onDiscover()
+      if (probe.runner && !fixCtx.bulk) onDiscover()
     }
     return
   }
@@ -504,14 +674,69 @@ async function reload() {
   rows.value = []; activePages.value = []; loadError.value = false; loading.value = false
   reloadLearned()
   if (!pid.value) { rows.value = []; activePages.value = []; return }
+  clearSelection()   // 切项目/作用域清空批量选择，避免跨作用域误删
   loading.value = true
   try {
-    const data = await listSelectors(project)
+    const data = await listSelectors(project, scope)
     if (disposed || version !== listVersion) return
     rows.value = scope ? (data.by_sub?.[scope] || []) : (data.shared || [])
+    // 回显当前作用域的扫描分支 / vm_iframe（保存分支时回传 vm_iframe，避免被清）
+    scanBranch.value = data.scope?.scan_branch || ''
+    scopeVmIframe.value = data.scope?.vm_iframe || ''
     activePages.value = groupedRows.value.map((g) => g.name)   // 默认全部展开
   } catch { if (!disposed && version === listVersion) loadError.value = true }
   finally { if (!disposed && version === listVersion) loading.value = false }
+  if (!disposed && version === listVersion) await loadModules()
+}
+
+// ---- 模块入口：登记每个模块从首页确定性到达的导航链 ----
+const modules = ref([])
+const moduleDlg = reactive({ visible: false, page: '', navText: '', readyKey: '', saving: false })
+
+async function loadModules() {
+  if (!pid.value) { modules.value = []; return }
+  try { modules.value = await listModules(pid.value, subProduct.value) } catch { modules.value = [] }
+}
+function openModuleEdit(row) {
+  Object.assign(moduleDlg, {
+    visible: true, saving: false,
+    page: row?.page || '', navText: (row?.nav_keys || []).join(','), readyKey: row?.ready_key || '',
+  })
+}
+async function submitModule() {
+  if (!moduleDlg.page.trim()) { ElMessage.warning('模块(page) 不能为空'); return }
+  moduleDlg.saving = true
+  try {
+    await saveModule({
+      project_id: pid.value, sub_product: subProduct.value, page: moduleDlg.page.trim(),
+      nav_keys: moduleDlg.navText.split(',').map((s) => s.trim()).filter(Boolean),
+      ready_key: moduleDlg.readyKey.trim(),
+    })
+    ElMessage.success('已保存模块入口'); moduleDlg.visible = false; await loadModules()
+  } catch { /* 拦截器已提示 */ } finally { moduleDlg.saving = false }
+}
+async function onDeleteModule(row) {
+  try { await ElMessageBox.confirm(`删除模块入口「${row.page}」？`, '删除', { type: 'warning' }) } catch { return }
+  try { await deleteModule(row.id); ElMessage.success('已删除'); await loadModules() } catch { /* 已提示 */ }
+}
+
+// 按模块刷新:verify 该模块所有 key,失效的列出并提示去重探更新。需先选在线设备+客户端停在该模块页。
+// runProbe 为轮询式(启动即返回,结果异步落 probe.result),故用一次性 watch 等 probe.running 归 false 再按本模块筛失效——
+// 直接在 runProbe 后同步读 probe.result 会拿到 null。后端认不认 keys 参数都对:staleKeysFromVerify 在客户端按本模块 key 筛。
+function refreshModule(row) {
+  if (!probe.runner) { ElMessage.warning('先选在线设备，并让客户端停在该模块页面'); return }
+  const mkeys = keysOfModule(rows.value, row.page)
+  if (!mkeys.length) { ElMessage.info(`模块「${row.page}」下暂无 key`); return }
+  runProbe('verify', { mode: 'verify', keys: mkeys.map((r) => r.key) })
+  const stop = watch(() => probe.running, (running) => {
+    if (running) return
+    stop()
+    if (probe.mode !== 'verify' || !probe.result) return   // 探测失败/超时,已由 runProbe 提示
+    const stale = staleKeysFromVerify(probe.result.verify, mkeys)
+    if (!stale.length) ElMessage.success(`模块「${row.page}」的 ${mkeys.length} 个 key 均有效`)
+    else ElMessage.warning(`模块「${row.page}」有 ${stale.length} 个 key 失效：${stale.join('、')}。点下方失效行「重新探测更新」逐个刷新`)
+  })
+
 }
 
 // ---- 运行时自学习候选评审 ----
@@ -659,8 +884,131 @@ async function onImport() {
 // 单个 key 候选链上限：脆弱候选在尾，超出上限时 slice 自然丢弃最不稳的，防链膨胀/优先级倒置。
 const MAX_CANDIDATES = 6
 
+// ---- 保存扫描分支（当前作用域）----
+async function saveScanBranch() {
+  if (!pid.value) return
+  savingBranch.value = true
+  try {
+    // 回传 scopeVmIframe，避免只存分支把已配的 vm_iframe 清掉。
+    await setSelectorScope({
+      project_id: pid.value, sub_product: subProduct.value,
+      vm_iframe: scopeVmIframe.value, scan_branch: scanBranch.value.trim(),
+    })
+    ElMessage.success('已保存扫描分支')
+  } catch { /* 拦截器已提示 */ } finally { savingBranch.value = false }
+}
+
+// ---- 批量删除选中的 key ----
+async function onBatchDelete() {
+  const ids = selectedIds.value
+  if (!ids.length) return
+  try {
+    await ElMessageBox.confirm(
+      `确认批量删除选中的 ${ids.length} 个选择器 key？被可执行用例引用的将联动降级为「选择器待补」（重新补 key 可一键恢复）。`,
+      '批量删除', { type: 'warning' },
+    )
+  } catch { return }
+  batchDeleting.value = true
+  try {
+    const res = await batchDeleteSelectors(ids)
+    ElMessage.success(`已删除 ${res.deleted} 个${res.downgraded ? `，${res.downgraded} 条用例降级为「选择器待补」` : ''}`)
+    clearSelection()
+    await reload()
+    await autoBackfill()
+  } catch { /* 已提示 */ } finally { batchDeleting.value = false }
+}
+
+// ---- 批量设置选中 key 的页面（page 分组）----
+const batchPaging = ref(false)
+async function onBatchSetPage() {
+  const ids = selectedIds.value
+  if (!ids.length) return
+  let value
+  try {
+    ({ value } = await ElMessageBox.prompt(
+      `把选中的 ${ids.length} 个选择器 key「页面」整体设为(逗号分隔多页；留空=清空为未分类)：`, '批量设页面',
+      { inputPlaceholder: '如 会话', inputValue: '', confirmButtonText: '保存' }))
+  } catch { return }
+  batchPaging.value = true
+  try {
+    const res = await batchSetSelectorPage(ids, (value || '').trim())
+    ElMessage.success(`已更新 ${res?.updated ?? ids.length} 个 key 的页面`)
+    clearSelection()
+    await reload()
+  } catch { /* 已提示 */ } finally { batchPaging.value = false }
+}
+const imp = reactive({ visible: false, text: '', overwrite: false, saving: false })
+
+function openImport() {
+  Object.assign(imp, { visible: true, text: '', overwrite: false, saving: false })
+}
+
+// el-upload on-change：读取本地 .json 文件文本填入文本域（不真正上传）。
+function onImpFile(file) {
+  const raw = file.raw || file
+  const reader = new FileReader()
+  reader.onload = (e) => { imp.text = String(e.target.result || '') }
+  reader.onerror = () => ElMessage.error('读取文件失败')
+  reader.readAsText(raw)
+}
+
+// kebab-testid → camelCase key（与后端/脚本口径一致），供数组格式无 key 时兜底。
+function toCamelKey(s) {
+  const parts = String(s).split('-')
+  return parts[0] + parts.slice(1).map((p) => p.slice(0, 1).toUpperCase() + p.slice(1)).join('')
+}
+
+// 把用户粘贴的 JSON 归一成后端要的 registry：支持 ①{registry:{...}} ②裸 {key:{...}} ③数组[{key,testid,...}]。
+// 返回 { registry, vmIframe } 或抛错。
+function normalizeImport(parsed) {
+  if (Array.isArray(parsed)) {
+    const registry = {}
+    for (const it of parsed) {
+      if (!it || typeof it !== 'object') continue
+      const key = (it.key || toCamelKey(it.testid || '')).trim()
+      if (!key) continue
+      const candidates = Array.isArray(it.candidates)
+        ? it.candidates
+        : (it.testid ? [{ by: 'testid', value: it.testid }] : [])
+      registry[key] = { frame: it.frame || 'vm', page: it.page || '', desc: it.desc || '', candidates }
+    }
+    return { registry, vmIframe: '' }
+  }
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.registry && typeof parsed.registry === 'object') {
+      return { registry: parsed.registry, vmIframe: parsed.vmIframe || '' }
+    }
+    return { registry: parsed, vmIframe: '' }   // 裸 map
+  }
+  throw new Error('JSON 顶层须是对象或数组')
+}
+
+async function submitImport() {
+  const raw = imp.text.trim()
+  if (!raw) { ElMessage.warning('请粘贴或选择 JSON'); return }
+  let parsed
+  try { parsed = JSON.parse(raw) } catch { ElMessage.error('不是合法 JSON'); return }
+  let norm
+  try { norm = normalizeImport(parsed) } catch (e) { ElMessage.error(e.message || '格式无法识别'); return }
+  const count = Object.keys(norm.registry || {}).length
+  if (!count) { ElMessage.warning('未解析到任何 key'); return }
+  imp.saving = true
+  try {
+    const res = await importSelectors({
+      project_id: pid.value, sub_product: subProduct.value,
+      registry: norm.registry, vm_iframe: norm.vmIframe, overwrite: imp.overwrite,
+    })
+    const inv = res.invalid?.length ? `，非法跳过 ${res.invalid.length}` : ''
+    ElMessage.success(`导入完成：新增 ${res.imported}，覆盖 ${res.updated}，跳过 ${res.skipped}${inv}`)
+    imp.visible = false
+    await reload()
+    await autoBackfill()
+  } catch { /* 拦截器已提示 */ } finally { imp.saving = false }
+}
+
 // 「定位缺失 key」上下文（从用例库带 query 跳来）：待补的 key 列表 + 语义匹配上下文 + 当前选中的 key。
-const fixCtx = reactive({ keys: [], ctx: '', activeKey: '' })
+// bulk=true 时为「批量补选择器」模式:显示待补清单 + 探测后批量匹配/建 key(不逐个选 activeKey)。
+const fixCtx = reactive({ keys: [], ctx: '', activeKey: '', bulk: false, done: [] })
 const route = useRoute()
 
 // ---- 设备探测（discover / verify）----
@@ -795,12 +1143,20 @@ function onBoxUp(e) {
 
 // ---- 探测元素 vs 已入库对比标识(#3)----
 // 口径:按候选定位器 by+value 重叠判定。对当前作用域已登记的 key 建索引:
-//   candKey(c) = `${by} ${value}` → 该候选属于哪个 key。
+//   candKey(c) = `${by} ${value}` → 该候选属于哪个 key。
 // 元素标识:
 //   已存在(exists):元素 best 候选已在某 key 里(该 key 已能定位到它,无需再加)。
 //   更新(update):元素与某 key 有共同候选、但 best 是新的(可把 best 补进该 key)。
 //   新增(new):元素所有候选与所有 key 均无重叠。
-const candKey = (c) => `${c.by} ${c.value}`
+const candKey = (c) => `${c.by} ${c.value}`
+
+// 候选展示 label:by:'testid' 是我们候选结构里的内部简写,页面上开发写的实际属性是 data-testid;
+// 故展示成 data-testid=<值>(更贴合真实 DOM),其余 by 原样 <by>=<值>(css/placeholder/label/text/role)。
+const _BY_LABEL = { testid: 'data-testid' }
+function candLabel(c) {
+  if (!c || !c.by) return '—'
+  return `${_BY_LABEL[c.by] || c.by}=${c.value}`
+}
 
 // 当前作用域 rows 的候选反查索引:candKey → key 名(取第一个命中的 key)。
 const candIndex = computed(() => {
@@ -895,13 +1251,20 @@ const zoom = ref(1)
 const shotBoxes = computed(() => {
   const ps = probe.result?.pageSize
   if (!probe.screenshotUrl || !ps || !ps.w || !ps.h) return []
+  // 批量补选择器:把「待补 key ↔ 匹配到的探测元素」按 _uid 建编号索引,给对应框加醒目标注(编号+key)。
+  const fixIdx = new Map()
+  if (fixCtx.bulk) bulkMatches.value.forEach((m, i) => { if (m.el?._uid) fixIdx.set(m.el._uid, { key: m.key, no: i + 1 }) })
   const boxes = []
   for (const g of enrichedGroups.value) {
     for (const el of g.elements) {
       if (!el.absRect) continue
+      const fix = fixIdx.get(el._uid) || null
       boxes.push({
         uid: el._uid, el, frameMatch: el._frameMatch, type: el._status.type, approx: !!el.absApprox,
-        label: `${el.text || el.tag}${el.best ? ` · ${el.best.by}=${el.best.value}` : ''}${el.absApprox ? '（位置近似）' : ''}`,
+        fixKey: fix ? fix.key : '', fixNo: fix ? fix.no : 0,
+        label: fix
+          ? `#${fix.no} ${fix.key}${el.best ? ` · ${candLabel(el.best)}` : ''}`
+          : `${el.text || el.tag}${el.best ? ` · ${candLabel(el.best)}` : ''}${el.absApprox ? '（位置近似）' : ''}`,
         style: {
           left: `${(el.absRect.x / ps.w) * 100}%`, top: `${(el.absRect.y / ps.h) * 100}%`,
           width: `${(el.absRect.w / ps.w) * 100}%`, height: `${(el.absRect.h / ps.h) * 100}%`,
@@ -949,20 +1312,27 @@ function reprobeForKey(key) {
 }
 
 // ---- 加为 key 弹窗（新建 / 更新已有）----
-const add = reactive({ visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto', cand: null, key: '', page: '', desc: '', targetId: null, saving: false, status: null })
+// cand=best 候选(展示/更新合并用);cands=全部候选(testid 优先 + css 兜底,新建时整串落库)。
+// segTab/segScene/segElem=四段式 desc 的第1/3/4段(第2段=页面 add.page);desc 保存时由它们拼成。
+const add = reactive({
+  visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto',
+  cand: null, cands: [], key: '', page: '', desc: '',
+  segTab: '', segScene: '', segElem: '', targetId: null, saving: false, status: null,
+  // XPath 手动纠正:cssCount=该元素 CSS 类在本次探测里命中几个(≥2=多命中,建议 XPath);
+  // xpath=用户采纳/编辑的 XPath 值(非空则并入候选,排在 css 之前);xpathAuto=自动生成的建议值。
+  cssCount: 0, xpath: '', xpathAuto: '',
+})
 
 // 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
 const addTarget = computed(() => (add.mode === 'update' && add.targetId ? rows.value.find((r) => r.id === add.targetId) || null : null))
 
-// 合并后候选顺序预览：与 submitAddAsKey 的 merged 完全一致（就地替换脆弱同 by + 稳定优先 + 上限），标记新增项。
+// 合并后候选顺序预览：与 submitAddAsKey 的 update 分支完全一致（含 XPath 并入），标记新增项。
 const addMergedPreview = computed(() => {
-  if (!add.cand || !addTarget.value) return []
+  if (!addTarget.value) return []
   const existing = addTarget.value.candidates || []
-  const isDup = (c) => c.by === add.cand.by && c.value === add.cand.value
-  const dropSameFragile = (c) => isFragile(add.cand) && c.by === add.cand.by
-  const kept = existing.filter((c) => !isDup(c) && !dropSameFragile(c))
-  const dup = existing.some(isDup)
-  return orderCandidates([{ ...add.cand, _new: !dup }, ...kept.map((c) => ({ ...c, _new: false }))]).slice(0, MAX_CANDIDATES)
+  const merged = updateMergedCandidates(existing)
+  const isOld = (c) => existing.some((e) => e.by === c.by && e.value === c.value)
+  return merged.map((c) => ({ ...c, _new: !isOld(c) }))
 })
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
@@ -970,15 +1340,78 @@ function toCand(c) {
   return c ? { by: c.by, value: c.value } : null
 }
 
+// 一个探测元素的**全部**候选 → 存储用 {by,value} 列表:去重、testid/css 稳定优先、脆弱(text/role)降尾、限长。
+// 修复「加为 key 只存 best(testid)、丢了 css 兜底」——存 testid 优先 + css 兜底,执行期 testid 变了还能回落 css。
+function toCands(el) {
+  const raw = (el?.candidates || []).map(toCand).filter((c) => c && c.by && c.value)
+  const seen = new Set()
+  const uniq = raw.filter((c) => { const k = `${c.by} ${c.value}`; return seen.has(k) ? false : (seen.add(k), true) })
+  return orderCandidates(uniq).slice(0, MAX_CANDIDATES)
+}
+
+// 推断控件类型(四段式第4段:输入框/下拉列表/按钮…)。优先按元素 tag/type 判原生控件;
+// 自定义控件(div/span)按用例步骤/预期/key 名/元素文本等 hint 关键词推断;都判不出留空由人工填。
+const _CT_RULES = [
+  [/下拉|选择框|选择器|select|dropdown|picker/i, '下拉列表'],
+  [/多行|文本域|textarea/i, '多行输入框'],
+  [/勾选|复选|checkbox/i, '复选框'],
+  [/单选|radio/i, '单选框'],
+  [/搜索框|搜索输入|search/i, '搜索输入框'],
+  [/输入|填写|文本框|input/i, '输入框'],
+  [/切换|标签页|选项卡|\btab\b/i, 'Tab项'],
+  [/菜单项|menu[-\s]?item/i, '菜单项'],
+  [/下拉菜单|菜单|menu|dropdown-menu/i, '菜单容器'],
+  [/弹窗|对话框|modal|dialog|popup/i, '弹窗容器'],
+  [/链接|超链接|link/i, '链接'],
+  [/复选|多选/i, '复选框'],
+  [/按钮|提交|确认|保存|取消|删除|新建|btn|button|点击|click/i, '按钮'],
+]
+function inferControlType(el, hint = '') {
+  const tag = (el?.tag || '').toLowerCase()
+  const type = (el?.type || '').toLowerCase()
+  if (tag === 'select') return '下拉列表'
+  if (tag === 'textarea') return '多行输入框'
+  if (tag === 'input') {
+    if (type === 'checkbox') return '复选框'
+    if (type === 'radio') return '单选框'
+    if (['button', 'submit', 'reset'].includes(type)) return '按钮'
+    if (type === 'search') return '搜索输入框'
+    return '输入框'
+  }
+  for (const [re, label] of _CT_RULES) if (re.test(String(hint))) return label
+  if (tag === 'a') return '链接'
+  if (tag === 'button') return '按钮'
+  return ''
+}
+
+// 新建模式的四段式 desc 实时预览/落库值：[导航Tab]-[页面(=add.page)]-[场景]-[控件类型]。
+// 四段全空 → desc 置空(不硬塞空括号)。
+const addComposedDesc = computed(() => {
+  const segs = [add.segTab, add.page, add.segScene, add.segElem].map((s) => (s || '').trim())
+  return segs.some((s) => s) ? segs.map((s) => `[${s}]`).join('-') : ''
+})
+
 function openAddAsKey(el, frame) {
   const cand = toCand(el.best)
+  const cands = toCands(el)
   const status = matchStatus(el)   // #3 标识:exists/update/new
+  const scene = (el.text || '').trim().slice(0, 16)
+  // XPath 纠正:统计该元素 CSS 类在本次探测里命中几个;≥2=CSS 多命中(如同 class 的按钮),自动备一条 XPath。
+  const allEls = enrichedGroups.value.flatMap((g) => g.elements)
+  const cssCount = countCssMatches(allEls, cssSelectorValue(el))
+  const xpathAuto = autoXPath(el)
+  // best 是易多命中的 css(非 testid) 且确实多命中 → 默认采纳自动 XPath;否则留空(用户可手填)。
+  const xpath = (cssCount >= 2 && cand && cand.by === 'css') ? xpathAuto : ''
   // 「定位缺失 key」模式:直接新建选中的那个待补 key(预填 key 名),不走更新预置。
+  // 控件类型推断:先按「元素 tag/type + 元素自身文本」(最贴合该元素),判不出再退到用例步骤上下文。
   if (fixCtx.activeKey) {
+    const segElem = inferControlType(el, el.text || '')
+      || inferControlType({}, `${fixCtx.ctx || ''} ${fixCtx.activeKey || ''}`)
     Object.assign(add, {
       visible: true, saving: false, status,
       tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
-      cand, mode: 'create', key: fixCtx.activeKey, page: probe.page || '', desc: el.text || '', targetId: null,
+      cand, cands, mode: 'create', key: fixCtx.activeKey, page: probe.page || '', targetId: null,
+      segTab: '', segScene: scene, segElem, cssCount, xpathAuto, xpath,
     })
     return
   }
@@ -989,12 +1422,37 @@ function openAddAsKey(el, frame) {
   Object.assign(add, {
     visible: true, saving: false, status,
     tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
-    cand,
+    cand, cands,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
-    key: '', page: probe.page || '', desc: '',
-    targetId: preset ? preset.id : null,
+    key: '', page: probe.page || '', targetId: preset ? preset.id : null,
+    segTab: '', segScene: scene, segElem: inferControlType(el, el.text || ''),
+    cssCount, xpathAuto, xpath,
   })
+}
+
+// 新建时最终落库的候选:把用户采纳/编辑的 XPath 并入,排在 css 之前(orderCandidates 已给 xpath 固定档)。
+function addCreateCandidates() {
+  const base = (add.cands && add.cands.length) ? add.cands.slice() : (add.cand ? [add.cand] : [])
+  const xp = (add.xpath || '').trim()
+  if (!xp) return base
+  const withXp = [{ by: 'xpath', value: xp }, ...base.filter((c) => !(c.by === 'xpath' && c.value === xp))]
+  return orderCandidates(withXp).slice(0, MAX_CANDIDATES)
+}
+
+// 更新已有 key 时的合并候选:把 best + (可选)XPath 并入目标 key 现有候选;
+// 去重、脆弱同 by 就地替换、orderCandidates 排序(testid>xpath>css>脆弱)、限长。新建/更新共用此口径。
+function updateMergedCandidates(existing) {
+  const list = existing || []
+  const xp = (add.xpath || '').trim()
+  const nc = add.cand
+  const isDup = (c) => (nc && c.by === nc.by && c.value === nc.value) || (xp && c.by === 'xpath' && c.value === xp)
+  const dropSameFragile = (c) => nc && isFragile(nc) && c.by === nc.by
+  const kept = list.filter((c) => !isDup(c) && !dropSameFragile(c))
+  const head = []
+  if (xp) head.push({ by: 'xpath', value: xp })
+  if (nc) head.push(nc)
+  return orderCandidates([...head, ...kept]).slice(0, MAX_CANDIDATES)
 }
 
 async function submitAddAsKey() {
@@ -1005,19 +1463,18 @@ async function submitAddAsKey() {
   add.saving = true
   try {
     if (add.mode === 'create') {
+      // 存全部候选(testid > xpath > css 兜底;xpath 为用户采纳/编辑的精确定位);desc 用四段式拼装值。
+      const candidates = addCreateCandidates()
       await createSelector({
         project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: add.key.trim(),
-        frame: add.frame || 'auto', page: add.page || '', desc: add.desc.trim(), candidates: [add.cand],
+        frame: add.frame || 'auto', page: add.page || '', desc: addComposedDesc.value, candidates,
       })
       ElMessage.success('已新建 key')
     } else {
       const target = rows.value.find((r) => r.id === add.targetId)
       const existing = target?.candidates || []
-      // 合并：去掉与新候选完全相同的旧项；新候选若脆弱(text/role)则替换同 by 的旧脆弱项(就地替换、不累加)；
-      // 再按稳定优先排序(脆弱降尾)、裁剪到上限，避免链膨胀与优先级倒置。
-      const dropSameFragile = (c) => isFragile(add.cand) && c.by === add.cand.by
-      const kept = existing.filter((c) => !(c.by === add.cand.by && c.value === add.cand.value) && !dropSameFragile(c))
-      const merged = orderCandidates([add.cand, ...kept]).slice(0, MAX_CANDIDATES)
+      // 合并 best +（可选）XPath 到目标 key 现有候选;去重、脆弱同 by 就地替换、排序(testid>xpath>css>脆弱)、限长。
+      const merged = updateMergedCandidates(existing)
       await patchSelector(add.targetId, { candidates: merged })
       ElMessage.success('已更新已有 key 的候选')
       if (target && probe.updateTarget === target.key) probe.updateTarget = ''
@@ -1027,6 +1484,65 @@ async function submitAddAsKey() {
     await autoBackfill()
   } catch { /* http 拦截器已提示（如 key 冲突）*/ }
   finally { add.saving = false }
+}
+
+// ---- 批量补选择器(bulk 模式):把本次探测元素批量匹配到「尚未补齐」的待补 key ----
+// 复用 matchElementsToKeys(纯逻辑,已单测):对每个待补 key 贪心配一个最匹配的探测元素。
+// 仅取「有 best 候选、matchStatus=new(库里还没有)、且已配上元素」的 key —— 遵循已有覆盖(exists 跳过)、
+// 没有的新建。返回 [{key, el, cand, score}],供面板预览与一键批量建。
+const bulkMatches = computed(() => {
+  if (!fixCtx.bulk) return []
+  const remaining = fixCtx.keys.filter((k) => !fixCtx.done.includes(k))
+  if (!remaining.length) return []
+  const els = enrichedGroups.value.flatMap((g) => g.elements.map((el) => ({ ...el, _frame: el._frameMatch })))
+  const withBest = els.filter((el) => el.best && matchStatus(el).type === 'new')  // 已存在的元素不重复建
+  return matchElementsToKeys(remaining, fixCtx.ctx, withBest)
+    .filter((p) => p.el && p.el.best)
+    .map((p) => ({ key: p.key, el: p.el, cand: toCand(p.el.best), frame: p.el._frame || 'auto', score: p.score }))
+})
+
+const bulkAdding = ref(false)
+
+// 批量补 chip 信息:key → { no 编号, uid 联动高亮, label 展示(data-testid=…) }。
+// 与 shotBoxes 的 fixNo 同源(bulkMatches 顺序),使 chip 编号 ↔ 截图框编号一致。
+const bulkChipInfo = computed(() => {
+  const m = new Map()
+  bulkMatches.value.forEach((x, i) => {
+    m.set(x.key, { no: i + 1, uid: x.el?._uid || '', label: x.cand ? candLabel(x.cand) : '' })
+  })
+  return m
+})
+
+// 一键批量建 key:对 bulkMatches 里每对逐个 createSelector(key 名唯一,候选取元素 best)。
+// 逐个建而非批量端点——量小(单次探测匹配上的 key 通常个位数),且复用后端已有唯一约束/校验。
+async function batchAddMatched() {
+  const matches = bulkMatches.value
+  if (!matches.length) { ElMessage.warning('本次探测没有匹配到可新建的待补 key,试试切到目标页/弹窗再探'); return }
+  bulkAdding.value = true
+  let ok = 0
+  const failed = []
+  try {
+    for (const m of matches) {
+      try {
+        // 存全部候选(testid 优先 + css 兜底);desc 四段式,控件类型先按元素文本、再退到用例上下文推断。
+        const scene = (m.el.text || '').trim().slice(0, 16)
+        const elem = inferControlType(m.el, m.el.text || '')
+          || inferControlType({}, `${fixCtx.ctx || ''} ${m.key || ''}`)
+        const desc = (probe.page || scene || elem) ? `[]-[${probe.page || ''}]-[${scene}]-[${elem}]` : ''
+        await createSelector({
+          project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: m.key,
+          frame: m.frame || 'auto', page: probe.page || '', desc, candidates: toCands(m.el),
+        })
+        ok += 1
+        if (!fixCtx.done.includes(m.key)) fixCtx.done.push(m.key)
+      } catch { failed.push(m.key) }  // 单个失败(如 key 冲突)不阻断其余
+    }
+    const remain = fixCtx.keys.filter((k) => !fixCtx.done.includes(k))
+    ElMessage.success(`已批量新建 ${ok} 个 key${failed.length ? `,${failed.length} 个失败(${failed.join(',')})` : ''}`
+      + `${remain.length ? `;还剩 ${remain.length} 个待补,可切到对应页/弹窗继续探测` : ',全部补齐！'}`)
+    await reload()
+    await autoBackfill()
+  } finally { bulkAdding.value = false }
 }
 </script>
 
@@ -1040,6 +1556,9 @@ async function submitAddAsKey() {
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .form-hint { color: #90a4ae; font-size: 12px; }
 .registry-card { margin-top: 16px; }
+.scan-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 10px; background: #f5f7fa; border-radius: 4px; }
+.scan-label { font-size: 13px; color: #606266; font-weight: 600; }
+.imp-toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; }
 .probe-scope { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; color: #607d8b; font-size: 13px; }
 .probe-group { margin-bottom: 14px; }
 .probe-group-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
@@ -1047,6 +1566,12 @@ async function submitAddAsKey() {
 .probe-el-text { margin-left: 6px; }
 .add-preview { background: #f5f7fa; border-radius: 4px; padding: 10px 12px; }
 .add-cand { margin-top: 6px; }
+.add-cands { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.cand-chip { font-family: var(--tech-mono, monospace); }
+.seg-row { display: flex; align-items: center; gap: 4px; width: 100%; }
+.seg-sep { color: #909399; }
+.xpath-alert { margin-bottom: 8px; }
+.xpath-suggest { cursor: pointer; color: #409eff; word-break: break-all; }
 .add-status { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
 .add-deep-hint { margin-top: 8px; line-height: 1.5; }
 .match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
@@ -1064,6 +1589,10 @@ async function submitAddAsKey() {
 .el-box.box-exists { border-color: rgba(103,194,58,.5); background: rgba(103,194,58,.06); }
 .el-box.approx { border-style: dashed; }
 .el-box.active { border-width: 2px; box-shadow: 0 0 0 2px rgba(64,158,255,.35); background: rgba(64,158,255,.18); z-index: 2; }
+/* 批量补选择器:待补 key 匹配到的元素框——橙色实线醒目框 + 左上角编号角标,与上方 chip 编号/联动一致 */
+.el-box.box-fix { border: 2px solid #e6a23c; background: rgba(230,162,60,.14); box-shadow: 0 0 0 1px rgba(230,162,60,.4); z-index: 3; }
+.el-box.box-fix.active { background: rgba(230,162,60,.3); box-shadow: 0 0 0 3px rgba(230,162,60,.55); z-index: 4; }
+.box-fix-no { position: absolute; top: -9px; left: -9px; min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box; background: #e6a23c; color: #fff; font-size: 11px; line-height: 16px; text-align: center; border-radius: 8px; font-weight: 700; pointer-events: none; }
 /* 框选模式:overlay 接管鼠标(盖住元素框),十字光标;拖拽出的矩形 */
 .shot-overlay.box-selecting { pointer-events: auto; cursor: crosshair; }
 .shot-overlay.box-selecting .el-box { pointer-events: none; }
@@ -1077,6 +1606,10 @@ async function submitAddAsKey() {
 .fix-bar { margin: 8px 0; }
 .fix-bar-in { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .fix-bar-hint { font-size: 12px; color: #7a5b00; }
+.fix-keys-chips { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+.chip-tid { opacity: .75; font-family: var(--tech-mono, monospace); }
+.chip-hover { box-shadow: 0 0 0 2px rgba(230,162,60,.6); }
+.fix-bar-actions { display: flex; align-items: center; gap: 10px; width: 100%; }
 .locate-key-btn { margin-left: 4px; }
 .status-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; cursor: help; }
 .cand-preview-title { font-weight: 600; margin-bottom: 4px; }

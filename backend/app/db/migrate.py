@@ -399,6 +399,22 @@ def ensure_selector_page_column() -> None:
             conn.execute(text("ALTER TABLE selector_key ADD COLUMN page VARCHAR(64) NOT NULL DEFAULT ''"))
 
 
+def ensure_selector_scan_column() -> None:
+    """selector_scope 表补列 scan_branch（主动探测:本地脚本按此分支拉代码扫 testid）。
+
+    老库补列后存量行 scan_branch=''（未配置）；新库由 ensure_selector_tables 依模型建表即含。
+    幂等：ADD 前先探列。
+    """
+    cols = _columns("selector_scope")
+    if not cols:
+        return  # 表尚未建，交给 ensure_selector_tables
+    if "scan_branch" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE selector_scope ADD COLUMN scan_branch VARCHAR(128) NOT NULL DEFAULT ''"
+            ))
+
+
 def ensure_selector_frame_width() -> None:
     """selector_key.frame 列宽放宽到 128（容纳 url:<hostname> 深层 frame 定位）。
 
@@ -716,6 +732,17 @@ def ensure_platform_columns() -> None:
                 "ALTER TABLE runner_device ADD COLUMN platform VARCHAR(16) NOT NULL DEFAULT 'web'"
             ))
         _ensure_index("runner_device", "idx_runnerdev_platform", "platform")
+
+
+def ensure_module_entry_table(engine=None) -> None:
+    """建 module_entry 表(幂等)。create_all 已能建新表；此处显式 CREATE(checkfirst)
+    保证老库无需依赖模型 import 时机也能补出该表(与 ensure_selector_tables/
+    ensure_api_env_table 一致)。表含 (project_id, sub_product, page) 唯一约束与
+    scope 索引，DDL 由模型元数据按方言生成(SQLite/MySQL 通用)。"""
+    from app.db.session import engine as _default_engine
+    from app.models.module_entry import ModuleEntry
+    eng = engine if engine is not None else _default_engine
+    ModuleEntry.__table__.create(bind=eng, checkfirst=True)
 
 
 def ensure_runner_device_capabilities() -> None:
