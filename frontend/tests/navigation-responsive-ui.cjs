@@ -30,6 +30,21 @@ const assert = require('node:assert/strict');
     await page.getByRole('menuitem', { name: '我的设备', exact: true }).waitFor();
     await page.getByPlaceholder('查找功能').fill('发版');
     await page.getByRole('menuitem', { name: '发版记录', exact: true }).waitFor();
+    const search = page.getByPlaceholder('查找功能');
+    for (const focused of [false, true]) {
+      if (focused) await search.focus();
+      else await search.blur();
+      await search.hover();
+      const colors = await search.evaluate(input => ({
+        text: getComputedStyle(input).color,
+        placeholder: getComputedStyle(input, '::placeholder').color,
+        background: getComputedStyle(input.closest('.el-input__wrapper')).backgroundColor,
+      }));
+      assert.equal(colors.background, 'rgb(43, 47, 54)');
+      assert.equal(colors.text, 'rgb(243, 245, 247)');
+      assert.equal(colors.placeholder, 'rgb(184, 193, 206)');
+    }
+    await page.screenshot({ path: '/tmp/navigation-search-contrast.png', fullPage: true });
     await page.getByPlaceholder('查找功能').fill('不存在的功能');
     await page.getByText('无匹配功能', { exact: true }).waitFor();
     await page.getByRole('button', { name: '收起侧栏', exact: true }).click();

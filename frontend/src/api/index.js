@@ -146,6 +146,7 @@ export const parameterizeEvalQuery = (payload) => http.post('/ai/eval-queries/pa
 export const importEvalQueries = (payload) => http.post('/ai/eval-queries/import', payload)
 export const updateEvalQuery = (id, payload) => http.patch(`/ai/eval-queries/${id}`, payload)
 export const deleteEvalQuery = (id) => http.delete(`/ai/eval-queries/${id}`)
+export const batchDeleteEvalQueries = (payload) => http.post('/ai/eval-queries/batch-delete', payload)
 
 // 测评任务(子分类:定制用例集合 + 整体执行 + 综合评价)
 export const listEvalTasks = (projectId) => http.get('/eval-tasks', { params: { project_id: projectId } })

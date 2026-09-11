@@ -184,6 +184,7 @@ def main():
     test_parameterize_engine_unavailable_503()
     test_parameterize_404()
     test_delete_query()
+    test_batch_delete_queries()
     print("\n[PASS] AI 参数化→变体展开 端到端 全部通过")
 
 
@@ -209,6 +210,34 @@ def test_delete_query():
     assert _s.get(EvalQuery, sibling.id) is not None
     assert client.delete(f"/api/ai/eval-queries/{base.id}").status_code == 404
     print("OK delete:阻止活动用例删除，清理任务引用，保留历史执行与其他用例")
+
+
+def test_batch_delete_queries():
+    a, b, keep = [_mk_concrete_case() for _ in range(3)]
+    ids = [a.id, b.id]
+    task = EvalTask(project_id=1, name="批量删除回归", query_ids=json.dumps([a.id, keep.id, b.id]))
+    run = EvalRun(project_id=1, eval_query_id=b.id, status=EvalRunStatus.running, answer="保留历史")
+    _s.add_all([task, run]); _s.commit()
+    url = "/api/ai/eval-queries/batch-delete"
+    for payload, expected_status in [
+        ({"project_id": 1, "query_ids": ids}, 409),
+        ({"project_id": 1, "query_ids": [a.id, 999999]}, 404),
+        ({"project_id": 1, "query_ids": []}, 422),
+    ]:
+        response = client.post(url, json=payload)
+        assert response.status_code == expected_status, response.text
+        assert _s.get(EvalQuery, a.id) and _s.get(EvalQuery, b.id)
+        _s.refresh(task)
+        assert json.loads(task.query_ids) == [a.id, keep.id, b.id]
+    run.status = EvalRunStatus.judged; _s.commit()
+    response = client.post(url, json={"project_id": 1, "query_ids": [*ids, a.id]})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == {"deleted": ids, "count": 2}
+    _s.refresh(task); _s.refresh(run)
+    assert json.loads(task.query_ids) == [keep.id]
+    assert run.answer == "保留历史"
+    assert _s.get(EvalQuery, a.id) is None and _s.get(EvalQuery, b.id) is None
+    print("OK batch delete:整批校验、失败不删、去重、任务清理与历史保留")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [], writes = [];
+    let batchDeleteFails = true;
     page.on('pageerror', e => errors.push(e.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'mock-local-only'));
     const queries = [1, 2, 3].map(id => ({ id, title: `用例${id}`, prompt: '完整提问内容\n'.repeat(15), expected: '完整预期', turn_index: 0 }));
@@ -23,6 +24,10 @@ const assert = require('node:assert/strict');
       if (path.endsWith('/eval-tasks/18/runs')) data = { task, runs: [] };
       if (path.endsWith('/devices')) data = [{ name: '测试机', runner_id: 'runner-1' }];
       if (path.endsWith('/eval-queue/enqueue')) data = { run_ids: [1], batch_id: 'mock-batch' };
+      if (path.endsWith('/ai/eval-queries/batch-delete')) {
+        if (batchDeleteFails) return route.fulfill({ status: 409, json: { code: 409, msg: '所选用例仍在执行，本次未删除任何用例' } });
+        data = { deleted: req.postDataJSON().query_ids, count: req.postDataJSON().query_ids.length };
+      }
       await route.fulfill({ json: { code: 0, data } });
     });
     const base = process.env.UI_BASE_URL || 'http://127.0.0.1:5189';
@@ -85,6 +90,23 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '用例1', exact: true }).waitFor({ state: 'hidden' });
     assert.equal(writes.filter(w => w.path === '/api/ai/eval-queries/1').length, 1);
     assert(await page.getByRole('button', { name: '用例2', exact: true }).isVisible());
+    await page.locator('.el-table__body-wrapper .el-checkbox').first().click();
+    await page.locator('.el-table__body-wrapper .el-checkbox').nth(1).click();
+    await page.getByRole('button', { name: '批量删除', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '取消', exact: true }).click();
+    assert(!writes.some(w => w.path.endsWith('/batch-delete')));
+    await page.getByRole('button', { name: '批量删除', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '确认删除', exact: true }).click();
+    await page.getByText('所选用例仍在执行，本次未删除任何用例', { exact: true }).waitFor();
+    assert(await page.getByRole('button', { name: '用例2', exact: true }).isVisible());
+    await page.locator('.filter-bar').getByText('已选 2 条', { exact: true }).waitFor();
+    batchDeleteFails = false;
+    await page.getByRole('button', { name: '批量删除', exact: true }).click();
+    await page.locator('.el-message-box').getByRole('button', { name: '确认删除', exact: true }).click();
+    await page.getByRole('button', { name: '用例2', exact: true }).waitFor({ state: 'hidden' });
+    const batch = writes.filter(w => w.path.endsWith('/batch-delete'));
+    assert.equal(batch.length, 2);
+    assert.deepEqual(batch[1].body, { project_id: 1, query_ids: [2, 3] });
     assert.deepEqual(errors, []);
     console.log('PASS: navigation, task filters, selection preservation, detail tabs, dispatch payload, mobile dialog');
   } finally { await browser.close(); }

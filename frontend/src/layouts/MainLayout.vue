@@ -106,8 +106,20 @@ function onCommand(cmd) {
 .logo-text { font-size: 15px; font-weight: 600; letter-spacing: 0; }
 .brand-mark { --tm-line: #668ff1; --tm-dim: #92b1f5; --tm-signal: var(--tech-on-dark-accent); }
 .nav-search { padding: 8px 12px 16px; }
-.nav-search :deep(.el-input__wrapper) { background: #2b2f36; box-shadow: 0 0 0 1px #3d424c inset; }
-.nav-search :deep(.el-input__inner) { color: #e7ebef; }
+/* Keep the dark sidebar input independent of global light form backgrounds. */
+.nav-search :deep(.el-input__wrapper),
+.nav-search :deep(.el-input__wrapper:hover),
+.nav-search :deep(.el-input__wrapper:focus-within) {
+  background-color: #2b2f36 !important;
+  box-shadow: 0 0 0 1px #59616e inset;
+}
+.nav-search :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #92b1f5 inset, 0 0 0 2px rgba(146, 177, 245, .2) !important;
+}
+.nav-search :deep(.el-input__inner) { color: #f3f5f7; caret-color: #f3f5f7; }
+.nav-search :deep(.el-input__inner::placeholder) { color: #b8c1ce; opacity: 1; }
+.nav-search :deep(.el-input__prefix), .nav-search :deep(.el-input__suffix) { color: #b8c1ce; }
+.nav-search :deep(.el-input__clear:hover) { color: #fff; }
 .menu { border-right: none; flex: 1; overflow-y: auto; overflow-x: hidden; }
 .menu:not(.el-menu--collapse) { width: 226px; }
 .menu.el-menu--collapse { width: 64px; }

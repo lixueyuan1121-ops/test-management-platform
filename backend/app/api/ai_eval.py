@@ -504,22 +504,46 @@ def update_eval_query(query_id: int, body: EvalQueryUpdateIn, db: Session = Depe
     return ok(_to_query_out(q))
 
 
+def _delete_eval_queries(db: Session, queries: list[EvalQuery]):
+    query_ids = {q.id for q in queries}
+    if db.query(EvalRun.id).filter(
+        EvalRun.eval_query_id.in_(query_ids),
+        EvalRun.status.in_((EvalRunStatus.pending, EvalRunStatus.running, EvalRunStatus.judging)),
+    ).first():
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="所选用例有排队、执行或判定中的测评，本次未删除任何用例，请结束后再删除")
+    project_ids = {q.project_id for q in queries}
+    for task in db.query(EvalTask).filter(EvalTask.project_id.in_(project_ids)).with_for_update().all():
+        ids = json.loads(task.query_ids or "[]")
+        if query_ids.intersection(ids):
+            task.query_ids = json.dumps([qid for qid in ids if qid not in query_ids])
+    for q in queries:
+        db.delete(q)
+    db.commit()
+
+
+class EvalQueryBatchDeleteIn(BaseModel):
+    project_id: int
+    query_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+@router.post("/eval-queries/batch-delete")
+def batch_delete_eval_queries(body: EvalQueryBatchDeleteIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    ids = list(dict.fromkeys(body.query_ids))
+    queries = db.query(EvalQuery).filter(EvalQuery.project_id == body.project_id, EvalQuery.id.in_(ids)).all()
+    if len(queries) != len(ids):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="部分用例不存在或不属于当前项目，本次未删除任何用例")
+    _delete_eval_queries(db, queries)
+    return ok({"deleted": ids, "count": len(ids)})
+
+
 @router.delete("/eval-queries/{query_id}")
 def delete_eval_query(query_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     q = db.get(EvalQuery, query_id)
     if not q:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评用例不存在")
     assert_project_role(db, user, q.project_id, _WRITE_ROLES)
-    if db.query(EvalRun.id).filter(
-        EvalRun.eval_query_id == query_id,
-        EvalRun.status.in_((EvalRunStatus.pending, EvalRunStatus.running, EvalRunStatus.judging)),
-    ).first():
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="该用例有排队、执行或判定中的测评，请结束后再删除")
-    for task in db.query(EvalTask).filter(EvalTask.project_id == q.project_id).with_for_update().all():
-        ids = json.loads(task.query_ids or "[]")
-        if query_id in ids:
-            task.query_ids = json.dumps([qid for qid in ids if qid != query_id])
-    db.delete(q); db.commit()
+    _delete_eval_queries(db, [q])
     return ok({"deleted": query_id})
 
 

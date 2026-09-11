@@ -23,6 +23,9 @@
         <span class="count-info" v-if="!loading">共 {{ queries.length }} 条</span>
         <span class="sel-info">已选 {{ selected.length }} 条</span>
         <div class="spacer" />
+        <el-button v-if="canDelete" type="danger" plain size="small" :icon="Delete"
+          :disabled="!selected.length || deletingId !== null || loading" :loading="batchDeleting"
+          @click="removeSelectedQueries">批量删除</el-button>
         <el-button type="primary" size="small" :icon="Upload" :disabled="!pid" @click="openImport">导入用例</el-button>
         <el-button type="primary" size="small" :disabled="!selected.length" @click="dispatchVisible = true">配置并下发</el-button>
       </div>
@@ -81,7 +84,7 @@
             </el-tooltip>
             <el-tooltip v-if="canDelete" content="删除用例" placement="top">
               <el-button text type="danger" size="small" :icon="Delete" :aria-label="`删除用例 ${row.title}`"
-                :loading="deletingId === row.id" :disabled="deletingId !== null" @click="removeQuery(row)" />
+                :loading="deletingId === row.id" :disabled="deletingId !== null || batchDeleting" @click="removeQuery(row)" />
             </el-tooltip>
           </template>
         </el-table-column>
@@ -195,7 +198,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Collection, Upload, Delete } from '@element-plus/icons-vue'
-import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks, deleteEvalQuery } from '@/api'
+import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks, deleteEvalQuery, batchDeleteEvalQueries } from '@/api'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -224,8 +227,27 @@ const pid = ref(null)
 const auth = useAuthStore()
 const canDelete = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
 const deletingId = ref(null)
+const batchDeleting = ref(false)
+async function removeSelectedQueries() {
+  if (!canDelete.value || !selected.value.length || batchDeleting.value || deletingId.value !== null) return
+  const projectId = pid.value
+  const ids = selected.value.map(q => q.id)
+  batchDeleting.value = true
+  try {
+    await ElMessageBox.confirm(`确定删除勾选的 ${ids.length} 条用例？将同步从关联任务中移除，历史执行结果保留。多轮对话仅删除勾选的轮次，删除后不可恢复。任一用例仍在排队、执行或判定中，整批不删除。`, '批量删除测评用例', {
+      type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消',
+    })
+    const result = await batchDeleteEvalQueries({ project_id: projectId, query_ids: ids })
+    const removed = new Set(result.deleted)
+    queries.value = queries.value.filter(q => !removed.has(q.id))
+    selected.value = selected.value.filter(q => !removed.has(q.id))
+    if (removed.has(inspectedCase.value?.id)) caseVisible.value = false
+    ElMessage.success(`已删除 ${result.count} 条用例`)
+  } catch { /* 取消或失败保留用例与选择，接口错误由拦截器提示。 */ }
+  finally { batchDeleting.value = false }
+}
 async function removeQuery(row) {
-  if (!canDelete.value || deletingId.value !== null) return
+  if (!canDelete.value || deletingId.value !== null || batchDeleting.value) return
   deletingId.value = row.id
   try {
     await ElMessageBox.confirm(`确定删除“${row.title}”？将从关联测评任务中移除，历史执行结果保留。多轮对话仅删除当前这一条，删除后不可恢复。`, '删除测评用例', {
