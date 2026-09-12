@@ -53,11 +53,11 @@ def _claude_env() -> dict:
     return env
 
 
-def _load_selector_keys(project_id: int | None = None, pages: list[str] | None = None) -> list[dict]:
+def _load_selector_keys(project_id: int | None = None, pages: list[str] | None = None, sub_product: str = "") -> list[dict]:
     """项目级共享 key 清单(供 prompt 注入),返回 [{key, frame, desc, page}, ...]。
 
     DB 是唯一事实来源:走服务层读项目共享 key(sub_product='')。生成器脱离请求 db,
-    故内部自开 SessionLocal 并关闭。project_id 为空或读不到 → 空列表(prompt 不注入 key 清单)。
+    故内部自开 SessionLocal 并关闭。project_id 为空不注入 key 清单；读取失败显式报错，避免按空表继续生成。
     pages 非空时按页面收窄(见 shared_key_dicts):只留该页 + 未分类的 key。
     """
     if not project_id:
@@ -66,15 +66,14 @@ def _load_selector_keys(project_id: int | None = None, pages: list[str] | None =
     from app.services.selectors import shared_key_dicts
     s = SessionLocal()
     try:
-        return shared_key_dicts(s, project_id, pages)
-    except Exception:
-        logger.warning("读注册表失败(project_id=%s),prompt 不注入 key 清单", project_id)
-        return []
+        return shared_key_dicts(s, project_id, pages, sub_product)
+    except Exception as exc:
+        raise RuntimeError("选择器注册表读取失败，请恢复数据库连接后重新生成") from exc
     finally:
         s.close()
 
 
-def _key_page_map(project_id: int | None = None) -> dict[str, str]:
+def _key_page_map(project_id: int | None = None, sub_product: str = "") -> dict[str, str]:
     """项目共享 key → 所属页面 的映射(供按 script 用到的 key 反查页面,自动给用例打页面标)。
 
     project_id 为空或读不到 → 空 dict。生成器脱离请求 db,内部自开 SessionLocal 并关闭。
@@ -85,7 +84,7 @@ def _key_page_map(project_id: int | None = None) -> dict[str, str]:
     from app.services.selectors import shared_key_page_map
     s = SessionLocal()
     try:
-        return shared_key_page_map(s, project_id)
+        return shared_key_page_map(s, project_id, sub_product)
     except Exception:
         return {}
     finally:
@@ -115,30 +114,29 @@ def _pages_for_script(script, key_page_map: dict[str, str]) -> str:
     return ",".join(pages)
 
 
-def pages_for_script(script, project_id: int | None = None) -> str:
+def pages_for_script(script, project_id: int | None = None, sub_product: str = "") -> str:
     """单条便捷版:读一次 key→page 映射并推断该 script 的页面(供 gen_script 重生后重新打标)。"""
-    return _pages_for_script(script, _key_page_map(project_id))
+    return _pages_for_script(script, _key_page_map(project_id, sub_product))
 
 
-def _registered_keys(project_id: int | None = None) -> set[str]:
+def _registered_keys(project_id: int | None = None, sub_product: str = "") -> set[str] | None:
     """项目级**候选有效**的 key 集合(供生成侧校验 script.target.key)——L4 口径。
 
     只收候选结构可用(至少一个含 by+value 的候选)的 key:注册了但候选坏成 [{}]/空 [] 的 key
     **不算可用**,会被当『选择器待补』降级(而非当可执行 script 放行)。口径由服务层
     usable_key_set 单点定义(与 schema/runner 的「有效候选」一致)。
 
-    project_id 为空或读不到 → 返回空集。空集时校验放行(见 _validate_script),
-    避免"读不到注册表就把所有 gui/e2e 全降 manual"这种误伤生成结果。
+    无项目上下文时返回 None；成功空表返回空集并拒绝未登记 key；数据库失败显式报错。
     """
     if not project_id:
-        return set()
+        return None
     from app.db.session import SessionLocal
     from app.services.selectors import usable_key_set
     s = SessionLocal()
     try:
-        return usable_key_set(s, project_id)
-    except Exception:
-        return set()
+        return usable_key_set(s, project_id, sub_product)
+    except Exception as exc:
+        raise RuntimeError("选择器注册表读取失败，无法校验脚本") from exc
     finally:
         s.close()
 
@@ -331,13 +329,13 @@ _AUTOMATION_FEASIBILITY_SPEC = """自动化可执行性约束:
 
 # gui/e2e 的 script DSL(原 prompt 条目 5+6)。抽成常量供分片按需拼装;api 分片不带此段。
 _GUI_SCRIPT_SPEC = """script(gui/e2e)——有序步骤数组,每步一个对象 {action, target?, args?, desc}:
-   - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot
+   - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、set_checked(设置勾选状态)、select_option(选择原生下拉选项)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot
    - 列表/重复控件必须缩小目标：target 可用 within:{key,has_text} 指定所属记录、has_text 过滤文本；只有用例明确按序号操作时才用 nth(从0开始)，不得默认取第一项。
    - target:定位元素,**优先用语义 key**:{"key":"<下方清单里的 key>"};清单没有时给语义新 key 并描述元素，等待补齐；仅当输入提供已验证的 CSS 时才可用 {"selector":"<CSS>"}，不得臆造
    - **hover 用于"悬停才显示"的元素**(如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip):先 hover 到承载元素,再 wait_for 等浮层出现,然后 click/assert;hover 本身不做断言
    - wait_response 紧跟提交用的 click/press(可在中间插 wait_for)，执行器在提交前记录本轮基线；自定义完成信号用 args.complete_key/stop_key。
    - **wait_for 是"等某个元素出现",必须带 target(key 或 selector)**——它不是纯计时等待;只想等异步结果(发消息/提交后等生成)用 wait_response,不要写没有 target 的 wait_for
-   - args:assert_text 用 {"expected":"...","contains":true};fill/type 用 {"text":"..."};press 用 {"key_name":"End"}(Playwright 按键名,如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {"timeout_ms":6000}(超时上限,仍需配 target)
+   - args:assert_text 用 {"expected":"...","contains":true};fill/type 用 {"text":"..."};复选框/单选框用 set_checked + {"checked":true|false};原生下拉框用 select_option + {"values":["选项的 value"]};press 用 {"key_name":"End"}(Playwright 按键名,如 End/Home/Enter/Escape/Tab/Control+A);wait_for 用 {"timeout_ms":6000}(超时上限,仍需配 target)
    - **否定断言(极重要,别写反)**:验证"某文案**不显示** / 菜单**已关闭** / 某项**不含** / Chip/Tag **已移除/已消失**"这类**否定**预期时,**严禁**写成 `assert_text` 去 equals/contains 那个"不该出现的文案"(元素消失后 textContent 为空,equals 恒不等 → 必然假失败)。正确写法二选一:
      · 目标元素**整体应消失/不存在** → 用 `assert_absent`(target 指向该元素;有效查询确认不存在/隐藏才通过，查询异常不通过)。如"移除后专家 Tag 消失""关闭后菜单消失"。
      · 目标元素**还在、只是其文本不应等于/不应包含某值** → 用 `assert_text` 且 `args.negate=true`(如 {"expected":"纳米Work","negate":true} 表示"该处文本不应是纳米Work")。
@@ -455,7 +453,7 @@ def plan_shards(project_id: int | None = None) -> list[dict]:
 
 
 def build_testcase_prompt(requirement: str, project_id: int | None = None, pages: list[str] | None = None,
-                          shard: dict | None = None, no_script: bool = False) -> str:
+                          shard: dict | None = None, no_script: bool = False, sub_product: str = "") -> str:
     """把需求文本包装成「生成结构化测试点」的指令。
 
     用 <requirement> 标签包裹用户输入（而非引号），避免内容里的引号破坏边界。
@@ -520,7 +518,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
             secs.append(f"{_API_SCRIPT_SPEC}\n{_api_contract_block(project_id)}")
         else:
             # 注入语义 key 清单(供 gui/e2e 的 script.target.key 取值);读不到就给空块、只说明无可用 key
-            keys = _load_selector_keys(project_id, pages)
+            keys = _load_selector_keys(project_id, pages, sub_product)
             if keys:
                 lines = "\n".join(f"   - {k['key']}（{k['frame']}）：{k['desc']}" for k in keys)
                 keys_block = "\n   可用语义 key 清单（已有匹配 key 必须复用；缺失时使用语义新 key 和元素描述，等待补齐）：\n" + lines
@@ -580,7 +578,7 @@ def _build_cmd(prompt: str, system_prompt: str | None = None, prompt_via_stdin: 
     return cmd
 
 
-def build_script_prompt(kind: str, title: str, steps: str, expected: str, project_id: int | None = None) -> str:
+def build_script_prompt(kind: str, title: str, steps: str, expected: str, project_id: int | None = None, sub_product: str = "") -> str:
     """把单条用例转成"只产出该用例结构化 script"的指令。
 
     gui/e2e 注入选择器 key 清单;api 注入请求-断言-提取规范段 + 项目 api 契约。
@@ -601,7 +599,7 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 3. 数组每步的结构与规则:
 {_API_SCRIPT_SPEC}
 {_api_contract_block(project_id)}"""
-    keys = _load_selector_keys(project_id)
+    keys = _load_selector_keys(project_id, sub_product=sub_product)
     lines = "\n".join(f"   - {k['key']}({k['frame']}):{k['desc']}" for k in keys) if keys else "   (无可用 key)"
     return f"""为下面这条 {kind} 测试用例设计**可执行的结构化步骤 script**。
 
@@ -619,7 +617,7 @@ def build_script_prompt(kind: str, title: str, steps: str, expected: str, projec
 {lines}"""
 
 
-def generate_script(kind: str, title: str, steps: str, expected: str, project_id: int | None = None, timeout: int | None = None) -> tuple[list, str | None]:
+def generate_script(kind: str, title: str, steps: str, expected: str, project_id: int | None = None, timeout: int | None = None, sub_product: str = "") -> tuple[list, str | None]:
     """同步调 claude 为单条用例生成 script。返回 (script列表, 错误)。
 
     校验按 kind 分流:gui/e2e → _validate_script(选择器 key);api → _validate_api_script。
@@ -629,7 +627,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     if kind not in ("gui", "e2e", "api"):
         return [], "仅 gui/e2e/api 用例支持生成 script"
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
-    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
+    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id, sub_product)
     cmd = [
         _claude_bin(), "-p", prompt, "--output-format", "json",
         "--append-system-prompt", _SYSTEM_PROMPT,
@@ -678,23 +676,26 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     if kind == "api":
         script, err = _validate_api_script(arr)
     else:
-        script, err = _validate_generated_gui_script(arr, _registered_keys(project_id))
+        script, err = _validate_generated_gui_script(arr, _registered_keys(project_id, sub_product))
     if err:
         return [], f"生成的 script 不合法:{err}"
     return script, None
 
 
-def revalidate_for_backfill(script, project_id: int | None = None) -> tuple[list, str | None]:
+def revalidate_for_backfill(script, project_id: int | None = None, sub_product: str = "", db=None) -> tuple[list, str | None]:
     """用当前注册表重新校验一份已存的 gui/e2e script(供「选择器待补」重生时确定性回填)。
 
     返回 (规范化步骤, 错误)。err is None 表示 script 引用的 key 现已全部注册、结构合法
     → 可直接回填、无需再调 AI(避免 AI 盲重写导致 key 名漂移、反复降级);err 非空则调用方
     落 AI 兜底。script 为空/非数组时 _validate_script 亦返回错误。
     """
-    return _validate_script(script, _registered_keys(project_id))
+    if db is not None:
+        from app.services.selectors import usable_key_set
+        return _validate_script(script, usable_key_set(db, project_id, sub_product))
+    return _validate_script(script, _registered_keys(project_id, sub_product))
 
 
-def validate_script_for_edit(kind: str, script, project_id: int | None = None, db=None) -> tuple[list, str | None]:
+def validate_script_for_edit(kind: str, script, project_id: int | None = None, db=None, sub_product: str = "") -> tuple[list, str | None]:
     """校验人工编辑后的 script,按 kind 分流(与生成侧同一批校验器,口径一致)。
 
     返回 (规范化步骤, 错误说明);err is None 表示合法可入库。
@@ -707,9 +708,9 @@ def validate_script_for_edit(kind: str, script, project_id: int | None = None, d
     if kind in ("gui", "e2e"):
         if db is not None:
             from app.services.selectors import usable_key_set
-            valid_keys = usable_key_set(db, project_id) if project_id else set()
+            valid_keys = usable_key_set(db, project_id, sub_product) if project_id else set()
         else:
-            valid_keys = _registered_keys(project_id)
+            valid_keys = _registered_keys(project_id, sub_product)
         return _validate_script(script, valid_keys)
     if kind == "api":
         return _validate_api_script(script)
@@ -1709,7 +1710,7 @@ def extract_html_fragment(raw: str) -> str:
     return s[first.start():end].strip()
 
 
-def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
+def parse_testcases(raw: str, project_id: int | None = None, sub_product: str = "") -> list[dict]:
     """从模型输出全文中提取结构化测试点数组。
 
     容错顺序：markdown ```json fence → 裸 [ ... ]。字段缺失给空串，超长截断，
@@ -1723,8 +1724,8 @@ def parse_testcases(raw: str, project_id: int | None = None) -> list[dict]:
         return []
     out = []
     _VALID_KINDS = {"gui", "api", "cli", "e2e", "manual"}
-    valid_keys = _registered_keys(project_id)   # 读一次注册表,供本批所有 gui/e2e 校验 target.key
-    key_page_map = _key_page_map(project_id)     # 读一次 key→page,供按 script 用到的 key 自动打页面标
+    valid_keys = _registered_keys(project_id, sub_product)   # 读一次注册表,供本批所有 gui/e2e 校验 target.key
+    key_page_map = _key_page_map(project_id, sub_product)     # 读一次 key→page,供按 script 用到的 key 自动打页面标
     for it in arr:
         if not isinstance(it, dict):
             continue
@@ -1801,7 +1802,7 @@ def _validate_generated_gui_script(script, valid_keys=None):
     return _validate_script(script, valid_keys)
 
 
-_VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot", "mock_route", "unmock_route"}
+_VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "set_checked", "select_option", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot", "mock_route", "unmock_route"}
 
 # gui/e2e 因"选择器未注册"降级 manual 时的 kind_reason 前缀标识。
 # 前端据此前缀渲染「补选择器可自动化」标签(见 CaseLibrary.vue),故改此串须同步前端。
@@ -1812,10 +1813,9 @@ def _unregistered_keys(script, valid_keys) -> list[str]:
     """收集 script 里引用了、但不在 valid_keys 注册表内的 target.key(去重保序)。
 
     供"选择器待补"标识:知道补哪几个 key 就能把该用例救成可执行 gui/e2e。
-    valid_keys 为空(注册表读不到)时返回 []——此时 _validate_script 本就跳过 key 校验,
-    不会因 key 降级,故不构成"选择器待补"。
+    valid_keys=None 时不作注册校验；空集表示全部 key 尚不可用。
     """
-    if not valid_keys or not isinstance(script, list):
+    if valid_keys is None or not isinstance(script, list):
         return []
     return [key for key in referenced_keys(script) if key not in valid_keys]
 
@@ -1848,7 +1848,7 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
 
     valid_keys:注册表里的合法 key 集合。传入且非空时,校验每个 target.key 必须在其中
     (拦截模型瞎编的 key,把问题挡在生成阶段,而非等下发到设备执行才 fail)。
-    传 None 或空集则跳过 key 校验(注册表读不到时不误伤)。
+    仅传 None 时跳过 key 校验；空集表示注册表已读取但没有有效候选。
     """
     if not isinstance(script, list) or not script:
         return [], "script 缺失或非数组"
@@ -1866,10 +1866,10 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
             return [], "args/target 必须是对象"
         if action == "wait_response":
             for key in referenced_keys([st]):
-                if valid_keys and key not in valid_keys:
+                if valid_keys is not None and key not in valid_keys:
                     return [], f"step「wait_response」用了未注册的 key「{key}」"
 
-        if action in ("click", "hover", "fill", "type", "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent") or (action == "press" and target):
+        if action in ("click", "hover", "fill", "type", "set_checked", "select_option", "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent") or (action == "press" and target):
             if not (isinstance(target, dict) and (target.get("key") or target.get("selector"))):
                 return [], f"step「{action}」缺 target.key/selector"
             current, depth = target, 0
@@ -1879,13 +1879,17 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
                 if depth > 3:
                     return [], "within 最多嵌套三层"
                 k = current.get("key")
-                if k and valid_keys and k not in valid_keys:
+                if k and valid_keys is not None and k not in valid_keys:
                     return [], f"step「{action}」用了未注册的 key「{k}」(不在 selectors.json 注册表内)"
                 if "nth" in current and (type(current["nth"]) is not int or current["nth"] < 0):
                     return [], "nth 必须是非负整数"
                 if "has_text" in current and not isinstance(current["has_text"], str):
                     return [], "has_text 必须是字符串"
                 current, depth = current.get("within"), depth + 1
+        if action == "set_checked" and type(args.get("checked")) is not bool:
+            return [], "set_checked 缺少布尔值 args.checked"
+        if action == "select_option" and not (isinstance(args.get("values"), str) or (isinstance(args.get("values"), list) and all(isinstance(v, str) for v in args["values"]))):
+            return [], "select_option 缺少 args.values 字符串或字符串数组"
         if action == "press" and not (st.get("args") or {}).get("key_name"):
             return [], "press 缺少 args.key_name"
         if action == "assert_text" and not isinstance((st.get("args") or {}).get("expected"), str):
@@ -1901,7 +1905,7 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
 
 
 # e2e 应是"多步端到端":足够长 + 含实质交互动作(click/fill/wait_response),而非只有 connect+断言。
-_INTERACTION_ACTIONS = {"click", "fill", "wait_response"}
+_INTERACTION_ACTIONS = {"click", "fill", "set_checked", "select_option", "wait_response"}
 
 
 def _looks_like_e2e(script: list) -> bool:

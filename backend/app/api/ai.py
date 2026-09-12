@@ -52,6 +52,7 @@ def _to_case_out(tc, task_title: str | None = None, with_script: bool = True) ->
         "id": tc.id,
         "ai_task_id": tc.ai_task_id,
         "project_id": tc.project_id,
+        "sub_product": getattr(tc, "sub_product", ""),
         "task_id": tc.task_id,
         "category": tc.category,
         "title": tc.title,
@@ -200,7 +201,7 @@ def gen_testcases(
     job = ai_jobs.enqueue(
         db, "testcase_gen", provider=provider_id, project_id=body.project_id, user_id=user.id,
         input={"ai_task_id": at.id, "project_id": body.project_id, "task_id": body.task_id,
-               "requirement": body.requirement, "pages": body.pages or None,
+               "requirement": body.requirement, "pages": body.pages or None, "sub_product": body.sub_product,
                "requirement_id": requirement_id, "provider": provider_id,
                "scenario_only": bool(body.scenario_only)},
         ref_kind="ai_task", ref_id=at.id,
@@ -316,7 +317,7 @@ def list_cases(
     # 只 SELECT 列表展示所需列,刻意排除 script(大 TEXT,仅详情按需取),减小响应体与内存。
     cols = _apply_filters(
         db.query(
-            TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.task_id,
+            TestCase.id, TestCase.ai_task_id, TestCase.project_id, TestCase.sub_product, TestCase.task_id,
             TestCase.category, TestCase.title, TestCase.steps, TestCase.expected,
             TestCase.priority, TestCase.exec_kind, TestCase.platform, TestCase.provider, TestCase.kind_reason,
             TestCase.page, TestCase.precondition, TestCase.is_regression,
@@ -381,19 +382,66 @@ def backfill_testcases(
         old_script = _load_script_list(tc.script)
         if not (sel_fix and intended in ("gui", "e2e") and old_script):
             continue
-        norm, verr = revalidate_for_backfill(old_script, project_id=project_id)
+        norm, verr = revalidate_for_backfill(old_script, project_id=project_id, sub_product=tc.sub_product, db=db)
         if verr is not None:
             continue
         tc.script = json.dumps(norm, ensure_ascii=False)
         tc.exec_kind = intended
         tc.kind_reason = None
         tc.last_gen_error = None
-        p = pages_for_script(norm, project_id)
+        p = pages_for_script(norm, project_id, tc.sub_product)
         if p:
             tc.page = p
         restored += 1
     db.commit()
     return ok({"restored": restored, "remaining": len(rows) - restored})
+
+
+@router.post("/testcases/remap-selector")
+def remap_case_selector(body: dict, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.script_keys import remap_key, referenced_keys
+    from app.services.selectors import usable_key_set
+    from app.services.claude_runner import _validate_script
+    project_id = body.get("project_id")
+    assert_project_role(db, user, project_id, _WRITE_ROLES)
+    ids, source, destination = body.get("case_ids"), body.get("from_key"), body.get("to_key")
+    if not isinstance(ids, list) or not ids or len(ids) > 200 or not source or not destination:
+        raise HTTPException(422, detail="请选择用例及待补 key、复用 key")
+    rows = db.query(TestCase).filter(TestCase.project_id == project_id, TestCase.id.in_(ids)).with_for_update().all()
+    changed, restored = [], 0
+    for tc in rows:
+        if (tc.sub_product or "") != (body.get("sub_product") or ""):
+            raise HTTPException(409, detail="选中用例的选择器作用域不同，请分批处理")
+        script = _load_script_list(tc.script)
+        fix, _, intended = selector_fix_info(tc.kind_reason)
+        if not fix or intended not in ("gui", "e2e") or not script or source not in referenced_keys(script):
+            continue
+        usable = usable_key_set(db, project_id, tc.sub_product)
+        if destination not in usable:
+            raise HTTPException(409, detail="复用目标没有有效候选，请先维护选择器")
+        from app.services.selectors import scoped_key_rows
+        from app.services.selector_history import revision
+        target = next(row for row in scoped_key_rows(db, project_id, tc.sub_product) if row.key == destination)
+        if body.get("expected_revision") != revision(target):
+            raise HTTPException(409, detail="复用目标已变化，请重新探测后再回填")
+        if source in usable:
+            raise HTTPException(409, detail="待补 key 已被补齐，请刷新用例后再操作")
+        updated = remap_key(script, source, destination)
+        missing = [key for key in referenced_keys(updated) if key not in usable]
+        norm, error = _validate_script(updated, usable | set(missing))
+        if error:
+            raise HTTPException(422, detail=error)
+        tc.script = json.dumps(norm, ensure_ascii=False)
+        if missing:
+            tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{', '.join(missing)} 后即可执行 {intended}"
+        else:
+            tc.exec_kind = intended
+            tc.kind_reason = None
+            tc.last_gen_error = None
+            restored += 1
+        changed.append(tc.id)
+    db.commit()
+    return ok({"changed": changed, "restored": restored})
 
 
 @router.get("/testcases/{cid}")
@@ -486,7 +534,7 @@ def review_testcase(
     # 其它硬错误(action 非法/无断言/非数组)→ 仍 400。
     if body.script is not None:
         eff_kind = getattr(tc, "exec_kind", "gui") or "gui"
-        norm, verr = validate_script_for_edit(eff_kind, body.script, project_id=tc.project_id, db=db)
+        norm, verr = validate_script_for_edit(eff_kind, body.script, project_id=tc.project_id, db=db, sub_product=tc.sub_product)
         if verr is not None:
             # 判断是否"仅因未注册 key"(可补齐)——用当前可用 key 集找缺的 key,
             # 若"假设补齐这些 key"后能通过校验,则是纯缺 key → 降级待补保存;否则是硬错误 → 拒绝。
@@ -494,7 +542,7 @@ def review_testcase(
             if eff_kind in ("gui", "e2e"):
                 from app.services.selectors import usable_key_set
                 from app.services.claude_runner import _unregistered_keys, _validate_script
-                valid_keys = usable_key_set(db, tc.project_id) if tc.project_id else set()
+                valid_keys = usable_key_set(db, tc.project_id, tc.sub_product) if tc.project_id else set()
                 missing = _unregistered_keys(body.script, valid_keys)
                 if missing:
                     norm2, err2 = _validate_script(body.script, (valid_keys or set()) | set(missing))
@@ -508,12 +556,12 @@ def review_testcase(
             keys_txt = ", ".join(missing)
             tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {eff_kind}"[:500]
             tc.script = json.dumps(norm2, ensure_ascii=False)
-            p = pages_for_script(norm2, tc.project_id)
+            p = pages_for_script(norm2, tc.project_id, tc.sub_product)
             if p:
                 tc.page = p
         else:
             tc.script = json.dumps(norm, ensure_ascii=False)
-            p = pages_for_script(norm, tc.project_id)
+            p = pages_for_script(norm, tc.project_id, tc.sub_product)
             if p:
                 tc.page = p   # 按新 script 的 key 重推页面(推断为空则保留原页面,不清)
 
@@ -581,7 +629,7 @@ def gen_script(
     # 补 key 后,若旧 script 引用的 key 现已全部注册且结构合法 → 直接回填,不调 AI:
     # 避免 AI 盲重写导致 key 名漂移、反复降级(同批次多条缺同一 key 时补一次即可全部回填)。
     if sel_fix and kind in ("gui", "e2e") and tc_old_script:
-        norm, verr = revalidate_for_backfill(tc_old_script, project_id=tc_project_id)
+        norm, verr = revalidate_for_backfill(tc_old_script, project_id=tc_project_id, sub_product=tc.sub_product, db=db)
         if verr is None:
             db.close()
             res = _write_back_script(cid, norm, kind, sel_fix, tc_project_id)
@@ -595,7 +643,7 @@ def gen_script(
         db, "script_gen", provider=getattr(tc, "provider", None), project_id=tc_project_id,
         user_id=user.id,
         input={"cid": cid, "kind": kind, "sel_fix": sel_fix, "project_id": tc_project_id,
-               "title": tc_title, "steps": tc_steps, "expected": tc_expected,
+               "title": tc_title, "steps": tc_steps, "expected": tc_expected, "sub_product": tc.sub_product,
                "provider": getattr(tc, "provider", None)},
         ref_kind="test_case", ref_id=cid,
     )
@@ -630,7 +678,7 @@ def _write_back_script(cid: int, script: list, kind: str, sel_fix: bool, project
         if sel_fix:
             tc2.kind_reason = None        # 已成功重生,清除「选择器待补」标识(前端 badge 随之消失)
         tc2.last_gen_error = None         # 重生成功 → 清除上次失败原因
-        p = pages_for_script(script, project_id)
+        p = pages_for_script(script, project_id, tc2.sub_product)
         if p:
             tc2.page = p                  # 按新 script 用到的 key 重新打页面标(推断为空则保留原页面,不清)
         s.commit()
@@ -656,7 +704,7 @@ def run_script_gen_job(db: Session, job) -> dict:
     if not engine.is_available():
         engine = generators.get_provider(generators.DEFAULT_PROVIDER)
     script, err = engine.generate_script(kind, inp.get("title") or "", inp.get("steps") or "",
-                                         inp.get("expected") or "", project_id=pid)
+                                         inp.get("expected") or "", project_id=pid, sub_product=inp.get("sub_product") or "")
     tc = db.get(TestCase, cid)
     if err:
         if tc is not None:
@@ -671,7 +719,7 @@ def run_script_gen_job(db: Session, job) -> dict:
     if sel_fix:
         tc.kind_reason = None        # 清「选择器待补」标识
     tc.last_gen_error = None
-    p = pages_for_script(script, pid)
+    p = pages_for_script(script, pid, tc.sub_product)
     if p:
         tc.page = p
     db.commit()
@@ -685,7 +733,7 @@ _ai_jobs_reg.register_handler("script_gen", run_script_gen_job)
 
 
 def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str] | None,
-              shard: dict | None = None, no_script: bool = False):
+              shard: dict | None = None, no_script: bool = False, sub_product: str = ""):
     """单次(不分片)跑引擎,累积流式事件。返回 (raw, meta, err)。
 
     分片被关掉(AI_SHARD_CONCURRENCY<=1)或只排到一片时走这条,行为与分片改造前一致。
@@ -693,8 +741,8 @@ def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str]
     """
     raw, meta, err = "", None, None
     builder = None
-    if shard or no_script:
-        builder = lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard, no_script)  # noqa: E731
+    if shard or no_script or sub_product:
+        builder = lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard, no_script, sub_product=sub_product)  # noqa: E731
     for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages, prompt_builder=builder):
         et = evt.get("type")
         if et == "delta":
@@ -728,6 +776,7 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     task_id = inp.get("task_id")
     requirement = inp.get("requirement") or ""
     pages = inp.get("pages") or None
+    sub_product = inp.get("sub_product") or ""
     requirement_id = inp.get("requirement_id")
     provider_id = generators.normalize_provider(inp.get("provider"))
     engine = generators.get_provider(provider_id)
@@ -751,12 +800,12 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     if getattr(settings, "AI_SHARD_CONCURRENCY", 5) <= 1 or len(shards) <= 1:
         one = shards[0] if len(shards) == 1 else None
         raw, meta, err = _gen_once(engine, requirement, project_id, pages,
-                                   shard=one, no_script=scenario_only)
-        cases = engine.parse_testcases(raw, project_id=project_id) if raw and not err else []
+                                   shard=one, no_script=scenario_only, sub_product=sub_product)
+        cases = engine.parse_testcases(raw, project_id=project_id, sub_product=sub_product) if raw and not err else []
         part_errors: list[str] = []
     else:
         res = generate_sharded(engine, requirement, project_id=project_id, pages=pages,
-                               shards=shards, no_script=scenario_only)
+                               shards=shards, no_script=scenario_only, sub_product=sub_product)
         raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
         err = "；".join(part_errors) if not cases else None
         logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
@@ -786,6 +835,7 @@ def run_testcase_gen_job(db: Session, job) -> dict:
         new_objs = []
         for c in cases:
             tc = TestCase(
+                sub_product=sub_product,
                 ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
                 requirement_id=requirement_id,
                 category=c["category"] or None, title=c["title"], steps=c["steps"] or None,
@@ -876,7 +926,7 @@ def export_playwright_one(
     assert_project_role(db, user, tc.project_id, _ALL_ROLES)   # 读操作：项目内任意角色可导
     if not _export_kind(tc):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅 gui/e2e 用例支持导出 Playwright 脚本")
-    reg = selectors.resolved_registry(db, tc.project_id)
+    reg = selectors.resolved_registry(db, tc.project_id, tc.sub_product)
     try:
         text = export_case_to_playwright(_case_for_export(tc), reg["registry"], reg["vmIframe"])
     except ValueError as e:
@@ -917,9 +967,10 @@ def export_playwright_bulk(
             if not _export_kind(tc):
                 skipped.append(tc.id)
                 continue
-            if tc.project_id not in reg_cache:
-                reg_cache[tc.project_id] = selectors.resolved_registry(db, tc.project_id)
-            reg = reg_cache[tc.project_id]
+            scope_key = (tc.project_id, tc.sub_product)
+            if scope_key not in reg_cache:
+                reg_cache[scope_key] = selectors.resolved_registry(db, tc.project_id, tc.sub_product)
+            reg = reg_cache[scope_key]
             try:
                 text = export_case_to_playwright(_case_for_export(tc), reg["registry"], reg["vmIframe"])
             except ValueError:

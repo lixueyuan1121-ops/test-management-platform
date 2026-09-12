@@ -307,6 +307,9 @@ export const evalDimensionStats = (project_id, days = 30, byEngine = false) =>
 export const listSelectors = (project_id, sub_product = '') => http.get('/selectors/manage', { params: { project_id, sub_product } })
 export const createSelector = (body) => http.post('/selectors', body)
 export const patchSelector = (id, body) => http.patch(`/selectors/${id}`, body)
+export const getSelectorHistory = id => http.get(`/selectors/${id}/history`)
+export const restoreSelector = (id, body) => http.post(`/selectors/${id}/restore`, body)
+export const remapCaseSelector = body => http.post('/ai/testcases/remap-selector', body)
 export const deleteSelector = (id) => http.delete(`/selectors/${id}`)
 // 批量删除选择器 key（逐个联动降级引用它的可执行用例）。返回 { deleted, downgraded, missing }
 export const batchDeleteSelectors = (ids) => http.post('/selectors/batch-delete', { ids })

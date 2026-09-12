@@ -13,7 +13,7 @@ import { createAutomationRuntime } from "./runtime-loader.mjs";
 import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
-import { CAPTURE_INIT, DRAIN_SCRIPT, STOP_SCRIPT } from "../record-capture.mjs";
+import { CAPTURE_INIT, DRAIN_SCRIPT, STOP_SCRIPT, ACK_SCRIPT } from "../record-capture.mjs";
 
 const SELECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), "selectors.json");
 
@@ -33,23 +33,25 @@ export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
     // 那个只认 data-testid,开发用 data-test-id 会定位不到)。score 100=最高优先。
     for (const attr of ["data-testid", "data-test-id", "data-test"]) {
       const v = el.getAttribute(attr);
-      if (v) { const s = `[${attr}="${v}"]`; cands.push({ sel: s, score: 100, by: "css", value: s }); break; }
+      if (v) { const s = `[${attr}=${JSON.stringify(v)}]`; cands.push({ sel: s, score: 100, by: attr === "data-testid" ? "testid" : "css", value: attr === "data-testid" ? v : s }); }
     }
-    if (el.id && !/^\d/.test(el.id) && el.id.length < 50) cands.push({ sel: `#${CSS.escape(el.id)}`, score: 90, by: "css", value: `#${el.id}` });
+    if (el.id && !/^\d/.test(el.id) && el.id.length < 50) cands.push({ sel: `#${CSS.escape(el.id)}`, score: 90, by: "css", value: `#${CSS.escape(el.id)}` });
     const aria = el.getAttribute("aria-label");
-    if (aria && aria.length < 60) cands.push({ sel: `[aria-label="${aria}"]`, score: 80, by: "label", value: aria });
+    if (aria && aria.length < 60) cands.push({ sel: `[aria-label=${JSON.stringify(aria)}]`, score: 80, by: "label", value: aria, exact: true });
     const name = el.getAttribute("name");
-    if (name) cands.push({ sel: `[name="${name}"]`, score: 75, by: "css", value: `[name="${name}"]` });
+    if (name) cands.push({ sel: `[name=${JSON.stringify(name)}]`, score: 75, by: "css", value: `[name=${JSON.stringify(name)}]` });
     const ph = el.getAttribute("placeholder");
-    if (ph) cands.push({ sel: `[placeholder="${ph}"]`, score: 70, by: "placeholder", value: ph });
-    const role = el.getAttribute("role") || el.tagName.toLowerCase();
-    if (role && aria) cands.push({ sel: `${role}[aria-label="${aria}"]`, score: 68, by: "role", value: role, name: aria });
+    if (ph) cands.push({ sel: `[placeholder=${JSON.stringify(ph)}]`, score: 70, by: "placeholder", value: ph, exact: true });
+    const role = el.getAttribute("role") || ({ BUTTON: 'button', A: 'link', INPUT: ['button','submit','reset'].includes(el.type) ? 'button' : el.type === 'checkbox' ? 'checkbox' : el.type === 'radio' ? 'radio' : 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox' })[el.tagName];
+    const labelled = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean).map(id => document.getElementById(id)?.textContent || '').join(' ').trim();
+    const accessibleName = labelled || aria || (el.labels?.length ? [...el.labels].map(label => label.textContent).join(' ').trim() : '') || (el.innerText || '').trim();
+    if (role && accessibleName) cands.push({ sel: `role=${role}`, score: 95, by: 'role', value: role, name: accessibleName, exact: true });
     const classes = Array.from(el.classList);
     const bem = classes.filter(isBEM);
     const stable = bem.length ? bem : classes.filter((c) => !isHash(c) && c.length > 3);
     if (stable.length) { const sel = stable.map((c) => `.${CSS.escape(c)}`).join(""); cands.push({ sel, score: bem.length ? 60 : 45, by: "css", value: sel }); }
     const txt = (el.innerText || el.textContent || "").trim().slice(0, 30);
-    if (txt && txt.length >= 2 && txt.length <= 20) cands.push({ sel: `text=${txt}`, score: 40, by: "text", value: txt });
+    if (txt && txt.length >= 2 && txt.length <= 20) cands.push({ sel: `text=${txt}`, score: 65, by: "text", value: txt, exact: true });
     const tag = el.tagName.toLowerCase();
     const type = el.getAttribute("type");
     if (type) cands.push({ sel: `${tag}[type="${type}"]`, score: 30, by: "css", value: `${tag}[type="${type}"]` });
@@ -88,12 +90,17 @@ export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
     });
   }
   const out = [];
+  const epoch = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
+  const refs = new Map();
+  window.__qalabProbeElements = refs; // 仅本次探测有效；下一次探测/导航后旧引用失效。
   for (const el of elements) {
     if (!isVisible(el)) continue;
     const candidates = genCandidates(el);
     if (!candidates.length) continue;
     const r = el.getBoundingClientRect();
-    out.push({ tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.value || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 4), best: candidates[0] });
+    const element_ref = epoch + ':' + out.length;
+    refs.set(element_ref, el);
+    out.push({ element_ref, tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.value || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 6), best: candidates[0] });
   }
   return out;
 };
@@ -127,6 +134,14 @@ export function pickReadyPage(pages) {
   return open.find((p) => (p.url() || "").includes("work.n.cn")) || open[0];
 }
 
+// frame URL 去掉会话参数和 hash；相同路径的多帧由 runtime 消歧，不能随便取第一帧。
+export function recordingFrame(frame, main, vm, url = frame.url()) {
+  if (frame === main) return "shell";
+  if (frame === vm) return "vm";
+  try { const parsed = new URL(url); parsed.search = ''; parsed.hash = ''; return "url:" + parsed.href; }
+  catch { return "url:" + url; }
+}
+
 // 工厂:创建一个 gui-core 实例(持有 browser/page 连接态)。
 // opts: { cdpUrl, timeout, selectorsPath, registry, vmIframe }
 // registry/vmIframe 若传入则直接用之(runner 从 API 拉的注册表),否则 readFileSync 内置 selectors.json。
@@ -137,6 +152,12 @@ export function createGuiCore(opts = {}) {
   const PAGE_READY_TIMEOUT = Number(opts.pageReadyTimeout || process.env.CDP_PAGE_READY_MS || 15000);
   // let(非 const):setRegistry 就地换表后,共享 runtime 通过 getter 读取新注册表。
   let REGISTRY, VM_IFRAME;
+  let activeRecordingSession = null;
+  let recordingEnabled = false;
+  let recordEventSink = null;
+  let recordPersistenceError = null;
+  const pendingRecordEvents = new Map();
+  const recordingContexts = new WeakSet();
   if (opts.registry) {
     REGISTRY = opts.registry; VM_IFRAME = opts.vmIframe || "";
   } else {
@@ -309,38 +330,69 @@ export function createGuiCore(opts = {}) {
     drainHeals() { return HEALS.splice(0); },
 
     // ---- 录制:注入事件捕获 / 排空缓冲 / 停止(见 record-capture.mjs)----
-    async startRecording() {
+    async startRecording(sessionId) {
       await ensureConnected();
       // addInitScript 先注册:保证 testid 注入若触发 reload,reload 后的新页/新 iframe 在脚本运行前即带捕获钩子。
       // (顺序坑:之前先 injectTestIdMode 后 addInitScript → reload 早发生、捕获脚本没覆盖到,vm iframe 无钩子→录不到)。
-      try { await ctx.addInitScript(CAPTURE_INIT); } catch { /* 老版本回退:仅靠下方即时注入 */ }
+      if (activeRecordingSession !== String(sessionId)) pendingRecordEvents.clear();
+      activeRecordingSession = String(sessionId);
+      recordingEnabled = true;
+      if (!recordingContexts.has(ctx)) {
+        await ctx.exposeBinding('__qalabRecorderState', () => recordingEnabled ? activeRecordingSession : null);
+        await ctx.exposeBinding('__qalabRecorderEvent', async (source, ev) => {
+          const url = ev.document_url || source.frame.url(); // 在回调到达时固定 URL，导航之后不改写同一事件。
+          if (activeRecordingSession && ev?.event_id?.startsWith(activeRecordingSession + ":")) {
+            const frame = recordingFrame(source.frame, page.mainFrame(), await contentFrame(), url);
+            pendingRecordEvents.set(ev.event_id, { ev, frame });
+            try { if (recordEventSink) await recordEventSink(Number(activeRecordingSession), { ev, frame }); }
+            catch (error) { recordPersistenceError = error; throw error; }
+          }
+        });
+        await ctx.addInitScript({ content: `window.__qalabRecorderState().then(id => { if (id) (${CAPTURE_INIT.toString()})({sessionId:id}); });` });
+        recordingContexts.add(ctx);
+      }
       const { reloaded } = await injectTestIdMode(ctx, page, { reloadTimeout: PAGE_READY_TIMEOUT });  // 保证元素带 testid
       // reload 过 → 等业务 iframe 重新就绪,再逐 frame 即时注入(现有帧;addInitScript 覆盖首次加载的帧)。
       if (reloaded) { try { await waitForContentFrame(PAGE_READY_TIMEOUT); } catch { /* 尽力而为 */ } }
       for (const f of page.frames()) {
-        await f.evaluate(CAPTURE_INIT).catch(() => { /* 跨域/未就绪 frame 忽略,addInitScript 兜底 */ });
+        await f.evaluate(CAPTURE_INIT, { sessionId: activeRecordingSession });
       }
       return { recording: true };
     },
-    // 排空各 frame 的捕获缓冲,带上 frame 标签(shell/vm/url:host,与 probe frameMatch 同口径)。
+    // 排空各 frame 的捕获缓冲,带上 frame 标签(shell/vm/url:路径,与 probe frameMatch 同口径)。
+    setRecordEventSink(sink) { recordEventSink = sink; },
     async drainRecordEvents() {
       await ensureConnected();
+      if (recordPersistenceError) {
+        const error = recordPersistenceError; recordPersistenceError = null;
+        throw new Error('录制事件持久化失败：' + error.message);
+      }
       const main = page.mainFrame();
       const vm = await contentFrame();
-      const out = [];
+      const labelFor = f => recordingFrame(f, main, vm);
+      const out = [...pendingRecordEvents.values()].filter(({ ev }) => ev.event_id?.startsWith(activeRecordingSession + ":"));
       for (const f of page.frames()) {
         let raw;
         try { raw = await f.evaluate(DRAIN_SCRIPT); } catch { continue; }
         if (!Array.isArray(raw) || !raw.length) continue;
-        const label = f === main ? "shell" : f === vm ? "vm"
-          : (() => { try { const h = new URL(f.url()).hostname; return h ? "url:" + h : "auto"; } catch { return "auto"; } })();
-        for (const ev of raw) out.push({ ev, frame: label });
+        const label = labelFor(f);
+        for (const ev of raw) if (ev.event_id?.startsWith(activeRecordingSession + ":")) {
+          out.push(pendingRecordEvents.get(ev.event_id) || { ev, frame: label });
+        }
       }
       return out;   // [{ev(原始捕获), frame}] —— runner 侧再经 rawEventToStep 规整
     },
     async stopRecording() {
-      try { for (const f of page.frames()) await f.evaluate(STOP_SCRIPT).catch(() => {}); } catch { /* ignore */ }
+      recordingEnabled = false;
+      for (const f of page.frames()) {
+        try { await f.evaluate(STOP_SCRIPT); }
+        catch (error) { if (!f.isDetached()) throw error; }
+      }
       return { recording: false };
+    },
+    async ackRecordEvents(ids) {
+      for (const id of ids) pendingRecordEvents.delete(id);
+      for (const f of page.frames()) await f.evaluate(ACK_SCRIPT, ids).catch(() => {});
     },
 
     async connect() {
@@ -348,8 +400,35 @@ export function createGuiCore(opts = {}) {
       const f = await waitForContentFrame();
       return { connected: true, title: await page.title(), url: page.url(), frame_url: f.url(), in_iframe: f !== page.mainFrame() };
     },
+    async setChecked(args) { await ensureConnected(); return runtime.setChecked(args); },
+    async selectOption(args) { await ensureConnected(); return runtime.selectOption(args); },
     listKeys() {
       return { count: Object.keys(REGISTRY).length, keys: Object.entries(REGISTRY).map(([k, v]) => ({ key: k, frame: v.frame, desc: v.desc })) };
+    },
+    async validateSelection({ items = [] } = {}) {
+      await ensureConnected();
+      const results = [];
+      for (const item of items.slice(0, 100)) {
+        const registry = { ...REGISTRY, __selection: { frame: item.frame || 'auto', candidates: item.candidates || [] } };
+        const checker = createAutomationRuntime({ page, registry, vmIframe: VM_IFRAME, timeout: 500 });
+        try {
+          const result = await checker.inspect({ ...(item.target || {}), key: '__selection' }, { requireVisible: true });
+          const visible = result.count === 1 && await result.loc.isVisible();
+          const actual = result.count === 1 ? await result.loc.evaluate(el => ({ tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').trim().slice(0, 40) })) : null;
+          const identityVerified = item.element_ref && result.count === 1
+            ? await result.loc.evaluate((el, ref) => window.__qalabProbeElements?.get(ref) === el, item.element_ref) : false;
+          const sameElement = (!item.element_ref || identityVerified) && (!item.expected || (actual && (!item.expected.tag || actual.tag === item.expected.tag.toLowerCase())
+            && (!item.expected.text || actual.text === item.expected.text.trim().slice(0, 40))));
+          if (visible && sameElement) await result.loc.evaluate(el => {
+            const old = el.style.outline;
+            el.style.outline = '3px solid #409eff';
+            setTimeout(() => { el.style.outline = old; }, 1200);
+          });
+          results.push({ key: item.key, ok: visible && !!sameElement, identity_verified: !!identityVerified, count: result.count, visible, actual, hit: result.hit,
+            error: !visible ? '当前页面未唯一匹配可见元素' : !sameElement ? '页面状态已变化，当前元素与选中时不同，请重新探测' : null });
+        } catch (error) { results.push({ key: item.key, ok: false, error: error.message, code: error.code }); }
+      }
+      return { validation: results, checked_at: new Date().toISOString() };
     },
     async probe({ contains = "", bbox = null, limit = 0, screenshot = false } = {}) {
       const relax = !!bbox;               // 框选：放宽采集(穿透+不过滤白名单/去重)
@@ -366,13 +445,11 @@ export function createGuiCore(opts = {}) {
       const frameLabel = (f) =>
         f === main ? "shell" : f === vm ? "vm" : "iframe";
       // frameMatch:加为 key 时写入 selector_key.frame 的值。shell/vm 沿用旧语义;深层 iframe
-      // 取 url:<hostname>——执行侧 scopesFor 据此从 page.frames() 扁平查找该 Frame 定位。
+      // 取 url:<origin/path>——执行侧 scopesFor 据此从 page.frames() 扁平查找该 Frame 定位。
       const frameMatch = (f) => {
         if (f === main) return "shell";
         if (f === vm) return "vm";
-        const u = f.url() || "";
-        try { const h = new URL(u).hostname; if (h) return `url:${h}`; } catch { /* 非法/相对 url,退回截断 */ }
-        return `url:${u.slice(0, 80)}`;
+        return recordingFrame(f, main, vm);
       };
       // 整页截图(可选,discover 用):fullPage 展开主文档滚动区,坐标系=主文档内容左上(0,0)。
       // 注:iframe 内部滚动区不随 fullPage 展开——iframe 内滚出可视区的元素框可能不准(已知限制)。
@@ -425,9 +502,15 @@ export function createGuiCore(opts = {}) {
     // 供 runner 的 probe verify 模式用:回归确认某作用域已登记的 key 仍能在页面上定位到。
     async verifyKeys(keys) {
       await ensureConnected();
-      const out = {};
-      for (const k of (keys || [])) out[k] = await isKeyVisible(k);
-      return { verify: out };
+      const out = {}, details = {};
+      for (const k of (keys || [])) {
+        try {
+          const result = await runtime.inspect({ key: k }, { requireVisible: true });
+          out[k] = result.count === 1 && await result.loc.isVisible();
+          details[k] = { count: result.count, hit: result.hit, error: out[k] ? null : '当前页没有唯一可见目标' };
+        } catch (error) { out[k] = false; details[k] = { code: error.code, error: error.message }; }
+      }
+      return { verify: out, details };
     },
     // 核心 key 巡检:探核心 key(默认内置 coreKeys,可传子集覆盖)是否都在当前页可见,
     // 返回 {verify, failed, core}。failed 非空 = 有核心 key 失效(进入段/复位/掉登录检测会塌),供告警。

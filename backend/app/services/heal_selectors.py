@@ -5,7 +5,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models import SelectorKey
-from app.services.selector_ranking import valid_candidates, order_candidates
+from app.services.selector_history import remember
+from app.services.selector_ranking import valid_candidates, merge_candidates, candidate_identity
 
 _MAX_CANDIDATES = 6
 _HEAL_DESC = "[自愈] 执行时自动定位"
@@ -28,7 +29,7 @@ def _item_candidates(it: dict) -> list:
     else:
         sel = str(it.get("selector") or "").strip()
         cands = [{"by": "css", "value": sel}] if sel else []
-    return order_candidates([{"by": c["by"], "value": c["value"]} for c in cands])
+    return merge_candidates(cands)
 
 
 def apply_heal_items(db: Session, project_id: int, items, updated_by=None, sub_product: str = "") -> dict:
@@ -51,10 +52,14 @@ def apply_heal_items(db: Session, project_id: int, items, updated_by=None, sub_p
         desc = str(it.get("desc") or "").strip() or _HEAL_DESC
         row = (db.query(SelectorKey)
                .filter(SelectorKey.project_id == project_id,
-                       SelectorKey.sub_product == sub_product, SelectorKey.key == key).first())
+                       SelectorKey.sub_product == sub_product, SelectorKey.key == key).populate_existing().with_for_update().first())
+        if row and it.get("mode") == "create":
+            raise ValueError(f"选择器 {key} 已被其他操作创建，请重新保存以分配新名称")
+        if row and it.get("frame") and row.frame != it["frame"]:
+            raise ValueError(f"选择器 {key} 的 frame 已变化，请重新探测")
         if not row:
             db.add(SelectorKey(project_id=project_id, sub_product=sub_product, key=key,
-                               frame="auto", page=page, desc=desc,
+                               frame=it.get("frame") or "auto", page=page, desc=desc,
                                candidates=json.dumps(new_cands[:_MAX_CANDIDATES], ensure_ascii=False),
                                updated_by=updated_by, updated_at=datetime.utcnow()))
             db.flush()   # C1:立即 flush,让本批后续同 key 的 query 能查到它(session autoflush=False),
@@ -62,14 +67,19 @@ def apply_heal_items(db: Session, project_id: int, items, updated_by=None, sub_p
             created += 1
             continue
         existing = _cands(row.candidates)
-        # 新候选里去掉已存在的(by+value 全等);全都已存在 → skip
+        # 新候选里去掉已存在的(完整候选身份相同);全都已存在 → skip
         def _dup(c):
-            return any(isinstance(e, dict) and e.get("by") == c["by"] and e.get("value") == c["value"] for e in existing)
+            return any(isinstance(e, dict) and candidate_identity(e) == candidate_identity(c) for e in existing)
         fresh = [c for c in new_cands if not _dup(c)]
         if not fresh:
             skipped += 1
             continue
-        merged = order_candidates(fresh + [c for c in existing if isinstance(c, dict)])[:_MAX_CANDIDATES]
+        merged = merge_candidates(existing, fresh)
+        if merged == existing:
+            skipped += 1
+            continue
+        remember(db, row, updated_by)
+        row.updated_by = updated_by
         row.candidates = json.dumps(merged, ensure_ascii=False)
         if page and not (row.page or "").strip():
             row.page = page
@@ -79,5 +89,5 @@ def apply_heal_items(db: Session, project_id: int, items, updated_by=None, sub_p
             row.desc = item_desc
         row.updated_at = datetime.utcnow()
         patched += 1
-    db.commit()
+    db.flush()  # 调用方拥有事务：选择器与用例必须共同成功或回滚。
     return {"created": created, "patched": patched, "skipped": skipped}

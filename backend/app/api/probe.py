@@ -23,6 +23,7 @@ from app.db.session import get_db
 from app.models import ProbeRequest, User
 from app.schemas.common import ok
 from app.schemas.probe import ProbeReportIn, ProbeStartIn
+from app.services.selector_device import owned_device, lock_device, assert_idle, assert_assigned, active_recording
 
 router = APIRouter(prefix="/api/probe", tags=["probe"])
 
@@ -67,10 +68,14 @@ def start_probe(
 ):
     """发起一次设备探测。项目 member/admin 可操作（project_id 走体外鉴权）。"""
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    device = owned_device(db, user, body.runner, body.runner_device_id)
+    assert_idle(db, device.id)
+    from app.api.selectors import _valid_sub
     r = ProbeRequest(
         project_id=body.project_id,
-        sub_product=body.sub_product,
-        runner=body.runner,
+        sub_product=_valid_sub(body.sub_product),
+        runner=device.runner_id,
+        runner_device_id=device.id,
         status="pending",
         params=json.dumps(body.params, ensure_ascii=False),
         created_by=user.id,
@@ -95,17 +100,19 @@ def list_pending(
     设备 token:runner 锁定为该设备的 runner_id(忽略 query,防拿他人 token 冒充别的设备);
     共享 token(兜底):沿用 query 的 runner。
     """
-    if ctx.device is not None:
-        runner = ctx.device.runner_id
-        ctx.device.last_seen_at = datetime.utcnow()   # 记录设备活跃
-    else:
-        from app.services.dispatcher import touch_runner_heartbeat
-        touch_runner_heartbeat(db, runner)   # 共享 token:按 runner_id 刷心跳(在线判定统一口径)
+    if ctx.device is None:
+        return ok([])
+    device = lock_device(db, ctx)
+    device.last_seen_at = datetime.utcnow()
+    if active_recording(db, device.id):
+        db.commit()
+        return ok([])
+    assert_idle(db, device.id)
     rows = (
         db.query(ProbeRequest)
-        .filter(ProbeRequest.status == "pending", ProbeRequest.runner == runner)
+        .filter(ProbeRequest.status == "pending", ProbeRequest.runner_device_id == device.id)
         .order_by(ProbeRequest.id)
-        .limit(limit)
+        .limit(1)
         .all()
     )
     for r in rows:
@@ -138,15 +145,20 @@ def report_probe(
     db: Session = Depends(get_db),
     ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
-    if ctx.device is not None:
-        runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
-    r = db.get(ProbeRequest, probe_id)
+    device = lock_device(db, ctx)
+    r = db.query(ProbeRequest).filter(ProbeRequest.id == probe_id).populate_existing().with_for_update().first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="探测请求不存在")
     # 归属校验：只能回写派给自己的探测（设备 token 下 runner 已锁定为设备 runner_id;
     # 共享 token 下靠 query runner 区分），避免多台 runner 串扰。
-    if r.runner != runner:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该探测未派给此执行机")
+    assert_assigned(r, device)
+    if r.status != "running":
+        # 已确认的同一结果允许幂等重传；失联过期/未领取请求不可被迟到回包复活。
+        same_result = r.status == "done" and body.result is not None and _loads(r.result) == body.result
+        same_error = r.status == "failed" and body.result is None and r.error == body.error
+        if same_result or same_error:
+            return ok(_to_out(r))
+        raise HTTPException(409, detail="探测已结束或尚未领取，请重新发起探测")
 
     if body.result is not None:
         r.result = json.dumps(body.result, ensure_ascii=False)
@@ -212,8 +224,8 @@ async def upload_screenshot(
     r = db.get(ProbeRequest, probe_id)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="探测请求不存在")
-    if r.runner != runner:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该探测未派给此执行机")
+    device = lock_device(db, ctx)
+    assert_assigned(r, device)
     data = await file.read()
     if len(data) > _MAX_SHOT_BYTES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"截图过大（>{_MAX_SHOT_BYTES // 1024 // 1024}MB）")

@@ -75,9 +75,9 @@ def test_report_and_dedupe():
 
     d = _report([{"key": "sendBtn", "candidates": [LEARNED_CAND, {"by": "bogus", "value": "x"}],
                   "evidence": {"matched": "testid~send", "text": "发送", "score": 100}}], run_id=77)
-    assert d["code"] == 0 and d["data"]["accepted"] == 1 and d["data"]["appended"] == 1, d
+    assert d["code"] == 0 and d["data"]["accepted"] == 1 and d["data"]["appended"] == 0, d
     cands = _key_cands()
-    assert cands[-1] == LEARNED_CAND, cands   # 追加在尾部,带试用标
+    assert LEARNED_CAND not in cands, cands   # 追加在尾部,带试用标
     row = _s.query(SelectorLearned).filter_by(key="sendBtn").first()
     assert row.status == "pending" and row.hit_count == 1 and row.run_id == 77
 
@@ -86,7 +86,7 @@ def test_report_and_dedupe():
     assert d2["data"]["deduped"] == 1 and d2["data"]["appended"] == 0, d2
     _s.refresh(row)
     assert row.hit_count == 2
-    assert len(_key_cands()) == 2   # 原1 + learned1
+    assert len(_key_cands()) == 1   # 待评审不入执行表
     print("OK report+dedupe")
 
 
@@ -95,7 +95,7 @@ def test_probation_cap():
     _report([{"key": "sendBtn", "candidates": [{"by": "css", "value": "#send2", "src": "learned"}]}])
     d = _report([{"key": "sendBtn", "candidates": [{"by": "css", "value": "#send3", "src": "learned"}]}])
     assert d["data"]["accepted"] == 1 and d["data"]["appended"] == 0, d
-    assert len(_key_cands()) == 3   # 原1 + learned2(上限)
+    assert len(_key_cands()) == 1   # 所有待评审候选保持隔离
     print("OK probation cap")
 
 

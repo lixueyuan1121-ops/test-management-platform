@@ -38,8 +38,8 @@ def _script_keys(script):
 
 def test_selector_fix_downgrade_preserves_script():
     """改动1:仅缺 key(补齐即可执行)而降级的用例,须保留原始 script 供后续确定性回填。"""
-    cr._registered_keys = lambda pid: {"navTasks"}   # submitOrderBtn 未注册
-    cr._key_page_map = lambda pid: {}
+    cr._registered_keys = lambda pid, sub_product="": {"navTasks"}   # submitOrderBtn 未注册
+    cr._key_page_map = lambda pid, sub_product="": {}
     cases = cr.parse_testcases(_one_case_raw(), project_id=1)
     assert len(cases) == 1
     c = cases[0]
@@ -52,8 +52,8 @@ def test_selector_fix_downgrade_preserves_script():
 
 def test_downgrade_with_other_problems_keeps_no_script():
     """回归:补齐 key 后仍有其它问题(如无断言)的用例,不保留 script(不留坏脚本)。"""
-    cr._registered_keys = lambda pid: {"navTasks"}
-    cr._key_page_map = lambda pid: {}
+    cr._registered_keys = lambda pid, sub_product="": {"navTasks"}
+    cr._key_page_map = lambda pid, sub_product="": {}
     raw = json.dumps([{
         "title": "无断言用例", "kind": "gui", "steps": "x", "expected": "y",
         "script": [
@@ -68,7 +68,7 @@ def test_downgrade_with_other_problems_keeps_no_script():
 
 def test_backfill_ready_after_key_registered():
     """改动2:待补 script 引用的 key 现已全部注册 → 确定性回填校验通过(err is None,无需调 AI)。"""
-    cr._registered_keys = lambda pid: {"navTasks", "submitOrderBtn"}   # 已补齐
+    cr._registered_keys = lambda pid, sub_product="": {"navTasks", "submitOrderBtn"}   # 已补齐
     script = json.loads(_one_case_raw())[0]["script"]
     norm, err = cr.revalidate_for_backfill(script, project_id=1)
     assert err is None, f"key 补齐后应可确定性回填,却报: {err}"
@@ -77,7 +77,7 @@ def test_backfill_ready_after_key_registered():
 
 def test_backfill_not_ready_when_key_still_missing():
     """改动2:仍缺 key 时回填不成立(err 非空)→ 调用方应落 AI 兜底。"""
-    cr._registered_keys = lambda pid: {"navTasks"}   # submitOrderBtn 仍缺
+    cr._registered_keys = lambda pid, sub_product="": {"navTasks"}   # submitOrderBtn 仍缺
     script = json.loads(_one_case_raw())[0]["script"]
     norm, err = cr.revalidate_for_backfill(script, project_id=1)
     assert err is not None, "仍缺 key 时不应确定性回填(应落 AI 兜底)"

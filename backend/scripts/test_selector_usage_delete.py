@@ -119,7 +119,7 @@ def main():
                        candidates='[{"by": "text", "value": "成功"}]'))
     _s.commit()
     from app.services import claude_runner as cr
-    cr._registered_keys = lambda pid=None: {"submitOrderBtn", "orderOkToast"} if pid == 1 else set()
+    cr._registered_keys = lambda pid=None, sub_product="": {"submitOrderBtn", "orderOkToast"} if pid == 1 else set()
     r = client.post("/api/ai/testcases/backfill", params={"project_id": 1})
     d = r.json()["data"]
     assert d["restored"] == 2, f"加回 key 后批量回填应救回 2 条,实际 {d}"

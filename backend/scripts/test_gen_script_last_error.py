@@ -52,7 +52,7 @@ _OK_SCRIPT = [
 ]
 
 
-def _gen(kind, title, steps, expected, project_id=None, timeout=None):
+def _gen(kind, title, steps, expected, project_id=None, timeout=None, sub_product=""):
     return (_OK_SCRIPT, None) if _MODE["ok"] else ([], _ERR)
 
 

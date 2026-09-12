@@ -1,3 +1,44 @@
+// 镜像后端 selector_ranking.py；现场唯一性由探测/runtime 验证。
+export const FRAGILE_BYS = new Set(['text', 'role'])
+const VALID_BYS = new Set(['testid', 'xpath', 'role', 'label', 'text', 'placeholder', 'css'])
+export function normalizeCandidate(c) {
+  if (!c || !VALID_BYS.has(c.by) || typeof c.value !== 'string' || !c.value.trim()
+      || ('name' in c && typeof c.name !== 'string') || ('exact' in c && typeof c.exact !== 'boolean')) return null
+  return Object.fromEntries(['by', 'value', 'name', 'exact', 'src', 'status', 'disabled']
+    .filter(k => k in c).map(k => [k, c[k]]))
+}
+export const candidateIdentity = c => {
+  const match = c.by === 'css' && c.value?.match(/^\[data-testid=("(?:[^"\\]|\\.)*"|[\w-]+)\]$/)
+  if (match) { try { c = { ...c, by: 'testid', value: match[1].startsWith('"') ? JSON.parse(match[1]) : match[1] } } catch {} }
+  return JSON.stringify([c.by, c.value, c.name || null, c.exact ?? false])
+}
+export const isActiveCandidate = c => !!normalizeCandidate(c) && c.src !== 'learned'
+  && !['pending', 'rejected', 'retired'].includes(c.status) && c.disabled !== true
+export function isFragile(c) {
+  return (c?.by === 'role' && !(c.name && c.exact)) || (c?.by === 'text' && !c.exact)
+}
+export function candidateRank(c) {
+  if (c.by === 'testid') return 0
+  if (c.by === 'role' && c.name && c.exact) return 1
+  if (c.by === 'label') return 2
+  if (c.by === 'placeholder') return 3
+  if (c.by === 'css' && (c.value.startsWith('#') || c.value.startsWith('[data-test'))) return 4
+  if (c.by === 'text' && c.exact) return 5
+  if (c.by === 'role' && c.name) return 6
+  if (c.by === 'xpath') return 7
+  if (c.by === 'css') return 8
+  return 9
+}
+export const orderCandidates = cands => [...(cands || [])].sort((a, b) => candidateRank(a) - candidateRank(b))
+export function mergeCandidates(...groups) {
+  const unique = new Map()
+  for (const c of groups.flat().map(normalizeCandidate).filter(Boolean)) {
+    const id = candidateIdentity(c)
+    if (!unique.has(id)) unique.set(id, c)
+  }
+  return orderCandidates([...unique.values()]).slice(0, 6)
+}
+
 export function elementTextValue(el) {
   if (!el) return "";
   const tag = String(el.tagName || "").toUpperCase();
@@ -34,9 +75,9 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
   };
   const validBys = new Set(["testid", "xpath", "role", "text", "label", "placeholder", "css"]);
   const candidates = (entry) => {
-    const c = (entry?.candidates || []).filter((c) => c && validBys.has(c.by) && c.value);
+    const c = (entry?.candidates || []).filter(isActiveCandidate);
     if (!c.length) throw error("INVALID_SELECTOR", "选择器没有有效候选");
-    return c.filter((c) => !["text", "role"].includes(c.by)).concat(c.filter((c) => ["text", "role"].includes(c.by)));
+    return orderCandidates(c);
   };
   function locator(scope, cand) {
     const exact = typeof cand.exact === "boolean" ? { exact: cand.exact } : {};
@@ -67,7 +108,10 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
       if (count === 1) vm = { scope: page().frameLocator(vmIframe()), name: "vm" };
     }
     // A product may flatten the business page into the main renderer.
-    if (frame === "vm" || frame === "content") return [vm || shell];
+    if (frame === "vm" || frame === "content") {
+      if (vmIframe() && !vm) throw error('INVALID_FRAME', '已配置的业务 iframe 尚未出现');
+      return [vm || shell];
+    }
     return vm ? [shell, vm] : [shell];
   }
   function validateTarget(target, depth = 0) {
@@ -78,37 +122,55 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     if (target.key && !registry()?.[target.key]) throw error("UNKNOWN_KEY", `未定义语义 key "${target.key}"`);
     if (target.within) validateTarget(target.within, depth + 1);
   }
-  async function inspect(target, { multiple = false, parent = null, all = false } = {}) {
+  async function inspect(target, { multiple = false, parent = null, all = false, requireVisible = false } = {}) {
     validateTarget(target);
     let container = parent;
     if (target.within) {
-      const p = await inspect(target.within);
+      const p = await inspect(target.within, { requireVisible });
       if (!p.count) return { count: 0, loc: null, containerMissing: true, hit: p.hit };
       container = p.loc;
     }
     const entry = target.key ? registry()[target.key] : null;
     const cands = entry ? candidates(entry) : [{ by: "css", value: target.selector }];
     const locations = container ? [{ scope: container, name: "within" }] : await scopes(target.frame ?? entry?.frame ?? "content");
-    let empty;
+    let empty, hidden, ambiguous;
     const matches = [];
-    for (const s of locations) for (const cand of cands) {
-      let loc = locator(s.scope, cand);
-      if (target.has_text !== undefined) loc = loc.filter({ hasText: target.has_text });
-      if (target.visible !== undefined) loc = loc.filter({ visible: !!target.visible });
-      if (target.nth !== undefined) loc = loc.nth(target.nth);
-      const count = await loc.count(); // Invalid CSS / detached frames must not become absence.
-      const hit = { scope: s.name, by: cand.by, value: cand.value, ...(target.nth !== undefined ? { nth: target.nth } : {}) };
-      if (!multiple && count > 1) throw error("AMBIGUOUS_TARGET", `目标 ${target.key || target.selector} 匹配 ${count} 个元素；请使用 within/has_text 或明确 nth`);
-      if (count && !all) return { loc, count, hit };
-      if (count) matches.push({ loc, count, hit });
-      empty ||= { loc, count, hit };
+    // 候选优先级先于 frame 遍历顺序。auto 的唯一性在全部允许的 frame 上检查。
+    for (const cand of cands) {
+      const hits = [];
+      for (const s of locations) {
+        let loc = locator(s.scope, cand);
+        if (target.has_text !== undefined) loc = loc.filter({ hasText: target.has_text });
+        if (target.visible !== undefined) loc = loc.filter({ visible: !!target.visible });
+        if (target.nth !== undefined) loc = loc.nth(target.nth);
+        const count = await loc.count(); // 无效语法/失联 frame 不能变成“元素不存在”。
+        const hit = { scope: s.name, ...normalizeCandidate(cand), ...(target.nth !== undefined ? { nth: target.nth } : {}) };
+        const result = { loc, count, hit };
+        empty ||= result;
+        if (count) hits.push(result);
+      }
+      const total = hits.reduce((n, r) => n + r.count, 0);
+      if (all) { matches.push(...hits); continue; }
+      if (!multiple && total > 1) {
+        ambiguous ||= error("AMBIGUOUS_TARGET", `目标 ${target.key || target.selector} 在允许的 frame 中匹配 ${total} 个元素；请限定 frame/within/has_text`);
+        continue; // 当前候选不唯一，不妨碍后续更精确的候选唯一定位。
+      }
+      if (total) {
+        const result = hits[0];
+        if (requireVisible && !await result.loc.isVisible()) { hidden ||= result; continue; }
+        return result;
+      }
     }
-    return all ? { ...empty, matches, count: matches.reduce((n, r) => n + r.count, 0) } : empty;
+    if (all) return { ...empty, matches, count: matches.reduce((n, r) => n + r.count, 0) };
+    if (hidden) return hidden;
+    if (ambiguous) throw ambiguous;
+    return empty;
   }
+
   async function resolve(target, { requireVisible = true } = {}) {
     const end = Date.now() + limit(target);
     for (;;) {
-      const r = await inspect(target);
+      const r = await inspect(target, { requireVisible });
       if (r.count && (!requireVisible || await r.loc.isVisible())) return r;
       if (Date.now() >= end) throw error("TARGET_TIMEOUT", `目标 ${target.key || target.selector} 在超时内未${requireVisible ? "可见" : "出现"}`);
       await sleep(Math.min(pollMs, Math.max(1, end - Date.now())));
@@ -130,7 +192,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     let absentSince = null;
     let actual = null, locatable = false, hit;
     for (;;) {
-      const r = await inspect(args, { multiple: mode === "absent", all: mode === "absent" });
+      const r = await inspect(args, { multiple: mode === "absent", all: mode === "absent", requireVisible: mode !== "absent" });
       hit = r.hit;
       locatable = !!r.count;
       if (!r.count) actual = null;
@@ -278,6 +340,17 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     assertVisible: (args) => check("visible", args),
     assertAbsent: (args) => check("absent", args),
     async click(args) { const r = await resolve(args); await r.loc.click({ timeout: Math.max(1, limit(args)) }); return { clicked: args.key || args.selector, via: r.hit }; },
+    async setChecked(args) {
+      if (typeof args.checked !== 'boolean') throw error('INVALID_CHECKED', 'checked 必须是布尔值');
+      const r = await resolve(args);
+      await r.loc.setChecked(args.checked, { timeout: Math.max(1, limit(args)) });
+      return { checked: args.checked, via: r.hit };
+    },
+    async selectOption(args) {
+      if (!(typeof args.values === 'string' || (Array.isArray(args.values) && args.values.every(v => typeof v === 'string')))) throw error('INVALID_OPTION', 'values 必须是字符串或字符串数组');
+      const r = await resolve(args);
+      return { selected: await r.loc.selectOption(args.values, { timeout: Math.max(1, limit(args)) }), via: r.hit };
+    },
     async hover(args) { const r = await resolve(args); await r.loc.hover({ timeout: Math.max(1, limit(args)) }); return { hovered: args.key || args.selector, via: r.hit }; },
     async type(args) { const r = await resolve(args); await r.loc.pressSequentially(String(args.text ?? ""), { timeout: Math.max(1, limit(args)) }); return { typed: args.key || args.selector, via: r.hit }; },
     async getText(args) { const r = await resolve(args, { requireVisible: false }); return { text: await r.loc.evaluate(elementTextValue, undefined, { timeout: Math.max(1, limit(args)) }), via: r.hit }; },

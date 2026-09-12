@@ -1,13 +1,19 @@
 // 录制捕获:注入被测页的事件监听脚本 + runner 侧的原始事件→步骤 纯映射(便于单测)。
 // 设计:捕获脚本把每次 click/change 的目标元素候选(内联 genCandidates,与 DISCOVER_SCRIPT 同款)
-// push 进页面全局 window.__qalabRec;runner 每轮 evaluate 排空(跨 frame),不用 exposeBinding(避时序坑)。
+// 页面缓冲和 exposeBinding 双通道保留事件，Runner 持久化后上传，服务端确认才清理。
 // Alt+点击 = 标断言。stop 时置 window.__qalabRecOn=false,捕获脚本空转(addInitScript 撤不掉,用开关关)。
 
 // ---- 注入进页面的捕获脚本(必须自包含:addInitScript 会序列化函数源,不能引用模块作用域) ----
-export function CAPTURE_INIT() {
+export function CAPTURE_INIT({ sessionId = "local" } = {}) {
   try {
-    // 新一轮录制丢弃上一轮尚未排空的事件，监听器仍只安装一次。
-    window.__qalabRec = [];
+    // 重复注入同一会话不清空未确认事件。
+    if (window.__qalabRecSession !== sessionId) {
+      window.__qalabRecReset?.();
+      window.__qalabRec = [];
+      window.__qalabRecSession = sessionId;
+      window.__qalabRecDocument = (globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2));
+      window.__qalabRecSeq = 0;
+    }
     if (window.__qalabRecHooked) { window.__qalabRecOn = true; return; }
     window.__qalabRecHooked = true;
     window.__qalabRecOn = true;
@@ -16,19 +22,29 @@ export function CAPTURE_INIT() {
     var isHash = function (c) { return /[A-Za-z0-9]{6,}$/.test(c) && !/[-_]/.test(c.slice(-8)); };
     var gen = function (el) {
       var cands = [];
-      var tid = el.getAttribute("data-testid") || el.getAttribute("data-test-id") || el.getAttribute("data-test");
-      if (tid) cands.push({ by: "testid", value: tid });
-      if (el.id && !/^\d/.test(el.id) && el.id.length < 50) cands.push({ by: "css", value: "#" + el.id });
+      var tid = "";
+      for (var attr of ["data-testid", "data-test-id", "data-test"]) {
+        var value = el.getAttribute(attr);
+        if (!value) continue;
+        tid = value;
+        cands.push(attr === "data-testid" ? { by: "testid", value: value }
+          : { by: "css", value: "[" + attr + "=" + JSON.stringify(value) + "]" });
+      }
+      if (el.id && !/^\d/.test(el.id) && el.id.length < 50) cands.push({ by: "css", value: "#" + CSS.escape(el.id) });
+      var role = el.getAttribute("role") || ({ BUTTON: "button", A: "link", INPUT: ["button", "submit", "reset"].includes(el.type) ? "button" : el.type === "checkbox" ? "checkbox" : el.type === "radio" ? "radio" : "textbox", TEXTAREA: "textbox", SELECT: "combobox" })[el.tagName];
+      var labelled = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean).map(function (id) { return document.getElementById(id)?.textContent || ""; }).join(" ").trim();
+      var accessibleName = labelled || el.getAttribute("aria-label") || (el.labels?.length ? Array.from(el.labels).map(function(l) { return l.textContent; }).join(" ").trim() : "") || ((el.innerText || "").trim());
+      if (role && accessibleName) cands.push({ by: "role", value: role, name: accessibleName, exact: true });
       var aria = el.getAttribute("aria-label");
-      if (aria && aria.length < 60) cands.push({ by: "label", value: aria });
+      if (aria && aria.length < 60) cands.push({ by: "label", value: aria, exact: true });
       var name = el.getAttribute("name");
-      if (name) cands.push({ by: "css", value: '[name="' + name + '"]' });
+      if (name) cands.push({ by: "css", value: '[name=' + JSON.stringify(name) + ']' });
       var ph = el.getAttribute("placeholder");
-      if (ph) cands.push({ by: "placeholder", value: ph });
+      if (ph) cands.push({ by: "placeholder", value: ph, exact: true });
       var classes = Array.prototype.slice.call(el.classList || []);
       var bem = classes.filter(isBEM);
       var stable = bem.length ? bem : classes.filter(function (c) { return !isHash(c) && c.length > 3; });
-      var stableSel = stable.length ? stable.map(function (c) { return "." + c; }).join("") : "";
+      var stableSel = stable.length ? stable.map(function (c) { return "." + CSS.escape(c); }).join("") : "";
       if (stableSel) cands.push({ by: "css", value: stableSel });
       var txt = (el.innerText || el.textContent || "").trim().slice(0, 30);
       // 无 testid 时:补一条 **xpath**(tag + class contains + 精确文本)——比裸 css 类(常多命中)和
@@ -44,7 +60,7 @@ export function CAPTURE_INIT() {
         if (tcond) conds.push(tcond);
         if (conds.length) cands.push({ by: "xpath", value: "//" + tag + "[" + conds.join("][") + "]" });
       }
-      if (txt && txt.length >= 2 && txt.length <= 20) cands.push({ by: "text", value: txt });
+      if (txt && txt.length >= 2 && txt.length <= 20) cands.push({ by: "text", value: txt, exact: true });
       return cands;
     };
     // 从事件目标向上找"有意义"的可定位元素(内层 svg/span/文本 div → 最近的可点击容器)。
@@ -70,34 +86,84 @@ export function CAPTURE_INIT() {
       }
       return el;
     };
+    var pendingBindings = new Set();
     var emit = function (type, ev) {
       if (!window.__qalabRecOn) return;
-      var el = pick(ev.target);
+      var el = pick(ev.composedPath?.()[0] || ev.target);
       if (!el || !el.tagName) return;
       var cands = gen(el);
       if (!cands.length) return;
       window.__qalabRec.push({
         type: type, tag: el.tagName.toLowerCase(), elType: el.getAttribute("type") || "",
-        text: (el.innerText || el.value || "").trim().slice(0, 40), value: el.value || "",
-        altKey: !!ev.altKey, candidates: cands, ts: Date.now(),
+        text: (el.innerText || el.value || "").trim().slice(0, 40), value: el.isContentEditable ? el.textContent : (el.value || ""),
+        checked: !!el.checked, values: el.tagName === 'SELECT' ? Array.from(el.selectedOptions).map(o => o.value) : undefined,
+        key_name: ev.key, document_url: globalThis.location?.href || '',
+        altKey: !!ev.altKey, candidates: cands, ts: performance.timeOrigin + performance.now(),
+        event_id: window.__qalabRecSession + ":" + window.__qalabRecDocument + ":" + (++window.__qalabRecSeq),
       });
+      // 尽早送进 Runner 的待确认区；页面导航销毁时仍能保留已捕获事件。
+      if (window.__qalabRecorderEvent) {
+        var pending = window.__qalabRecorderEvent(window.__qalabRec.at(-1)).catch(function() {});
+        pendingBindings.add(pending);
+        pending.finally(function() { pendingBindings.delete(pending); });
+      }
     };
-    document.addEventListener("click", function (e) { emit("click", e); }, true);
-    document.addEventListener("change", function (e) { emit("change", e); }, true);
-  } catch (e) { /* SSR/受限环境忽略 */ }
+    // 断言选择在 capture 阶段阻断点击及提前绑定的 pointer/mouse 业务处理。
+    var blockPick = function(e) {
+      if (!window.__qalabRecOn || !e.altKey) return;
+      if (e.type === "click") { flushInputs(); emit("click", e); }
+      e.preventDefault(); e.stopImmediatePropagation();
+    };
+    ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick"].forEach(function(type) {
+      window.addEventListener(type, blockPick, true);
+    });
+    var dirtyInputs = new Map();
+    window.__qalabRecReset = function() { dirtyInputs.clear(); };
+    var targetOf = function(e) { return e.composedPath?.()[0] || e.target; };
+    var isTextInput = function(el) { return el && (el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !['checkbox','radio','file','button','submit','reset','range','color','hidden'].includes(el.type))); };
+    var flushInputs = function() {
+      for (var [el] of dirtyInputs) emit('change', { target: el });
+      dirtyInputs.clear();
+    };
+    document.addEventListener('input', function(e) {
+      if (window.__qalabRecOn && isTextInput(targetOf(e))) dirtyInputs.set(targetOf(e), true);
+    }, true);
+    document.addEventListener("click", function (e) {
+      if (!window.__qalabRecOn || e.altKey) return;
+      flushInputs();
+      var el = targetOf(e);
+      if (el?.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type)) return; // change 记录最终状态。
+      emit("click", e);
+    }, true);
+    document.addEventListener("change", function (e) {
+      dirtyInputs.delete(targetOf(e));
+      emit("change", e);
+    }, true);
+    document.addEventListener('keydown', function(e) {
+      if (!window.__qalabRecOn || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || !['Enter','Tab','Escape'].includes(e.key)) return;
+      flushInputs();
+      emit('press', e);
+    }, true);
+    window.__qalabRecFlush = async function() { flushInputs(); await Promise.all([...pendingBindings]); };
+  } catch (e) { throw new Error("录制初始化失败: " + e.message); }
 }
 
-// 排空页面缓冲(runner 每帧 evaluate 调用):取出并清空 window.__qalabRec。
+// 读取待确认页面缓冲，重复读取不删除事件。
 export function DRAIN_SCRIPT() {
   var e = window.__qalabRec || [];
-  window.__qalabRec = [];
-  return e;
+  return e.slice(); // 服务端确认后由 ACK_SCRIPT 清理。
 }
 
 // 停止捕获:置开关 false(addInitScript 撤不掉,靠开关空转)。
-export function STOP_SCRIPT() {
+export async function STOP_SCRIPT() {
+  const flushing = window.__qalabRecFlush?.(); // 先同步捕获尚未失焦的最终输入。
   window.__qalabRecOn = false;
-  window.__qalabRec = [];
+  await flushing;
+}
+
+export function ACK_SCRIPT(ids) {
+  var acked = new Set(ids || []);
+  window.__qalabRec = (window.__qalabRec || []).filter(function(e) { return !acked.has(e.event_id); });
 }
 
 // ---- runner 侧纯映射:原始捕获事件 → 后端 event 步骤(§5 schema)。可单测。 ----
@@ -107,32 +173,31 @@ export function rawEventToStep(raw, frame) {
   const cands = (raw.candidates || []).filter((c) => c && c.by && c.value);
   if (!cands.length) return null;
   const base = { tag: raw.tag || "", type: raw.elType || "", text: raw.text || "",
-                 value: raw.value || "", candidates: cands, frame: frame || "auto" };
+                 value: raw.value || "", candidates: cands, frame: frame || "auto",
+                 ...(raw.event_id ? { event_id: raw.event_id } : {}), ...(raw.ts !== undefined ? { ts: raw.ts } : {}) };
   if (raw.altKey) {
     const txt = (raw.text || "").trim();
     return { ...base, action: "assert",
              assert: (txt.length >= 2 && txt.length <= 20) ? { kind: "text", expected: txt } : { kind: "visible" } };
   }
-  if (raw.type === "change") return { ...base, action: "fill" };
+  if (raw.type === 'press') return { ...base, action: 'press', key_name: raw.key_name };
+  if (raw.type === "change") {
+    if (raw.tag === 'select') return { ...base, action: 'select_option', values: raw.values || [raw.value || ''] };
+    if (raw.tag === 'input' && ['checkbox', 'radio'].includes(raw.elType)) return { ...base, action: 'set_checked', checked: raw.checked };
+    if (raw.tag === 'input' && ['file', 'range', 'color'].includes(raw.elType)) return { ...base, action: 'unsupported_' + raw.elType };
+    return { ...base, action: "fill" };
+  }
   return { ...base, action: "click" };
 }
 
-// 去抖:丢掉与上一条"同候选签名 + 同 action"的连续重复(点击常触发合成事件;change 前的 click 等)。
-// sig 用首候选 by+value + action。返回过滤后的步骤数组。
+// 仅按事件编号去重重传数据，真实连续操作保留，并按捕获时间排序。
 export function dedupeSteps(steps) {
-  const out = [];
-  let last = "";
-  for (const s of steps || []) {
-    if (!s) continue;
-    const c0 = s.candidates && s.candidates[0];
-    const sig = s.action + "|" + (c0 ? c0.by + " " + c0.value : "");
-    if (sig === last) {
-      // 同签名连续:若是 fill(取最后一次 value)则覆盖上一条,否则跳过
-      if (s.action === "fill" && out.length) out[out.length - 1] = s;
-      continue;
-    }
-    last = sig;
-    out.push(s);
-  }
-  return out;
+  const seen = new Set();
+  return (steps || []).filter(s => {
+    if (!s) return false;
+    if (!s.event_id) return true; // 两次真实点击/输入即使目标相同也不能合并。
+    if (seen.has(s.event_id)) return false;
+    seen.add(s.event_id);
+    return true;
+  }).sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
 }

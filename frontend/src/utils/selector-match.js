@@ -29,7 +29,7 @@ export function scoreElement(key, ctxTokens, el) {
   for (const t of tokenize(key)) if (hay.has(t)) score += 3
   for (const t of (ctxTokens || [])) if (hay.has(t)) score += 1
   const cands = (el.candidates && el.candidates.length) ? el.candidates : (el.best ? [el.best] : [])
-  if (cands.some((c) => c && (c.by === 'testid' || (c.by === 'css' && /^#/.test(c.value || ''))))) score += 0.5
+  if (score > 0 && cands.some((c) => c && (c.by === 'testid' || (c.by === 'css' && /^#/.test(c.value || ''))))) score += 0.5
   return score
 }
 

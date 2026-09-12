@@ -41,7 +41,7 @@ test("rawEventToStep: 无有效候选 / 非对象 → null", () => {
   assert.equal(rawEventToStep(null), null);
 });
 
-test("dedupeSteps: 连续同签名去重;fill 连续取最后一次", () => {
+test("dedupeSteps: 保留两次真实点击和输入，只按事件 ID 去重", () => {
   const steps = [
     { action: "click", candidates: [{ by: "testid", value: "a" }] },
     { action: "click", candidates: [{ by: "testid", value: "a" }] },   // 重复 → 去
@@ -50,10 +50,12 @@ test("dedupeSteps: 连续同签名去重;fill 连续取最后一次", () => {
     { action: "click", candidates: [{ by: "testid", value: "b" }] },
   ];
   const out = dedupeSteps(steps);
-  assert.equal(out.length, 3, JSON.stringify(out));
+  assert.equal(out.length, 5, JSON.stringify(out));
   assert.equal(out[0].candidates[0].value, "a");
-  assert.equal(out[1].value, "he");   // fill 取最后一次
-  assert.equal(out[2].candidates[0].value, "b");
+  assert.equal(out[2].value, "h");
+  assert.equal(out[3].value, "he");
+  assert.equal(out[4].candidates[0].value, "b");
+  assert.equal(dedupeSteps([{...steps[0], event_id:"1"}, {...steps[0], event_id:"1"}]).length, 1);
 });
 
 // 同一页面连续录制时复用监听器，但不能复用上一轮缓冲。
@@ -63,13 +65,14 @@ import { CAPTURE_INIT, DRAIN_SCRIPT, STOP_SCRIPT } from "./record-capture.mjs";
 function capturePage() {
   const listeners = new Map();
   const context = vm.createContext({
-    window: {},
+    window: { addEventListener() {} },
+    performance: { timeOrigin: 0, now: () => Date.now() },
     document: { addEventListener(type, callback) {
       const list = listeners.get(type) || [];
       list.push(callback); listeners.set(type, list);
     } },
   });
-  const run = (fn) => vm.runInContext(`(${fn.toString()})()`, context);
+  const run = (fn, arg) => vm.runInContext(`(${fn.toString()})(${JSON.stringify(arg) || ""})`, context);
   const click = (text) => {
     const target = { tagName: "BUTTON", innerText: text, classList: [],
       matches: () => true, getAttribute: (name) => name === "data-testid" ? text : null };
@@ -82,7 +85,7 @@ test("新录制清空未上报事件，复用监听器且只捕获本轮操作",
   const page = capturePage();
   page.run(CAPTURE_INIT);
   page.click("old");
-  page.run(CAPTURE_INIT);
+  page.run(CAPTURE_INIT, { sessionId: "new" });
   assert.equal(page.run(DRAIN_SCRIPT).length, 0);
   page.click("new");
   const events = page.run(DRAIN_SCRIPT);
@@ -91,14 +94,14 @@ test("新录制清空未上报事件，复用监听器且只捕获本轮操作",
   assert.equal(page.listeners.get("click").length, 1);
 });
 
-test("停止后丢弃剩余缓冲，停止期间的操作不进入下一轮", () => {
+test("停止保留未确认缓冲，停止期间不再捕获，新会话清空旧缓冲", () => {
   const page = capturePage();
   page.run(CAPTURE_INIT);
   page.click("old");
   page.run(STOP_SCRIPT);
   page.click("between");
-  assert.equal(page.run(DRAIN_SCRIPT).length, 0);
-  page.run(CAPTURE_INIT);
+  assert.equal(page.run(DRAIN_SCRIPT).length, 1);
+  page.run(CAPTURE_INIT, { sessionId: "next" });
   page.click("fresh");
   const events = page.run(DRAIN_SCRIPT);
   assert.equal(events.length, 1);

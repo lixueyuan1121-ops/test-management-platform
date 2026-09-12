@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.deps import get_current_user, require_runner_ctx
 from app.db.session import Base, get_db
-from app.models import Project, SelectorKey, TestCase, RecordSession, AiTask, Task, ChecklistItem
+from app.models import Project, SelectorKey, TestCase, RecordSession, AiTask, Task, ChecklistItem, RunnerDevice
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 Base.metadata.create_all(_engine)
@@ -24,6 +24,7 @@ _s.add(SelectorKey(id=1, project_id=1, sub_product="", key="navAgents",
                    candidates='[{"by":"testid","value":"nav-agents"}]'))
 from datetime import date
 _s.add(Task(id=1, project_id=1, assigned_by=1, assigned_to=1, title="录制目标任务", assigned_date=date(2026, 9, 10), status="pending"))
+_s.add(RunnerDevice(id=1, owner_id=1, runner_id="win-01", name="Test", token="test-device-token"))
 _s.commit()
 
 
@@ -33,7 +34,7 @@ def _override_db():
 
 app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
 app.dependency_overrides[get_db] = _override_db
-app.dependency_overrides[require_runner_ctx] = lambda: SimpleNamespace(device=None)
+app.dependency_overrides[require_runner_ctx] = lambda: SimpleNamespace(device=_s.get(RunnerDevice, 1))
 client = TestClient(app)
 
 
@@ -44,7 +45,7 @@ def main():
     sid = r.json()["data"]["id"]
 
     # ② runner 拉取 → pending 认领为 recording
-    r = client.get("/api/record/pending?runner=win-01")
+    r = client.get("/api/record/pending?runner=win-01&consumer_id=test-process")
     assert any(x["id"] == sid for x in r.json()["data"]), r.text
     _s.expire_all()
     assert _s.get(RecordSession, sid).status == "recording"
@@ -57,7 +58,8 @@ def main():
         {"action": "assert", "tag": "div", "text": "预览区", "candidates": [{"by": "testid", "value": "preview-panel"}],
          "assert": {"kind": "visible"}},
     ]
-    r = client.post(f"/api/record/{sid}/events?runner=win-01", json={"events": evs})
+    evs = [{**e, "event_id": str(i), "ts": i} for i, e in enumerate(evs)]
+    r = client.post(f"/api/record/{sid}/events?runner=win-01", json={"events": evs, "consumer_id": "test-process"})
     assert r.json()["data"]["total"] == 3, r.text
 
     # ④ 用户轮询看实时步骤
@@ -66,7 +68,9 @@ def main():
 
     # ⑤ 停止
     r = client.post(f"/api/record/{sid}/stop")
-    assert r.json()["data"]["status"] == "stopped"
+    assert r.json()["data"]["status"] == "stopping"
+    ack = client.post(f"/api/record/{sid}/events", json={"events": [], "consumer_id": "test-process", "final": True})
+    assert ack.json()["data"]["status"] == "stopped"
 
     # ⑥ 保存为用例 → 组装 e2e script + 回填 office-online-preview（task_id 必填）
     r = client.post(f"/api/record/{sid}/save-as-case", json={"title": "录制:专家页在线预览", "task_id": 1, "precondition": "进入首页"})

@@ -1,17 +1,30 @@
 from typing import Any
+import math
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class RecordStartIn(BaseModel):
     project_id: int
     sub_product: str = ""
     runner: str
+    runner_device_id: int | None = None
 
 
 class RecordEventsIn(BaseModel):
     """runner 增量上报捕获事件(每项为一步操作,见 record_session.events schema)。"""
-    events: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
+    consumer_id: str = Field(min_length=1, max_length=64)
+    final: bool = False
+
+    @field_validator("events")
+    @classmethod
+    def valid_timestamps(cls, events):
+        for event in events:
+            ts = event.get("ts", 0)
+            if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts) or ts < 0:
+                raise ValueError("事件 ts 须为非负有限时间戳")
+        return events
 
 
 class RecordSaveIn(BaseModel):

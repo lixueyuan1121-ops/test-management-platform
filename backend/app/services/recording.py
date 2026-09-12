@@ -13,29 +13,32 @@ import re
 from sqlalchemy.orm import Session
 
 from app.models import SelectorKey, TestCase, AiTask
-from app.services.selector_ranking import valid_candidates, order_candidates
+from app.services.selector_ranking import valid_candidates, order_candidates, candidate_identity, is_active_candidate
 from app.services.heal_selectors import apply_heal_items
 
 
-def _cand_key(c: dict) -> str:
-    """候选唯一键(与前端 candKey 同口径:by+value 重叠判定)。"""
-    return f"{c.get('by')} {c.get('value')}"
+def _cand_key(c: dict, frame: str = "auto") -> str:
+    return json.dumps(["vm" if frame == "content" else frame, candidate_identity(c)], ensure_ascii=False)
 
 
 def _is_unique_cand(c: dict) -> bool:
-    """该候选是否**唯一强定位**(可用于"命中已有 key"判定)。
+    # 仅用于身份复用；现场唯一性仍须由运行前的探测验证。
+    by, val = c.get("by"), str(c.get("value") or "")
+    return (by == "testid" or (by == "role" and bool(c.get("name")) and c.get("exact") is True)
+            or (by == "css" and (val.startswith("#") or val.startswith("[data-test"))))
 
-    只认:testid / xpath(带文本或多重条件,基本唯一) / id 选择器(#x) / 属性选择器([...])。
-    **排除**裸 class 选择器(如 `.sidebar-nav__item`,同类元素全命中→跨元素误配)和 text(子串多命中)。
-    修"点『技能』导航却因共享 .sidebar-nav__item 命中到 artifactCard_pptx"这类张冠李戴。
-    """
-    by = c.get("by"); val = str(c.get("value") or "")
-    if by in ("testid", "xpath"):
-        return True
-    if by == "css":
-        # #id 或 [attr=...] 视为唯一;纯 .class 链(易多命中)不作匹配依据
-        return val.startswith("#") or ("[" in val and "." not in val.split("[")[0])
-    return False  # label/placeholder/text/role 一律不作匹配键
+
+class KeyIndex(dict):
+    def __init__(self):
+        super().__init__()
+        self.taken: set[str] = set()
+
+    def add(self, candidate, frame, key):
+        identity = _cand_key(candidate, frame)
+        if identity not in self:
+            self[identity] = key
+        elif self[identity] != key:
+            self[identity] = None  # 多个 key 指向同一候选，不能按查询顺序随便复用。
 
 
 def to_camel(s: str) -> str:
@@ -47,23 +50,22 @@ def to_camel(s: str) -> str:
     return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
 
 
-def build_key_index(db: Session, project_id: int, sub_product: str = "") -> dict[str, str]:
-    """{候选键 by+value → key 名} 反查索引:把录制元素匹配到**已注册** key(命中即复用)。
-
-    **只用唯一强候选建索引**(见 _is_unique_cand):testid/xpath/#id/[attr],不用裸 class/text——
-    否则不同元素共享一个通用 class(如 .sidebar-nav__item)会互相误配(实测:技能导航被配到 artifactCard_pptx)。
-    """
-    idx: dict[str, str] = {}
-    rows = (db.query(SelectorKey.key, SelectorKey.candidates)
-            .filter(SelectorKey.project_id == project_id, SelectorKey.sub_product == sub_product).all())
-    for key, raw in rows:
+def build_key_index(db: Session, project_id: int, sub_product: str = "") -> KeyIndex:
+    idx = KeyIndex()
+    rows = (db.query(SelectorKey).filter(SelectorKey.project_id == project_id,
+            SelectorKey.sub_product.in_(["", sub_product] if sub_product else [""])).all())
+    merged = {}
+    for row in sorted(rows, key=lambda r: r.sub_product != ""):
+        merged[row.key] = row
+        idx.taken.add(row.key)
+    for key, row in merged.items():
         try:
-            cands = json.loads(raw or "[]")
-        except (json.JSONDecodeError, ValueError):
+            cands = json.loads(row.candidates or "[]")
+        except (ValueError, TypeError):
             cands = []
-        for c in cands if isinstance(cands, list) else []:
-            if isinstance(c, dict) and c.get("by") and c.get("value") and _is_unique_cand(c):
-                idx.setdefault(_cand_key(c), key)
+        for c in valid_candidates(cands):
+            if is_active_candidate(c) and _is_unique_cand(c):
+                idx.add(c, row.frame or "auto", key)
     return idx
 
 
@@ -86,50 +88,69 @@ def assemble_recording_steps(events: list, key_index: dict[str, str]) -> tuple[l
 
     每步:action 映射 + 目标 key(命中已有 / 新建)。新建 key 收进 new_keys(供 apply_heal_items 回填)。
     预期结果 expected 由**断言步**汇总生成(assert_text→"出现文案X"、assert_visible→"X 可见"),
-    无断言则给"操作完成无报错"兜底——修复"录制生成的 e2e 没有预期结果"。
+    无断言时返回空预期，由保存入口阻止成为可执行用例。
     script 首步补 connect。
     """
     steps: list = [{"action": "connect", "target": {}, "args": {}, "desc": "连接被测客户端"}]
     new_keys: list = []
     expects: list = []
-    taken = set(key_index.values())
+    taken = set(getattr(key_index, "taken", ())) | {k for k in key_index.values() if k}
+    key_index = dict(key_index)
     for ev in events or []:
         if not isinstance(ev, dict):
-            continue
+            raise ValueError("录制包含非法步骤，请重新检查")
         cands = valid_candidates(ev.get("candidates") or [])
         if not cands:
-            continue  # 无有效候选的事件跳过(无法定位)
+            raise ValueError("录制步骤缺少有效候选，不能丢弃步骤后保存为可执行用例")
         # 命中已注册 key?按候选顺序找第一个命中的。
-        key = next((key_index[_cand_key(c)] for c in cands if _cand_key(c) in key_index), None)
+        frame = ev.get("frame") or "auto"
+        hits = {key_index.get(_cand_key(c, frame)) for c in cands if _is_unique_cand(c)} - {None}
+        key = next(iter(hits)) if len(hits) == 1 else None
         if key is None:
             key = _new_key_name(ev, taken)
             taken.add(key)
+            # 同一次录制后续点击/断言复用刚建立的身份；禁止跨 frame 复用。
+            for c in cands:
+                if _is_unique_cand(c):
+                    key_index.setdefault(_cand_key(c, frame), key)
             page = str(ev.get("page") or "")
             ctrl = _control_type(ev)
             desc = f"[{ev.get('nav_tab','') or '?'}]-[{page or '?'}]-[{(ev.get('text') or '操作')[:12]}]-[{ctrl}]"
             new_keys.append({"key": key, "candidates": order_candidates(cands),
-                             "page": page, "desc": desc, "frame": ev.get("frame") or "auto"})
+                             "page": page, "desc": desc, "frame": frame, "mode": "create"})
         else:
-            # 命中已有 key:仍把本次捕获的候选并入(apply_heal_items 会合并去重、xpath>css>text 排序)——
+            # 命中已有 key:仍把本次捕获的候选并入(apply_heal_items 会合并按完整身份去重和语义质量排序)——
             # 修"key 早先由脆弱 css 建、之后重录也不补 xpath → 一直定位不到"。不传 desc/page,不动已有元信息。
-            new_keys.append({"key": key, "candidates": order_candidates(cands)})
+            new_keys.append({"key": key, "candidates": order_candidates(cands), "frame": frame, "mode": "update"})
         action = ev.get("action") or "click"
         desc = (ev.get("text") or "").strip()[:40]
         if action == "fill":
             steps.append({"action": "fill", "target": {"key": key},
                           "args": {"text": ev.get("value") or ""}, "desc": desc or f"输入到 {key}"})
+        elif action == "set_checked":
+            steps.append({"action": action, "target": {"key": key}, "args": {"checked": ev.get("checked")}, "desc": desc or f"设置 {key} 勾选状态"})
+        elif action == "select_option":
+            steps.append({"action": action, "target": {"key": key}, "args": {"values": ev.get("values")}, "desc": desc or f"选择 {key} 选项"})
+        elif action == "press":
+            steps.append({"action": action, "target": {"key": key}, "args": {"key_name": ev.get("key_name")}, "desc": desc or f"按键 {ev.get('key_name')}"})
         elif action == "assert":
             a = ev.get("assert") or {}
-            if a.get("kind") == "text" and a.get("expected"):
+            if a.get("kind") not in ("text", "visible"):
+                raise ValueError("请选择有效断言类型")
+            if a.get("kind") == "text" and not str(a.get("expected") or "").strip():
+                raise ValueError("文本断言的预期内容不能为空")
+            if a.get("kind") == "text":
                 steps.append({"action": "assert_text", "target": {"key": key},
                               "args": {"expected": a["expected"], "contains": True}, "desc": desc or f"断言文本「{a['expected']}」"})
                 expects.append(f"出现文案「{a['expected']}」")
             else:
                 steps.append({"action": "assert_visible", "target": {"key": key}, "args": {}, "desc": desc or f"断言 {key} 可见"})
                 expects.append(f"{desc or key} 可见")
-        else:  # click(含导航、普通点击)
+        elif action == "click":
             steps.append({"action": "click", "target": {"key": key}, "args": {}, "desc": desc or f"点击 {key}"})
-    expected = "；".join(expects) if expects else "操作按步骤完成，界面无报错"
+        else:
+            raise ValueError(f"不支持的录制动作：{action}")
+    expected = "；".join(expects)
     return steps, new_keys, expected
 
 
@@ -169,12 +190,24 @@ def save_recording_as_case(db: Session, project_id: int, sub_product: str, event
     """
     key_index = build_key_index(db, project_id, sub_product)
     steps, new_keys, expected = assemble_recording_steps(events, key_index)
+    if not expected:
+        raise ValueError("请至少添加一个有效断言后保存为自动化用例")
     # 回填新建 key(与执行期自愈同一函数:多候选、去重、testid>xpath>css 排序、四段式 desc)。
+    if sub_product:
+        local_names = {r.key for r in db.query(SelectorKey).filter_by(project_id=project_id, sub_product=sub_product).all()}
+        # 共享 key 已可复用，不因录制子产品用例而生成仅含本次候选的同名覆盖。
+        new_keys = [item for item in new_keys if item["mode"] != "update" or item["key"] in local_names]
     if new_keys:
         apply_heal_items(db, project_id, new_keys, updated_by=created_by, sub_product=sub_product)
+    from app.services.claude_runner import _validate_script
+    from app.services.selectors import usable_key_set
+    normalized, error = _validate_script(steps, usable_key_set(db, project_id, sub_product))
+    if error:
+        raise ValueError(f"录制脚本不可执行：{error}")
+    steps = normalized
     at = _record_ai_task(db, project_id, created_by)
     tc = TestCase(
-        ai_task_id=at.id, project_id=project_id, task_id=task_id, title=(title or "录制用例")[:512],
+        ai_task_id=at.id, project_id=project_id, sub_product=sub_product, task_id=task_id, title=(title or "录制用例")[:512],
         exec_kind="e2e", review_status="adopted", adopted=True,
         steps="\n".join(s["desc"] for s in steps if s.get("desc")),
         expected=expected,

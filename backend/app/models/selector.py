@@ -26,7 +26,7 @@ class SelectorKey(Base):
     # platform: web(PC端) / android / ios。默认 web 保持存量数据语义不变。
     platform: Mapped[str] = mapped_column(String(16), default="web", server_default="web", index=True)
     key: Mapped[str] = mapped_column(String(64))
-    frame: Mapped[str] = mapped_column(String(128), default="auto", server_default="auto")
+    frame: Mapped[str] = mapped_column(String(2048), default="auto", server_default="auto")
     page: Mapped[str] = mapped_column(String(64), default="", server_default="")
     desc: Mapped[str] = mapped_column(String(255), default="", server_default="")
     candidates: Mapped[str] = mapped_column(Text, default="[]")  # JSON 字符串
@@ -96,6 +96,7 @@ class ProbeRequest(Base):
     project_id: Mapped[int] = mapped_column(Integer, index=True)
     sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
     runner: Mapped[str] = mapped_column(String(64), index=True)
+    runner_device_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
     params: Mapped[str] = mapped_column(Text, default="{}")
     # result 存整页探测结果 JSON（groups×elements×candidates）。真实复杂页面单帧可达数百元素，

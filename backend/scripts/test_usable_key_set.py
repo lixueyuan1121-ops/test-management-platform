@@ -65,8 +65,8 @@ def _case_with_key(key: str):
 def test_bad_candidate_key_downgraded_as_selector_fix():
     """注册但候选坏的 key:_registered_keys(=usable 口径)里没有它 → 被当『选择器待补』降级。"""
     # usable 口径:badKey 候选坏 → 不在可用集
-    cr._registered_keys = lambda pid: {"goodKey"}
-    cr._key_page_map = lambda pid: {}
+    cr._registered_keys = lambda pid, sub_product="": {"goodKey"}
+    cr._key_page_map = lambda pid, sub_product="": {}
     cases = cr.parse_testcases(_case_with_key("badKey"), project_id=1)
     assert len(cases) == 1
     c = cases[0]
@@ -77,8 +77,8 @@ def test_bad_candidate_key_downgraded_as_selector_fix():
 
 def test_good_candidate_key_passes():
     """候选有效的 key:在 usable 集内 → 用例正常保留为可执行 gui。"""
-    cr._registered_keys = lambda pid: {"goodKey"}
-    cr._key_page_map = lambda pid: {}
+    cr._registered_keys = lambda pid, sub_product="": {"goodKey"}
+    cr._key_page_map = lambda pid, sub_product="": {}
     cases = cr.parse_testcases(_case_with_key("goodKey"), project_id=1)
     assert cases[0]["kind"] == "gui", f"候选有效应放行为 gui,实际 {cases[0]['kind']}"
     assert cases[0]["script"] is not None

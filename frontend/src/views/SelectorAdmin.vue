@@ -13,7 +13,7 @@
           <span>设备探测</span>
           <div class="filters">
             <el-select
-              v-model="probe.runner" placeholder="选择在线设备" size="small" style="width:200px"
+              v-model="probe.runner" :disabled="contextLocked" placeholder="选择在线设备" size="small" style="width:200px"
               no-data-text="你还没有登记设备（去「我的设备」登记）"
             >
               <el-option
@@ -26,7 +26,7 @@
               clearable style="width:220px"
             />
             <el-select
-              v-model="probe.page" filterable allow-create default-first-option clearable
+              v-model="probe.page" :disabled="contextLocked" filterable allow-create default-first-option clearable
               placeholder="当前页面(可选，加 key 默认归属)" size="small" style="width:200px"
             >
               <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
@@ -77,20 +77,25 @@
               批量加为 key（本次匹配 {{ bulkMatches.length }} 个）
             </el-button>
             <span class="form-hint">已补 {{ fixCtx.done.length }} / {{ fixCtx.keys.length }}</span>
-            <el-button link type="info" size="small" @click="fixCtx.keys = []; fixCtx.bulk = false">退出批量</el-button>
+            <el-button link type="info" size="small" :disabled="contextLocked" @click="fixCtx.keys = []; fixCtx.bulk = false">退出批量</el-button>
           </div>
         </div>
       </el-alert>
       <el-alert v-else-if="fixCtx.keys.length" type="warning" :closable="false" class="fix-bar">
         <div class="fix-bar-in">
           <span class="fix-bar-hint">待补选择器 key（选一个 → 下方高亮页面上最可能的元素 → 点该元素「加为 key」新建）：</span>
-          <el-radio-group v-model="fixCtx.activeKey" size="small">
+          <el-radio-group v-model="fixCtx.activeKey" :disabled="contextLocked" size="small">
             <el-radio-button v-for="k in fixCtx.keys" :key="k" :value="k">{{ k }}</el-radio-button>
           </el-radio-group>
-          <el-button link type="info" size="small" @click="fixCtx.keys = []; fixCtx.activeKey = ''">退出定位</el-button>
+          <el-button link type="info" size="small" :disabled="contextLocked" @click="fixCtx.keys = []; fixCtx.activeKey = ''">退出定位</el-button>
         </div>
       </el-alert>
 
+      <div v-if="fixCtx.caseIds.length" style="margin:12px 0;display:flex;gap:12px;align-items:center">
+        <el-button size="small" :loading="trialRunning" :disabled="!fixCtx.done.length || contextLocked || !probe.runner" @click="trialRelatedCases">试运行已补齐的关联用例</el-button>
+        <router-link v-if="trialBatch" :to="{ name: 'exec-results', query: { project_id: pid, batch_id: trialBatch } }">查看本次执行结果</router-link>
+        <span class="form-hint">试运行会在所选设备执行完整用例，请先恢复用例前置状态。</span>
+      </div>
       <el-empty v-if="!probe.done && !probe.running" description="选择在线设备后点「探测」，会扫描该设备当前页面的可交互元素" :image-size="80" />
       <div v-else-if="probe.running" class="probe-loading" v-loading="true" element-loading-text="探测中，请在设备上停留在目标页面…" style="min-height:120px" />
 
@@ -320,6 +325,7 @@
             <el-table-column label="操作" width="120" align="center">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" :disabled="contextLocked" @click="openEdit(row)">编辑</el-button>
+                <el-button link size="small" :disabled="contextLocked" @click="openHistory(row)">历史</el-button>
                 <el-button link type="danger" size="small" :disabled="contextLocked" @click="onDelete(row)">删除</el-button>
               </template>
             </el-table-column>
@@ -408,12 +414,13 @@
           <span class="form-hint">已匹配库中 key「{{ add.status.key }}」，{{ add.status.type === 'exists' ? '该候选已登记' : '建议更新已有以补充候选' }}</span>
         </div>
         <div v-if="add.frame && add.frame.startsWith('url:')" class="form-hint add-deep-hint">
-          该元素在嵌套 iframe，将按 frame url 定位：<code>{{ add.frame }}</code>（执行时从页面所有 frame 按此 url 匹配，找不到回退 shell/vm）
+          该元素在嵌套 iframe，将按 frame url 定位：<code>{{ add.frame }}</code>（执行时必须唯一匹配此 frame）
         </div>
       </div>
       <el-form label-width="90px" :disabled="add.saving" style="margin-top:12px">
         <el-form-item label="模式">
           <el-radio-group v-model="add.mode">
+            <el-radio v-if="fixCtx.activeKey && fixCtx.caseIds.length" value="reuse">复用已有 key</el-radio>
             <el-radio value="create">新建 key</el-radio>
             <el-radio value="update" :disabled="!rows.length">更新已有 key</el-radio>
           </el-radio-group>
@@ -445,7 +452,7 @@
         </template>
         <el-form-item v-else label="目标 key" required>
           <el-select v-model="add.targetId" placeholder="选择当前作用域的已有 key" filterable style="width:100%">
-            <el-option v-for="r in rows" :key="r.id" :value="r.id" :label="`${r.key}（${(r.candidates || []).length} 候选）`" />
+            <el-option v-for="r in (add.mode === 'reuse' ? effectiveRows : rows)" :key="r.id" :value="r.id" :label="`${r.key}（${(r.candidates || []).length} 候选）`" />
           </el-select>
           <div class="form-hint">best 候选将按<b>稳定优先</b>并入该 key（文案类候选自动降到末尾，超出上限丢弃最不稳的）</div>
           <div v-if="addTarget" class="add-compare">
@@ -540,6 +547,15 @@
     </section>
     </WorkspacePage>
   </div>
+  <el-dialog v-model="historyDialog.visible" title="选择器历史版本" width="720px">
+    <div v-for="item in historyDialog.rows" :key="item.id" style="margin-bottom:16px">
+      <div>{{ fmtTime(item.created_at) }} · 修改前版本
+        <el-button size="small" :loading="historyDialog.saving" @click="restoreHistory(item)">恢复此版本</el-button>
+      </div>
+      <pre style="white-space:pre-wrap;max-height:180px;overflow:auto">{{ JSON.stringify(item.snapshot, null, 2) }}</pre>
+    </div>
+    <el-empty v-if="!historyDialog.rows.length" description="暂无历史修改" />
+  </el-dialog>
 </template>
 
 <script setup>
@@ -553,13 +569,13 @@ import { useAppStore } from '@/store/app'
 import {
   listSelectors, createSelector, patchSelector, deleteSelector, importLegacySelectors,
   batchDeleteSelectors, importSelectors, setSelectorScope, batchSetSelectorPage,
-  selectorUsage, backfillTestcases,
+  selectorUsage, backfillTestcases, enqueueCases, getTestcase, getSelectorHistory, restoreSelector, remapCaseSelector,
   listMyDevices, startProbe, getProbe,
   listModules, saveModule, deleteModule,
   listLearnedSelectors, reviewLearnedSelector,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { isFragile, orderCandidates } from '@/utils/selector-ranking'
+import { isActiveCandidate, isFragile, orderCandidates, normalizeCandidate, candidateIdentity, mergeCandidates } from '@/utils/selector-ranking'
 import { autoXPath, cssSelectorValue, countCssMatches } from '@/utils/xpath-locator'
 import { rankElements } from '@/utils/selector-match'
 import { matchElementsToKeys } from '@/utils/bulk-fix-selectors'
@@ -576,6 +592,7 @@ const projects = ref([])
 const pid = ref(null)
 const subProduct = ref('')   // '' = 项目级共享
 const rows = ref([])
+const effectiveRows = ref([])
 // 未查看的新 key 按用户保存在当前标签页，刷新或离开列表后仍可继续查看。
 const unreadStorageKey = `tp_selector_unread:${auth.user?.id || 'anonymous'}`
 const unreadSelectorIds = ref(new Set())
@@ -655,10 +672,13 @@ onMounted(async () => {
   const qPid = q.project_id ? Number(q.project_id) : null
   if (qPid && projects.value.some((p) => p.id === qPid)) {
     pid.value = qPid
+    if (q.sub_product !== undefined) subProduct.value = String(q.sub_product)
     await reload()
     fixCtx.keys = String(q.fix_keys || '').split(',').filter(Boolean)
     if (fixCtx.keys.length) activeView.value = 'probe'
     fixCtx.ctx = String(q.ctx || '')
+    fixCtx.caseIds = String(q.case_ids || '').split(',').map(Number).filter(Boolean)
+    try { fixCtx.contexts = JSON.parse(String(q.key_contexts || '{}')) } catch { fixCtx.contexts = {} }
     fixCtx.bulk = q.bulk === '1'
     fixCtx.done = []
     // 批量模式不预选单个 activeKey(整批一起匹配);单条模式仍激活第一个 key 走原高亮排序。
@@ -681,7 +701,7 @@ onMounted(async () => {
 
 let disposed = false, listVersion = 0, learnedVersion = 0, probeVersion = 0
 const loadError = ref(false), reviewing = ref(false), deleting = ref(false)
-const contextLocked = computed(() => dialog.visible || dialog.saving || add.visible || add.saving || probe.running || importing.value || reviewing.value || deleting.value)
+const contextLocked = computed(() => dialog.visible || dialog.saving || add.visible || add.saving || probe.running || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
 onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll() })
 
 async function onProjectChange() {
@@ -699,7 +719,7 @@ async function onScopeChange() {
 // 按当前 (项目, 子产品) 取列表：'' 取 shared，否则取 by_sub[子产品]。
 async function reload() {
   const version = ++listVersion, project = pid.value, scope = subProduct.value
-  rows.value = []; activePages.value = []; loadError.value = false; loading.value = false
+  rows.value = []; effectiveRows.value = []; activePages.value = []; loadError.value = false; loading.value = false
   reloadLearned()
   if (!pid.value) { rows.value = []; activePages.value = []; return }
   clearSelection()   // 切项目/作用域清空批量选择，避免跨作用域误删
@@ -708,6 +728,7 @@ async function reload() {
     const data = await listSelectors(project, scope)
     if (disposed || version !== listVersion) return
     rows.value = scope ? (data.by_sub?.[scope] || []) : (data.shared || [])
+    effectiveRows.value = [...new Map([...(data.shared || []), ...rows.value].map(row => [row.key, row])).values()]
     // 回显当前作用域的扫描分支 / vm_iframe（保存分支时回传 vm_iframe，避免被清）
     scanBranch.value = data.scope?.scan_branch || ''
     scopeVmIframe.value = data.scope?.vm_iframe || ''
@@ -789,8 +810,8 @@ async function reviewLearnedRow(row, action) {
   try {
     await ElMessageBox.confirm(
       action === 'approve'
-        ? `转正候选 ${row.candidate.by}=${row.candidate.value}？将去掉试用标、永久保留在「${row.key}」候选链中。`
-        : `拒绝候选 ${row.candidate.by}=${row.candidate.value}？将从「${row.key}」注册表移除，且不再自动挂回。`,
+        ? `转正候选 ${row.candidate.by}=${row.candidate.value}？批准后将发布到「${row.key}」候选链中。`
+        : `拒绝候选 ${row.candidate.by}=${row.candidate.value}？该候选将留在拒绝记录中，不参与执行。`,
       `${label}确认`, { type: action === 'approve' ? 'success' : 'warning', confirmButtonText: `确认${label}`, cancelButtonText: '取消' },
     )
   } catch { reviewing.value = false; return }
@@ -807,6 +828,23 @@ function fmtTime(s) {
   return String(s).replace('T', ' ').slice(0, 16)
 }
 
+const historyDialog = reactive({ visible: false, id: null, revision: '', rows: [], saving: false })
+async function openHistory(row) {
+  const data = await getSelectorHistory(row.id)
+  Object.assign(historyDialog, { visible: true, id: row.id, revision: data.current.revision, rows: data.history })
+}
+async function restoreHistory(item) {
+  if (historyDialog.saving) return
+  historyDialog.saving = true
+  try {
+    await restoreSelector(historyDialog.id, { history_id: item.id, expected_revision: historyDialog.revision })
+    historyDialog.visible = false
+    await reload()
+    await autoBackfill()
+    ElMessage.success('已恢复历史版本')
+  } finally { historyDialog.saving = false }
+}
+
 // ---- 新增 / 编辑 ----
 const dialog = reactive({ visible: false, id: null, key: '', frame: '', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false })
 
@@ -816,7 +854,7 @@ function openCreate() {
 function openEdit(row) {
   markSelectorSeen(row)
   Object.assign(dialog, {
-    id: row.id, key: row.key, frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
+    id: row.id, revision: row.revision, key: row.key, frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
     candidatesText: JSON.stringify(row.candidates || [], null, 2), platform: row.platform || 'web', saving: false, visible: true,
   })
 }
@@ -837,7 +875,7 @@ async function submit() {
   dialog.saving = true
   try {
     if (dialog.id) {
-      await patchSelector(dialog.id, { platform: dialog.platform, frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
+      await patchSelector(dialog.id, { expected_revision: dialog.revision, platform: dialog.platform, frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
     } else {
       await createSelector({
         project_id: pid.value, sub_product: subProduct.value, platform: dialog.platform, key: dialog.key.trim(),
@@ -848,7 +886,7 @@ async function submit() {
     dialog.visible = false
     await reload()
     await autoBackfill()
-  } catch { /* http 拦截器已提示（如 key 冲突）*/ }
+  } catch (error) { ElMessage.error(error.message || '保存失败') }
   finally { dialog.saving = false }
 }
 
@@ -860,7 +898,24 @@ async function autoBackfill() {
     if (res?.restored > 0) {
       ElMessage.success(`已联动回填 ${res.restored} 条「选择器待补」用例${res.remaining ? `,仍有 ${res.remaining} 条待补` : ''}`)
     }
-  } catch { /* 回填失败不影响保存,用例库仍可逐条重生 */ }
+  } catch { ElMessage.warning('选择器已保存，但用例回填失败；请在用例库重试回填后再执行') }
+}
+
+const trialRunning = ref(false)
+const trialBatch = ref('')
+async function trialRelatedCases() {
+  if (trialRunning.value || contextLocked.value) return
+  trialRunning.value = true
+  try {
+    const cases = []
+    for (let i = 0; i < fixCtx.caseIds.length; i += 8) cases.push(...await Promise.all(fixCtx.caseIds.slice(i, i + 8).map(getTestcase)))
+    const ready = cases.filter(c => !c.selector_fix && ['gui', 'e2e'].includes(c.exec_kind) && (c.sub_product || '') === subProduct.value)
+    if (!ready.length) { ElMessage.warning('关联用例尚未全部补齐选择器，请继续补齐'); return }
+    const result = await enqueueCases(pid.value, probe.runner, ready.map(c => c.id))
+    trialBatch.value = result.batch_id || ''
+    ElMessage.success(`已下发 ${ready.length} 条用例试运行${ready.length < cases.length ? `，另 ${cases.length - ready.length} 条仍待补齐` : ''}`)
+  } catch (error) { ElMessage.error(error.message || '试运行下发失败') }
+  finally { trialRunning.value = false }
 }
 
 // ---- 删除 ----
@@ -1037,7 +1092,7 @@ async function submitImport() {
 
 // 「定位缺失 key」上下文（从用例库带 query 跳来）：待补的 key 列表 + 语义匹配上下文 + 当前选中的 key。
 // bulk=true 时为「批量补选择器」模式:显示待补清单 + 探测后批量匹配/建 key(不逐个选 activeKey)。
-const fixCtx = reactive({ keys: [], ctx: '', activeKey: '', bulk: false, done: [] })
+const fixCtx = reactive({ keys: [], ctx: '', contexts: {}, caseIds: [], activeKey: '', bulk: false, done: [] })
 const route = useRoute()
 
 // ---- 设备探测（discover / verify）----
@@ -1068,7 +1123,7 @@ async function runProbe(mode, extraParams = {}) {
   let id
   try {
     const params = { contains: probe.contains || '', ...extraParams }
-    const res = await startProbe({ project_id: pid.value, sub_product: subProduct.value, runner: probe.runner, params })
+    const res = await startProbe({ project_id: pid.value, sub_product: subProduct.value, runner: probe.runner, runner_device_id: devices.value.find(d => d.runner_id === probe.runner)?.id, params })
     id = res?.id
   } catch { probe.running = false; return /* http 拦截器已提示 */ }
   if (disposed || version !== probeVersion) return
@@ -1177,51 +1232,37 @@ function onBoxUp(e) {
 //   已存在(exists):元素 best 候选已在某 key 里(该 key 已能定位到它,无需再加)。
 //   更新(update):元素与某 key 有共同候选、但 best 是新的(可把 best 补进该 key)。
 //   新增(new):元素所有候选与所有 key 均无重叠。
-const candKey = (c) => `${c.by} ${c.value}`
+const candKey = candidateIdentity
 
 // 候选展示 label:by:'testid' 是我们候选结构里的内部简写,页面上开发写的实际属性是 data-testid;
 // 故展示成 data-testid=<值>(更贴合真实 DOM),其余 by 原样 <by>=<值>(css/placeholder/label/text/role)。
 const _BY_LABEL = { testid: 'data-testid' }
 function candLabel(c) {
   if (!c || !c.by) return '—'
-  return `${_BY_LABEL[c.by] || c.by}=${c.value}`
+  return `${_BY_LABEL[c.by] || c.by}=${c.value}${c.name ? ` · ${c.name}` : ""}${c.exact ? "（精确）" : ""}`
 }
 
 // 当前作用域 rows 的候选反查索引:candKey → key 名(取第一个命中的 key)。
+const reusableCandidate = c => c?.by === 'testid' || (c?.by === 'role' && c.name && c.exact)
+  || (c?.by === 'css' && (/^#/.test(c.value) || /^\[data-test/.test(c.value)))
+const scopedIdentity = (c, frame) => `${frame === 'content' ? 'vm' : frame || 'auto'}|${candKey(c)}`
 const candIndex = computed(() => {
   const idx = new Map()
-  for (const r of rows.value) {
-    for (const c of (r.candidates || [])) {
-      const k = candKey(c)
-      if (!idx.has(k)) idx.set(k, r.key)
-    }
+  for (const row of effectiveRows.value) for (const c of (row.candidates || []).filter(c => isActiveCandidate(c) && reusableCandidate(c))) {
+    const identity = scopedIdentity(c, row.frame)
+    if (!idx.has(identity)) idx.set(identity, row.key)
+    else if (idx.get(identity) !== row.key) idx.set(identity, null)
   }
   return idx
 })
-
-// 给一个探测元素算标识:{ type:'exists'|'update'|'new', key?:命中的已有 key }
-// 口径:best 已在库→已存在;否则看其它候选与哪个 key 重叠——
-//   稳定候选命中且 best 是脆弱(纯文案漂移)→ 已存在(不更新,避免堆积脆弱候选);
-//   稳定候选命中且 best 也是稳定(锚点变更)→ 更新;
-//   仅脆弱候选命中 → 更新;都不命中 → 新增。
 function matchStatus(el) {
-  const idx = candIndex.value
-  const best = el.best
-  if (best && idx.has(candKey(best))) return { type: 'exists', key: idx.get(candKey(best)) }
-  let stableHit = null
-  let fragileHit = null
-  for (const c of (el.candidates || [])) {
-    if (!idx.has(candKey(c))) continue
-    if (isFragile(c)) { if (!fragileHit) fragileHit = idx.get(candKey(c)) }
-    else if (!stableHit) stableHit = idx.get(candKey(c))
-  }
-  if (stableHit) {
-    return best && isFragile(best)
-      ? { type: 'exists', key: stableHit }   // 纯文案漂移:稳定锚点已在库,best 只是文案 → 不更新
-      : { type: 'update', key: stableHit }   // best 是新的稳定锚点 → 值得更新
-  }
-  if (fragileHit) return { type: 'update', key: fragileHit }
-  return { type: 'new' }
+  const frame = el._frameMatch || el._frame || 'auto'
+  const candidates = (el.candidates || []).filter(c => isActiveCandidate(c) && reusableCandidate(c))
+  const hits = new Set(candidates.map(c => candIndex.value.get(scopedIdentity(c, frame))).filter(Boolean))
+  if (hits.size !== 1) return { type: 'new' }
+  const key = [...hits][0]
+  const exists = el.best && candIndex.value.get(scopedIdentity(el.best, frame)) === key
+  return { type: exists ? 'exists' : 'update', key }
 }
 
 const STATUS_META = {
@@ -1233,7 +1274,7 @@ const STATUS_META = {
 // key 名 → 当前作用域该 key 的 row（供标识 popover 展示命中 key 的现有候选/frame）。
 const keyIndex = computed(() => {
   const idx = new Map()
-  for (const r of rows.value) if (!idx.has(r.key)) idx.set(r.key, r)
+  for (const r of effectiveRows.value) if (!idx.has(r.key)) idx.set(r.key, r)
   return idx
 })
 
@@ -1244,16 +1285,16 @@ const enrichedGroups = computed(() => {
   const kIdx = keyIndex.value
   return (probe.result.groups || []).map((g, gi) => {
     let els = (g.elements || []).map((el, ei) => {
-      const status = el.best ? matchStatus(el) : { type: 'none' }
+      const status = el.best ? matchStatus({ ...el, _frameMatch: g.frameMatch || g.frame || 'auto' }) : { type: 'none' }
       const hit = status.key ? kIdx.get(status.key) : null
       return { ...el, _uid: `${gi}-${ei}`, _frameMatch: g.frameMatch || g.frame || 'auto', _status: status, _hitCands: hit ? (hit.candidates || []) : [], _hitFrame: hit ? (hit.frame || '') : '' }
     })
     const counts = { new: 0, update: 0, exists: 0 }
     for (const e of els) if (counts[e._status.type] !== undefined) counts[e._status.type] += 1
-    if (probe.hideExists) els = els.filter((e) => e._status.type !== 'exists')
+    if (probe.hideExists && !fixCtx.keys.length) els = els.filter((e) => e._status.type !== 'exists')
     // 「定位缺失 key」选中了某 key：按语义匹配度排序、给 Top3 打 _matchTop 高亮；否则按状态排序。
     if (fixCtx.activeKey) {
-      const ranked = rankElements(fixCtx.activeKey, fixCtx.ctx, els)
+      const ranked = rankElements(fixCtx.activeKey, fixCtx.contexts[fixCtx.activeKey] || fixCtx.ctx, els)
       els = ranked.map((r, i) => ({ ...r.el, _matchScore: r.score, _matchTop: r.score > 0 && i < 3 }))
     } else {
       els.sort((a, b) => STATUS_ORDER[a._status.type] - STATUS_ORDER[b._status.type])
@@ -1360,13 +1401,13 @@ const addMergedPreview = computed(() => {
   if (!addTarget.value) return []
   const existing = addTarget.value.candidates || []
   const merged = updateMergedCandidates(existing)
-  const isOld = (c) => existing.some((e) => e.by === c.by && e.value === c.value)
+  const isOld = (c) => existing.some((e) => candidateIdentity(e) === candidateIdentity(c))
   return merged.map((c) => ({ ...c, _new: !isOld(c) }))
 })
 
 // 把探测候选归一成注册表存储的 {by,value}（丢弃 runner 内部的 sel/score）。
 function toCand(c) {
-  return c ? { by: c.by, value: c.value } : null
+  return normalizeCandidate(c)
 }
 
 // 一个探测元素的**全部**候选 → 存储用 {by,value} 列表:去重、testid/css 稳定优先、脆弱(text/role)降尾、限长。
@@ -1374,7 +1415,7 @@ function toCand(c) {
 function toCands(el) {
   const raw = (el?.candidates || []).map(toCand).filter((c) => c && c.by && c.value)
   const seen = new Set()
-  const uniq = raw.filter((c) => { const k = `${c.by} ${c.value}`; return seen.has(k) ? false : (seen.add(k), true) })
+  const uniq = raw.filter((c) => { const k = candidateIdentity(c); return seen.has(k) ? false : (seen.add(k), true) })
   return orderCandidates(uniq).slice(0, MAX_CANDIDATES)
 }
 
@@ -1423,7 +1464,7 @@ const addComposedDesc = computed(() => {
 function openAddAsKey(el, frame) {
   const cand = toCand(el.best)
   const cands = toCands(el)
-  const status = matchStatus(el)   // #3 标识:exists/update/new
+  const status = matchStatus({ ...el, _frameMatch: frame })   // #3 标识:exists/update/new
   const scene = (el.text || '').trim().slice(0, 16)
   // XPath 纠正:统计该元素 CSS 类在本次探测里命中几个;≥2=CSS 多命中(如同 class 的按钮),自动备一条 XPath。
   const allEls = enrichedGroups.value.flatMap((g) => g.elements)
@@ -1438,8 +1479,9 @@ function openAddAsKey(el, frame) {
       || inferControlType({}, `${fixCtx.ctx || ''} ${fixCtx.activeKey || ''}`)
     Object.assign(add, {
       visible: true, saving: false, status,
-      tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
-      cand, cands, mode: 'create', key: fixCtx.activeKey, page: probe.page || '', targetId: null,
+      tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', frame: frame || 'auto',
+      cand, cands, mode: status.key && fixCtx.caseIds.length ? 'reuse' : 'create', key: fixCtx.activeKey, page: probe.page || '',
+      targetId: effectiveRows.value.find(r => r.key === status.key)?.id || null,
       segTab: '', segScene: scene, segElem, cssCount, xpathAuto, xpath,
     })
     return
@@ -1450,7 +1492,7 @@ function openAddAsKey(el, frame) {
   const preset = presetByVerify || presetByMatch
   Object.assign(add, {
     visible: true, saving: false, status,
-    tag: el.tag, type: el.type || '', text: el.text || '', frame: frame || 'auto',
+    tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', frame: frame || 'auto',
     cand, cands,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
@@ -1472,26 +1514,54 @@ function addCreateCandidates() {
 // 更新已有 key 时的合并候选:把 best + (可选)XPath 并入目标 key 现有候选;
 // 去重、脆弱同 by 就地替换、orderCandidates 排序(testid>xpath>css>脆弱)、限长。新建/更新共用此口径。
 function updateMergedCandidates(existing) {
-  const list = existing || []
   const xp = (add.xpath || '').trim()
-  const nc = add.cand
-  const isDup = (c) => (nc && c.by === nc.by && c.value === nc.value) || (xp && c.by === 'xpath' && c.value === xp)
-  const dropSameFragile = (c) => nc && isFragile(nc) && c.by === nc.by
-  const kept = list.filter((c) => !isDup(c) && !dropSameFragile(c))
-  const head = []
-  if (xp) head.push({ by: 'xpath', value: xp })
-  if (nc) head.push(nc)
-  return orderCandidates([...head, ...kept]).slice(0, MAX_CANDIDATES)
+  return mergeCandidates(add.cands?.length ? add.cands : [add.cand].filter(Boolean), xp ? [{ by: 'xpath', value: xp }] : [], existing || [])
+}
+
+// 保存前重新在当前设备验证，避免截图过期后把另一元素回填进 key。
+async function validateSelectedItems(items) {
+  if (!probe.runner) throw new Error('请选择在线设备')
+  if (items.some(item => !item.element_ref)) throw new Error('缺少本次探测的元素标识，请更新 Runner 后重新探测')
+  if (items.length > 100) throw new Error('单次最多校验 100 个元素，请按页面分批处理')
+  const started = await startProbe({ project_id: pid.value, sub_product: subProduct.value,
+    runner: probe.runner, runner_device_id: devices.value.find(d => d.runner_id === probe.runner)?.id,
+    params: { mode: 'validate_selection', items } })
+  const deadline = Date.now() + 60000
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    if (disposed) throw new Error('页面已关闭')
+    const result = await getProbe(started.id)
+    if (result.status === 'failed') throw new Error(result.error || '设备校验失败')
+    if (result.status === 'done') {
+      const checked = result.result?.validation || []
+      if (checked.length !== items.length) throw new Error('设备版本不支持完整定位校验，请更新 Runner')
+      const failures = checked.filter(item => !item.ok || !item.identity_verified)
+      if (failures.length) throw new Error(failures.map(item => `${item.key}: ${item.error || '无法确认原始元素，请更新 Runner 并重新探测'}`).join('；'))
+      return checked
+    }
+  }
+  throw new Error('定位校验超时，请确认设备在线并停留在目标页面')
 }
 
 async function submitAddAsKey() {
   if (add.saving) return
   if (!add.cand) { ElMessage.error('该元素没有可用候选'); return }
   if (add.mode === 'create' && !add.key.trim()) { ElMessage.warning('key 名不能为空'); return }
-  if (add.mode === 'update' && !add.targetId) { ElMessage.warning('请选择要更新的已有 key'); return }
+  if (add.mode !== 'create' && !add.targetId) { ElMessage.warning('请选择要更新的已有 key'); return }
   add.saving = true
   try {
-    if (add.mode === 'create') {
+    const targetRow = (add.mode === 'reuse' ? effectiveRows.value : rows.value).find(row => row.id === add.targetId)
+    if (add.mode === 'update' && targetRow?.frame !== add.frame) throw new Error('选中元素与原 key 的 frame 不同，请检查作用域')
+    await validateSelectedItems([{ key: add.mode === 'create' ? add.key : targetRow?.key,
+      candidates: add.mode === 'create' ? addCreateCandidates() : add.mode === 'reuse' ? targetRow?.candidates : updateMergedCandidates(targetRow?.candidates),
+      frame: add.mode === 'create' ? add.frame : targetRow?.frame, element_ref: add.elementRef, expected: { tag: add.tag, text: add.text } }])
+    if (add.mode === 'reuse') {
+      const result = await remapCaseSelector({ project_id: pid.value, sub_product: subProduct.value,
+        case_ids: fixCtx.caseIds, from_key: fixCtx.activeKey, to_key: targetRow.key, expected_revision: targetRow.revision })
+      if (!result.changed.length) throw new Error('用例已发生变化，请刷新后重新选择')
+      if (!fixCtx.done.includes(fixCtx.activeKey)) fixCtx.done.push(fixCtx.activeKey)
+      ElMessage.success(`已复用 ${targetRow.key}，更新 ${result.changed.length} 条用例`)
+    } else if (add.mode === 'create') {
       // 存全部候选(testid > xpath > css 兜底;xpath 为用户采纳/编辑的精确定位);desc 用四段式拼装值。
       const candidates = addCreateCandidates()
       await createSelector({
@@ -1504,14 +1574,15 @@ async function submitAddAsKey() {
       const existing = target?.candidates || []
       // 合并 best +（可选）XPath 到目标 key 现有候选;去重、脆弱同 by 就地替换、排序(testid>xpath>css>脆弱)、限长。
       const merged = updateMergedCandidates(existing)
-      await patchSelector(add.targetId, { candidates: merged })
+      await patchSelector(add.targetId, { candidates: merged, expected_revision: target?.revision })
       ElMessage.success('已更新已有 key 的候选')
       if (target && probe.updateTarget === target.key) probe.updateTarget = ''
     }
+    if (add.mode === 'create' && fixCtx.keys.includes(add.key.trim()) && !fixCtx.done.includes(add.key.trim())) fixCtx.done.push(add.key.trim())
     add.visible = false
     await reload()
     await autoBackfill()
-  } catch { /* http 拦截器已提示（如 key 冲突）*/ }
+  } catch (error) { ElMessage.error(error.message || '保存失败') }
   finally { add.saving = false }
 }
 
@@ -1524,10 +1595,10 @@ const bulkMatches = computed(() => {
   const remaining = fixCtx.keys.filter((k) => !fixCtx.done.includes(k))
   if (!remaining.length) return []
   const els = enrichedGroups.value.flatMap((g) => g.elements.map((el) => ({ ...el, _frame: el._frameMatch })))
-  const withBest = els.filter((el) => el.best && matchStatus(el).type === 'new')  // 已存在的元素不重复建
-  return matchElementsToKeys(remaining, fixCtx.ctx, withBest)
+  const withBest = els.filter((el) => el.best)  // 已存在的元素不重复建
+  return matchElementsToKeys(remaining, Object.keys(fixCtx.contexts).length ? fixCtx.contexts : fixCtx.ctx, withBest)
     .filter((p) => p.el && p.el.best)
-    .map((p) => ({ key: p.key, el: p.el, cand: toCand(p.el.best), frame: p.el._frame || 'auto', score: p.score }))
+    .map((p) => ({ key: p.key, el: p.el, cand: toCand(p.el.best), frame: p.el._frame || 'auto', score: p.score, reuseKey: matchStatus(p.el).key || '' }))
 })
 
 const bulkAdding = ref(false)
@@ -1551,6 +1622,8 @@ async function batchAddMatched() {
   let ok = 0
   const failed = []
   try {
+    await validateSelectedItems(matches.map(m => ({ key: m.key, frame: m.reuseKey ? effectiveRows.value.find(r => r.key === m.reuseKey)?.frame : m.frame,
+      candidates: m.reuseKey ? effectiveRows.value.find(r => r.key === m.reuseKey)?.candidates : toCands(m.el), element_ref: m.el.element_ref, expected: { tag: m.el.tag, text: m.el.text } })))
     for (const m of matches) {
       try {
         // 存全部候选(testid 优先 + css 兜底);desc 四段式,控件类型先按元素文本、再退到用例上下文推断。
@@ -1558,21 +1631,28 @@ async function batchAddMatched() {
         const elem = inferControlType(m.el, m.el.text || '')
           || inferControlType({}, `${fixCtx.ctx || ''} ${m.key || ''}`)
         const desc = (probe.page || scene || elem) ? `[]-[${probe.page || ''}]-[${scene}]-[${elem}]` : ''
+        if (m.reuseKey && fixCtx.caseIds.length) {
+          const target = effectiveRows.value.find(r => r.key === m.reuseKey)
+          const result = await remapCaseSelector({ project_id: pid.value, sub_product: subProduct.value, case_ids: fixCtx.caseIds,
+            from_key: m.key, to_key: m.reuseKey, expected_revision: target?.revision })
+          if (!result.changed.length) throw new Error('用例引用已变化')
+        } else {
         const created = await createSelector({
           project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: m.key,
           frame: m.frame || 'auto', page: probe.page || '', desc, candidates: toCands(m.el),
         })
         markSelectorNew(created)
+        }
         ok += 1
         if (!fixCtx.done.includes(m.key)) fixCtx.done.push(m.key)
       } catch { failed.push(m.key) }  // 单个失败(如 key 冲突)不阻断其余
     }
     const remain = fixCtx.keys.filter((k) => !fixCtx.done.includes(k))
-    ElMessage.success(`已批量新建 ${ok} 个 key${failed.length ? `,${failed.length} 个失败(${failed.join(',')})` : ''}`
+    ElMessage.success(`已补齐或复用 ${ok} 个 key${failed.length ? `,${failed.length} 个失败(${failed.join(',')})` : ''}`
       + `${remain.length ? `;还剩 ${remain.length} 个待补,可切到对应页/弹窗继续探测` : ',全部补齐！'}`)
     await reload()
     await autoBackfill()
-  } finally { bulkAdding.value = false }
+  } catch (error) { ElMessage.error(error.message || '批量校验失败') } finally { bulkAdding.value = false }
 }
 </script>
 

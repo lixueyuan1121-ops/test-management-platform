@@ -3,4 +3,4 @@
 import { existsSync } from "node:fs";
 const bundled = new URL("./playwright-runtime.mjs", import.meta.url);
 const source = new URL("../../../backend/app/services/playwright_runtime.mjs", import.meta.url);
-export const { elementTextValue, createAutomationRuntime, responseArgsBeforeAction, toUrlMatcher, buildMockResponse } = await import(existsSync(bundled) ? bundled.href : source.href);
+export const { normalizeCandidate, candidateIdentity, candidateRank, orderCandidates, isActiveCandidate, elementTextValue, createAutomationRuntime, responseArgsBeforeAction, toUrlMatcher, buildMockResponse } = await import(existsSync(bundled) ? bundled.href : source.href);

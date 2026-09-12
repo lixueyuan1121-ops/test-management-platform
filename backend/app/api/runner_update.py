@@ -32,7 +32,7 @@ _RUNNER_DIR = os.path.join(_REPO_ROOT, "tools", "qalab-runner")
 # 其下机器私有/运行产物目录必须剪掉:accounts(登录态 storageState,覆盖=所有账号掉登录)、
 # output/screenshots/logs(运行产物)、test(测试代码,执行机不需要)。
 _EXCLUDE_DIRS = {"node_modules", "evidence", "cases", "platform", "__pycache__", ".git", ".remember",
-                 "accounts", "output", "screenshots", "logs", "test"}
+                 "accounts", "output", "screenshots", "logs", "test", ".record-outbox"}
 # 启动脚本走人工分发、.mjs 走升级通道：run.cmd/run.sh 内含用户手工填入的
 # RUNNER_TOKEN 等本机配置，若进包会被 Expand-Archive -Force 用占位版覆盖 → 静默 401。
 _EXCLUDE_FILES = {

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { randomUUID, createHash } from "node:crypto";
+import { createRecordingPump } from "./recording-pump.mjs";
+import { loadRegistry, registrySnapshot } from "./selector-registry.mjs";
 // qalab 本地执行 runner —— 轮询平台待执行队列,调用 Claude Code(headless)执行,回写 pass/fail。
 // 纯 Node(v18+ 内置 fetch),无外部依赖。本机 python 在 git-bash 下无法 fork,故 runner 用 node。
 //
@@ -100,8 +103,9 @@ const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${enc
 const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
 const reportProbe  = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
 // 录制会话(与 exec/probe 队列并列):拉本机待录/录制中会话,增量上报捕获步骤。
-const fetchRecords = () => api("GET", `/api/record/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
-const reportRecordEvents = (id, events) => api("POST", `/api/record/${id}/events?runner=${encodeURIComponent(RUNNER_ID)}`, { events });
+const RECORD_CONSUMER = randomUUID();
+const fetchRecords = () => api("GET", `/api/record/pending?runner=${encodeURIComponent(RUNNER_ID)}&consumer_id=${RECORD_CONSUMER}`);
+const reportRecordEvents = (id, body) => api("POST", `/api/record/${id}/events?runner=${encodeURIComponent(RUNNER_ID)}`, body);
 // 上传探测整页截图(PNG 二进制)到独立端点:multipart/form-data(不用 api() 封装——那是 JSON)。
 // 只带 Authorization,不设 Content-Type——让 fetch 按 FormData 自动补 multipart boundary。
 // Node 18+ 内置 FormData/Blob/fetch。截图不塞 result TEXT(MySQL 5.6 TEXT 64KB 会截断 base64)。
@@ -159,28 +163,7 @@ async function uploadReportShots(runId, report) {
   return out;
 }
 
-// 从平台拉某项目/子产品的合并注册表(DB 单源),缓存 by `${project_id}|${sub}`。三种情形都不清空内置兜底:
-//   ① DB 说空(registry 无 key)→ 返回旧缓存或 null,**不写空缓存**(避免污染),runner 显式恢复内置表，避免串用上一项目;
-//   ② API 不可达(异常)→ 用缓存或 null;③ 拿到非空注册表 → 缓存并返回。
-// data 取法:api() 已解包 {code,msg,data} 返回 data 本身(见 fetchPending);`res?.data || res` 仅为防御。
-const _regCache = new Map();  // `${project_id}|${sub}` -> {version, registry, vmIframe}
-async function fetchRegistry(projectId, sub = "") {
-  if (!projectId) return null;
-  const ck = `${projectId}|${sub}`;
-  try {
-    const res = await api("GET", `/api/selectors?project_id=${projectId}&sub_product=${encodeURIComponent(sub)}`);
-    const data = res?.data || res;   // api() 已解包则直接是 data
-    // 空 DB(registry 为空/无 key)→ 保留内置兜底或旧缓存,绝不用 {} 覆盖(否则该项目所有 key 定位全 fail)。
-    if (!data || !data.registry || !Object.keys(data.registry).length) {
-      return _regCache.get(ck) || null;
-    }
-    _regCache.set(ck, data);
-    return data;
-  } catch (e) {
-    log(`拉注册表失败(${ck}):${e.message};回落${_regCache.has(ck) ? "缓存" : "内置文件"}`);
-    return _regCache.get(ck) || null;   // 有缓存用缓存,否则 null→gui-core 恢复内置文件
-  }
-}
+const fetchRegistry = (projectId, sub = "") => loadRegistry(api, projectId, sub);
 
 // ---- 确保 namiclaw 带 CDP 调试端口在跑(GUI 用例前置)----
 // namiclaw 有单实例锁:必须先杀光旧实例,再带 --remote-debugging-port 冷启动,否则端口不开。
@@ -525,13 +508,15 @@ async function handleProbes() {
       await guiCore.connect();
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
-      if ((p.params || {}).mode === "verify") {
+      if ((p.params || {}).mode === "validate_selection") {
+        await reportProbe(p.id, { result: await guiCore.validateSelection(p.params) });
+      } else if ((p.params || {}).mode === "verify") {
         // verify:校验 key 是否还命中当前页。core=true 巡检核心 key 集(失效即在 failed 里告警)。
         if ((p.params || {}).core) {
           const out = await guiCore.verifyCoreKeys((p.params || {}).keys);
           await reportProbe(p.id, { result: out });
         } else {
-          const keys = Object.keys((reg && reg.registry) || {});
+          const keys = Array.isArray(p.params?.keys) ? p.params.keys : Object.keys((reg && reg.registry) || {});
           const out = await guiCore.verifyKeys(keys);
           await reportProbe(p.id, { result: out });
         }
@@ -557,38 +542,23 @@ async function handleProbes() {
 // ---- 录制队列(与 exec/probe 并列)----
 // 首次见到某会话 → startRecording(注入捕获);每轮 drain 页面缓冲 → rawEventToStep 规整 → 去抖 → 增量上报。
 // 会话不再出现在 recording 列表(被 stop/删) → stopRecording 并清本地跟踪。
-const _recActive = new Set();   // 本机已注入捕获的录制会话 id
+const recordingPump = createRecordingPump({ gui: guiCore, upload: reportRecordEvents,
+  directory: join(__rdir, ".record-outbox", createHash("sha256").update(BASE_URL + RUNNER_ID).digest("hex").slice(0, 16)), consumerId: RECORD_CONSUMER });
 async function handleRecordings() {
-  let list = [];
   try {
     const res = await fetchRecords();
-    list = res?.data || res || [];
-  } catch (e) { log("拉录制队列失败:", e.message); return; }
-  const liveIds = new Set(list.map((s) => s.id));
-  // 已停止/消失的会话:停捕获,移出跟踪
-  for (const id of [..._recActive]) {
-    if (!liveIds.has(id)) { try { await guiCore.stopRecording(); } catch {} _recActive.delete(id); }
-  }
-  if (!list.length) return;
-  for (const s of list) {
-    try {
-      await ensureNamiclaw();
-      if (!_recActive.has(s.id)) {
-        await guiCore.startRecording();
-        _recActive.add(s.id);
-        log(`开始录制 id=${s.id}(在客户端操作;Alt+点击=标断言)`);
-      }
-      const drained = await guiCore.drainRecordEvents();   // [{ev, frame}]
-      if (drained.length) {
-        const steps = dedupeSteps(drained.map(({ ev, frame }) => rawEventToStep(ev, frame)).filter(Boolean));
-        if (steps.length) {
-          await reportRecordEvents(s.id, steps);
-          log(`  录制 id=${s.id} 上报 ${steps.length} 步`);
-        }
-      }
-    } catch (e) {
-      log(`录制 id=${s.id} 异常:`, e.message);
+    const list = res?.data || res || [];
+    if (!list.length) { await recordingPump.release(); return false; }
+    await ensureNamiclaw();
+    const session = list[0];
+    if (recordingPump.activeId !== session.id) {
+      const reg = await fetchRegistry(session.project_id, session.sub_product || "");
+      guiCore.setRegistry(reg.registry, reg.vmIframe, reg.coreKeys);
     }
+    return await recordingPump.advance(session);
+  } catch (e) {
+    log("录制等待重试:", e.message);
+    return true; // 状态未确认时不运行会改动同一页面的执行/探测任务。
   }
 }
 
@@ -626,7 +596,8 @@ async function tick() {
       } else if (item.kind === "gui" || item.kind === "e2e") {
         await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
         // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则按当前项目回落缓存或内置文件，清除上个项目配置。
-        const reg = await fetchRegistry(item.payload?.project_id, item.payload?.sub_product || "");
+        const reg = item.payload?.selector_registry ? registrySnapshot(item.payload.selector_registry)
+          : await fetchRegistry(item.payload?.project_id, item.payload?.sub_product || "");
         guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
         result = await runWithTrace(guiCore, async () => {
           let result;
@@ -739,11 +710,11 @@ async function main() {
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
   for (;;) {
+    if (await handleRecordings()) { await sleep(POLL_MS); continue; }
     try { await tick(); } catch (e) { log("轮询异常:", e.message); }
     // exec 轮询之后并列处理设备探测队列(独立 try,探测异常不影响下一轮 exec 轮询)。
     try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
     // 并列处理录制队列(独立 try)。
-    try { await handleRecordings(); } catch (e) { log("录制轮询异常:", e.message); }
     // 再并列处理 perf 采集队列(独立 try,采集异常不影响下一轮其他轮询)。
     try { await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
     await sleep(POLL_MS);

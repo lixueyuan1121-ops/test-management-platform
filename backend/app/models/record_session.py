@@ -20,6 +20,9 @@ class RecordSession(Base):
     project_id: Mapped[int] = mapped_column(Integer, index=True)
     sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
     runner: Mapped[str] = mapped_column(String(64), index=True)
+    runner_device_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    saved_case_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consumer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
     # 已捕获操作步骤 JSON 数组;runner 每轮 drain 页面缓冲后增量 append(seq 续接)。
     # MySQL 5.6/5.7 的 TEXT/LONGTEXT 不支持数据库默认值；空数组由 ORM 插入时提供。

@@ -17,7 +17,7 @@
 import { responseArgsBeforeAction } from "./gui-mcp/runtime-loader.mjs";
 
 const DETERMINISTIC = new Set([
-  "connect", "click", "hover", "fill", "type", "press",
+  "connect", "click", "hover", "fill", "type", "press", "set_checked", "select_option",
   "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible", "assert_absent", "judge",
   "mock_route", "unmock_route",
@@ -120,6 +120,8 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
         case "click": { const r = await gui.click(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "hover": { const r = await gui.hover(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "fill": { const r = await gui.fill(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "set_checked": { const r = await gui.setChecked(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "select_option": { const r = await gui.selectOption(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         // type: 逐字符追加输入，不清空原有内容。先 click 聚焦元素，再模拟键盘打字。
         // 用于：在已有内容末尾追加、或对 fill 不兼容的富文本组件输入。
         case "type": { const r = await gui.type(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }

@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.deps import get_current_user
 from app.db.session import Base, get_db
-from app.models import AiTask, TestCase, Project
+from app.models import AiTask, TestCase, Project, SelectorKey
 from app.services import generators
 from app.services import claude_runner as cr
 
@@ -60,6 +60,7 @@ _s.add(AiTask(id=2, project_id=2, user_id=1, input_type="text", status="done"))
 _s.add(TestCase(id=4, ai_task_id=2, project_id=2, title="别的项目", steps="点",
                 exec_kind="manual", review_status="pending", script=_SCRIPT_OK,
                 kind_reason="[选择器待补] 补齐选择器 key:submitOrderBtn 后即可执行 gui"))
+_s.add(SelectorKey(project_id=1,key="submitOrderBtn",frame="shell",page="下单页",candidates='[ {"by":"testid","value":"submit"} ]'))
 _s.commit()
 
 
@@ -74,8 +75,8 @@ def _boom(*a, **k):
 # 桩引擎:可用,但 generate_script 一被调用就炸(证明批量回填是纯确定性校验)。
 generators.get_provider = lambda name=None: SimpleNamespace(is_available=lambda: True, generate_script=_boom)
 # 注册表口径打桩(免真实 DB):项目1 可用 key 只有 submitOrderBtn;页面映射供重打页面标。
-cr._registered_keys = lambda pid=None: {"submitOrderBtn"} if pid == 1 else set()
-cr._key_page_map = lambda pid=None: {"submitOrderBtn": "下单页"} if pid == 1 else {}
+cr._registered_keys = lambda pid=None, sub_product="": {"submitOrderBtn"} if pid == 1 else set()
+cr._key_page_map = lambda pid=None, sub_product="": {"submitOrderBtn": "下单页"} if pid == 1 else {}
 
 app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, is_platform_admin=True)
 app.dependency_overrides[get_db] = _override_db

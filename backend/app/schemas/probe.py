@@ -8,6 +8,7 @@ class ProbeStartIn(BaseModel):
     project_id: int
     sub_product: str = ""
     runner: str
+    runner_device_id: int | None = None
     params: dict[str, Any] = {}
 
 

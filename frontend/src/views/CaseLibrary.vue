@@ -416,13 +416,18 @@ async function onReviewChange(row, val) {
 
 // 「定位缺失 key」：带上项目/页面/缺失 key/用例上下文跳到选择器管理，触发按上下文探测并高亮匹配元素。
 // steps/title 作为语义匹配上下文（中文文案命中元素可见文字，key 名命中英文属性）。见 SelectorAdmin fixKeys 分支。
-function locateMissingKeys(row) {
+async function locateMissingKeys(row) {
+  const detail = await getTestcase(row.id)
+  const { contexts } = collectMissingKeys([detail], [])
   router.push({
     name: 'selectors',
     query: {
       project_id: pid.value,
       page: (row.page || '').split(',').filter(Boolean)[0] || '',
+      sub_product: row.sub_product || '',
+      case_ids: String(row.id),
       fix_keys: (row.selector_fix_keys || []).join(','),
+      key_contexts: JSON.stringify(contexts),
       ctx: `${row.title || ''} ${row.steps || ''}`.trim().slice(0, 200),
     },
   })
@@ -433,16 +438,25 @@ function locateMissingKeys(row) {
 async function bulkFixSelectors() {
   const fixCases = selected.value.filter((r) => r.selector_fix)
   if (!fixCases.length) { ElMessage.warning('选中的用例里没有「选择器待补」的'); return }
+  const scopes = new Set(fixCases.map(c => c.sub_product || ''))
+  if (scopes.size !== 1) { ElMessage.warning('请按相同子产品作用域分批补选择器，避免同名 key 串用'); return }
+  const scope = [...scopes][0]
   fixing.value = true
   try {
     // 读当前项目已注册 key(共享 + 各子产品),剔除已覆盖的(遵循已有覆盖,不重复建)。
     const registered = new Set()
     try {
       const sel = await listSelectors(pid.value)
-      for (const k of (sel?.shared || [])) registered.add(k.key)
-      for (const arr of Object.values(sel?.by_sub || {})) for (const k of arr) registered.add(k.key)
+      const merged = new Map((sel?.shared || []).map(row => [row.key, row]))
+      for (const row of (sel?.by_sub?.[scope] || [])) merged.set(row.key, row)
+      for (const row of merged.values()) if ((row.candidates || []).some(c => c.by && c.value && c.src !== 'learned' && !['pending','rejected','retired'].includes(c.status) && !c.disabled)) registered.add(row.key)
     } catch { /* 读不到就不剔除,交由探测阶段 matchStatus 兜底判已存在 */ }
-    const { keys, skipped, caseCount, ctx } = collectMissingKeys(fixCases, registered)
+    // 列表不含脚本，读取所选用例的完整步骤，逐 key 提取相关描述。
+    const detailedCases = []
+    for (let i = 0; i < fixCases.length; i += 8) {
+      detailedCases.push(...await Promise.all(fixCases.slice(i, i + 8).map(c => getTestcase(c.id))))
+    }
+    const { keys, skipped, caseCount, ctx, contexts } = collectMissingKeys(detailedCases, registered)
     if (!keys.length) {
       ElMessage.info(skipped.length
         ? `选中 ${caseCount} 条待补用例的 key 均已注册,试试「批量回填」或去选择器管理确认`
@@ -459,7 +473,10 @@ async function bulkFixSelectors() {
       query: {
         project_id: pid.value,
         page: (fixCases.map((r) => (r.page || '').split(',').filter(Boolean)[0]).find(Boolean)) || '',
+        sub_product: scope,
+        case_ids: fixCases.map(c => c.id).join(','),
         fix_keys: keys.join(','),
+        key_contexts: JSON.stringify(contexts),
         ctx: ctx.slice(0, 200),
         bulk: '1',   // 标记批量模式:SelectorAdmin 展示待补清单 + 批量匹配/建 key
       },

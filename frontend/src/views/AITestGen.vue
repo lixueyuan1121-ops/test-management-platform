@@ -35,6 +35,10 @@
         <el-select v-model="pid" placeholder="选择项目" style="width:200px" :disabled="running" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
+        <el-select v-model="subProduct" placeholder="选择器作用域" :disabled="running" @change="loadSelectorPages">
+          <el-option label="项目级共享" value="" />
+          <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
+        </el-select>
         <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（必填）" :disabled="running" @change="onTaskChange" />
         <el-select
           v-model="targetPages" multiple filterable collapse-tags collapse-tags-tooltip
@@ -346,6 +350,8 @@ const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
 const taskId = ref(null)
+const subProduct = ref('')
+const SUB_PRODUCTS = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
 const targetPages = ref([])        // 生成的目标页面(收窄注入 key + 给该批用例打页面标)
 const pageOptions = ref([])        // 目标页面下拉候选:当前项目选择器里已有的 page(去重)
 const requirement = ref('')
@@ -466,10 +472,14 @@ async function onProjectChange() {
   ])
   // api 契约独立拉取,失败不影响主流程(无契约就是常态)。
   try { apiContract.value = await getApiContract(pid.value) } catch { /* 忽略 */ }
-  // 目标页面候选:从项目选择器(共享域)派生 distinct page,失败不影响生成。
+  await loadSelectorPages()
+}
+async function loadSelectorPages() {
+  targetPages.value = []
   try {
     const data = await listSelectors(pid.value)
-    pageOptions.value = [...new Set((data.shared || []).map((k) => k.page).filter(Boolean))].sort()
+    const rows = [...(data.shared || []), ...(data.by_sub?.[subProduct.value] || [])]
+    pageOptions.value = [...new Set(rows.flatMap(k => (k.page || '').split(',')).filter(Boolean))].sort()
   } catch { pageOptions.value = [] }
 }
 
@@ -622,7 +632,7 @@ function generate() {
 
   ctrl = new AbortController()
   streamTestcases(
-    { project_id: pid.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined,
+    { project_id: pid.value, sub_product: subProduct.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined,
       requirement_url: sourceUrl.value || undefined, requirement_title: sourceInfo.value?.label || undefined,
       scenario_only: scenarioOnly.value || undefined },
     {

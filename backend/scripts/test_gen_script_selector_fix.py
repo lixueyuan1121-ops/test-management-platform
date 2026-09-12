@@ -44,7 +44,7 @@ def _override_db():
 # 桩引擎:永远可用,返回一段合法 gui script(connect + assert_visible)
 _STUB = SimpleNamespace(
     is_available=lambda: True,
-    generate_script=lambda kind, title, steps, expected, project_id=None, timeout=None: (
+    generate_script=lambda kind, title, steps, expected, project_id=None, timeout=None, sub_product="": (
         [{"action": "connect", "target": {}, "args": {}, "desc": "连"},
          {"action": "assert_visible", "target": {"key": "navTasks"}, "args": {}, "desc": "看"}], None),
 )

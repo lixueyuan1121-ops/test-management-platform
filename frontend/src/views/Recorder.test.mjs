@@ -25,7 +25,7 @@ function recorder(overrides = {}) {
   const module = { exports: {} }
   const imports = {
     vue: { ref: value => ({ value }), watch() {}, onMounted() {}, onUnmounted: fn => { unmount = fn } },
-    'element-plus': { ElMessage: { success() {}, warning() {} } },
+    'element-plus': { ElMessage: { success() {}, warning() {}, info() {}, error() {} } },
     '@/store/app': { useAppStore: () => ({}) },
     '@/api': api,
     '@/utils/lastProject': { pickDefaultProjectId: () => null },
@@ -93,4 +93,19 @@ test('离开页面后返回的开始请求不能重新启动轮询', async () =>
   pending.resolve({ id: 1 }); await start
   assert.equal(h.timers.size, 0)
   assert.equal(h.state.sessionId.value, null)
+})
+
+
+test('停止请求返回 stopping 时维持等待，最终事件确认后才能保存', async () => {
+  let status = 'stopping', saves = 0
+  const h = recorder({ stopRecord: async () => ({status}), getRecord: async () => ({status, events: [{action:'assert', assert:{kind:'visible'}}]}), saveRecordAsCase: async () => { saves++; return {title:'T'} } })
+  await h.state.onStart(); await h.state.onStop()
+  assert.equal(h.state.stopping.value, true)
+  assert.equal(h.state.recording.value, true)
+  h.state.title.value = 'T'; h.state.taskId.value = 1
+  await h.state.onSave(); assert.equal(saves, 0)
+  status = 'stopped'; await h.poll()
+  assert.equal(h.state.stopping.value, false)
+  assert.equal(h.state.recording.value, false)
+  await h.state.onSave(); assert.equal(saves, 1)
 })

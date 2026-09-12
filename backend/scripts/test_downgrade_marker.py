@@ -6,7 +6,7 @@ import app.services.claude_runner as cr
 from app.services.claude_runner import parse_testcases, _unregistered_keys, _SELECTOR_FIX_MARK
 
 # 免 DB:桩掉注册表读取,固定 valid_keys = {navTasks}
-cr._registered_keys = lambda pid=None: {"navTasks"}
+cr._registered_keys = lambda pid=None, sub_product="": {"navTasks"}
 
 
 def _find(cases, title):
@@ -64,7 +64,7 @@ def main():
     # _unregistered_keys 单元
     sc = [{"action": "click", "target": {"key": "a"}}, {"action": "assert_visible", "target": {"key": "b"}}]
     assert _unregistered_keys(sc, {"a"}) == ["b"]
-    assert _unregistered_keys(sc, set()) == [], "空注册表不构成缺失"
+    assert _unregistered_keys(sc, set()) == ["a", "b"], "成功空表时所有引用都缺失"
 
     print("OK test_downgrade_marker")
 

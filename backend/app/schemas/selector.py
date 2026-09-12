@@ -29,10 +29,15 @@ class SelectorKeyIn(BaseModel):
     # platform: web(PC端) / android / ios；默认 web 保持向后兼容。
     platform: str = "web"
     key: str = Field(min_length=1, max_length=64)
-    frame: str = "auto"
+    frame: str = Field(default="auto", max_length=2048)
     page: str = ""
     desc: str = ""
     candidates: list[dict[str, Any]] = []
+
+    @field_validator("key", mode="before")
+    @classmethod
+    def _v_key(cls, v):
+        return v.strip() if isinstance(v, str) else v
 
     @field_validator("platform")
     @classmethod
@@ -46,8 +51,9 @@ class SelectorKeyIn(BaseModel):
 
 
 class SelectorKeyPatch(BaseModel):
+    expected_revision: str | None = None
     platform: str | None = None
-    frame: str | None = None
+    frame: str | None = Field(default=None, max_length=2048)
     page: str | None = None
     desc: str | None = None
     candidates: list[dict[str, Any]] | None = None

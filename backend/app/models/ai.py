@@ -52,6 +52,7 @@ class TestCase(Base):
     # 生成引擎:claude / deepseek / ...（冗余自 ai_task.provider，便于用例库/日报直接展示与筛选，免 join）。
     provider: Mapped[str] = mapped_column(String(16), default="claude", server_default="claude", index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
+    sub_product: Mapped[str] = mapped_column(String(32), default="", server_default="")
     task_id: Mapped[int | None] = mapped_column(
         ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True
     )

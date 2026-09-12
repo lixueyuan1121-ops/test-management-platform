@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.enums import AiInputType, ExecKind, ReviewStatus
 
@@ -11,6 +11,7 @@ REQUIREMENT_MAX_LEN = 60000
 
 
 class TestCaseGenIn(BaseModel):
+    sub_product: str = ""
     project_id: int
     task_id: int | None = None
     input_type: AiInputType = AiInputType.text
@@ -24,6 +25,14 @@ class TestCaseGenIn(BaseModel):
     # 有 url 时后端幂等 upsert 需求实体并给该批用例挂 requirement_id;纯文本粘贴无 url 不建实体。
     requirement_url: str | None = Field(None, max_length=512)
     requirement_title: str | None = Field(None, max_length=512)
+
+    @field_validator("sub_product")
+    @classmethod
+    def validate_scope(cls, value):
+        from app.api.release import SUB_PRODUCTS
+        if value and value not in SUB_PRODUCTS:
+            raise ValueError("子产品取值非法")
+        return value
 
 
 class EvalQueryGenIn(BaseModel):

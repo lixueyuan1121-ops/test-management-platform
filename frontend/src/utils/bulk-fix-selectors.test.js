@@ -4,6 +4,30 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { collectMissingKeys, matchElementsToKeys } from "./bulk-fix-selectors.js";
 
+test('稳定属性不能让无关元素进入自动配对', () => {
+  const pairs = matchElementsToKeys(['invoiceAmount', 'invoiceSave'], '', [
+    { text: '退出登录', candidates: [{ by: 'css', value: '#logout' }] },
+    { text: '用户头像', candidates: [{ by: 'testid', value: 'avatar' }] },
+  ]);
+  assert.ok(pairs.every(p => p.el === null));
+});
+
+test('同分候选和跨 key 冲突需要人工选择', () => {
+  const candidates = [{ by: 'testid', value: 'save-invoice' }];
+  assert.equal(matchElementsToKeys(['saveInvoice'], '', [{ candidates }, { candidates }])[0].el, null);
+  assert.ok(matchElementsToKeys(['saveInvoice', 'invoiceSave'], '', [{ candidates }]).every(p => !p.el));
+});
+
+test('每个 key 的上下文来自引用它的步骤', () => {
+  const data = collectMissingKeys([{ selector_fix: true, selector_fix_keys: ['amount', 'submit'],
+    title: '发票', script: [
+      { target: { key: 'amount' }, desc: '填写金额' },
+      { target: { key: 'submit' }, desc: '提交审批' },
+    ] }], []);
+  assert.match(data.contexts.amount, /填写金额/);
+  assert.doesNotMatch(data.contexts.amount, /提交审批/);
+});
+
 // ---- collectMissingKeys:汇总选中待补用例缺的 key,去重、剔除已注册 ----
 test("collectMissingKeys: 汇总去重、剔除已注册、忽略非待补用例", () => {
   const cases = [

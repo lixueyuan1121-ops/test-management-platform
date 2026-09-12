@@ -101,6 +101,7 @@ def _maybe_auto_retry(db: Session, r: ExecRun) -> bool:
         project_id=r.project_id,
         batch_id=r.batch_id,
         runner=r.runner,
+        runner_device_id=r.runner_device_id,
         auto_reassign=r.auto_reassign,
         kind=r.kind,
         status=ExecStatus.pending,
@@ -315,6 +316,29 @@ def _new_batch_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
+def _dispatch_device_id(db, runner, owner_id=None):
+    rows = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner).all()
+    own = next((d for d in rows if d.owner_id == owner_id), None)
+    if own:
+        return own.id
+    if len(rows) > 1:
+        raise HTTPException(409, detail="执行设备名称不唯一，请选择自己登记的设备")
+    return rows[0].id if rows else None
+
+
+def _device_run_filter(db, ctx):
+    from sqlalchemy import and_, or_
+    if not ctx.device:
+        # 已登记名称的旧未绑定任务也只能由设备 token 领取，避免共享 token 绕过设备占用锁。
+        return and_(ExecRun.runner_device_id.is_(None),
+                    ExecRun.runner.notin_(db.query(RunnerDevice.runner_id)))
+    unbound = ExecRun.runner_device_id.is_(None)
+    same_name_count = db.query(RunnerDevice).filter(RunnerDevice.runner_id == ctx.device.runner_id).count()
+    if same_name_count > 1:
+        unbound = and_(unbound, ExecRun.enqueued_by == ctx.device.owner_id)
+    return or_(ExecRun.runner_device_id == ctx.device.id, unbound)
+
+
 def _get_runner_platform(db: Session, runner_id: str, owner_id: int | None = None) -> str | None:
     """取 runner 设备的 platform；若未登记（旧 runner/未注册设备）返回 None 不阻塞。
 
@@ -423,8 +447,12 @@ def _payload_of(tc: TestCase | None, db: Session) -> dict:
         "priority": tc.priority,
         "script": script,
         "precondition": (tc.precondition or "").strip() or None,  # 前置条件(起始位置+手写前置步骤)→ runner 提示先到起点
-        "project_id": tc.project_id,   # runner 按此拉该项目的合并选择器注册表(DB 单源)
+        "project_id": tc.project_id,
+        "sub_product": getattr(tc, "sub_product", "") or "",
     }
+    if _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
+        from app.services.selectors import resolved_registry
+        payload["selector_registry"] = resolved_registry(db, tc.project_id, payload["sub_product"])
     # 仅 api 用例注入 api_env 快照（省 payload 体积;执行不需要 contract）。
     if _kind_of(tc) == ExecKind.api:
         from app.services.api_env import get_api_env
@@ -556,6 +584,7 @@ def enqueue(
             project_id=it.project_id,
             batch_id=batch_id,
             runner=runner,
+            runner_device_id=_dispatch_device_id(db, runner, user.id),
             auto_reassign=body.runner == "auto",
             kind=_kind_of(tc),
             status=ExecStatus.pending,
@@ -618,6 +647,7 @@ def enqueue_cases(
             project_id=tc.project_id,
             batch_id=batch_id,
             runner=resolved[cid],
+            runner_device_id=_dispatch_device_id(db, resolved[cid], user.id),
             auto_reassign=body.runner == "auto",
             kind=_kind_of(tc),
             status=ExecStatus.pending,
@@ -694,7 +724,7 @@ def list_pending(
         touch_runner_heartbeat(db, runner, kind="exec")
     rows = (
         db.query(ExecRun)
-        .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner)
+        .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner, _device_run_filter(db, ctx))
         .order_by(ExecRun.id)
         .limit(limit)
         .all()
@@ -712,12 +742,16 @@ def claim(
 ):
     if ctx.device is not None:
         runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
+    if ctx.device is not None:
+        from app.services.selector_device import lock_device, assert_idle
+        lock_device(db, ctx)
+        assert_idle(db, ctx.device.id)
     r = db.get(ExecRun, run_id)
     if not r or r.status != ExecStatus.pending:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项不可认领")
     # 归属校验：只能认领派给自己的执行项，避免多台 runner 串扰
     # （设备 token 下 runner 已锁定为设备 runner_id;共享 token 下靠 query runner 区分）。
-    if r.runner != runner:
+    if r.runner != runner or not db.query(ExecRun.id).filter(ExecRun.id == run_id, _device_run_filter(db, ctx)).first():
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
     changed = db.query(ExecRun).filter(
         ExecRun.id == run_id, ExecRun.runner == runner, ExecRun.status == ExecStatus.pending,
@@ -769,7 +803,7 @@ def report(
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     # 归属校验：只能回写派给自己的执行项（见 claim 说明）。
-    if r.runner != runner:
+    if r.runner != runner or not db.query(ExecRun.id).filter(ExecRun.id == run_id, _device_run_filter(db, ctx)).first():
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
 
     if r.started_at is not None and r.status != ExecStatus.running:
@@ -935,6 +969,7 @@ def retry_run(
         project_id=r.project_id,
         batch_id=_new_batch_id(),                # 重试单独成批(结果页可区分为一次新执行)
         runner=r.runner,
+        runner_device_id=_dispatch_device_id(db, r.runner, user.id),
         kind=_effective_kind(tc),                # 待补按原意图 gui/e2e 派(见 _effective_kind)
         status=ExecStatus.pending,
         payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),   # 重新快照,跑最新用例
@@ -1001,7 +1036,7 @@ async def upload_exec_screenshot(
     r = db.get(ExecRun, run_id)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
-    if r.runner != runner:
+    if r.runner != runner or not db.query(ExecRun.id).filter(ExecRun.id == run_id, _device_run_filter(db, ctx)).first():
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
     data = await file.read()
     if len(data) > _MAX_SHOT_BYTES:

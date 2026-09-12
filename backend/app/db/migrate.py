@@ -15,6 +15,33 @@ def _columns(table: str) -> set[str]:
     return {c["name"] for c in insp.get_columns(table)}
 
 
+def ensure_selector_reliability_columns() -> None:
+    """保留存量记录；老的无设备绑定会话不交给任意同名设备。"""
+    additions = {
+        "record_session": {"runner_device_id": "INTEGER NULL", "saved_case_id": "INTEGER NULL", "consumer_id": "VARCHAR(64) NULL"},
+        "probe_request": {"runner_device_id": "INTEGER NULL"},
+        "test_case": {"sub_product": "VARCHAR(32) NOT NULL DEFAULT ''"},
+    }
+    for table, fields in additions.items():
+        columns = _columns(table)
+        if not columns:
+            continue
+        with engine.begin() as conn:
+            for name, ddl in fields.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+        if table in ("record_session", "probe_request"):
+            index_name = f"ix_{table}_runner_device_id"
+            if index_name not in _indexes(table):
+                with engine.begin() as conn:
+                    conn.execute(text(f"CREATE INDEX {index_name} ON {table} (runner_device_id)"))
+    if engine.dialect.name == "mysql" and _columns("exec_run"):
+        column = next(c for c in inspect(engine).get_columns("exec_run") if c["name"] == "payload")
+        if str(column["type"]).upper() != "LONGTEXT":
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE exec_run MODIFY COLUMN payload LONGTEXT NOT NULL"))
+
+
 def _indexes(table: str) -> set[str]:
     insp = inspect(engine)
     if table not in insp.get_table_names():
@@ -416,7 +443,7 @@ def ensure_selector_scan_column() -> None:
 
 
 def ensure_selector_frame_width() -> None:
-    """selector_key.frame 列宽放宽到 128（容纳 url:<hostname> 深层 frame 定位）。
+    """selector_key.frame 列宽放宽到 2048（容纳深层 frame 的 URL 路径）。
 
     老库 frame 原为 VARCHAR(8)（仅存 shell/vm/auto）。MySQL 需 MODIFY 放宽；SQLite 声明长度
     不强制、写入不截断，无需 DDL（仅 MySQL 执行）。幂等：重复 MODIFY 安全。
@@ -424,8 +451,10 @@ def ensure_selector_frame_width() -> None:
     if not _columns("selector_key"):
         return  # 表尚未建
     if engine.dialect.name == "mysql":
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE selector_key MODIFY COLUMN `frame` VARCHAR(128) NOT NULL DEFAULT 'auto'"))
+        frame = next(c for c in inspect(engine).get_columns("selector_key") if c["name"] == "frame")
+        if (getattr(frame["type"], "length", 0) or 0) < 2048:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE selector_key MODIFY COLUMN `frame` VARCHAR(2048) NOT NULL DEFAULT 'auto'"))
 
 
 def ensure_probe_screenshot_column() -> None:

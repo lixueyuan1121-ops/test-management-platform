@@ -9,10 +9,10 @@ import json
 from pathlib import Path
 
 _RUNTIME = Path(__file__).with_name("playwright_runtime.mjs")
-_ACTIONS = {"connect", "goto", "click", "hover", "fill", "type", "press", "wait_for",
+_ACTIONS = {"connect", "goto", "click", "hover", "fill", "type", "set_checked", "select_option", "press", "wait_for",
             "wait_response", "get_text", "screenshot", "assert_visible", "assert_absent",
             "assert_text", "mock_route", "unmock_route"}
-_TARGET_ACTIONS = {"click", "hover", "fill", "type", "wait_for", "get_text",
+_TARGET_ACTIONS = {"click", "hover", "fill", "type", "set_checked", "select_option", "wait_for", "get_text",
                    "assert_visible", "assert_absent", "assert_text"}
 
 
@@ -102,6 +102,8 @@ test(config.title, async ({}, testInfo) => {
           case 'click': await runtime.click(a); break;
           case 'hover': await runtime.hover(a); break;
           case 'fill': await runtime.fill(a); break;
+          case 'set_checked': await runtime.setChecked(a); break;
+          case 'select_option': await runtime.selectOption(a); break;
           case 'type': await runtime.type(a); break;
           case 'press': await runtime.pressKey(a); break;
           case 'wait_for': await runtime.waitFor(a); break;

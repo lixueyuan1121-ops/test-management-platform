@@ -223,9 +223,12 @@ def reassign_stranded_runs(db: Session) -> int:
         target = pick_runner(db, dev.platform)
         if not target or target == rid:
             continue   # 无可改派目标:原地等
+        targets = db.query(RunnerDevice).filter(RunnerDevice.runner_id == target).all()
+        if len(targets) != 1:
+            continue  # 不能用同名设备字符串决定改派归属。
         n = (db.query(ExecRun)
              .filter(ExecRun.runner == rid, ExecRun.status == "pending", ExecRun.auto_reassign.is_(True))
-             .update({"runner": target,
+             .update({"runner": target, "runner_device_id": targets[0].id,
                       "reason": f"[自动改派] 原设备 {rid} 离线,改派到 {target}"},
                      synchronize_session=False))
         moved += n

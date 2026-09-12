@@ -43,6 +43,8 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine, tables=tables)
     ensure_testcase_precondition_column()
     ensure_record_session_table()
+    from app.db.migrate import ensure_selector_reliability_columns
+    ensure_selector_reliability_columns()
     ensure_selector_scan_column()
     ensure_module_entry_table()
     ensure_task_columns()

@@ -221,7 +221,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
 
 
 def generate_script(kind: str, title: str, steps: str, expected: str,
-                    project_id: int | None = None, timeout: int | None = None) -> tuple[list, str | None]:
+                    project_id: int | None = None, timeout: int | None = None, sub_product: str = "") -> tuple[list, str | None]:
     """同步为单条 gui/e2e/api 用例生成结构化 script。返回 (script列表, 错误)。"""
     if not is_available():
         return [], "DeepSeek 引擎未启用或未配置"
@@ -231,7 +231,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
     if not _acquire_slot(_slots):
         return [], "DeepSeek 生成繁忙（等待超时），请稍后重试"
 
-    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
+    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id, sub_product)
     try:
         resp, err = _post_with_retry(
             stream=False, json_body=_body(prompt, stream=False), timeout=timeout)
@@ -262,7 +262,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str,
     if kind == "api":
         script, err = _validate_api_script(arr)
     else:
-        script, err = _validate_generated_gui_script(arr, _registered_keys(project_id))
+        script, err = _validate_generated_gui_script(arr, _registered_keys(project_id, sub_product))
     if err:
         return [], f"生成的 script 不合法：{err}"
     return script, None

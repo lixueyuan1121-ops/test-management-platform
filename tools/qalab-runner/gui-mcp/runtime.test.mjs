@@ -285,3 +285,16 @@ test('upstream XPath candidates and form values survive the shared runtime and e
     { action: 'assert_text', target: { key: 'select' }, args: { expected: 'current' } },
   ], reg));
 });
+
+
+test('表单状态动作在导出脚本中等价执行', async () => {
+  await page.setContent('<input type="checkbox" data-testid="check"><select data-testid="select"><option value="a">A</option><option value="b">B</option></select>');
+  const reg = {check:{frame:'shell',candidates:[{by:'testid',value:'check'}]}, select:{frame:'shell',candidates:[{by:'testid',value:'select'}]}};
+  await runExport(await exported([
+    {action:'set_checked',target:{key:'check'},args:{checked:true}},
+    {action:'select_option',target:{key:'select'},args:{values:['b']}},
+    {action:'assert_text',target:{key:'select'},args:{expected:'b'}},
+  ], reg));
+  assert.equal(await page.getByTestId('check').isChecked(),true);
+  assert.equal(await page.getByTestId('select').inputValue(),'b');
+});

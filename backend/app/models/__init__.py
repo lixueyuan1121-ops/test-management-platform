@@ -76,3 +76,4 @@ __all__ = [
     "FailCluster",
     "RtsRecommendation",
 ]
+from .selector_revision import SelectorRevision
