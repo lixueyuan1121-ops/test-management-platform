@@ -4,6 +4,8 @@ from fastapi import APIRouter
 from app.api import auth, issues, members, projects, reports, stats, tasks, tools, users, ai, checklist, exec_queue, devices, release, selectors, probe, api_env, perf, ai_eval, eval_queue, eval_judge, eval_export, eval_devices, eval_task, eval_report, feedback, release_checklist, runner_update, test_plan, hooks, requirement, ai_jobs, fail_cluster, rts, commander, record, modules
 
 api_router = APIRouter()
+from app.api import requirement_analysis
+api_router.include_router(requirement_analysis.router)
 api_router.include_router(auth.router)
 api_router.include_router(projects.router)
 api_router.include_router(members.router)

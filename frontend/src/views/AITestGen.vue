@@ -5,7 +5,7 @@
           <!-- 仅在有 2 个及以上可用引擎时才显示切换器;只有一个引擎无需切换,直接隐藏 -->
           <div v-else-if="availProviders.length > 1" class="engine-picker">
             <span class="engine-label">生成引擎</span>
-            <el-radio-group v-model="engine" size="small" :disabled="running" class="engine-seg">
+            <el-radio-group v-model="engine" size="small" :disabled="busy" class="engine-seg">
               <el-radio-button
                 v-for="p in availProviders"
                 :key="p.id"
@@ -25,24 +25,24 @@
             <el-radio-button value="config">生成配置</el-radio-button>
             <el-radio-button value="results" :disabled="!cases.length && !viewingId">生成结果（{{ cases.length }}）</el-radio-button>
           </el-radio-group>
-          <el-select v-model="viewingId" placeholder="查看历史生成" clearable size="small" style="width:260px" :disabled="running" @change="onViewHistory">
+          <el-select v-model="viewingId" placeholder="查看历史生成" clearable size="small" style="width:260px" :disabled="busy" @change="onViewHistory">
             <el-option v-for="h in history" :key="h.id" :label="`#${h.id} · ${fmtTime(h.created_at)} · ${h.case_count}条 · ${h.status}`" :value="h.id" />
           </el-select>
         </div>
       </template>
     <section v-show="activePanel === 'config'" class="input-card">
       <div class="form-row">
-        <el-select v-model="pid" placeholder="选择项目" style="width:200px" :disabled="running" @change="onProjectChange">
+        <el-select v-model="pid" placeholder="选择项目" style="width:200px" :disabled="busy" @change="onProjectChange">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <el-select v-model="subProduct" placeholder="选择器作用域" :disabled="running" @change="loadSelectorPages">
+        <el-select v-model="subProduct" placeholder="选择器作用域" :disabled="busy" @change="loadSelectorPages">
           <el-option label="项目级共享" value="" />
           <el-option v-for="sp in SUB_PRODUCTS" :key="sp" :label="sp" :value="sp" />
         </el-select>
-        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（必填）" :disabled="running" @change="onTaskChange" />
+        <TaskPicker v-model="taskId" :tasks="tasks" placeholder="关联任务（必填）" :disabled="busy" @change="onTaskChange" />
         <el-select
           v-model="targetPages" multiple filterable collapse-tags collapse-tags-tooltip
-          placeholder="目标页面（可选，聚焦该页选择器）" style="width:260px" :disabled="running"
+          placeholder="目标页面（可选，聚焦该页选择器）" style="width:260px" :disabled="busy"
         >
           <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
         </el-select>
@@ -75,17 +75,17 @@
           :key="m.k"
           :type="inputType === m.k ? 'primary' : 'default'"
           size="small"
-          :disabled="running || extracting"
+          :disabled="busy"
           @click="inputType = m.k"
         >{{ m.label }}</el-button>
       </div>
 
       <div v-if="inputType === 'url'" class="extract-row-wrap">
         <div class="extract-row">
-          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="extracting || running" @keyup.enter="doExtractUrl()">
+          <el-input v-model="urlInput" placeholder="需求网页链接，或飞书 docx/wiki/sheets/base 链接" :disabled="busy" @keyup.enter="doExtractUrl()">
             <template #prepend>URL</template>
           </el-input>
-          <el-button type="primary" :loading="extracting" :disabled="running || !urlInput.trim()" @click="doExtractUrl()">抓取正文</el-button>
+          <el-button type="primary" :loading="extracting" :disabled="busy || !urlInput.trim()" @click="doExtractUrl()">抓取正文</el-button>
         </div>
         <div class="extract-tip">支持普通网页与飞书文档（飞书需管理员配置应用凭据并把文档共享给应用）</div>
       </div>
@@ -93,24 +93,24 @@
       <el-upload
         v-else-if="inputType === 'file'"
         :auto-upload="false"
-        :disabled="extracting || running"
+        :disabled="busy"
         :show-file-list="false"
         :on-change="onFilePick"
-        accept=".txt,.md,.markdown,.docx,.pdf"
+        accept=".txt,.md,.markdown,.docx,.pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp"
         drag
         class="upload-row"
       >
         <el-icon class="up-icon"><UploadFilled /></el-icon>
-        <div class="up-text">拖拽或点击上传需求文档<br><span>支持 txt / md / docx / pdf，≤ 5MB</span></div>
+        <div class="up-text">拖拽或点击上传需求文档或图片<br><span>支持 txt / md / docx / pdf / PNG / JPG / WebP 等图片，≤ 5MB</span></div>
       </el-upload>
 
       <div v-else class="text-tools">
-        <el-button text type="primary" @click="fillDemo" :disabled="running">填充示例需求</el-button>
+        <el-button text type="primary" @click="fillDemo" :disabled="busy">填充示例需求</el-button>
       </div>
 
       <div v-if="sourceInfo" class="source-info">
         <el-icon><Document /></el-icon>
-        <span>来源：{{ sourceInfo.label }} · 提取 {{ sourceInfo.chars }} 字（可切「编辑」修改后再生成）</span>
+        <span>来源：{{ sourceInfo.label }} · 提取 {{ sourceInfo.chars }} 字 · {{ sourceMaterials.length }} 张图片（分析时识别图片内容）</span>
       </div>
 
       <!-- api 用例引导：有契约展示可选接口清单（可「引用」到需求）；无契约提示去配置。附「插入需求模板」。 -->
@@ -125,11 +125,11 @@
               </template>
               <div class="api-line" v-for="(l, i) in apiLines" :key="i">
                 <code class="api-code">{{ l }}</code>
-                <el-button link type="primary" size="small" @click.stop="refInterface(l)">引用</el-button>
+                <el-button link type="primary" size="small" :disabled="busy" @click.stop="refInterface(l)">引用</el-button>
               </div>
             </el-collapse-item>
           </el-collapse>
-          <el-button link type="primary" size="small" class="tpl-btn" @click="insertApiTemplate">
+          <el-button link type="primary" size="small" class="tpl-btn" :disabled="busy" @click="insertApiTemplate">
             插入 api 用例需求模板
           </el-button>
         </template>
@@ -137,13 +137,13 @@
           <el-icon><Connection /></el-icon>
           <span>本项目未配置 api 契约 · api 用例可能降级人工。</span>
           <router-link to="/api-env" class="api-guide-link">去配置 api 环境 →</router-link>
-          <el-button link type="primary" size="small" @click="insertApiTemplate">插入 api 用例需求模板</el-button>
+          <el-button link type="primary" size="small" :disabled="busy" @click="insertApiTemplate">插入 api 用例需求模板</el-button>
         </div>
       </div>
 
       <div class="req-head">
         <span class="req-label">需求内容</span>
-        <el-radio-group v-model="reqMode" size="small" :disabled="running">
+        <el-radio-group v-model="reqMode" size="small" :disabled="busy">
           <el-radio-button label="preview">预览</el-radio-button>
           <el-radio-button label="edit">编辑</el-radio-button>
         </el-radio-group>
@@ -167,9 +167,23 @@
         type="textarea"
         :autosize="{ minRows: 6, maxRows: 14 }"
         :placeholder="reqPlaceholder"
-        :disabled="running"
+        :disabled="busy"
         class="req-input"
         v-loading="extracting"
+      />
+
+      <div class="supplement-images">
+        <el-upload :auto-upload="false" :show-file-list="false" :disabled="busy" :on-change="onImageSupplement" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp">
+          <el-button :disabled="busy" :loading="extracting">补充需求图片</el-button>
+          <template #tip><div class="coverage-hint">保留当前正文并添加截图、流程图或权限矩阵，每张 ≤ 5MB；补充资料后需重新分析确认。</div></template>
+        </el-upload>
+      </div>
+
+      <RequirementReview
+        :project-id="pid" :task-id="taskId" :requirement="requirement" :provider="engine"
+        :source-id="sourceId" :source-url="sourceUrl" :source-title="sourceInfo?.label || ''" :input-type="inputType"
+        :source-warnings="sourceWarnings" :materials="sourceMaterials" :disabled="running || extracting" :available="aiAvailable"
+        @ready="baselineId = $event" @busy="analysisBusy = $event" @restore="restoreRequirement"
       />
 
       <div class="actions">
@@ -177,14 +191,14 @@
           type="primary"
           size="large"
           :loading="running"
-          :disabled="!aiAvailable || !pid || !requirement.trim()"
+          :disabled="busy || !aiAvailable || !pid || !taskId || !baselineId || !requirement.trim()"
           @click="generate"
         >
           <el-icon v-if="!running" class="btn-icon"><MagicStick /></el-icon>
-          {{ running ? '生成中…' : '生成测试点' }}
+          {{ running ? '生成中…' : '按已确认规则生成测试点' }}
         </el-button>
         <el-button v-if="running" size="large" @click="cancel">取消</el-button>
-        <el-checkbox v-model="scenarioOnly" :disabled="running" class="scenario-only">
+        <el-checkbox v-model="scenarioOnly" :disabled="busy" class="scenario-only">
           仅生成场景组合用例
           <el-tooltip placement="top">
             <template #content>
@@ -229,6 +243,25 @@
         <div class="stat adopted"><div class="stat-num">{{ adoptedCount }}</div><div class="stat-label">已采纳</div></div>
       </div>
 
+      <div v-if="acceptanceCoverage" class="acceptance-coverage">
+        <h3>验收覆盖 · 确认版本 #{{ acceptanceCoverage.baseline_id }}</h3>
+        <p>已关联用例 {{ acceptanceCoverage.linked }}/{{ acceptanceCoverage.total }} · 人工核验 {{ acceptanceCoverage.reviewed }}/{{ acceptanceCoverage.total }} · 缺失 {{ acceptanceCoverage.total - acceptanceCoverage.linked }}</p>
+        <p class="coverage-hint">采纳用例前，请对照下方验收条件核对步骤和预期。编号关联仅表示生成范围，人工核验也不代表测试执行通过。</p>
+        <el-alert v-if="acceptanceCoverage.newer_draft" title="该需求的评审草稿已有修改；本批结果仍对应上述已确认版本。" type="warning" :closable="false" />
+        <p v-if="acceptanceCoverage.pending_rules.length">待澄清、未生成：{{ acceptanceCoverage.pending_rules.join('、') }}</p>
+        <p v-for="item in acceptanceCoverage.excluded_rules" :key="item.id">本期排除 {{ item.id }}：{{ item.reason }}</p>
+        <el-alert v-if="acceptanceCoverage.unlinked_case_ids.length" :title="`以下用例未关联有效验收条件，不计入覆盖：${acceptanceCoverage.unlinked_case_ids.join('、')}`" type="warning" :closable="false" />
+        <el-collapse><el-collapse-item title="查看验收条件与用例对应关系" name="coverage">
+          <el-table :data="acceptanceCoverage.criteria" border size="small">
+            <el-table-column prop="criterion_id" label="验收编号" width="130" />
+            <el-table-column prop="text" label="验收条件" min-width="240" />
+            <el-table-column label="关联用例" min-width="140"><template #default="{ row }"><el-button v-for="id in row.case_ids" :key="id" link type="primary" @click="inspectedCase = cases.find(c => c.id === id)">#{{ id }}</el-button></template></el-table-column>
+            <el-table-column label="状态" width="115"><template #default="{ row }"><el-tag :type="row.state === 'reviewed' ? 'success' : row.state === 'missing' ? 'danger' : 'warning'">{{ { reviewed: '人工核验', pending: '待核验', missing: '缺失' }[row.state] }}</el-tag></template></el-table-column>
+          </el-table>
+        </el-collapse-item></el-collapse>
+      </div>
+      <el-alert v-else-if="coverageError" title="验收覆盖加载失败，请刷新历史记录后重试" type="warning" :closable="false" />
+
       <el-table :data="cases" size="small" border stripe class="case-table">
         <el-table-column label="维度" width="80" align="center">
           <template #default="{ row }">
@@ -248,6 +281,7 @@
         <el-table-column label="测试点" min-width="200">
           <template #default="{ row }">
             <button type="button" class="case-title" @click="inspectedCase = row">{{ row.title }}</button>
+            <div v-if="row.acceptance_links?.length" class="coverage-hint">验收：{{ row.acceptance_links.map(link => link.criterion_id).join('、') }}</div>
             <el-tooltip v-if="row.selector_fix" :content="row.kind_reason" placement="top">
               <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">
                 补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"> · 补: {{ row.selector_fix_keys.join(', ') }}</template>
@@ -282,8 +316,16 @@
     <el-drawer :model-value="!!inspectedCase" class="generation-detail" title="测试点详情" size="min(760px, 100vw)" @close="inspectedCase = null">
       <template v-if="inspectedCase">
         <h2 class="detail-title">{{ inspectedCase.title }}</h2>
+        <h3 v-if="inspectedCase.precondition">前提条件</h3><div v-if="inspectedCase.precondition" class="detail-text">{{ inspectedCase.precondition }}</div>
         <h3>步骤</h3><div class="detail-text">{{ inspectedCase.steps || '—' }}</div>
         <h3>预期结果</h3><div class="detail-text">{{ inspectedCase.expected || '—' }}</div>
+        <template v-if="inspectedCase.acceptance_links?.length">
+          <h3>对应的验收条件与依据</h3>
+          <article v-for="link in inspectedCase.acceptance_links" :key="link.criterion_id" class="acceptance-evidence">
+            <strong>{{ link.criterion_id }} · {{ link.rule_title }}</strong><p class="detail-text">{{ link.text }}</p>
+            <p class="coverage-hint">{{ link.source_section }} · 确认版本 #{{ link.baseline_id }}</p><blockquote class="detail-text">{{ link.source_quote || '补充规则，按评审结论确认' }}</blockquote>
+          </article>
+        </template>
       </template>
       <template #footer>
         <el-radio-group v-if="inspectedCase" :model-value="inspectedCase.review_status || 'pending'" :disabled="reviewingId === inspectedCase.id" @change="value => reviewRow(inspectedCase, value)">
@@ -303,13 +345,14 @@ import { MagicStick, UploadFilled, Document, Connection, QuestionFilled } from '
 import {
   listTasks, aiStatus, listAiTasks, listAiCases, listCases, reviewTestcase, streamTestcases,
   cancelAiJob,
-  extractUrl, extractFile, getApiContract, listSelectors,
+  extractUrl, extractFile, getApiContract, listSelectors, getRequirementCoverage,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { renderMarkdown } from '@/utils/markdown'
 import TaskPicker from '@/components/TaskPicker.vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
+import RequirementReview from '@/components/RequirementReview.vue'
 import '@/styles/workspace-overlays.css'
 
 // 维度 / 优先级 → el-tag 配色
@@ -374,6 +417,10 @@ const urlInput = ref('')
 const extracting = ref(false)
 const sourceInfo = ref(null)   // { label, chars }
 const sourceUrl = ref('')      // 需求文档来源 url(extract-url 成功后记录,生成时随请求上报做需求追溯)
+const sourceId = ref(null), sourceMaterials = ref([]), sourceWarnings = ref([])
+const baselineId = ref(null), analysisBusy = ref(false)
+const busy = computed(() => running.value || extracting.value || analysisBusy.value)
+const acceptanceCoverage = ref(null), coverageError = ref(false), resultTaskId = ref(null)
 
 // 项目 api 契约(接口清单,成员可读,不含凭据)。有契约时生成页展示"可选接口清单"辅助 QA 圈定 api 用例范围。
 const apiContract = ref({ has_contract: false, contract: '', base_url: '' })
@@ -459,6 +506,7 @@ async function onProjectChange() {
   inspectedCase.value = null
   taskId.value = null
   cases.value = []
+  acceptanceCoverage.value = null; resultTaskId.value = null; coverageError.value = false
   meta.value = null
   viewingId.value = null
   targetPages.value = []
@@ -530,6 +578,7 @@ function findFeishuUrl(text) {
 
 // 选中任务：带入其需求地址并自动抓取正文
 async function onTaskChange(id) {
+  const project = pid.value
   // 选定关联任务:查该任务是否已有历史用例,有则提示避免重复生成
   taskCases.value = []
   taskCasesTotal.value = 0
@@ -537,9 +586,10 @@ async function onTaskChange(id) {
     try {
       // 单任务用例量有限,取一页(上限 200)展示;数量以 total 为准(不受分页截断)
       const { items, total } = await listCases({ project_id: pid.value, task_id: id, limit: 200 })
+      if (taskId.value !== id || pid.value !== project) return
       taskCases.value = items || []
       taskCasesTotal.value = total || 0
-    } catch { taskCases.value = []; taskCasesTotal.value = 0 }
+    } catch { if (taskId.value !== id || pid.value !== project) return; taskCases.value = []; taskCasesTotal.value = 0 }
   }
   const t = tasks.value.find((x) => x.id === id)
   const url = (t?.requirement_url || '').trim()
@@ -549,10 +599,21 @@ async function onTaskChange(id) {
   doExtractUrl(url)
 }
 
-function fillDemo() { requirement.value = DEMO; sourceInfo.value = null; sourceUrl.value = ''; reqMode.value = 'preview' }
+function clearSource() { sourceId.value = null; sourceMaterials.value = []; sourceWarnings.value = [] }
+function fillDemo() { requirement.value = DEMO; clearSource(); sourceInfo.value = null; sourceUrl.value = ''; reqMode.value = 'preview' }
+function restoreRequirement(data) {
+  requirement.value = data.source_text; sourceId.value = data.source_id
+  sourceUrl.value = data.source_url || ''; urlInput.value = sourceUrl.value
+  sourceInfo.value = { label: data.source_title || '文本需求', chars: data.source_text.length }
+  sourceMaterials.value = data.materials || []; sourceWarnings.value = data.source_info?.warnings || []
+  inputType.value = data.source_info?.input_type || 'text'; reqMode.value = 'preview'
+}
+function setExtractedSource(result) {
+  sourceId.value = result.source_id; sourceMaterials.value = result.materials || []; sourceWarnings.value = result.warnings || []
+}
 
 async function doExtractUrl(overrideUrl) {
-  if (extracting.value || running.value) return
+  if (busy.value) return
   let url = (typeof overrideUrl === 'string' ? overrideUrl : urlInput.value).trim()
   if (!url) return
   urlInput.value = url
@@ -570,10 +631,11 @@ async function doExtractUrl(overrideUrl) {
       }
     }
     requirement.value = r.text
+    setExtractedSource(r)
     sourceInfo.value = { label: r.title || url, chars: r.chars }
     sourceUrl.value = url   // 记录需求来源:生成时后端据此 upsert 需求实体并给用例挂 requirement_id
     reqMode.value = 'preview'   // 抓取后先看渲染效果
-    ElMessage.success(`已提取 ${r.chars} 字`)
+    ElMessage.success(`已提取 ${r.chars} 字、${sourceMaterials.value.length} 张图片`)
   } catch {
     // 请求拦截器已提示失败，保留当前正文供重试。
   } finally {
@@ -582,7 +644,7 @@ async function doExtractUrl(overrideUrl) {
 }
 
 async function onFilePick(uploadFile) {
-  if (extracting.value || running.value) return
+  if (busy.value) return
   const raw = uploadFile?.raw
   if (!raw) return
   if (raw.size > 5 * 1024 * 1024) { ElMessage.warning('文件过大（>5MB）'); return }
@@ -590,10 +652,11 @@ async function onFilePick(uploadFile) {
   try {
     const r = await extractFile(raw)
     requirement.value = r.text
+    setExtractedSource(r)
     sourceInfo.value = { label: r.filename, chars: r.chars }
     sourceUrl.value = ''
     reqMode.value = 'preview'   // 解析后先看渲染效果
-    ElMessage.success(`已解析 ${r.chars} 字`)
+    ElMessage.success(`已解析 ${r.chars} 字、${sourceMaterials.value.length} 张图片`)
   } catch {
     // 请求拦截器已提示失败，保留当前正文供重试。
   } finally {
@@ -601,15 +664,34 @@ async function onFilePick(uploadFile) {
   }
 }
 
+async function onImageSupplement(uploadFile) {
+  if (busy.value) return
+  const file = uploadFile?.raw
+  if (!file) return
+  if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name)) { ElMessage.warning('请上传 PNG、JPG、WebP 等图片'); return }
+  if (file.size > 5 * 1024 * 1024) { ElMessage.warning('图片过大（>5MB）'); return }
+  extracting.value = true
+  try {
+    const result = await extractFile(file, sourceId.value)
+    setExtractedSource(result)
+    if (!requirement.value.trim()) requirement.value = '[需求内容见图片]'
+    sourceInfo.value ||= { label: file.name, chars: requirement.value.length }
+    ElMessage.success(`已收集 ${sourceMaterials.value.length} 张图片，请重新分析需求`)
+  } catch { /* Extraction errors are reported by the API interceptor. */ }
+  finally { extracting.value = false }
+}
+
 function generate() {
-  if (running.value) return
+  if (busy.value) return
   if (!pid.value || !requirement.value.trim()) return
   if (!taskId.value) { ElMessage.warning('请先选择关联任务(必填)'); return }
+  if (!baselineId.value) { ElMessage.warning('请先分析需求并确认验收规则'); return }
   const version = ++generationVersion
   historyVersion++
   historyLoading.value = false
   historyError.value = false
   cases.value = []
+  acceptanceCoverage.value = null; resultTaskId.value = null; coverageError.value = false
   meta.value = null
   viewingId.value = null
   rawStream.value = ''
@@ -634,7 +716,7 @@ function generate() {
   streamTestcases(
     { project_id: pid.value, sub_product: subProduct.value, task_id: taskId.value, input_type: inputType.value, provider: engine.value, requirement: requirement.value, pages: targetPages.value.length ? targetPages.value : undefined,
       requirement_url: sourceUrl.value || undefined, requirement_title: sourceInfo.value?.label || undefined,
-      scenario_only: scenarioOnly.value || undefined },
+      scenario_only: scenarioOnly.value || undefined, baseline_id: baselineId.value },
     {
       signal: ctrl.signal,
       // 轮询回传真实状态:排队位次 / 执行中;记录进入 running 的时刻供超时判定
@@ -649,6 +731,7 @@ function generate() {
         if (version !== generationVersion) return
         if (abortReason.value) { stop(); return }
         cases.value = evt.cases || []
+        resultTaskId.value = evt.aiTaskId; acceptanceCoverage.value = evt.coverage
         if (cases.value.length) activePanel.value = 'results'
         meta.value = evt.meta || null
         if (evt.status === 'failed') ElMessage.error(evt.msg || '生成失败，未得到有效测试点')
@@ -728,6 +811,7 @@ async function onViewHistory(id) {
   const version = ++historyVersion
   inspectedCase.value = null
   cases.value = []
+  acceptanceCoverage.value = null; resultTaskId.value = id; coverageError.value = false
   meta.value = null
   historyError.value = false
   historyLoading.value = false
@@ -736,9 +820,12 @@ async function onViewHistory(id) {
   activePanel.value = 'results'
   historyLoading.value = true
   try {
-    const result = await listAiCases(id)
+    const [result, coverageResult] = await Promise.allSettled([listAiCases(id), getRequirementCoverage(id)])
     if (version !== historyVersion) return
-    cases.value = result
+    if (result.status === 'rejected') throw result.reason
+    cases.value = result.value
+    acceptanceCoverage.value = coverageResult.status === 'fulfilled' ? coverageResult.value : null
+    coverageError.value = coverageResult.status === 'rejected'
     meta.value = h ? { case_count: h.case_count, duration_ms: h.duration_ms, cost_usd: h.cost_usd, output_tokens: h.output_tokens } : null
     rawStream.value = ''
   } catch {
@@ -756,6 +843,7 @@ onBeforeUnmount(() => {
 
 // 三态评审：采纳/否决/待定。用后端返回的 data 回写本地行（review_status/reviewed_at/adopted）。
 async function reviewRow(row, val) {
+  const task = resultTaskId.value
   const prev = { review_status: row.review_status, reviewed_at: row.reviewed_at, adopted: row.adopted }
   reviewingId.value = row.id
   // 乐观更新：先切控件选中态，失败再回滚
@@ -765,6 +853,10 @@ async function reviewRow(row, val) {
     row.review_status = data.review_status
     row.reviewed_at = data.reviewed_at
     row.adopted = data.adopted
+    if (task) {
+      try { const current = await getRequirementCoverage(task); if (resultTaskId.value === task) { acceptanceCoverage.value = current; coverageError.value = false } }
+      catch { if (resultTaskId.value === task) { acceptanceCoverage.value = null; coverageError.value = true } }
+    }
   } catch {
     Object.assign(row, prev)  // 回滚
     ElMessage.error('操作失败，请重试')
@@ -780,6 +872,12 @@ function fmtTime(s) {
 </script>
 
 <style scoped>
+.acceptance-coverage { margin: 16px 0; padding: 16px; border: 1px solid var(--el-border-color); border-radius: 10px; }
+.acceptance-coverage h3 { margin: 0 0 10px; }
+.coverage-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.acceptance-evidence { padding: 12px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.supplement-images { margin: 16px 0; }
+
 .result-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
 .result-toolbar :deep(.el-select) { max-width:100%; }
 .input-card, .result-card, .stream-card { margin-top:16px; }

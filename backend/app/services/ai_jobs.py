@@ -97,6 +97,8 @@ def get_job(db: Session, job_id: int) -> AiJob | None:
 
 def _ensure_handlers() -> None:
     """惰性 import 各特性模块,触发其 register_handler(避免循环导入,worker 启动/首跑前确保就位)。"""
+    if "requirement_analysis" not in _HANDLERS:
+        import app.services.requirement_analysis  # noqa: F401
     if "triage" not in _HANDLERS:
         import app.services.exec_triage  # noqa: F401  (import 时 register triage handler)
     if "eval_judge" not in _HANDLERS:

@@ -11,6 +11,7 @@ REQUIREMENT_MAX_LEN = 60000
 
 
 class TestCaseGenIn(BaseModel):
+    baseline_id: int | None = None
     sub_product: str = ""
     project_id: int
     task_id: int | None = None

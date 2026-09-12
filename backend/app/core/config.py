@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = ""            # OpenAI 兼容端点，如 http://host/v1；留空走官方 deepseek.com
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+    # Optional vision model on the same OpenAI-compatible gateway. Text-only
+    # models never receive images; requirement analysis can use Claude for vision.
+    DEEPSEEK_VISION_MODEL: str = ""
     DEEPSEEK_MAX_TOKENS: int = 49152       # 推理模型 reasoning 占用多，过小会在正文产出前被截断（POC 实测）
     # DeepSeek 独立并发闸:HTTP 直调易撞网关分钟级 token/请求配额,故默认远小于 claude 的
     # AI_MAX_CONCURRENCY(claude 是本地进程无网关限流)。分片各占一槽,超限排队等待而非并发轰网关撞 429。

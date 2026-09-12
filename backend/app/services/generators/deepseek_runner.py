@@ -65,6 +65,10 @@ def _endpoint() -> str:
     return f"{base}/chat/completions"
 
 
+def supports_images() -> bool:
+    return is_available() and bool(settings.DEEPSEEK_VISION_MODEL)
+
+
 def _headers() -> dict:
     h = {"Content-Type": "application/json"}
     if settings.DEEPSEEK_API_KEY:
@@ -72,15 +76,18 @@ def _headers() -> dict:
     return h
 
 
-def _body(prompt: str, stream: bool, system_prompt: str | None = None) -> dict:
+def _body(prompt: str, stream: bool, system_prompt: str | None = None, images: list[dict] | None = None) -> dict:
     return {
-        "model": settings.DEEPSEEK_MODEL or "deepseek-v4-flash",
+        "model": settings.DEEPSEEK_VISION_MODEL if images else settings.DEEPSEEK_MODEL or "deepseek-v4-flash",
         "messages": [
             {"role": "system", "content":
              system_prompt or
              "你是一名资深测试工程师，擅长把需求快速拆解为高覆盖率、可执行、可落地的测试点。"
              "只按用户要求的格式输出，不寒暄、不解释。"},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": ([{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": f"data:{im['mime_type']};base64,{im['data']}"}}
+                for im in images
+            ]) if images else prompt},
         ],
         "max_tokens": settings.DEEPSEEK_MAX_TOKENS or 49152,
         "stream": stream,
@@ -138,7 +145,7 @@ def _post_with_retry(*, stream: bool, json_body: dict, timeout, sleep=time.sleep
     return None, "DeepSeek 请求失败：重试用尽"
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None) -> Iterator[dict]:
     """流式生成测试点。yield delta/result/error/heartbeat，契约与 claude_runner 对齐。
 
     只累积 delta.content（正文）为 raw；delta.reasoning_content（思维链）丢弃。
@@ -149,6 +156,9 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     """
     if not is_available():
         yield {"type": "error", "msg": "DeepSeek 引擎未启用或未配置（检查 DEEPSEEK_ENABLED / BASE_URL / KEY）"}
+        return
+    if images and not supports_images():
+        yield {"type": "error", "msg": "当前引擎未配置图片识别模型，请配置视觉模型或启用 Claude 后重试"}
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
@@ -164,7 +174,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     last_beat = time.monotonic()
     try:
         resp, err = _post_with_retry(
-            stream=True, json_body=_body(prompt, stream=True, system_prompt=system_prompt),
+            stream=True, json_body=_body(prompt, stream=True, system_prompt=system_prompt, images=images),
             timeout=timeout)
         if err:
             yield {"type": "error", "msg": err}

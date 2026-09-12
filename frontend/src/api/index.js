@@ -386,11 +386,11 @@ export const setPerfThresholds = (id, thresholds) => http.patch(`/perf/report-se
 export const getPerfPrompt = (id) => http.get(`/perf/runs/${id}/prompt`)
 export const signalPerfRun = (id) => http.post(`/perf/runs/${id}/signal`)
 export const cancelPerfRun = (id) => http.post(`/perf/runs/${id}/cancel`)
-export const extractUrl = (url) => http.post('/ai/extract-url', { url })
-export const extractFile = (file) => {
+export const extractUrl = (url) => http.post('/ai/extract-url', { url }, { timeout: 180000 })
+export const extractFile = (file, appendTo) => {
   const fd = new FormData()
   fd.append('file', file)
-  return http.post('/ai/extract-file', fd)
+  return http.post('/ai/extract-file', fd, { timeout: 180000, params: appendTo ? { append_to: appendTo } : undefined })
 }
 
 // 测试点生成(方案2 P3b:改入队+轮询,不再 SSE 流式)。保持 onDone/onError 回调形状不变:
@@ -400,7 +400,13 @@ export async function streamTestcases(payload, { onDone, onError, signal, onTick
   try {
     const { job_id } = await http.post('/ai/testcases', payload, { silent: true })
     const result = await pollAiJob(job_id, { signal, onTick })
+    if (!result.cases && result.ai_task_id) {
+      const [cases, coverage] = await Promise.all([listAiCases(result.ai_task_id), getRequirementCoverage(result.ai_task_id)])
+      result.cases = cases; result.coverage = coverage
+    }
     onDone?.({
+      aiTaskId: result.ai_task_id,
+      coverage: result.coverage || null,
       cases: result.cases || [],
       status: result.status || 'done',
       // 分片并行生成时,个别维度分片可能未产出(后端 partial_errors);用例照常落库,
@@ -495,6 +501,14 @@ export const deleteRequirement = (rid) => http.delete(`/requirements/${rid}`)
 export const requirementCases = (rid) => http.get(`/requirements/${rid}/cases`)
 export const linkRequirementCases = (rid, case_ids) => http.post(`/requirements/${rid}/cases`, { case_ids })
 export const unlinkRequirementCases = (rid, case_ids) => http.delete(`/requirements/${rid}/cases`, { data: { case_ids } })
+
+export const analyzeRequirement = (payload) => http.post('/ai/requirements/analyze', payload)
+export const listRequirementAnalyses = (params) => http.get('/ai/requirements/analyses', { params })
+export const getRequirementAnalysis = (id) => http.get(`/ai/requirements/analyses/${id}`)
+export const saveRequirementDraft = (id, payload) => http.patch(`/ai/requirements/analyses/${id}`, payload)
+export const confirmRequirement = (id, payload) => http.post(`/ai/requirements/analyses/${id}/confirm`, payload)
+export const getRequirementCoverage = (id) => http.get(`/ai/requirements/coverage/${id}`)
+export const getRequirementImage = (sourceId, materialId) => http.get(`/ai/requirements/sources/${sourceId}/images/${materialId}`, { responseType: 'blob' })
 
 // ===== AI 任务队列(方案2):POST 特性端点拿 job_id → 轮询 GET /ai-jobs/{id} 取结果 =====
 // 统一轮询助手:done→resolve result;failed/cancelled→reject;onTick 回传 {status,queue_position}

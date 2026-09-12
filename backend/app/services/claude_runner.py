@@ -505,7 +505,7 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
     secs.append("""priority 判定规则（按"失败后果的严重性"定级，不要随意打分）：
    - P0：核心主流程 / 一旦失败即阻断使用或造成数据错误（如登录、支付、下单、提交保存主数据）。
    - P1：重要功能 / 常见路径上的异常与校验（如必填校验、关键按钮不可用、主功能的边界）。
-   - P2：次要功能、一般边界场景，以及**文案、样式、提示语、界面美观**类问题（文案/样式一律 P2）。
+   - P2：次要功能、一般边界、一般文案与样式；安全授权范围、误导性承诺等影响核心验收的文字，按实际失败后果定 P0/P1。
    - P3：极端罕见场景 / 影响面很小的细节。""")
 
     secs.append(_kind_spec(has_contract))
@@ -764,7 +764,7 @@ def _parse_line(line: str) -> dict | None:
     return None
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None) -> Iterator[dict]:
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
@@ -783,8 +783,18 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
         return
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
-    via_stdin = len(prompt) > _PROMPT_ARGV_MAX  # 超长走 stdin,避开 Windows argv 32K 上限
+    via_stdin = bool(images) or len(prompt) > _PROMPT_ARGV_MAX
     cmd = _build_cmd(prompt, system_prompt, prompt_via_stdin=via_stdin)
+    stdin_text = prompt
+    if images:
+        # Anthropic image blocks are input data, not file-read tools. Keep all tool
+        # restrictions in _build_cmd, including Read and network access.
+        cmd += ["--input-format", "stream-json"]
+        stdin_text = json.dumps({"type": "user", "parent_tool_use_id": None, "message": {
+            "role": "user", "content": [{"type": "text", "text": prompt}] + [
+                {"type": "image", "source": {"type": "base64", "media_type": im["mime_type"], "data": im["data"]}}
+                for im in images
+            ]}}, ensure_ascii=False) + "\n"
 
     if not _acquire_slot(_slots):
         yield {"type": "error", "msg": "AI 生成繁忙（等待超时，并发持续打满），请稍后重试"}
@@ -814,7 +824,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
         # 后台线程写 stdin(prompt 可到几十 KB,同步写可能与子进程首输出互相等而卡住),写完关流。
         def _feed():
             try:
-                proc.stdin.write(prompt)
+                proc.stdin.write(stdin_text)
                 proc.stdin.close()
             except OSError:
                 pass
@@ -1791,6 +1801,9 @@ def parse_testcases(raw: str, project_id: int | None = None, sub_product: str = 
             "steps": str(it.get("steps") or "").strip(),
             "expected": str(it.get("expected") or "").strip(),
             "priority": str(it.get("priority") or "").strip()[:8],
+            "criterion_ids": [x for x in it.get("criterion_ids", []) if isinstance(x, str)][:32]
+                if isinstance(it.get("criterion_ids"), list) else [],
+            "precondition": str(it.get("precondition") or "").strip()[:4000],
             "kind": kind,
             "kind_reason": kind_reason,
             "script": script_json,

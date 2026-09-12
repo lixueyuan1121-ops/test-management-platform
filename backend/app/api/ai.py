@@ -21,7 +21,7 @@ from app.db.session import SessionLocal, get_db
 from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRegressionIn
 from app.schemas.common import ok
-from app.services import claude_runner, extractors, generators, selectors
+from app.services import claude_runner, generators, selectors
 from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script, revalidate_for_backfill, validate_script_for_edit
 from app.services.generators.sharded import generate_sharded
 from app.services.playwright_exporter import export_case_to_playwright
@@ -115,38 +115,61 @@ def ai_status(user: User = Depends(get_current_user)):
 
 
 @router.post("/extract-url")
-def extract_url_ep(body: ExtractUrlIn, user: User = Depends(get_current_user)):
+def extract_url_ep(body: ExtractUrlIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """抓取需求 URL 正文，返回给前端预览/编辑后再生成（不直接触发 AI）。"""
     try:
-        title, text = extractors.extract_from_url(body.url)
+        from app.services import requirement_sources
+        title, text, materials, warnings = requirement_sources.from_url(body.url)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     text = (text or "").strip()
-    if not text:
+    if not text and not materials:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="未从该链接提取到正文")
-    return ok({"title": title, "chars": len(text), "text": text[:20000]})
+    return ok(requirement_sources.save_source(db, user.id, title, body.url, text or "[需求内容见图片]", materials, warnings))
 
 
 @router.post("/extract-file")
 async def extract_file_ep(
     file: UploadFile = File(...),
+    append_to: int | None = Query(None),
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """解析上传文档（txt/md/docx/pdf）为纯文本，供前端预览/编辑后再生成。"""
-    data = await file.read()
+    """解析文本、表格及图片。补充资料生成新的不可变快照。"""
+    source = None
+    if append_to:
+        if (file.filename or "").rsplit(".", 1)[-1].lower() not in {"png", "jpg", "jpeg", "webp", "gif", "bmp"}:
+            raise HTTPException(422, "补充图片只支持 PNG、JPG、WebP 等图片格式")
+        from app.models import RequirementSource
+        from app.api.requirement_analysis import authorize_source
+        source = db.get(RequirementSource, append_to)
+        authorize_source(db, user, source)
+    data = await file.read(5 * 1024 * 1024 + 1)
     if len(data) > 5 * 1024 * 1024:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="文件过大（>5MB）")
     try:
-        text = extractors.extract_from_file(file.filename or "", data)
+        from app.services import requirement_sources
+        from starlette.concurrency import run_in_threadpool
+        text, materials, warnings = await run_in_threadpool(requirement_sources.from_file, file.filename or "", data)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         logger.exception("文档解析失败")
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="文档解析失败，请检查文件是否损坏")
     text = (text or "").strip()
-    if not text:
+    if not text and not materials:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="未从文档提取到文本")
-    return ok({"filename": file.filename, "chars": len(text), "text": text[:20000]})
+    if source:
+        existing = json.loads(source.materials)
+        if len(existing) + len(materials) > requirement_sources.MAX_IMAGES:
+            raise HTTPException(422, "合并后超过 40 张图片，请按章节拆分资料")
+        if sum(len(m.get("data", "")) for m in existing + materials) > requirement_sources.MAX_TOTAL_BYTES * 4 // 3:
+            raise HTTPException(422, "合并图片超过 40MB，请压缩或拆分")
+        for index, material in enumerate(materials, len(existing) + 1):
+            material["id"] = f"IMG{index}"
+        return ok(requirement_sources.save_source(db, user.id, source.title, source.url,
+                  source.text, existing + materials, json.loads(source.warnings) + warnings))
+    return ok(requirement_sources.save_source(db, user.id, file.filename or "需求文档", "", text or "[需求内容见图片]", materials, warnings))
 
 
 @router.post("/testcases")
@@ -166,6 +189,16 @@ def gen_testcases(
     _t = db.get(Task, body.task_id)
     if not _t or _t.project_id != body.project_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="关联任务不存在或不属于该项目")
+    from app.models import RequirementAnalysis, RequirementBaseline, RequirementGeneration
+    from app.services.requirement_analysis import source_hash
+    baseline = db.get(RequirementBaseline, body.baseline_id) if body.baseline_id else None
+    analysis = db.get(RequirementAnalysis, baseline.analysis_id) if baseline else None
+    if not baseline or not analysis or analysis.project_id != body.project_id or analysis.task_id != body.task_id:
+        raise HTTPException(400, "请先分析需求并确认当前任务的验收规则")
+    if analysis.source_hash != source_hash(body.requirement) or analysis.revision != baseline.revision:
+        raise HTTPException(409, "需求或规则已变化，请重新分析或确认验收规则后生成")
+    if (body.requirement_url or "").strip() != analysis.source_url:
+        raise HTTPException(409, "需求来源已变化，请重新分析")
     # 选择生成引擎(claude/deepseek/...);非法/空回落默认。可用性针对所选引擎判定。
     provider_id = generators.normalize_provider(body.provider)
     engine = generators.get_provider(provider_id)
@@ -180,10 +213,12 @@ def gen_testcases(
         kind="testcase_gen",
         provider=provider_id,
         input_type=body.input_type,
-        input_ref=body.requirement[:20000],
+        input_ref=body.requirement.encode("utf-8")[:60000].decode("utf-8", "ignore"),
         status=AiTaskStatus.running,
     )
     db.add(at)
+    db.flush()
+    db.add(RequirementGeneration(ai_task_id=at.id, baseline_id=baseline.id))
     db.commit()
     db.refresh(at)
 
@@ -201,9 +236,9 @@ def gen_testcases(
     job = ai_jobs.enqueue(
         db, "testcase_gen", provider=provider_id, project_id=body.project_id, user_id=user.id,
         input={"ai_task_id": at.id, "project_id": body.project_id, "task_id": body.task_id,
-               "requirement": body.requirement, "pages": body.pages or None, "sub_product": body.sub_product,
+               "pages": body.pages or None, "sub_product": body.sub_product,
                "requirement_id": requirement_id, "provider": provider_id,
-               "scenario_only": bool(body.scenario_only)},
+               "scenario_only": bool(body.scenario_only), "baseline_id": baseline.id},
         ref_kind="ai_task", ref_id=at.id,
     )
     return ok({"job_id": job.id, "ai_task_id": at.id})
@@ -248,7 +283,8 @@ def list_ai_task_cases(
         .order_by(TestCase.id)
         .all()
     )
-    return ok([_to_case_out(tc) for tc in rows])
+    from app.services.requirement_analysis import case_links
+    return ok(case_links(db, [_to_case_out(tc) for tc in rows]))
 
 
 @router.get("/cases")
@@ -459,7 +495,8 @@ def get_testcase(
     if tc.task_id is not None:
         t = db.get(Task, tc.task_id)
         title = t.title if t else None
-    return ok(_to_case_out(tc, task_title=title))
+    from app.services.requirement_analysis import case_links
+    return ok(case_links(db, [_to_case_out(tc, task_title=title)])[0])
 
 
 @router.patch("/testcases/{cid}")
@@ -565,9 +602,13 @@ def review_testcase(
             if p:
                 tc.page = p   # 按新 script 的 key 重推页面(推断为空则保留原页面,不清)
 
+    if body.review_status is not None:
+        from app.services.requirement_analysis import mark_coverage_review
+        mark_coverage_review(db, tc, body.review_status == ReviewStatus.adopted)
     db.commit()
     db.refresh(tc)
-    return ok(_to_case_out(tc))
+    from app.services.requirement_analysis import case_links
+    return ok(case_links(db, [_to_case_out(tc)])[0])
 
 
 @router.delete("/testcases/{cid}")
@@ -786,30 +827,40 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     at = db.get(AiTask, ai_task_id)
     if at is None:
         raise ValueError("生成任务记录丢失")
+    from app.models import RequirementBaseline, RequirementCaseLink
+    from app.services.requirement_analysis import approved_criteria, generate_from_baseline
+    baseline_id = inp.get("baseline_id")
+    baseline = db.get(RequirementBaseline, baseline_id) if baseline_id else None
+    baseline_payload = json.loads(baseline.payload) if baseline else None
+    if baseline_id and not baseline_payload:
+        raise ValueError("已确认验收版本不存在")
     # P1 根治(诊断文档):读完输入快照立即 commit,把 DB 连接还回池——避免生成的百秒级耗时里
     # 一直借着连接空闲、被 4963 端口中间层掐断,写库时 2013 Lost connection。生成引擎(plan_shards/
     # _load_api_contract/_load_selector_keys)全自开独立 SessionLocal,不用传入 db,故生成期零连接持有。
     db.commit()
 
     t0 = _time.monotonic()
-    if scenario_only:
-        shards = [s for s in claude_runner.TESTCASE_SHARDS if s["id"] == "scenario"]
-    else:
-        shards = claude_runner.plan_shards(project_id)
-    # 分片数 ≤1 或配置关掉分片 → 回落单次调用(scenario_only 只 1 片也走这条,透传 shard+no_script)
-    if getattr(settings, "AI_SHARD_CONCURRENCY", 5) <= 1 or len(shards) <= 1:
-        one = shards[0] if len(shards) == 1 else None
-        raw, meta, err = _gen_once(engine, requirement, project_id, pages,
-                                   shard=one, no_script=scenario_only, sub_product=sub_product)
-        cases = engine.parse_testcases(raw, project_id=project_id, sub_product=sub_product) if raw and not err else []
-        part_errors: list[str] = []
-    else:
-        res = generate_sharded(engine, requirement, project_id=project_id, pages=pages,
-                               shards=shards, no_script=scenario_only, sub_product=sub_product)
+    if baseline_payload:
+        res = generate_from_baseline(engine, baseline_payload, project_id, pages, sub_product, scenario_only)
         raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
         err = "；".join(part_errors) if not cases else None
-        logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
-                    ai_task_id, len(shards), res["shard_stats"], res["dropped_dup"])
+    else:
+        # Queued requests from the previous release retain their original input.
+        shards = ([s for s in claude_runner.TESTCASE_SHARDS if s["id"] == "scenario"]
+                  if scenario_only else claude_runner.plan_shards(project_id))
+        if getattr(settings, "AI_SHARD_CONCURRENCY", 5) <= 1 or len(shards) <= 1:
+            one = shards[0] if len(shards) == 1 else None
+            raw, meta, err = _gen_once(engine, requirement, project_id, pages,
+                                       shard=one, no_script=scenario_only, sub_product=sub_product)
+            cases = engine.parse_testcases(raw, project_id=project_id, sub_product=sub_product) if raw and not err else []
+            part_errors = []
+        else:
+            res = generate_sharded(engine, requirement, project_id=project_id, pages=pages,
+                                   shards=shards, no_script=scenario_only, sub_product=sub_product)
+            raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
+            err = "；".join(part_errors) if not cases else None
+            logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
+                        ai_task_id, len(shards), res["shard_stats"], res["dropped_dup"])
 
     duration_ms = (meta.get("duration_ms") if meta else None) or int((_time.monotonic() - t0) * 1000)
     cost_usd = meta.get("cost_usd") if meta else None
@@ -821,10 +872,15 @@ def run_testcase_gen_job(db: Session, job) -> dict:
         at2 = s.get(AiTask, ai_task_id)
         if at2 is None:
             raise ValueError("生成任务记录丢失")
+        existing = s.query(TestCase).filter_by(ai_task_id=ai_task_id).all()
+        if at2.status == AiTaskStatus.done and existing:
+            return existing, None
         at2.duration_ms = duration_ms
         at2.cost_usd = cost_usd
         at2.output_tokens = output_tokens
-        at2.output_raw = raw or None
+        # New reviews can contain hundreds of criteria. The complete cases live
+        # in TestCase; keep the legacy TEXT diagnostic field within MySQL limits.
+        at2.output_raw = (raw.encode("utf-8")[:60000].decode("utf-8", "ignore") if baseline_payload and raw else raw) or None
         if not cases:
             at2.status = AiTaskStatus.failed
             detail = err or ("未检测到有效测试点:引擎无任何输出(可能被网关/超时切断)" if not raw
@@ -842,9 +898,17 @@ def run_testcase_gen_job(db: Session, job) -> dict:
                 expected=c["expected"] or None, priority=c["priority"] or None,
                 exec_kind=c.get("kind") or "manual", kind_reason=c.get("kind_reason") or None,
                 script=c.get("script") or None,
+                precondition=c.get("precondition") or None,
                 page=c.get("page") or (",".join(pages) if pages else None),
             )
             s.add(tc); new_objs.append(tc)
+            if baseline_payload:
+                s.flush()
+                allowed = approved_criteria(baseline_payload)
+                for cid in c.get("criterion_ids", []):
+                    if cid in allowed:
+                        s.add(RequirementCaseLink(test_case_id=tc.id, baseline_id=baseline_id,
+                                                  rule_id=allowed[cid]["rule_id"], criterion_id=cid))
         at2.status = AiTaskStatus.done
         at2.case_count = len(cases)
         at2.error = ("部分分片未产出:" + "；".join(part_errors))[:2000] if part_errors else None
@@ -859,9 +923,14 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     if fail_detail is not None:   # 无有效用例:已落 AiTask=failed,抛错让 run_job 置 job failed
         raise ValueError(fail_detail)
 
-    return {"ai_task_id": ai_task_id, "status": "done", "case_count": len(cases),
-            "partial_errors": part_errors,
-            "cases": [_to_case_out(tc) for tc in objs]}
+    result = {"ai_task_id": ai_task_id, "status": "done", "case_count": len(cases),
+            "duration_ms": duration_ms, "cost_usd": cost_usd, "output_tokens": output_tokens,
+            "partial_errors": [error[:500] for error in part_errors[:30]]}
+    if not baseline_payload:
+        result["cases"] = [_to_case_out(tc) for tc in objs]
+    # Versioned generations use authenticated detail APIs, not the small legacy
+    # AiJob.result TEXT column, for full case and coverage documents.
+    return result
 
 
 _ai_jobs_reg.register_handler("testcase_gen", run_testcase_gen_job)

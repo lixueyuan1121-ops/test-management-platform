@@ -193,6 +193,14 @@
         <pre class="d-pre">{{ detail.row.steps || '—' }}</pre>
         <p class="d-row"><span class="d-k">预期</span></p>
         <pre class="d-pre">{{ detail.row.expected || '—' }}</pre>
+        <template v-if="detail.row.acceptance_links?.length">
+          <p class="d-row"><span class="d-k">验收依据</span></p>
+          <div v-for="link in detail.row.acceptance_links" :key="link.criterion_id">
+            <p>{{ link.criterion_id }} · {{ link.rule_title }} · 确认版本 #{{ link.baseline_id }}</p>
+            <pre class="d-pre">{{ link.text }}</pre>
+            <p>{{ link.source_section }}</p><pre class="d-pre">{{ link.source_quote || '按评审补充规则确认' }}</pre>
+          </div>
+        </template>
         <div class="d-row d-script-head">
           <span class="d-k">script</span>
           <el-button
