@@ -96,6 +96,11 @@
         <el-tag effect="plain">{{ dimLabel(inspectedCase.dimension) }}</el-tag>
         <section class="case-section"><h3>提问 Prompt</h3><div>{{ inspectedCase.prompt || '未填写' }}</div></section>
         <section class="case-section"><h3>预期 Expected</h3><div>{{ inspectedCase.expected || '未填写' }}</div></section>
+        <section class="case-section"><h3>产物检查</h3>
+          <EvalArtifactRules v-model="artifactRules" :disabled="!canDelete" />
+          <el-button v-if="canDelete" type="primary" size="small" :loading="savingRules" @click="saveArtifactRules">保存产物检查</el-button>
+          <p class="hint">仅用于后续下发的测评，已有运行保留原检查规则。</p>
+        </section>
         <section class="case-section"><h3>对话信息</h3><div>{{ inspectedCase.conversation_group || '单轮对话' }} · 第 {{ (inspectedCase.turn_index ?? 0) + 1 }} 轮</div></section>
       </template>
     </el-drawer>
@@ -195,6 +200,8 @@
 </template>
 
 <script setup>
+import EvalArtifactRules from '@/components/EvalArtifactRules.vue'
+import { updateEvalQuery } from '@/api'
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Collection, Upload, Delete } from '@element-plus/icons-vue'
@@ -267,6 +274,20 @@ const selected = ref([])
 const dispatchVisible = ref(false)
 const caseVisible = ref(false)
 const inspectedCase = ref(null)
+const artifactRules = ref([])
+const savingRules = ref(false)
+watch(inspectedCase, row => { artifactRules.value = JSON.parse(JSON.stringify(row?.verification_rules || [])) })
+async function saveArtifactRules() {
+  if (!inspectedCase.value || !canDelete.value) return
+  const row = inspectedCase.value
+  savingRules.value = true
+  try {
+    const updated = await updateEvalQuery(row.id, { verification_rules: artifactRules.value })
+    Object.assign(row, updated)
+    ElMessage.success('产物检查已保存，后续执行生效')
+  } catch { /* API interceptor displays the validation error. */ }
+  finally { savingRules.value = false }
+}
 const devices = ref([])
 const chosenRunner = ref('')
 const clientDevices = ref([])

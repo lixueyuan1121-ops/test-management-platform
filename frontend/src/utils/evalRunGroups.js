@@ -13,7 +13,7 @@
 export function groupEvalRuns(rows, matchFilter = () => true) {
   const keyOf = (r) => {
     const g = r.payload?.conversation_group
-    return g ? JSON.stringify([r.batch_id || '', r.target_engine || '', r.payload?.compare_group || '', g]) : null
+    return g ? JSON.stringify([r.batch_id || '', r.target_engine || '', r.payload?.compare_group || '', r.payload?.trial_index || 1, g]) : null
   }
   const byGroup = new Map()
   for (const r of rows) {
@@ -76,7 +76,7 @@ export function compareEvalRuns(runs) {
     const g = r.payload?.compare_group
     if (g !== 'A' && g !== 'B') continue
     const k = JSON.stringify([r.batch_id || '', r.target_engine || '',
-      r.eval_query_id ?? r.payload?.eval_query_id ?? r.run_id])
+      r.eval_query_id ?? r.payload?.eval_query_id ?? r.run_id, r.payload?.trial_index || 1])
     if (!byQuery.has(k)) byQuery.set(k, {})
     byQuery.get(k)[g] = r
     if (r.score != null && scores[g]) scores[g].push(r.score)

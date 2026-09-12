@@ -4,16 +4,17 @@
 trace 存磁盘(uploads/eval_traces/{...}.json,子项2),按 run.trace URL 反解路径读。
 """
 import json
+import copy
 import logging
 import os
 import time
 
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.enums import EvalRunStatus, EvalVerdict
 from app.models import EvalQuery, EvalRun
 from app.services import claude_runner, generators
+from app.services import eval_judgment_store as judgment_store
 
 logger = logging.getLogger("test_platform")
 
@@ -84,6 +85,7 @@ def _judge_once(engine, trace: dict, expected: str, dimension: str | None) -> tu
         err = "判定输出无法解析"
     if not err:
         _guard_missing_evidence(dims, trace)
+    dims["_raw_output"] = raw
     return dims, err
 
 
@@ -127,14 +129,20 @@ def _verdict_of(dims: dict) -> str:
 
 def recover_interrupted_judgments(db: Session, run_id: int | None = None, reason: str = "服务重启中断判定，请重新判定") -> int:
     """Startup-only sweep, or targeted recovery after a failed invocation."""
-    stmt = update(EvalRun).where(EvalRun.status == EvalRunStatus.judging)
+    q = db.query(EvalRun).filter(EvalRun.status == EvalRunStatus.judging)
     if run_id is not None:
-        stmt = stmt.where(EvalRun.id == run_id)
-    result = db.execute(stmt.values(status=EvalRunStatus.done, verdict=EvalVerdict.error.value,
-                                   verdict_reason=reason[:2000], score=None, verdict_dims=None,
-                                   is_abnormal=False))
+        q = q.filter(EvalRun.id == run_id)
+    rows = q.with_for_update().all()
+    for run in rows:
+        run.status = EvalRunStatus.done
+        run.verdict = EvalVerdict.error.value
+        run.verdict_reason = reason[:2000]
+        run.score = run.verdict_dims = None
+        run.review_mark = run.review_note = None
+        run.is_abnormal = False
+        judgment_store.complete(db, run)
     db.commit()
-    return result.rowcount
+    return len(rows)
 
 
 def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int = 1) -> dict:
@@ -148,6 +156,7 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
             if run is None or run.status not in (EvalRunStatus.done, EvalRunStatus.judged):
                 db.rollback()
                 return {"skipped": True, "reason": "执行状态已变化或正在判定，请完成后再判定"}
+            judgment_store.begin(db, run, generators.normalize_provider(provider))
             run.status = EvalRunStatus.judging
             db.commit()
         result = _judge_run(db, run, provider=provider, votes=votes)
@@ -176,11 +185,25 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     (平票/全 error → error 供复核,不猜);score 取有效均值。代价是 N 倍引擎调用时长,默认 1。
     """
     votes = max(1, min(5, int(votes or 1)))
-    from app.services.eval_snapshot import rubric_of
+    from app.services.eval_snapshot import rubric_of, context_of
     expected, dimension = rubric_of(db, run)
     trace = _load_trace(run)
+    trace["evaluation_context"] = context_of(db, run)
+    from app.services.eval_artifacts import verify_run
+    verification = verify_run(db, run) if isinstance(run, EvalRun) else None
+    if verification:
+        trace["artifact_verification"] = verification
+        trace["artifacts"] = [*(trace.get("artifacts") or []), {"verification": verification}]
 
     provider_id = generators.normalize_provider(provider)
+    from app.core.config import settings
+    requested_model = settings.DEEPSEEK_MODEL if provider_id == 'deepseek' else settings.AI_MODEL
+    judgment_store.set_input(db, run, claude_runner.build_eval_judge_prompt(trace, expected, dimension),
+        claude_runner.EVAL_JUDGE_SYSTEM_PROMPT, {"provider": provider_id, "votes": votes,
+        "trace_url": getattr(run, "trace", None), "rules_version": "context-v2",
+        "requested_model": requested_model or None, "observed_model": None,
+        "execution_config": trace.get("execution_config"), "runtime": trace.get("runtime"),
+        "input_files": trace.get("input_files")})
     # 未回填快速失败:执行机没回写任何东西(无轨迹、无回答、无思考)时没有可判定的素材——
     # 直接标 error 不调引擎,免得空壳 run 白耗几十秒 LLM、拖垮批量判定(前端同步等待会超时)。
     has_material = bool(
@@ -192,10 +215,12 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         run.verdict_reason = "证据不足：无可用回答、思考、工具或产物记录；不能据此判任务失败，请补齐证据后重判。"
         run.score = None
         run.verdict_dims = None
+        if verification:
+            run.verdict_dims = json.dumps({"artifact_verification": verification}, ensure_ascii=False)
         run.is_abnormal = False
         run.status = EvalRunStatus.done
         run.judged_by = provider_id
-        db.commit()
+        judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
         return {"verdict": "error", "reason": run.verdict_reason}
 
     engine = generators.get_provider(provider_id)
@@ -209,7 +234,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         run.is_abnormal = False
         run.status = EvalRunStatus.done
         run.judged_by = provider_id
-        db.commit()
+        judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
         return {"verdict": "error", "reason": run.verdict_reason}
 
     run.status = EvalRunStatus.judging
@@ -217,9 +242,23 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
 
     # N 次独立判定收集票(单次失败计 error 票不断批)
     ballots: list[tuple[str, dict]] = []   # (verdict, dims);判定失败的票 dims 为 None
+    audit_ballots = []
     fail_reasons: list[str] = []
     for _ in range(votes):
         dims_i, err_i = _judge_once(engine, trace, expected, dimension)
+        if not err_i and verification and verification["status"] != "pass":
+            failed = verification["status"] == "fail"
+            evidence = next(c for c in verification["checks"] if c["status"] == ("fail" if failed else "unknown"))
+            dims_i["artifact_expected"] = {"pass": False if failed else None,
+                "note": evidence["reason"], "evidence_source": "artifacts", "evidence_quote": evidence["reason"]}
+            dims_i["artifact_verification"] = verification
+            if failed:
+                dims_i["score"] = min(dims_i.get("score") or 2, 2)
+            dims_i["summary"] = f"产物核验{'未通过' if failed else '证据不足'}：{evidence['reason']}；" + (dims_i.get("summary") or "")
+        elif not err_i and verification:
+            dims_i["artifact_verification"] = verification
+        raw_i = dims_i.pop("_raw_output", None) if isinstance(dims_i, dict) else None
+        audit_ballots.append({"dims": copy.deepcopy(dims_i), "error": err_i, "raw_output": raw_i})
         if err_i:
             ballots.append((EvalVerdict.error.value, None))
             fail_reasons.append(err_i)
@@ -236,7 +275,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         run.verdict_dims = None
         run.is_abnormal = False
         run.judged_by = provider_id
-        db.commit()
+        judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
         return {"verdict": "error", "reason": run.verdict_reason}
 
     n_pass = sum(1 for v, _ in valid if v == EvalVerdict.passed.value)
@@ -270,7 +309,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     run.judged_by = provider_id if votes == 1 else f"{provider_id}x{votes}"
     run.is_abnormal = (verdict == EvalVerdict.failed.value)
     run.status = EvalRunStatus.judged
-    db.commit()
+    judgment_store.complete(db, run, audit_ballots)
     return {"verdict": verdict, "verdict_dims": dims, "score": run.score,
             "is_abnormal": run.is_abnormal, "judged_by": run.judged_by}
 
@@ -298,7 +337,7 @@ def run_judge_job(db: Session, job) -> dict:
         "verdict_dims": json.loads(run.verdict_dims) if run.verdict_dims else None,
         "verdict_reason": run.verdict_reason,
         "is_abnormal": bool(run.is_abnormal),
-        "judged_by": run.judged_by,
+        "judged_by": run.judged_by, "judgment_id": run.judgment_id,
     }
 
 

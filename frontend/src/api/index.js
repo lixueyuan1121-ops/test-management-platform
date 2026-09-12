@@ -189,7 +189,9 @@ export async function judgeEvalRun(runId, provider, { onTick } = {}) {
   return pollAiJob(job_id, { onTick })
 }
 // 人工复核标注(失败收敛):mark = confirmed/false_positive/false_negative/null(清除),note 可空
-export const reviewEvalRun = (runId, mark, note) => http.post(`/eval-judge/${runId}/review`, { mark, note })
+export const reviewEvalRun = (runId, mark, note, judgmentId) => http.post(`/eval-judge/${runId}/review`, { mark, note, judgment_id: judgmentId })
+export const listEvalJudgments = runId => http.get(`/eval-judge/${runId}/judgments`)
+export const downloadEvalArtifact = (runId, artifactId) => http.get(`/eval-queue/${runId}/artifacts/${artifactId}`, { responseType: 'blob' })
 // 判定质量统计(evaluator alignment):用复核标注反推 AI 判定准确率/误报率/漏报率,按引擎横评
 export const evalJudgeQuality = (projectId) => http.get('/eval-judge/judge-quality', { params: { project_id: projectId } })
 // 批量判定改入队(方案2 P2):POST 返回 {job_ids,count,skipped},每条 run 一个 job 由 worker 池并发跑。

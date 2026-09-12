@@ -36,7 +36,7 @@ def summary_view(db, task, batch_id=None):
     row = batch_summary(db, task, bid) if bid else None
     source = row or (task if bid == task.last_batch_id and task.summary_status else None)
     return SimpleNamespace(
-        id=task.id, name=task.name, last_batch_id=bid,
+        id=task.id, project_id=task.project_id, name=task.name, last_batch_id=bid,
         detail_html=row.detail_html if row else None,
         **{field: getattr(source, field) if source else None for field in SUMMARY_FIELDS},
     )

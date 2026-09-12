@@ -167,12 +167,13 @@ def run_eval_task_job(task_id: int) -> None:
             stored = {}
         opts_b = stored.pop("compareB", None) if isinstance(stored, dict) else None
         opts = stored if isinstance(stored, dict) else {}
+        trial_count = opts.pop("trial_count", 1)
         from app.api.eval_task import dispatch_task_runs
         from app.services.eval_engines import normalize_engines
         engines = normalize_engines(_json.loads(task.target_engines) if task.target_engines else None)
         try:
             created, batch_id = dispatch_task_runs(
-                db, task, task.schedule_runner, engines, None, opts, opts_b, None)
+                db, task, task.schedule_runner, engines, None, opts, opts_b, None, trial_count=trial_count)
         except ValueError as e:
             logger.warning("定时测评跳过:任务 %s %s", task_id, e)
             db.rollback()

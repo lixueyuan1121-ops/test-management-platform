@@ -19,7 +19,8 @@
         <h2 class="dr-eyebrow">测评维度能力画像</h2>
         <div class="dr-overall">
           <span class="dr-rate">{{ dimStats.overall_rate }}<span class="dr-u">%</span></span>
-          <span class="dr-lbl">综合通过率 · {{ dimStats.judged_total }} 条判定</span>
+          <span class="dr-lbl">有效样本通过率 · {{ dimStats.judged_total }} 条判定</span>
+          <span v-if="dimStats.coverage_rate != null" class="dr-lbl">判定覆盖率 {{ dimStats.coverage_rate }}% · 共 {{ dimStats.planned_total }} 条执行</span>
         </div>
       </div>
       <div class="dr-body">
@@ -39,7 +40,7 @@
             <span class="dr-dim-dot" :style="{ background: drColor(d.pass_rate) }"></span>
             <span class="dr-dim-name">{{ dimLabel(d.dimension) }}</span>
             <span class="dr-dim-rate" :style="{ color: drColor(d.pass_rate) }">{{ d.pass_rate }}%</span>
-            <span class="dr-dim-n">({{ d.total }})</span>
+            <span class="dr-dim-n">({{ d.total }}<template v-if="d.planned != null">/{{ d.planned }} 已判定</template>)</span>
           </div>
         </div>
       </div>
@@ -800,8 +801,9 @@ async function doReview(row, mark) {
     } catch { return }  // 取消
   }
   try {
-    const res = await reviewEvalRun(row.run_id, mark, note)
-    Object.assign(row, { review_mark: res.review_mark, review_note: res.review_note, is_abnormal: !!res.is_abnormal })
+    const res = await reviewEvalRun(row.run_id, mark, note, row.judgment_id ?? null)
+    Object.assign(row, { review_mark: res.review_mark, review_note: res.review_note, is_abnormal: !!res.is_abnormal,
+      judgment_id: res.judgment_id ?? row.judgment_id })
     ElMessage.success(mark ? `已标注：${REVIEW_LABEL[mark]}` : '已清除复核标注')
   } catch { /* 拦截器已提示 */ }
 }
@@ -885,7 +887,7 @@ function drawTrend() {
         if (!b) return ''
         return `<b>${b.task_name || '题库下发'}</b> · ${b.batch_id}<br/>`
           + `${(b.date || '').replace('T', ' ').slice(0, 19)}<br/>`
-          + `判定 ${b.judged}/${b.total} · 通过率 ${b.pass_rate ?? '—'}%<br/>`
+          + `判定 ${b.judged}/${b.total} · 有效样本通过率 ${b.pass_rate ?? '—'}%<br/>判定覆盖率 ${b.coverage_rate ?? '—'}% · 已确认成功占比 ${b.confirmed_success_rate ?? '—'}%<br/>`
           + `均分 ${b.avg_score ?? '—'}/5`
       },
     },

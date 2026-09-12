@@ -39,7 +39,7 @@ def _clean_dialog_options(raw: dict | None) -> dict:
 
     chatMode/thinkingDepth 的值必须与被测客户端页面下拉选项文案一致(执行器按文本匹配点选,
     见 qalab-runner eval config: 智能模式/计划模式/目标模式;低/中/标准/高/超高),此处不枚举校验,
-    客户端选项改文案时免于两头同步——点不中仅告警不阻断(见 dialog-runner._pickDropdownOption)。
+    客户端选项改文案时免于两头同步；执行前必须切换并读回验证。
     """
     if not isinstance(raw, dict):
         return {}
@@ -61,8 +61,9 @@ def _payload_of(q: EvalQuery, dialog_options: dict | None = None) -> dict:
         "prompt": q.prompt,
         "dimension": q.dimension,
         "expected": q.expected,
+        "verification_rules": json.loads(q.verification_rules) if q.verification_rules else [],
         "attachments": json.loads(q.attachments) if q.attachments else [],
-        "dialog_options": dialog_options if dialog_options
+        "dialog_options": dialog_options if dialog_options is not None
         else (json.loads(q.dialog_options) if q.dialog_options else {}),
         "conversation_group": q.conversation_group,
         "turn_index": q.turn_index,
@@ -189,7 +190,7 @@ def _to_out(r: EvalRun) -> dict:
         "score": r.score,
         "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
         "verdict_reason": r.verdict_reason,
-        "judged_by": r.judged_by,
+        "judged_by": r.judged_by, "judgment_id": r.judgment_id,
         "review_mark": r.review_mark,
         "review_note": r.review_note,
         "is_abnormal": bool(r.is_abnormal),
@@ -214,12 +215,22 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"测评题 {qid} 不属于该项目")
     created = []
     batch_id = _new_batch_id()
-    opts = _clean_dialog_options(body.dialog_options)
+    opts = _clean_dialog_options(body.dialog_options) if body.dialog_options is not None else None
+    from app.services.eval_engines import validate_dialog_options
+    try:
+        for q in qs:
+            validate_dialog_options(body.target_engine, _payload_of(q, opts)["dialog_options"])
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
     conversation_groups = _dispatch_conversation_groups(qs)
-    for qid in ids:
+    for qid, trial in [(qid, trial) for qid in ids for trial in range(1, body.trial_count + 1)]:
         q = found[qid]
         payload = _payload_of(q, opts)
         payload["conversation_group"] = conversation_groups[qid]
+        payload["source_conversation_group"] = conversation_groups[qid]
+        payload["trial_index"], payload["trial_count"] = trial, body.trial_count
+        if body.trial_count > 1 and payload["conversation_group"]:
+            payload["conversation_group"] = json.dumps(["trial", trial, payload["conversation_group"]], ensure_ascii=False)
         row = EvalRun(
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
             runner=body.runner, target_engine=body.target_engine,
@@ -229,6 +240,8 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
             enqueued_by=user.id,
         )
         db.add(row); db.flush(); created.append(row.id)
+    from app.services.eval_experiment import freeze
+    freeze(db, body.project_id, batch_id, qs, created, body.trial_count)
     db.commit()
     return ok({"run_ids": created, "batch_id": batch_id})
 
@@ -454,6 +467,62 @@ _TRACE_ROOT = os.path.join(_UPLOADS_DIR, "eval_traces")
 _MAX_TRACE_BYTES = 20 * 1024 * 1024
 
 
+@router.post("/{run_id}/artifacts")
+async def upload_artifact(run_id: int, file: UploadFile = File(...), runner: str = Query("mac-01"),
+                          claim_token: str | None = Query(None), db: Session = Depends(get_db),
+                          ctx: RunnerCtx = Depends(require_runner_ctx)):
+    import hashlib
+    from app.services.eval_artifacts import ARTIFACT_ROOT, MAX_BYTES
+    from app.services.eval_judgment_store import attempt_of
+    from app.models.ai_eval import EvalArtifact
+    if ctx.device is not None:
+        runner = ctx.device.runner_id
+    run = db.query(EvalRun).filter_by(id=run_id).with_for_update().populate_existing().first()
+    if not run:
+        raise HTTPException(404, detail="执行项不存在")
+    _assert_execution(run, runner, claim_token)
+    data = await file.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise HTTPException(400, detail="产物超过20MB核验上限")
+    name = (file.filename or 'artifact').replace('\\', '/').split('/')[-1][:255]
+    digest = hashlib.sha256(data).hexdigest()
+    attempt = attempt_of(db, run)
+    existing = db.query(EvalArtifact).filter_by(eval_run_id=run_id, attempt=attempt, name=name, sha256=digest).first()
+    if existing:
+        return ok({"artifact_id": existing.id, "name": name, "sha256": digest, "size_bytes": existing.size_bytes})
+    if db.query(EvalArtifact).filter_by(eval_run_id=run_id, attempt=attempt).count() >= 20:
+        raise HTTPException(400, detail="每次执行最多采集20个产物")
+    key = secrets.token_hex(24) + '.bin'
+    ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+    path = ARTIFACT_ROOT / key
+    try:
+        path.write_bytes(data)
+        row = EvalArtifact(eval_run_id=run_id, attempt=attempt, name=name, storage_key=key,
+                           sha256=digest, size_bytes=len(data))
+        db.add(row)
+        db.commit()
+    except Exception:
+        db.rollback()
+        path.unlink(missing_ok=True)
+        raise
+    return ok({"artifact_id": row.id, "name": name, "sha256": digest, "size_bytes": len(data)})
+
+
+@router.get("/{run_id}/artifacts/{artifact_id}")
+def download_artifact(run_id: int, artifact_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from fastapi.responses import FileResponse
+    from app.models.ai_eval import EvalArtifact
+    from app.services.eval_artifacts import ARTIFACT_ROOT
+    run = db.get(EvalRun, run_id)
+    if not run:
+        raise HTTPException(404, detail="执行项不存在")
+    assert_project_role(db, user, run.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    artifact = db.query(EvalArtifact).filter_by(id=artifact_id, eval_run_id=run_id).first()
+    if not artifact or not (ARTIFACT_ROOT / artifact.storage_key).is_file():
+        raise HTTPException(404, detail="产物不存在")
+    return FileResponse(ARTIFACT_ROOT / artifact.storage_key, filename=artifact.name, media_type='application/octet-stream')
+
+
 @router.post("/{run_id}/trace")
 async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = Query("mac-01"),
                        claim_token: str | None = Query(None),
@@ -510,7 +579,7 @@ def reset_run_for_retry(r: EvalRun) -> None:
     r.answer = None; r.trace = None; r.raw_message = None
     r.reported_duration = None; r.bean_cost = None; r.tokens = None; r.duration_ms = None
     r.verdict = None; r.score = None; r.verdict_dims = None; r.verdict_reason = None
-    r.judged_by = None; r.is_abnormal = False
+    r.judged_by = None; r.judgment_id = None; r.is_abnormal = False
     r.review_mark = None; r.review_note = None
 
 
@@ -635,38 +704,20 @@ def batch_trend(project_id: int = Query(...), limit: int = Query(30, le=100),
 
     # 每批各产品拆线(同批多产品横评):按 (batch_id, target_engine) 二次聚合各产品通过率/均分。
     batch_ids = [r.batch_id for r in rows]
-    eng_map: dict[str, dict] = {}   # batch_id -> {engine: {pass_rate, avg_score, judged}}
-    if batch_ids:
-        eng_rows = (db.query(
-            EvalRun.batch_id, EvalRun.target_engine,
-            func.sum(case((EvalRun.verdict == "pass", 1), else_=0)).label("passed"),
-            func.sum(case((EvalRun.verdict == "fail", 1), else_=0)).label("failed"),
-            func.avg(EvalRun.score).label("avg_score"))
-            .filter(EvalRun.project_id == project_id, EvalRun.batch_id.in_(batch_ids),
-                    EvalRun.target_engine.isnot(None))
-            .group_by(EvalRun.batch_id, EvalRun.target_engine).all())
-        for er in eng_rows:
-            judged = int(er.passed or 0) + int(er.failed or 0)
-            eng_map.setdefault(er.batch_id, {})[er.target_engine] = {
-                "pass_rate": round(int(er.passed or 0) / judged * 100, 1) if judged else None,
-                "avg_score": round(float(er.avg_score), 2) if er.avg_score is not None else None,
-                "judged": judged}
-
+    from app.services.eval_metrics import outcome_metrics
+    from app.services.eval_experiment import samples_by_batches, trial_metrics
+    by_batch, manifests = samples_by_batches(db, batch_ids, project_id)
     out = []
-    for r in reversed(rows):  # 倒序取最近 N 批 → 回正序(时间升序)供画曲线
-        judged = int(r.passed or 0) + int(r.failed or 0)
-        out.append({
-            "batch_id": r.batch_id,
-            "date": r.t0.isoformat() if r.t0 else None,
-            "task_name": name_map.get(r.task_id),
-            "total": int(r.total or 0),
-            "judged": judged,
-            "passed": int(r.passed or 0),
-            "failed": int(r.failed or 0),
-            "pass_rate": round(int(r.passed or 0) / judged * 100, 1) if judged else None,
-            "avg_score": round(float(r.avg_score), 2) if r.avg_score is not None else None,
-            "by_engine": eng_map.get(r.batch_id, {}),
-        })
+    for r in reversed(rows):
+        batch = by_batch.get(r.batch_id, [])
+        engines = sorted({s.target_engine for s in batch if s.target_engine})
+        out.append({"batch_id": r.batch_id, "date": r.t0.isoformat() if r.t0 else None,
+            "task_name": name_map.get(r.task_id), **outcome_metrics(batch),
+            "dataset_hash": (manifests[r.batch_id] or {}).get("dataset_hash"),
+            "trial_count": (manifests[r.batch_id] or {}).get("trial_count", 1),
+            "trial_metrics": trial_metrics(batch),
+            "by_engine": {eng: outcome_metrics(s for s in batch if s.target_engine == eng) for eng in engines}})
+
     return ok({"batches": out})
 
 
@@ -693,3 +744,15 @@ def list_history(project_id: int = Query(...), limit: int = Query(100, le=500),
     for i, qid in need:
         out[i]["dimension"] = dim_map.get(qid)
     return ok(out)
+
+
+@router.get("/batches/{batch_id}/experiment")
+def get_experiment(batch_id: str, project_id: int = Query(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.eval_experiment import samples_with_missing, trial_metrics
+    from app.services.eval_metrics import outcome_metrics
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    rows, manifest = samples_with_missing(db, batch_id, project_id)
+    if not rows and not manifest:
+        raise HTTPException(404, detail="批次不存在")
+    return ok({"batch_id": batch_id, "manifest": manifest, "metrics": outcome_metrics(rows),
+               "trial_metrics": trial_metrics(rows)})

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execResultBatches } from '../src/utils/execResultBatches.js'
-import { compareEvalRuns } from '../src/utils/evalRunGroups.js'
+import { compareEvalRuns, groupEvalRuns } from '../src/utils/evalRunGroups.js'
 
 test('失败后重试通过只计一次，保留旧明细及全部耗时', () => {
   const rows = [
@@ -47,4 +47,24 @@ test('不同批次不配对，缺侧或判定 error 计未决，零分参与平�
   assert.equal(result.undecided, 3)
   assert.equal(result.aAvg, '0.0')
   assert.equal(compareEvalRuns([]), null)
+})
+
+
+test('独立执行按 trial 配对，不覆盖同题前几次结果', () => {
+  const rows = []
+  for (const trial of [1, 2, 3]) {
+    rows.push({ ...run('namiwork', 'A', trial === 1 ? 'fail' : 'pass', 4), payload: { compare_group: 'A', trial_index: trial } })
+    rows.push({ ...run('namiwork', 'B', 'fail', 2), payload: { compare_group: 'B', trial_index: trial } })
+  }
+  const result = compareEvalRuns(rows)
+  assert.deepEqual([result.total, result.aWin, result.tie], [3, 2, 1])
+})
+
+test('同名多轮会话在不同 trial 中保持隔离', () => {
+  const rows = [1, 2].flatMap(trial => [0, 1].map(turn => ({ run_id: trial * 10 + turn,
+    batch_id: 'b', target_engine: 'namiwork', status: 'done',
+    payload: { conversation_group: 'g', turn_index: turn, trial_index: trial } })))
+  const groups = groupEvalRuns(rows)
+  assert.equal(groups.length, 2)
+  assert(groups.every(group => group.children.length === 2))
 })

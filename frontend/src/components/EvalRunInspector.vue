@@ -28,9 +28,34 @@
             </div>
           </section>
           <section v-if="row.verdict" class="evidence-section"><h3>人工复核</h3><slot name="review" /></section>
+          <section v-if="row.verdict_dims?.artifact_verification" class="evidence-section">
+            <h3>实际产物核验</h3>
+            <div v-for="file in row.verdict_dims.artifact_verification.evidence || []" :key="file.artifact_id"><el-button text type="primary" :loading="downloadingArtifact === file.artifact_id" @click="downloadArtifact(file)">下载已采集文件：{{ file.name }}</el-button></div>
+            <div v-for="(check, i) in row.verdict_dims.artifact_verification.checks" :key="i" class="dimension-result">
+              <el-tag :type="check.status === 'pass' ? 'success' : check.status === 'fail' ? 'danger' : 'info'">{{ check.status === 'pass' ? '通过' : check.status === 'fail' ? '未通过' : '证据不足' }}</el-tag>
+              <span> {{ check.name || '' }} · {{ check.reason }}</span>
+              <p v-if="check.sha256" class="mono">SHA256 {{ check.sha256 }}</p>
+            </div>
+          </section>
         </el-tab-pane>
         <el-tab-pane label="提问与回答" name="conversation">
           <section v-for="block in conversation" :key="block.label" class="evidence-section"><h3>{{ block.label }}</h3><div class="prose" v-html="renderMd(block.text)"></div></section>
+        </el-tab-pane>
+        <el-tab-pane label="判定历史" name="judgments">
+          <div v-if="judgmentsLoading" class="trace-state" role="status">正在读取判定版本…</div>
+          <div v-else-if="judgmentsError" class="trace-state" role="alert">{{ judgmentsError }}<el-button text type="primary" @click="loadJudgments">重新加载</el-button></div>
+          <div v-else-if="!judgments.length" class="trace-state">暂无版本记录；旧结论会在首次重判或复核时归档。</div>
+          <el-collapse v-else>
+            <el-collapse-item v-for="judgment in judgments" :key="judgment.id" :name="judgment.id" :title="`判定 #${judgment.id} · 第 ${judgment.attempt} 次执行 · ${judgment.result.verdict || '判定中'}`">
+              <div class="run-meta"><span>{{ judgment.provider }}</span><span>规则 {{ judgment.rules_version }}</span><span>{{ judgment.created_at?.replace('T', ' ') }}</span></div>
+              <div class="prose" v-html="renderMd(judgment.result.verdict_reason)"></div>
+              <h4>该版本人工复核</h4>
+              <div v-if="!judgment.reviews.length" class="trace-state">未复核</div>
+              <div v-for="(review, i) in judgment.reviews" :key="i"><span>{{ review.created_at?.replace('T', ' ') }} · {{ reviewLabels[review.mark] || '清除标记' }}</span><div class="prose" v-html="renderMd(review.note)"></div></div>
+              <details><summary>独立票据（{{ judgment.ballots.length }} 票）</summary><pre>{{ pretty(judgment.ballots) }}</pre></details>
+              <details><summary>当次判定输入</summary><p class="mono">{{ judgment.input_hash }}</p><pre>{{ pretty(judgment.input) }}</pre></details>
+            </el-collapse-item>
+          </el-collapse>
         </el-tab-pane>
         <el-tab-pane label="重试历史" name="history">
           <div v-if="historyLoading" class="trace-state" role="status">正在读取重试历史…</div>
@@ -63,6 +88,7 @@
               </section>
               <section class="evidence-section"><h3>产物记录</h3><pre>{{ pretty(trace.artifacts || []) }}</pre></section>
               <section v-if="trace.capture_diagnostics" class="evidence-section"><h3>采集诊断</h3><pre>{{ pretty(trace.capture_diagnostics) }}</pre></section>
+              <section v-if="trace.execution_config" class="evidence-section"><h3>实际执行配置</h3><pre>{{ pretty(trace.execution_config) }}</pre></section>
             </template>
           </template>
           <section v-if="row.raw_message" class="evidence-section"><h3>原始 message</h3><pre>{{ pretty(row.raw_message) }}</pre></section>
@@ -78,7 +104,7 @@ import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { Close, Link, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
-import { listEvalRunAttempts } from '@/api'
+import { listEvalRunAttempts, listEvalJudgments, downloadEvalArtifact } from '@/api'
 
 const props = defineProps({ visible: Boolean, row: Object, title: String })
 defineEmits(['update:visible'])
@@ -91,6 +117,37 @@ const history = ref([])
 const historyLoading = ref(false)
 const historyError = ref('')
 let historyRequest = 0
+const downloadingArtifact = ref(null)
+async function downloadArtifact(file) {
+  downloadingArtifact.value = file.artifact_id
+  try {
+    const blob = await downloadEvalArtifact(props.row.run_id, file.artifact_id)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.name || 'artifact'
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch { /* API interceptor displays download errors. */ }
+  finally { downloadingArtifact.value = null }
+}
+const judgments = ref([])
+const judgmentsLoading = ref(false)
+const judgmentsError = ref('')
+const reviewLabels = { confirmed: '认可判定', false_positive: '误报（实际通过）', false_negative: '漏报（实际有问题）' }
+let judgmentRequest = 0
+async function loadJudgments() {
+  const request = ++judgmentRequest
+  if (!props.visible || !Number.isInteger(props.row?.run_id)) return
+  judgmentsLoading.value = true
+  judgmentsError.value = ''
+  try {
+    const rows = await listEvalJudgments(props.row.run_id)
+    if (request === judgmentRequest) judgments.value = rows || []
+  } catch {
+    if (request === judgmentRequest) judgmentsError.value = '判定历史读取失败。'
+  } finally { if (request === judgmentRequest) judgmentsLoading.value = false }
+}
 const historyTraceUrl = source => {
   if (typeof source !== 'string') return null
   try {
@@ -148,6 +205,10 @@ async function loadTrace() {
   } finally { if (!current.signal.aborted) traceLoading.value = false }
 }
 watch(() => [props.visible, props.row?.run_id, props.row?.trace], () => {
+  judgmentRequest++
+  judgments.value = []
+  judgmentsError.value = ''
+  judgmentsLoading.value = false
   historyRequest++
   history.value = []
   historyError.value = ''
@@ -158,8 +219,13 @@ watch(() => [props.visible, props.row?.run_id, props.row?.trace], () => {
   traceError.value = ''
   traceLoading.value = false
 })
-watch(activeTab, tab => { if (tab === 'trace') loadTrace(); if (tab === 'history') loadHistory() })
-onBeforeUnmount(() => { controller?.abort(); historyRequest++ })
+watch(activeTab, tab => { if (tab === 'trace') loadTrace(); if (tab === 'history') loadHistory(); if (tab === 'judgments') loadJudgments() })
+watch(() => [props.row?.judgment_id, props.row?.review_mark, props.row?.review_note], () => {
+  judgmentRequest++
+  judgments.value = []
+  if (props.visible && activeTab.value === 'judgments') loadJudgments()
+})
+onBeforeUnmount(() => { controller?.abort(); historyRequest++; judgmentRequest++ })
 </script>
 
 <style scoped>

@@ -174,7 +174,9 @@ class DesktopRunner {
       await this._waitAttachmentsReady(ctx, atts.length); // 等附件卡片出现，未挂上即抛错（本条判失败）
     }
     // 对话选项（模型/模式/思考深度）——复用 DialogRunner 实现（留空则不动）
-    await dr._applyDialogOptions();
+    if (testCase.dialogOptions) dr.execution.dialogOptions = testCase.dialogOptions;
+    try { await dr._applyDialogOptions(); }
+    finally { testCase.executionConfig = structuredClone(dr.executionConfig || null); }
 
     const input = ctx.locator(this.platform.inputSelector).first();
     await input.waitFor({ timeout: 10000 });
@@ -364,6 +366,9 @@ class DesktopRunner {
       beanCost: out.beanCost, cost: out.cost, costRaw: out.costRaw,
       durationMs: (meta.endTime || Date.now()) - (meta.startTime || Date.now()),
       startTime: meta.startTime, endTime: meta.endTime,
+      executionConfig: testCase.executionConfig || null,
+      errorCode: errorMsg?.startsWith('[CONFIG_ERROR]') ? 'CONFIG_ERROR' : null,
+      errorMessage: errorMsg,
       success, incomplete, completeReason: meta.completeReason || 'unknown',
       missingFields: success ? dr_missingFields(out, this.execution) : [],
       reloadRecoveredFields: []

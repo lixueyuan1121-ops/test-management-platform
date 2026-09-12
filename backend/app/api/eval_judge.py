@@ -37,7 +37,7 @@ def _run_out(r: EvalRun) -> dict:
         "status": getattr(r.status, "value", r.status), "verdict": r.verdict,
         "score": r.score,
         "verdict_dims": json.loads(r.verdict_dims) if r.verdict_dims else None,
-        "verdict_reason": r.verdict_reason, "judged_by": r.judged_by,
+        "verdict_reason": r.verdict_reason, "judged_by": r.judged_by, "judgment_id": r.judgment_id,
         "review_mark": r.review_mark, "review_note": r.review_note,
         "is_abnormal": bool(r.is_abnormal), "share_link": r.share_link, "answer": r.answer,
     }
@@ -172,6 +172,7 @@ class ReviewMarkIn(BaseModel):
     # confirmed=认可判定 / false_positive=误报(判fail实际OK) / false_negative=漏报(判pass实际有问题) / None=清除
     mark: str | None = None
     note: str | None = None
+    judgment_id: int | None = None
 
 
 @router.post("/{run_id}/review")
@@ -181,22 +182,53 @@ def review_run(run_id: int, body: ReviewMarkIn, db: Session = Depends(get_db), u
     误报(false_positive)顺带摘掉 is_abnormal(不再推 multica/不计异常);
     漏报(false_negative)反向置真。verdict 本身不改——保留 AI 原判供对照统计。
     """
-    r = db.get(EvalRun, run_id)
+    r = db.query(EvalRun).filter_by(id=run_id).with_for_update().populate_existing().first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    if getattr(r.status, "value", r.status) == "judging":
+        raise HTTPException(409, detail="正在重新判定，请完成后再复核")
+    if "judgment_id" in body.model_fields_set and body.judgment_id != r.judgment_id:
+        raise HTTPException(409, detail="判定版本已变化，请刷新后复核")
     if not r.verdict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="该执行项还没有 AI 判定,先判定再复核")
     if body.mark is not None and body.mark not in ("confirmed", "false_positive", "false_negative"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="mark 须为 confirmed/false_positive/false_negative 或 null")
+    from app.services.eval_judgment_store import ensure_legacy
+    from app.models.ai_eval import EvalJudgmentReview
+    ensure_legacy(db, r)
+    db.add(EvalJudgmentReview(judgment_id=r.judgment_id, user_id=user.id,
+        mark=body.mark, note=(body.note or "").strip() or None))
     r.review_mark = body.mark
     r.review_note = (body.note or "").strip() or None
     if body.mark == "false_positive":
         r.is_abnormal = False
     elif body.mark == "false_negative":
         r.is_abnormal = True
+    else:
+        r.is_abnormal = r.verdict == "fail"
     db.commit(); db.refresh(r)
     return ok(_run_out(r))
+
+
+@router.get("/{run_id}/judgments")
+def judgment_history(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    import json
+    from app.models.ai_eval import EvalJudgment, EvalJudgmentReview
+    run = db.get(EvalRun, run_id)
+    if not run:
+        raise HTTPException(404, detail="执行项不存在")
+    assert_project_role(db, user, run.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    rows = db.query(EvalJudgment).filter_by(eval_run_id=run_id).order_by(EvalJudgment.id.desc()).all()
+    reviews = db.query(EvalJudgmentReview).filter(EvalJudgmentReview.judgment_id.in_([r.id for r in rows])).order_by(EvalJudgmentReview.id).all() if rows else []
+    return ok([{"id": r.id, "attempt": r.attempt, "provider": r.provider,
+        "rules_version": r.rules_version, "input_hash": r.input_hash,
+        "input": json.loads(r.input_json or "{}"), "ballots": json.loads(r.ballots or "[]"),
+        "result": json.loads(r.result or "{}"), "created_at": r.created_at.isoformat(),
+        "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        "reviews": [{"mark": v.mark, "note": v.note, "user_id": v.user_id,
+                     "created_at": v.created_at.isoformat()} for v in reviews if v.judgment_id == r.id]}
+        for r in rows])
 
 
 @router.get("/abnormal")
@@ -230,7 +262,7 @@ def judge_quality(project_id: int = Query(...), db: Session = Depends(get_db),
             func.sum(case((EvalRun.review_mark == "confirmed", 1), else_=0)).label("confirmed"),
             func.sum(case((EvalRun.review_mark == "false_positive", 1), else_=0)).label("fp"),
             func.sum(case((EvalRun.review_mark == "false_negative", 1), else_=0)).label("fn"),
-        ).filter(EvalRun.project_id == project_id, EvalRun.verdict.isnot(None))
+        ).filter(EvalRun.project_id == project_id, EvalRun.verdict.in_(["pass", "fail"]))
         for f in extra_filters:
             q = q.filter(f)
         return q.one()
@@ -252,7 +284,7 @@ def judge_quality(project_id: int = Query(...), db: Session = Depends(get_db),
     overall = _shape(_agg())
     # 引擎横评:只列有复核样本的引擎(没样本算不出准确率,列出来是噪音)
     engines = [n for (n,) in db.query(EvalRun.judged_by)
-               .filter(EvalRun.project_id == project_id, EvalRun.verdict.isnot(None),
+               .filter(EvalRun.project_id == project_id, EvalRun.verdict.in_(["pass", "fail"]),
                        EvalRun.judged_by.isnot(None), EvalRun.review_mark.isnot(None))
                .distinct().all()]
     by_engine = sorted(
@@ -270,100 +302,47 @@ def eval_dimension_stats(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """对话测评维度通过率聚合:以 EvalQuery.dimension 为轴,统计 verdict=pass/fail 的通过率。
-
-    time window: [today-days+1, today];  error/NULL verdict 不计。
-    dimension 为空归入"未标注"。dims 按 total 降序。overall_rate 为加权均值。
-    by_engine=True 时额外按 target_engine 分组(多产品横评),each 引擎一份分维通过率。
-    """
+    """历史维度使用运行快照，旧记录才回落题库；始终保留覆盖率分母。"""
     from datetime import date, timedelta
-    from app.models.ai_eval import EvalQuery, EvalRun
+    from types import SimpleNamespace
+    from app.models import EvalQuery
     from sqlalchemy import func
+    from app.services.eval_snapshot import payload_of
+    from app.services.eval_metrics import outcome_metrics
+    from app.services.eval_engines import EVAL_ENGINES
 
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     if days <= 0 or days > 365:
         days = 30
     today = date.today()
-    d_from = today - timedelta(days=days - 1)
+    rows = db.query(EvalRun.payload, EvalRun.verdict, EvalRun.status, EvalRun.target_engine,
+                    EvalRun.reason, EvalRun.verdict_reason, EvalRun.score, EvalQuery.dimension).outerjoin(
+        EvalQuery, EvalQuery.id == EvalRun.eval_query_id).filter(
+        EvalRun.project_id == project_id,
+        func.date(EvalRun.created_at) >= today - timedelta(days=days - 1),
+        func.date(EvalRun.created_at) <= today).all()
+    enriched = [SimpleNamespace(**dict(r._mapping), frozen_dimension=payload_of(r).get("dimension", r.dimension) or "未标注") for r in rows]
 
-    rows = (
-        db.query(EvalQuery.dimension, EvalRun.verdict, func.count(EvalRun.id))
-        .join(EvalQuery, EvalQuery.id == EvalRun.eval_query_id)
-        .filter(
-            EvalRun.project_id == project_id,
-            EvalRun.verdict.in_(["pass", "fail"]),
-            func.date(EvalRun.created_at) >= d_from,
-            func.date(EvalRun.created_at) <= today,
-        )
-        .group_by(EvalQuery.dimension, EvalRun.verdict)
-        .all()
-    )
+    def shape(items):
+        groups = {}
+        for row in items:
+            groups.setdefault(row.frozen_dimension, []).append(row)
+        dims = []
+        for dim, samples in groups.items():
+            m = outcome_metrics(samples)
+            # total historically means the valid-judgment denominator; keep compatibility.
+            dims.append({**m, "dimension": dim, "planned": m["total"], "total": m["judged"],
+                         "pass_rate": m["pass_rate"] if m["pass_rate"] is not None else 0.0})
+        dims.sort(key=lambda d: (-d["total"], d["dimension"]))
+        m = outcome_metrics(items)
+        return {"dims": dims, "judged_total": m["judged"], "overall_rate": m["pass_rate"] or 0.0,
+                "planned_total": m["total"], "coverage_rate": m["coverage_rate"],
+                "confirmed_success_rate": m["confirmed_success_rate"]}
 
-    agg: dict[str, dict] = {}
-    for dim, verdict, cnt in rows:
-        key = dim or "未标注"
-        bucket = agg.setdefault(key, {"total": 0, "passed": 0})
-        bucket["total"] += cnt
-        if verdict == "pass":
-            bucket["passed"] += cnt
-
-    dims = sorted(
-        [
-            {
-                "dimension": k,
-                "total": v["total"],
-                "passed": v["passed"],
-                "pass_rate": round(v["passed"] / v["total"] * 100, 1) if v["total"] else 0.0,
-            }
-            for k, v in agg.items()
-        ],
-        key=lambda x: (-x["total"], x["dimension"]),
-    )
-
-    judged_total = sum(d["total"] for d in dims)
-    total_passed = sum(d["passed"] for d in dims)
-    overall_rate = round(total_passed / judged_total * 100, 1) if judged_total else 0.0
-
-    result = {"days": days, "dims": dims, "judged_total": judged_total, "overall_rate": overall_rate}
-
-    # by_engine:按 target_engine 分组各算一份分维通过率(多产品横评)。仿 judge-quality 的 by_engine。
+    result = {"days": days, **shape(enriched)}
     if by_engine:
-        from app.services.eval_engines import EVAL_ENGINES
-        eng_rows = (
-            db.query(EvalRun.target_engine, EvalQuery.dimension, EvalRun.verdict, func.count(EvalRun.id))
-            .join(EvalQuery, EvalQuery.id == EvalRun.eval_query_id)
-            .filter(
-                EvalRun.project_id == project_id,
-                EvalRun.verdict.in_(["pass", "fail"]),
-                EvalRun.target_engine.isnot(None),
-                func.date(EvalRun.created_at) >= d_from,
-                func.date(EvalRun.created_at) <= today,
-            )
-            .group_by(EvalRun.target_engine, EvalQuery.dimension, EvalRun.verdict)
-            .all()
-        )
-        eng_agg: dict[str, dict] = {}   # engine -> {dim: {total, passed}}
-        for eng, dim, verdict, cnt in eng_rows:
-            bucket = eng_agg.setdefault(eng, {}).setdefault(dim or "未标注", {"total": 0, "passed": 0})
-            bucket["total"] += cnt
-            if verdict == "pass":
-                bucket["passed"] += cnt
-        by_engine_out = []
-        for eng, dim_map in eng_agg.items():
-            e_dims = sorted(
-                [{"dimension": k, "total": v["total"], "passed": v["passed"],
-                  "pass_rate": round(v["passed"] / v["total"] * 100, 1) if v["total"] else 0.0}
-                 for k, v in dim_map.items()],
-                key=lambda x: (-x["total"], x["dimension"]),
-            )
-            e_total = sum(v["total"] for v in dim_map.values())
-            e_pass = sum(v["passed"] for v in dim_map.values())
-            by_engine_out.append({
-                "engine": eng, "label": EVAL_ENGINES.get(eng, {}).get("label", eng),
-                "dims": e_dims, "judged_total": e_total,
-                "overall_rate": round(e_pass / e_total * 100, 1) if e_total else 0.0,
-            })
-        by_engine_out.sort(key=lambda e: (-e["judged_total"], e["engine"]))
-        result["by_engine"] = by_engine_out
-
+        engines = sorted({r.target_engine for r in enriched if r.target_engine})
+        result["by_engine"] = [{"engine": eng, "label": EVAL_ENGINES.get(eng, {}).get("label", eng),
+            **shape([r for r in enriched if r.target_engine == eng])} for eng in engines]
+        result["by_engine"].sort(key=lambda e: (-e["judged_total"], e["engine"]))
     return ok(result)

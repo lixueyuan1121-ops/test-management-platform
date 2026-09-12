@@ -1,3 +1,4 @@
+const { readSelection, verifySelection, configError } = require('./dialog-config');
 const fs = require('fs');
 const path = require('path');
 const workFrame = require('./work-frame');
@@ -183,7 +184,7 @@ class DialogRunner {
           }
         }
 
-        // 发送前设置对话选项（模型 / 对话模式 / 深度思考）；留空的项跳过、失败不阻断发送。
+        // 发送前设置对话选项（模型 / 对话模式 / 深度思考）；留空项读取当前配置，指定项失败阻断发送。
         await this._applyDialogOptions();
 
         const input = ctx.locator(this.platform.inputSelector).first();
@@ -282,6 +283,9 @@ class DialogRunner {
       durationMs: endTime - startTime, // 附加：墙钟耗时（仅记录，不回填）
       startTime,
       endTime,
+      executionConfig: this.executionConfig || null,
+      errorCode: errorMsg?.startsWith('[CONFIG_ERROR]') ? 'CONFIG_ERROR' : null,
+      errorMessage: errorMsg || null,
       success,
       incomplete,                    // 是否属于“超时/中间态未完成”（供 runWithRetry 决定是否重跑）
       completeReason,                // 完成/未完成原因：footer/stable/timeout/stall/nostart
@@ -334,32 +338,38 @@ class DialogRunner {
     }
   }
 
-  // 发送前设置对话选项：模型 / 对话模式 / 深度思考。留空的项跳过；任一步失败仅告警、不阻断发送。
+  // Explicit options must be verified before sending; unspecified controls are observed only.
   async _applyDialogOptions() {
     const opt = this.execution.dialogOptions || {};
-    if (!opt.model && !opt.chatMode && !opt.thinkingDepth) return; // 三项都留空 → 完全不动
     const P = this.platform;
-    if (opt.model) {
-      await this._pickDropdownOption('模型', P.modelDropdownSelector, P.modelOptionSelector, opt.model);
-    }
-    if (opt.chatMode) {
-      await this._pickDropdownOption('对话模式', P.chatModeTriggerSelector, P.chatModeOptionSelector, opt.chatMode);
-    }
-    if (opt.thinkingDepth) {
-      await this._pickDropdownOption('深度思考', P.thinkingDepthTriggerSelector, P.thinkingDepthOptionSelector, opt.thinkingDepth);
+    this.executionConfig = { schema_version: 1, requested: { ...opt }, observed: {}, status: 'checking' };
+    const fields = [
+      ['model', '模型', P.modelDropdownSelector, P.modelOptionSelector],
+      ['chatMode', '对话模式', P.chatModeTriggerSelector, P.chatModeOptionSelector],
+      ['thinkingDepth', '深度思考', P.thinkingDepthTriggerSelector, P.thinkingDepthOptionSelector],
+    ];
+    try {
+      for (const [key, label, trigger, option] of fields) {
+        if (opt[key]) this.executionConfig.observed[key] = await this._pickDropdownOption(label, trigger, option, opt[key]);
+        else this.executionConfig.observed[key] = trigger ? await readSelection(this._ctx().locator(trigger).first()).catch(() => []) : [];
+      }
+      this.executionConfig.status = Object.values(opt).some(Boolean) ? 'verified' : 'observed';
+    } catch (error) {
+      this.executionConfig.status = 'config_error';
+      this.executionConfig.error = error.message;
+      throw error;
     }
   }
 
   // 通用：展开某下拉(点 triggerSel) → 在展开项里按文本精确匹配点选 wanted。
-  //  optionSel 为空则纯文本匹配可见元素(用于选项 class 未知的深度下拉)。失败仅告警不抛。
+  // optionSel 为空则按可见文本匹配；最终以关闭菜单后的控件读回为准。
   async _pickDropdownOption(name, triggerSel, optionSel, wanted) {
-    if (!triggerSel || !wanted) return;
+    if (!triggerSel || !wanted) throw configError(`未配置${name}控件`);
     const ctx = this._ctx();
     try {
       const trigger = ctx.locator(triggerSel).first();
       if (await trigger.count().catch(() => 0) === 0) {
-        if (this.logger) this.logger.warn(`       ↳ [${this.label}] 设置${name}失败：找不到触发控件(${triggerSel})`);
-        return;
+        throw configError(`设置${name}失败：找不到触发控件(${triggerSel})`);
       }
       await trigger.click({ timeout: 4000 }).catch(() => {});
       await this.page.waitForTimeout(300);
@@ -379,16 +389,17 @@ class DialogRunner {
       if (optionSel) option = await this._findOptionByText(optionSel, wanted);
       if (!option) option = ctx.getByText(wanted, { exact: true }).first();
       if (await option.count().catch(() => 0) === 0) {
-        if (this.logger) this.logger.warn(`       ↳ [${this.label}] 设置${name}失败：下拉里找不到「${wanted}」`);
-        await this.page.keyboard.press('Escape').catch(() => {});
-        return;
+        throw configError(`设置${name}失败：下拉里找不到「${wanted}」`);
       }
-      await option.click({ timeout: 4000 }).catch(() => {});
+      await option.click({ timeout: 4000 });
       await this.page.waitForTimeout(400);
-      if (this.logger) this.logger.info(`       ↳ [${this.label}] 已设置${name} = ${wanted}`);
-    } catch (e) {
-      if (this.logger) this.logger.warn(`       ↳ [${this.label}] 设置${name}异常（忽略）: ${(e.message || '').split('\n')[0]}`);
       await this.page.keyboard.press('Escape').catch(() => {});
+      const observed = await verifySelection(this.page, trigger, wanted);
+      if (this.logger) this.logger.info(`       ↳ [${this.label}] 已验证${name} = ${wanted}`);
+      return observed;
+    } catch (e) {
+      await this.page.keyboard.press('Escape').catch(() => {});
+      throw e.message?.startsWith('[CONFIG_ERROR]') ? e : configError(`设置${name}失败：${e.message}`);
     }
   }
 

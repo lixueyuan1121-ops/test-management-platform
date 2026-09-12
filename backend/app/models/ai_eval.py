@@ -8,6 +8,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.dialects.mysql import LONGTEXT
 
 from app.core.enums import EvalDeviceKind, EvalRunStatus, EvalTaskStatus, ReviewStatus
 from app.db.session import Base
@@ -39,6 +40,7 @@ class EvalQuery(Base):
     turn_index: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 同组内第几轮（0 起）
     dialog_options: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: {model?,chatMode?,thinkingDepth?}
     expected: Mapped[str | None] = mapped_column(Text, nullable=True)  # 期望产物/行为（判定参照；可空）
+    verification_rules: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
     review_status: Mapped[ReviewStatus] = mapped_column(
         Enum(ReviewStatus, length=16), default=ReviewStatus.pending, server_default="pending"
     )
@@ -84,7 +86,7 @@ class EvalRun(Base):
     )
     # 下发时的题面快照 JSON 字符串（prompt/attachments/dialog_options/conversation_group/turn_index）：
     # 执行器据此驱动对话，用"下发那一刻"的配置避免执行时 eval_query 被改导致漂移（学 exec_run.payload）。
-    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
     # —— CLI 抓回的会话数据 ——
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # work.n.cn 会话 UUID
     share_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -104,6 +106,7 @@ class EvalRun(Base):
     verdict_dims: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: 三维结论（见 spec §5.5）
     verdict_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 判定理由汇总
     judged_by: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 判定用的引擎
+    judgment_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 人工复核标注(失败收敛):confirmed 认可判定 / false_positive 误报(判fail实际通过) /
     # false_negative 漏报(判pass实际有问题);NULL=未复核。note 记复核说明,沉淀 judge 盲区。
     review_mark: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -255,3 +258,54 @@ class EvalRunHistory(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     archived_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class EvalJudgment(Base):
+    """One judgment version; completed outcomes and their input are never overwritten."""
+    __tablename__ = "eval_judgment"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    eval_run_id: Mapped[int] = mapped_column(ForeignKey("eval_run.id", ondelete="CASCADE"), index=True)
+    attempt: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rules_version: Mapped[str] = mapped_column(String(32), default="context-v2")
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A complete prompt plus ballots may exceed MySQL TEXT's 64 KiB.
+    input_json: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+    ballots: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+    result: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class EvalJudgmentReview(Base):
+    """Append-only human feedback tied to a particular judgment."""
+    __tablename__ = "eval_judgment_review"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    judgment_id: Mapped[int] = mapped_column(ForeignKey("eval_judgment.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    mark: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class EvalExperiment(Base):
+    """Frozen plan for one batch, including every scheduled execution."""
+    __tablename__ = "eval_experiment"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
+    batch_id: Mapped[str] = mapped_column(String(32), unique=True)
+    dataset_hash: Mapped[str] = mapped_column(String(64))
+    manifest: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class EvalArtifact(Base):
+    __tablename__ = "eval_artifact"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    eval_run_id: Mapped[int] = mapped_column(ForeignKey("eval_run.id", ondelete="CASCADE"), index=True)
+    attempt: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    storage_key: Mapped[str] = mapped_column(String(64))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

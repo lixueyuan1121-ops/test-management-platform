@@ -15,6 +15,14 @@ const { groupIntoConversations, convHasAttachments } = require('../src/conversat
 const { downloadAttachments } = require('../src/attachment-downloader');
 const ResultReporter = require('../src/reporter');
 const DiagnosticReporter = require('../src/diagnostic-reporter');
+const { collectArtifacts, runnerMetadata } = require('../src/artifact-collector');
+const { createHash } = require('crypto');
+function inputDigests(paths) {
+  return (paths || []).map(file => {
+    try { return { name: path.basename(file), sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex') }; }
+    catch { return { name: path.basename(file), capture_error: '无法读取输入文件' }; }
+  });
+}
 const Logger = require('../src/logger');
 
 // 轻量加载 .env（KEY=VALUE）到环境变量，无需额外依赖。
@@ -751,6 +759,12 @@ async function runWorkbuddyBatch(items, client, config, logger) {
     // 回写一轮 run:先 uploadTrace 落盘,再 report(done)。顺序纪律同纳米(见 reportRun 注释):
     // report 会让 run 达终态,若是本批最后一条会同步触发一条龙判定,判定读磁盘 trace,故必须先落盘。
     const reportRun = async (runId, result, trace) => {
+      trace.execution_config = result.executionConfig || null;
+      const source = items.find(item => item.run_id === runId);
+      trace.runtime = { ...runnerMetadata(), user_agent: await runner.page.evaluate(() => navigator.userAgent).catch(() => null) };
+      trace.input_files = inputDigests(source?._attachmentPaths);
+      await collectArtifacts({ page: runner.page, trace, rules: source?.payload?.verification_rules,
+        client, runId, selectors: config.workbuddy }).catch(() => { trace.artifact_capture = { status: 'unknown', diagnostics: [{reason: '产物采集异常'}] }; });
       try {
         try { await client.uploadTrace(runId, trace); }
         catch (te) { logger.warn(`[workbuddy] 上传 run ${runId} 轨迹失败(判定退化无轨迹): ${te.message}`); }
@@ -760,7 +774,7 @@ async function runWorkbuddyBatch(items, client, config, logger) {
           answer: result.answer || null, raw_message: result.rawMessage || null, reported_duration: result.reportedDuration || null,
           bean_cost: result.beanCost || null, tokens: result.cost || null,
           session_id: trace.session_id || null,
-          reason: result.success ? null : (result.completeReason || null),
+          reason: result.success ? null : (result.errorCode ? `[${result.errorCode}] ${result.errorMessage || ""}` : result.completeReason || null),
           duration_ms: result.durationMs || null,
         });
         logger.info(`✅ [workbuddy] 回写 run ${runId} (${result.success ? 'done' : 'failed'})`);
@@ -800,7 +814,7 @@ async function runWorkbuddyBatch(items, client, config, logger) {
       config.execution.dialogOptions = (headP.dialog_options && typeof headP.dialog_options === 'object') ? headP.dialog_options : config.execution.dialogOptions;
       const testCases = conv.map(it => {
         const p = it.payload || {};
-        return { caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
+        return { caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '', dialogOptions: p.dialog_options || {},
           attachments: p.attachments || [], attachmentPaths: it._attachmentPaths || [],
           conversationId: p.conversation_group || `__run_${it.run_id}`, turnIndex: p.turn_index || 0, account: 'workbuddy' };
       });
@@ -920,6 +934,12 @@ program
       // 多轮同一对话逐轮隔离靠此 reset:session_id 每帧都带,reset 后下一轮仍能复得同一 session_id。
       const reportRun = async (runId, result, ws) => {
         const trace = ws ? ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
+        trace.execution_config = result.executionConfig || null;
+        const source = namiPending.find(item => item.run_id === runId);
+        trace.runtime = { ...runnerMetadata(), user_agent: await runner.page.evaluate(() => navigator.userAgent).catch(() => null) };
+        trace.input_files = inputDigests(source?._attachmentPaths);
+        await collectArtifacts({ page: runner.page, trace, rules: source?.payload?.verification_rules,
+          client, runId, selectors: config.platform }).catch(() => { trace.artifact_capture = { status: 'unknown', diagnostics: [{reason: '产物采集异常'}] }; });
         if (!trace.thinking && !trace.tool_calls?.length) {
           logger.warn(`[trace] run=${runId} 缺过程记录: connected=${trace.ws_connected ?? false}, captured=${trace.ws_captured}, diagnostics=${JSON.stringify(trace.capture_diagnostics || {})}`);
         }
@@ -946,7 +966,7 @@ program
             answer: result.answer || null, reported_duration: result.reportedDuration || null,
             bean_cost: result.beanCost || null, tokens: result.cost || null,
             session_id: trace.session_id || null,
-            reason: result.success ? null : (result.completeReason || null),
+            reason: result.success ? null : (result.errorCode ? `[${result.errorCode}] ${result.errorMessage || ""}` : result.completeReason || null),
             duration_ms: result.durationMs || null,
           });
           logger.info(`✅ 回写 run ${runId} (${result.success ? 'done' : 'failed'}, ws=${trace.ws_captured})`);
@@ -1014,7 +1034,7 @@ program
         const testCases = conv.map(it => {
           const p = it.payload || {};
           return {
-            caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '',
+            caseId: `RUN-${it.run_id}`, run_id: it.run_id, row: it.run_id, question: p.prompt || '', dialogOptions: p.dialog_options || {},
             attachments: p.attachments || [], attachmentPaths: it._attachmentPaths || [],
             conversationId: p.conversation_group || `__run_${it.run_id}`, turnIndex: p.turn_index || 0,
             account: 'desktop',

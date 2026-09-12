@@ -1,3 +1,4 @@
+const { readSelection, verifySelection, configError, normalize } = require('./dialog-config');
 // src/workbuddy-runner.js
 // WorkBuddy 对话驱动器：CDP 已连的 page 上开新对话、输入(contenteditable)、选模型档、发送、等完成、抓答案+trace。
 // 对外接口对齐 DesktopRunner（runOne/runConversationTurns/result 形状），使 bin/ai-eval.js 的 reportRun 无缝复用。
@@ -52,15 +53,33 @@ class WorkbuddyRunner {
 
   // 选模型档：点开 cr-model-selector__trigger，选名字匹配 dialogOptions.model 的 item。未指定则不动。
   async _applyDialogOptions() {
-    const model = (this.execution.dialogOptions || {}).model;
-    if (!model) return;
+    const options = this.execution.dialogOptions || {};
+    this.executionConfig = { schema_version: 1, requested: { ...options }, observed: {}, status: 'checking' };
     try {
-      await this.page.locator(this.wb.modelTriggerSelector).first().click();
-      await this.page.waitForTimeout(600);
-      const opt = this.page.locator(this.wb.modelOptionSelector, { hasText: model }).first();
-      if (await opt.count()) { await opt.click(); await this.page.waitForTimeout(400); }
-      else { this._warn(`   模型档「${model}」未在下拉中找到，用当前默认`); await this.page.keyboard.press('Escape').catch(() => {}); }
-    } catch (e) { this._warn(`   选模型档失败(用默认): ${(e.message || '').split('\n')[0]}`); }
+      if (options.chatMode || options.thinkingDepth) throw configError('WorkBuddy 暂不支持指定对话模式或思考深度');
+      const trigger = this.page.locator(this.wb.modelTriggerSelector).first();
+      if (options.model) {
+        await trigger.click({ timeout: 4000 });
+        await this.page.waitForTimeout(600);
+        const opts = this.page.locator(this.wb.modelOptionSelector);
+        let selected = null;
+        for (let i = 0; i < await opts.count(); i++) {
+          const option = opts.nth(i);
+          if (normalize(await option.innerText()) === normalize(options.model)) { selected = option; break; }
+        }
+        if (!selected) throw configError(`找不到模型「${options.model}」`);
+        await selected.click({ timeout: 4000 });
+        await this.page.keyboard.press('Escape').catch(() => {});
+        this.executionConfig.observed.model = await verifySelection(this.page, trigger, options.model);
+      } else this.executionConfig.observed.model = await readSelection(trigger).catch(() => []);
+      this.executionConfig.status = options.model ? 'verified' : 'observed';
+    } catch (error) {
+      const failure = error.message?.startsWith('[CONFIG_ERROR]') ? error : configError(error.message);
+      this.executionConfig.status = 'config_error';
+      this.executionConfig.error = failure.message;
+      await this.page.keyboard.press('Escape').catch(() => {});
+      throw failure;
+    }
   }
 
   async _footerCount() { return await this.page.locator(this.wb.footerSelector).count(); }
@@ -68,7 +87,9 @@ class WorkbuddyRunner {
   async _sendOne(testCase) {
     // 多轮对话不会经过 _openCleanConversation，发送前也要清理上轮分享态。
     if (!(await this._dismissShareUi())) throw new Error('分享底栏未关闭，无法发送下一轮');
-    await this._applyDialogOptions();
+    if (testCase.dialogOptions) this.execution.dialogOptions = testCase.dialogOptions;
+    try { await this._applyDialogOptions(); }
+    finally { testCase.executionConfig = structuredClone(this.executionConfig || null); }
     const input = this.page.locator(this.wb.inputSelector).first();
     // 附件(如有):必须先粘贴附件、确认「附件卡片挂上」再输 query,绝不「无附件裸发 query」——那样是
     // 对着没附件的回答评分,污染判定。WorkBuddy 附件走原生文件对话框(setInputFiles 不适用),真机坐实
@@ -355,6 +376,9 @@ class WorkbuddyRunner {
       conversationId: testCase.conversationId, turnIndex: testCase.turnIndex, question: testCase.question,
       answer: meta.errorMsg ? `[执行失败] ${meta.errorMsg}` : success ? answerText : `[未完成:${meta.completeReason}]`,
       rawMessage: meta.rawMessage || null,
+      executionConfig: testCase.executionConfig || null,
+      errorCode: meta.errorMsg?.startsWith('[CONFIG_ERROR]') ? 'CONFIG_ERROR' : null,
+      errorMessage: meta.errorMsg || null,
       shareLink: trace.share_link || null, artifactShareLink: (trace.artifacts[0] && trace.artifacts[0].share_link) || null,
       hasArtifact: trace.artifacts.length > 0,
       reportedDuration: trace.reported_duration || null, reportedDurationRaw: trace.reported_duration_raw || null,

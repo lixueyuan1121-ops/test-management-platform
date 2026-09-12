@@ -13,6 +13,7 @@ backend/.env
 # 运行时上传（探测截图等）：不入库，仅服务器本地
 backend/uploads/
 backend/artifacts/
+backend/storage/eval_artifacts/
 
 # Claude 本地个人记忆（含推送习惯，勿入库）
 CLAUDE.local.md

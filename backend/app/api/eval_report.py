@@ -159,8 +159,22 @@ def _detail_table_html(db: Session | None, task: EvalTask) -> str:
         trs.append(
             f"<tr><td>{i}</td><td>{e(str(title))}</td><td>{e(str(dim))}</td>"
             f"<td>{e(verdict)}</td><td>{e(str(score))}</td><td>{e(_fmt_dur(r.duration_ms))}</td></tr>")
+    from app.services.eval_experiment import samples_with_missing, trial_metrics
+    from app.services.eval_metrics import outcome_metrics
+    samples, manifest = samples_with_missing(db, task.last_batch_id, task.project_id)
+    metrics = outcome_metrics(samples)
+    overview = (f"<h2>覆盖率与稳定性</h2><p>有效样本通过率 {e(str(metrics['pass_rate'] if metrics['pass_rate'] is not None else '—'))}% · "
+                f"判定覆盖率 {e(str(metrics['coverage_rate']))}% · 已确认成功占比 {e(str(metrics['confirmed_success_rate']))}%</p>"
+                f"<p>计划 {metrics['total']} 条；配置错误 {metrics['config_errors']} 条；执行错误 {metrics['execution_errors']} 条；判定错误或证据不足 {metrics['judge_errors']} 条。</p>")
+    if manifest:
+        overview += f"<p>题库版本 {e(manifest['dataset_hash'])}；每题独立执行 {manifest['trial_count']} 次。</p>"
+        if manifest['trial_count'] > 1:
+            overview += '<table><tr><th>产品/组</th><th>题目等权成功率</th><th>判定覆盖率</th><th>题目等权均分</th></tr>'
+            for item in trial_metrics(samples)['by_engine_variant']:
+                overview += f"<tr><td>{e(item['engine'])} / {e(item['variant'])}</td><td>{item['success_rate']}%</td><td>{item['coverage_rate']}%</td><td>{e(str(item['mean_score'] if item['mean_score'] is not None else '—'))}</td></tr>"
+            overview += '</table>'
     return (
-        '<h2>逐条执行明细</h2>'
+        overview + '<h2>逐条执行明细</h2>'
         '<table><thead><tr><th>#</th><th>用例</th><th>维度</th><th>结果</th><th>评分</th><th>耗时</th></tr></thead>'
         '<tbody>' + "".join(trs) + '</tbody></table>'
     )

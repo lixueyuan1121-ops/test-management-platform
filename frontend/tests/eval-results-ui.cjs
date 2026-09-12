@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
     page.on('pageerror', error => errors.push(error.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'mock-local-only'));
     const rows = [
-      { run_id: 101, eval_query_id: 1, status: 'judged', verdict: 'pass', trace: '/uploads/test-trace.json', verdict_reason: '已完成文件分析', reported_duration: 65, verdict_dims: { tools_ok: { pass: null, note: '缺少完整过程证据', evidence_quote: '返回了文件摘要' } }, payload: { title: '文件分析', prompt: '分析上传的文件', expected: '输出文件摘要', conversation_group: 'g1', turn_index: 0 } },
+      { run_id: 101, eval_query_id: 1, status: 'judged', verdict: 'pass', trace: '/uploads/test-trace.json', judgment_id: 71, verdict_reason: '已完成文件分析', reported_duration: 65, verdict_dims: { tools_ok: { pass: null, note: '缺少完整过程证据', evidence_quote: '返回了文件摘要' } }, payload: { title: '文件分析', prompt: '分析上传的文件', expected: '输出文件摘要', conversation_group: 'g1', turn_index: 0 } },
       { run_id: 102, eval_query_id: 2, status: 'judged', verdict: 'fail', is_abnormal: true, payload: { title: '补充分析', prompt: '补充对比结果', conversation_group: 'g1', turn_index: 1 } },
       { run_id: 103, eval_query_id: 3, status: 'done', payload: { title: '生成报告', prompt: '生成测试报告' } },
       { run_id: 104, eval_query_id: 4, status: 'failed', trace: 'https://untrusted.invalid/uploads/data.json', reason: '测试错误', payload: { title: '失败用例' } },
@@ -74,7 +74,7 @@ const assert = require('node:assert/strict');
     await inspector.getByRole('button', { name: '认可判定', exact: true }).click();
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await page.getByText('已标注：已认可判定', { exact: true }).waitFor();
-    assert.deepEqual(writes.pop(), { path: '/api/eval-judge/101/review', body: { mark: 'confirmed', note: '' } });
+    assert.deepEqual(writes.pop(), { path: '/api/eval-judge/101/review', body: { mark: 'confirmed', note: '', judgment_id: 71 } });
     assert.equal(traceRequests, 0);
     await inspector.getByRole('tab', { name: '提问与回答' }).click();
     await inspector.getByText('输出文件摘要', { exact: true }).waitFor();

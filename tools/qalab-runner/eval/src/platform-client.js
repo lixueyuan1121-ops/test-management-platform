@@ -83,6 +83,16 @@ class PlatformClient {
     return this._api('POST', '/api/eval-devices/report', { runner: this.runnerId, devices: devices || [] });
   }
   // trace 走 multipart(与截图同理);multipart 不手设 Content-Type,让 form-data 自动补 boundary。
+  async uploadArtifact(runId, name, data) {
+    const form = new FormData();
+    form.append('file', data, { filename: name, contentType: 'application/octet-stream' });
+    const res = await fetch(`${this.baseUrl}/api/eval-queue/${runId}/artifacts?${this._executionQuery(runId)}`,
+      { method: 'POST', headers: { Authorization: `Bearer ${this.token}` }, body: form, timeout: 30000 });
+    const env = await res.json();
+    if (!res.ok || ![undefined, 0, 200, 201].includes(env.code)) throw new Error(env.msg || env.detail || `产物上传 HTTP ${res.status}`);
+    return env.data;
+  }
+
   async uploadTrace(runId, traceObj) {
     const form = new FormData();
     form.append('file', Buffer.from(JSON.stringify(traceObj), 'utf-8'), {

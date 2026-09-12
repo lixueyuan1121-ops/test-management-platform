@@ -39,6 +39,7 @@ def _to_query_out(q: EvalQuery) -> dict:
         "prompt": q.prompt,
         "dimension": q.dimension,
         "expected": q.expected,
+        "verification_rules": json.loads(q.verification_rules) if q.verification_rules else [],
         "attachments": json.loads(q.attachments) if q.attachments else [],
         "conversation_group": q.conversation_group,
         "turn_index": q.turn_index,
@@ -227,6 +228,9 @@ def list_eval_engines(user: User = Depends(get_current_user)):
     return ok([{"engine": k, **v} for k, v in EVAL_ENGINES.items()])
 
 
+from app.services.eval_artifacts import ArtifactRule, rules_json
+
+
 class EvalQueryManualIn(BaseModel):
     """手工录入/编辑一条测评用例(测评任务的「定制用例」入口;ai_task_id 为空区别于 AI 生成)。"""
     project_id: int
@@ -234,6 +238,7 @@ class EvalQueryManualIn(BaseModel):
     prompt: str = Field(..., min_length=1)
     dimension: str | None = None
     expected: str | None = None
+    verification_rules: list[ArtifactRule] | None = Field(None, max_length=20)
     conversation_group: str | None = Field(None, max_length=64)
     turn_index: int = 0
 
@@ -243,6 +248,7 @@ class EvalQueryUpdateIn(BaseModel):
     prompt: str | None = Field(None, min_length=1)
     dimension: str | None = None
     expected: str | None = None
+    verification_rules: list[ArtifactRule] | None = Field(None, max_length=20)
     conversation_group: str | None = Field(None, max_length=64)
     turn_index: int | None = None
 
@@ -262,6 +268,7 @@ def create_eval_query_manual(body: EvalQueryManualIn, db: Session = Depends(get_
         prompt=body.prompt.strip(),
         dimension=_norm_dimension(body.dimension),
         expected=(body.expected or "").strip() or None,
+        verification_rules=rules_json(body.verification_rules),
         conversation_group=(body.conversation_group or "").strip() or None,
         turn_index=max(0, body.turn_index or 0),
         provider="manual",
@@ -428,6 +435,7 @@ def expand_eval_query(body: EvalQueryExpandIn, db: Session = Depends(get_db), us
             dimension=base.dimension,
             # 附件引用原样继承，不对文件名、URL 或 token 做占位符替换。
             attachments=base.attachments,
+            verification_rules=base.verification_rules,
             turn_index=0,  # 变体各自单轮成组(多轮模板展开语义复杂,不支持;组名建完补)
             provider="template",
         )
@@ -496,6 +504,8 @@ def update_eval_query(query_id: int, body: EvalQueryUpdateIn, db: Session = Depe
         q.dimension = _norm_dimension(body.dimension)
     if body.expected is not None:
         q.expected = body.expected.strip() or None
+    if "verification_rules" in body.model_fields_set:
+        q.verification_rules = rules_json(body.verification_rules)
     if body.conversation_group is not None:
         q.conversation_group = body.conversation_group.strip() or None
     if body.turn_index is not None:

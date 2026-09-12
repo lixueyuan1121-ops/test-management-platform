@@ -12,6 +12,11 @@ EVAL_ENGINES: dict[str, dict] = {
 DEFAULT_ENGINE = "namiwork"
 
 
+def validate_dialog_options(engine: str, options: dict) -> None:
+    if engine == "workbuddy" and any(options.get(k) for k in ("chatMode", "thinkingDepth")):
+        raise ValueError("WorkBuddy 暂不支持指定对话模式或思考深度，请清空这两项后执行")
+
+
 def is_valid_engine(engine: str) -> bool:
     return engine in EVAL_ENGINES
 

@@ -546,6 +546,23 @@ def ensure_eval_run_history_table(engine=None) -> None:
         column_type = "LONGTEXT" if eng.dialect.name == "mysql" else "TEXT"
         with eng.begin() as conn:
             conn.execute(text(f"ALTER TABLE eval_run_history ADD COLUMN raw_message {column_type} NULL"))
+    from app.models.ai_eval import EvalJudgment, EvalJudgmentReview, EvalExperiment, EvalArtifact
+    EvalJudgment.__table__.create(bind=eng, checkfirst=True)
+    EvalJudgmentReview.__table__.create(bind=eng, checkfirst=True)
+    EvalExperiment.__table__.create(bind=eng, checkfirst=True)
+    EvalArtifact.__table__.create(bind=eng, checkfirst=True)
+    if "verification_rules" not in {c["name"] for c in inspect(eng).get_columns("eval_query")}:
+        with eng.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_query ADD COLUMN verification_rules TEXT NULL"))
+    if eng.dialect.name == "mysql":
+        for table, name in (("eval_run", "payload"), ("eval_query", "verification_rules")):
+            column = next(c for c in inspect(eng).get_columns(table) if c["name"] == name)
+            if "LONGTEXT" not in str(column["type"]).upper():
+                with eng.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN {name} LONGTEXT NULL"))
+    if "judgment_id" not in {c["name"] for c in inspect(eng).get_columns("eval_run")}:
+        with eng.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN judgment_id INTEGER NULL"))
 
 
 def ensure_eval_task_status_enum() -> None:

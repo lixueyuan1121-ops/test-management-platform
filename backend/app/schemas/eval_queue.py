@@ -9,6 +9,7 @@ class EvalEnqueueIn(BaseModel):
     eval_query_ids: list[int] = Field(..., min_length=1)
     # 下发时统一指定的对话选项 {model?,chatMode?,thinkingDepth?}；None/空 = 用题面存量（通常为空=客户端默认）
     dialog_options: dict | None = None
+    trial_count: int = Field(1, ge=1, le=5, strict=True)
 
 
 class EvalRetryFailedIn(BaseModel):

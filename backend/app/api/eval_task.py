@@ -58,12 +58,20 @@ def _sanitize_html(html: str) -> str:
 
 # ─── 序列化 ────────────────────────────────────────────────────────────────────
 
-def _parse_bean(raw) -> int:
-    """算力豆变动字符串 → 整数(容错)。形如 "-12"/"+5"/"12"/None/""/"—" → -12/5/12/0/0/0。"""
-    if not raw:
-        return 0
-    m = re.search(r"-?\d+", str(raw).replace("+", ""))
-    return int(m.group()) if m else 0
+def _parse_bean(raw):
+    """Decimal cost; missing is unknown, while signed legacy values stay unchanged."""
+    from decimal import Decimal, InvalidOperation
+    if raw is None or isinstance(raw, bool):
+        return None
+    text = str(raw).strip().replace(",", "").replace("，", "")
+    match = re.fullmatch(r"([+-]?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*算力豆)?", text)
+    if not match:
+        return None
+    try:
+        value = Decimal(match.group(1))
+        return value if value.is_finite() else None
+    except InvalidOperation:
+        return None
 
 
 def _parse_seconds(raw) -> int:
@@ -113,9 +121,24 @@ def _batch_totals(db: Session, task: EvalTask, batch_id: str | None = None) -> d
             .filter(EvalRun.eval_task_id == task.id,
                     EvalRun.batch_id == bid).all())
     total_ms = sum((d or 0) for d, _, _ in rows)
-    total_bean = sum(_parse_bean(b) for _, b, _ in rows)
+    beans = [_parse_bean(b) for _, b, _ in rows]
+    known = [b for b in beans if b is not None]
+    total_bean = float(sum(known)) if known else None
     total_reported_s = sum(_parse_seconds(rd) for _, _, rd in rows)
+    from app.models.ai_eval import EvalRunHistory
+    retries = db.query(EvalRunHistory.bean_cost, EvalRunHistory.duration_ms).join(
+        EvalRun, EvalRun.id == EvalRunHistory.eval_run_id).filter(
+        EvalRun.eval_task_id == task.id, EvalRun.batch_id == bid).all()
+    retry_beans = [_parse_bean(b) for b, _ in retries]
+    known_retries = [b for b in retry_beans if b is not None]
+    actual_known = known + known_retries
     return {"total_duration_ms": total_ms, "total_bean_cost": total_bean,
+            "retry_bean_cost": float(sum(known_retries)) if known_retries else (None if retries else 0),
+            "total_actual_bean_cost": float(sum(actual_known)) if actual_known else None,
+            "total_actual_duration_ms": total_ms + sum(d or 0 for _, d in retries),
+            "actual_bean_coverage_rate": round(len(actual_known) / (len(rows) + len(retries)) * 100, 1) if rows or retries else None,
+            "bean_known_count": len(known), "bean_missing_count": len(rows) - len(known),
+            "bean_coverage_rate": round(len(known) / len(rows) * 100, 1) if rows else None,
             "total_reported_duration_s": total_reported_s}
 
 
@@ -246,6 +269,7 @@ def delete_task(task_id: int, db: Session = Depends(get_db), user: User = Depend
 # ─── 执行(下发到执行机) ────────────────────────────────────────────────────────
 
 class EvalTaskRunIn(BaseModel):
+    trial_count: int = Field(1, ge=1, le=5, strict=True)
     # runner 单台;或 runners 多台分片并行;或 "auto" 自动铺到所有在线执行机。三选一(见 _resolve_runners)。
     runner: str | None = Field(None, max_length=64)
     runners: list[str] | None = Field(None, max_length=32)
@@ -334,7 +358,7 @@ def assign_groups_balanced(group_weights: list[tuple[str, int]], runners: list[s
 
 def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list[str],
                        target_device: str | None, opts: dict, opts_b: dict | None,
-                       user_id: int | None) -> tuple[list[int], str]:
+                       user_id: int | None, trial_count: int = 1) -> tuple[list[int], str]:
     """下发任务内全部用例(手动执行端点与定时 job 共用;opts_b is not None 即 A/B 对比)。
 
     target_engines:被测产品集合(多产品横评)。对每题按 engine × A/B variant 各 fan-out 一条 run。
@@ -355,12 +379,17 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
     if task is None:
         raise ValueError("测评任务不存在")
     engines = normalize_engines(target_engines)
+    if type(trial_count) is not int or not 1 <= trial_count <= 5:
+        raise ValueError("独立执行次数须为1～5")
 
     qids = json.loads(task.query_ids) if task.query_ids else []
     if not qids:
         raise ValueError("任务内还没有用例,先添加用例再执行")
     qs = db.query(EvalQuery).filter(EvalQuery.id.in_(qids)).all()
     found = {q.id: q for q in qs}
+    if any(q.project_id != task.project_id for q in qs):
+        raise ValueError("任务包含其他项目的用例")
+    qids = list(dict.fromkeys(qids))
     missing = [qid for qid in qids if qid not in found]
     if missing:
         raise ValueError(f"用例 {missing} 已不存在,请编辑任务移除")
@@ -383,7 +412,7 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
 
     batch_id = _new_batch_id()
     created = []
-    # 对比模式(opts_b 非 None 即启用,B 三项全空=B 用客户端默认也合法):每题下发 A/B 两条 run。
+    # B 显式空字典表示保持执行时客户端配置，不继承题目保存的选项。
     variants = [("A", opts), ("B", opts_b)] if opts_b is not None else [(None, opts)]
 
     # 按 (engine, 会话组) 规划:group_key 带 engine 前缀作分机 key(payload 内 conversation_group 不含前缀,
@@ -397,14 +426,20 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
         group_weight.setdefault(engine, {}); group_order.setdefault(engine, [])
         for qid in qids:
             q = found[qid]
-            for tag, vopts in variants:
-                payload = _payload_of(q, vopts)
+            for tag, vopts, trial in [(tag, opt, trial) for tag, opt in variants for trial in range(1, trial_count + 1)]:
+                payload = _payload_of(q, vopts if tag == "B" else (vopts or None))
+                from app.services.eval_engines import validate_dialog_options
+                validate_dialog_options(engine, payload.get("dialog_options") or {})
                 payload["conversation_group"] = conversation_groups[qid]
+                payload["source_conversation_group"] = conversation_groups[qid]
+                payload["trial_index"], payload["trial_count"] = trial, trial_count
+                if trial_count > 1 and payload["conversation_group"]:
+                    payload["conversation_group"] = json.dumps(["trial", trial, payload["conversation_group"]], ensure_ascii=False)
                 if tag:
                     payload["compare_group"] = tag
                     if payload.get("conversation_group"):
                         payload["conversation_group"] = f"{payload['conversation_group']}#{tag}"
-                base_group = payload.get("conversation_group") or f"q{qid}#{tag or ''}"
+                base_group = payload.get("conversation_group") or f"q{qid}#{tag or ''}#trial{trial}"
                 group_key = f"{engine}::{base_group}"     # engine 前缀:跨产品同名组隔离(仅分机用)
                 planned.append((engine, group_key, payload, q))
                 if group_key not in group_weight[engine]:
@@ -435,6 +470,8 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
             enqueued_by=user_id,
         )
         db.add(row); db.flush(); created.append(row.id)
+    from app.services.eval_experiment import freeze
+    freeze(db, task.project_id, batch_id, qs, created, trial_count)
     from app.services.eval_summary_store import batch_summary, SUMMARY_FIELDS
     if task.last_batch_id and task.summary_status:
         batch_summary(db, task, task.last_batch_id, create=True)
@@ -482,12 +519,13 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
         else:
             runner_arg = runner_list = _resolve_runners(db, body.runner, body.runners)
         created, batch_id = dispatch_task_runs(
-            db, task, runner_arg, engines, body.target_device, opts, opts_b, user.id)
+            db, task, runner_arg, engines, body.target_device, opts, opts_b, user.id, trial_count=body.trial_count)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     # 记录本次执行的对话选项(列表展示+下次执行回填);对比模式把 B 组挂在 compareB 键下。
     # 没指定则清空=默认,始终反映最近一次执行
     stored = dict(opts)
+    stored["trial_count"] = body.trial_count
     if body.dialog_options_b is not None:
         stored["compareB"] = opts_b
     task.dialog_options = json.dumps(stored, ensure_ascii=False) if stored else None
@@ -660,7 +698,12 @@ def task_runs(task_id: int, batch_id: str | None = Query(None),
         d = _run_out(r)
         d["dimension"] = (d.get("payload") or {}).get("dimension", dim_map.get(r.eval_query_id))
         out.append(d)
-    return ok({"task": _to_out(task, db, bid), "runs": out})
+    from app.services.eval_experiment import samples_with_missing, trial_metrics
+    from app.services.eval_metrics import outcome_metrics
+    samples, manifest = samples_with_missing(db, bid, task.project_id) if bid else ([], None)
+    return ok({"task": _to_out(task, db, bid), "runs": out,
+        "experiment": {"manifest": manifest, "metrics": outcome_metrics(samples),
+                       "trial_metrics": trial_metrics(samples)}})
 
 
 @router.get("/{task_id}/batches")
@@ -731,7 +774,10 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
         q = qmap.get(r.eval_query_id)
         cg = payload.get("compare_group")
         items.append({
-            "title": (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
+            "trial_index": payload.get("trial_index", 1),
+            "trial_count": payload.get("trial_count", 1),
+            "case_key": payload.get("source_conversation_group") or payload.get("eval_query_id") or r.eval_query_id,
+            "title": (f"[第{payload.get('trial_index')}次执行] " if payload.get("trial_count", 1) > 1 else "") + (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
             "dimension": payload.get("dimension", q.dimension if q else None),
             "engine": EVAL_ENGINES.get(r.target_engine, {}).get("label") if r.target_engine else None,
             "prompt": payload.get("prompt") or (q.prompt if q else ""),
@@ -824,7 +870,13 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
     # 且释放 db 的读事务——否则单连接(测试 StaticPool)下它与写终态的全新 session 会争同一连接。
     task_name = task.name
     task_desc = task.description or ""
+    from app.services.eval_experiment import samples_with_missing, trial_metrics
+    from app.services.eval_metrics import outcome_metrics
+    all_samples, manifest = samples_with_missing(db, batch_id, task.project_id)
+    aggregate = {"metrics": outcome_metrics(all_samples), "trial_metrics": trial_metrics(all_samples),
+                 "dataset_hash": (manifest or {}).get("dataset_hash")}
     prompt = claude_runner.build_eval_task_summary_prompt(task_name, task_desc, items)
+    prompt += "\n以下为平台按完整计划分母计算的权威统计；不得用已判样本通过率代替整体成功率。重复执行先题内再题间等权聚合，重试不是新增题目。\n" + json.dumps(aggregate, ensure_ascii=False)
     try:
         db.rollback()
     except Exception:  # noqa: BLE001
