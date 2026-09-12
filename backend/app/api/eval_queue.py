@@ -16,9 +16,10 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
-from app.core.enums import EvalDeviceKind, EvalRunStatus, ProjectRole
+from app.core.enums import EvalDeviceKind, EvalRunStatus, EvalTaskStatus, ProjectRole
 from app.db.session import get_db
 from app.models import EvalQuery, EvalRun, User
+from app.models.ai_eval import EvalRunHistory, EvalTask
 from app.schemas.common import ok
 from app.schemas.eval_queue import EvalEnqueueIn, EvalReportIn, EvalRetryFailedIn
 
@@ -59,6 +60,7 @@ def _payload_of(q: EvalQuery, dialog_options: dict | None = None) -> dict:
         "title": q.title,
         "prompt": q.prompt,
         "dimension": q.dimension,
+        "expected": q.expected,
         "attachments": json.loads(q.attachments) if q.attachments else [],
         "dialog_options": dialog_options if dialog_options
         else (json.loads(q.dialog_options) if q.dialog_options else {}),
@@ -476,10 +478,13 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
     except (json.JSONDecodeError, ValueError):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="轨迹须为合法 JSON")
     os.makedirs(_TRACE_ROOT, exist_ok=True)
-    # 重传前删该 run 的旧 trace 文件(随机名会产生多份,吞异常)
+    # 只清理未被历史快照引用的文件，重跑后仍能查阅旧证据。
+    archived = {os.path.basename(urlsplit(h.trace).path) for h in
+                db.query(EvalRunHistory.trace).filter(EvalRunHistory.eval_run_id == run_id).all()
+                if h.trace and h.trace.startswith("/uploads/eval_traces/")}
     try:
         for name in os.listdir(_TRACE_ROOT):
-            if name.startswith(f"{run_id}-"):
+            if name.startswith(f"{run_id}-") and name not in archived:
                 try:
                     os.remove(os.path.join(_TRACE_ROOT, name))
                 except OSError:
@@ -496,7 +501,7 @@ async def upload_trace(run_id: int, file: UploadFile = File(...), runner: str = 
 def reset_run_for_retry(r: EvalRun) -> None:
     """failed run 原地复位回 pending(重跑公共逻辑,任务端点与通用端点共用):
     清空全部回填与判定字段,payload 快照保留——仍按下发那一刻的配置重跑。调用方负责 commit。
-    (历史按「执行批次」保留:每次执行任务=新 batch,旧批次 run 都留库;见 /eval-tasks/{id}/batches。)"""
+    调用前由 reset_conversation_for_retry 归档结果并使综合评价失效。"""
     r.status = EvalRunStatus.pending
     r.started_at = None; r.heartbeat_at = None; r.claim_token = None
     r.finished_at = None; r.runner_device_id = None
@@ -510,20 +515,41 @@ def reset_run_for_retry(r: EvalRun) -> None:
 
 
 def reset_conversation_for_retry(db: Session, r: EvalRun) -> list[EvalRun]:
+    # 与流水线抢占/综合评价写回采用相同的任务锁顺序。
+    task = db.query(EvalTask).filter_by(id=r.eval_task_id).with_for_update().populate_existing().first() if r.eval_task_id else None
+    if task and task.last_batch_id == r.batch_id and task.pipeline_status == "running":
+        raise HTTPException(409, detail="本批次仍在自动判定或生成评价，请完成后重试")
     group = _group_rows(db, r)
-    if any(x.status in (EvalRunStatus.running, EvalRunStatus.cancelled) for x in group):
+    group = db.query(EvalRun).filter(EvalRun.id.in_([x.id for x in group])).order_by(
+        EvalRun.id).with_for_update().populate_existing().all()
+    if not any(x.status == EvalRunStatus.failed for x in group):
+        raise HTTPException(409, detail="会话已被重试或状态已变化，请刷新后重试")
+    if any(x.status in (EvalRunStatus.running, EvalRunStatus.cancelled, EvalRunStatus.judging) for x in group):
         raise HTTPException(409, detail="会话仍在执行或已停止,不能重试其中一轮")
     # A failed later turn cannot resume context in a fresh desktop session.
     # Retry the complete conversation, including previously completed turns.
     changed = db.query(EvalRun).filter(
         EvalRun.id.in_([x.id for x in group]),
-        EvalRun.status.in_([EvalRunStatus.pending, EvalRunStatus.done, EvalRunStatus.failed]),
+        EvalRun.status.in_([EvalRunStatus.pending, EvalRunStatus.done, EvalRunStatus.failed, EvalRunStatus.judged]),
     ).update({EvalRun.status: EvalRunStatus.pending}, synchronize_session=False)
     if changed != len(group):
         db.rollback()
         raise HTTPException(409, detail="会话状态已变化,请刷新后重试")
     for member in group:
+        if member.status != EvalRunStatus.pending:
+            attempt = (db.query(func.max(EvalRunHistory.attempt)).filter_by(eval_run_id=member.id).scalar() or 0) + 1
+            fields = {c.name: getattr(member, c.name) for c in EvalRunHistory.__table__.columns
+                      if c.name not in ("id", "eval_run_id", "attempt", "archived_at")}
+            fields["status"] = getattr(member.status, "value", member.status)
+            db.add(EvalRunHistory(eval_run_id=member.id, attempt=attempt, **fields))
         reset_run_for_retry(member)
+    if task:
+        from app.services.eval_summary_store import invalidate_summary
+        invalidate_summary(db, task, r.batch_id)
+        if task.last_batch_id == r.batch_id:
+            task.status = EvalTaskStatus.running
+            task.pipeline_status = None
+            task.pipeline_at = None
     return group
 
 
@@ -540,6 +566,8 @@ def retry_failed_batch(body: EvalRetryFailedIn, db: Session = Depends(get_db), u
     rows = q.all()
     retried = {}
     for r in rows:
+        if r.id in retried:
+            continue
         for member in reset_conversation_for_retry(db, r):
             retried[member.id] = member
     db.commit()
@@ -559,6 +587,18 @@ def retry_run_any(run_id: int, db: Session = Depends(get_db), user: User = Depen
     reset_conversation_for_retry(db, r)
     db.commit(); db.refresh(r)
     return ok(_to_out(r))
+
+
+@router.get("/{run_id}/attempts")
+def run_attempts(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """重试前的完整结果快照，按最近一次归档优先返回。"""
+    run = db.get(EvalRun, run_id)
+    if not run:
+        raise HTTPException(404, detail="执行项不存在")
+    assert_project_role(db, user, run.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    rows = db.query(EvalRunHistory).filter_by(eval_run_id=run_id).order_by(EvalRunHistory.attempt.desc()).all()
+    return ok([{c.name: (getattr(row, c.name).isoformat() if isinstance(getattr(row, c.name), datetime)
+                         else getattr(row, c.name)) for c in EvalRunHistory.__table__.columns} for row in rows])
 
 
 @router.get("/trend")
@@ -642,7 +682,7 @@ def list_history(project_id: int = Query(...), limit: int = Query(100, le=500),
     # 维度:优先 payload 快照(下发那一刻);老 run 的快照没有 dimension → 批量回查 eval_query 补上
     out = [_to_out(r) for r in rows]
     need = [(i, rows[i].eval_query_id) for i, d in enumerate(out)
-            if not (d.get("payload") or {}).get("dimension") and rows[i].eval_query_id]
+            if "dimension" not in (d.get("payload") or {}) and rows[i].eval_query_id]
     dim_map = {}
     if need:
         ids = list({qid for _, qid in need})

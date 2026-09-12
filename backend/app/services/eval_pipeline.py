@@ -63,9 +63,13 @@ def on_batch_maybe_done(db: Session, batch_id: str) -> bool:
     cond = EvalTask.pipeline_status.is_(None)
     if claimable_vals:
         cond = cond | EvalTask.pipeline_status.in_(claimable_vals)
+    unfinished = db.query(EvalRun.id).filter(
+        EvalRun.eval_task_id == task.id, EvalRun.batch_id == batch_id,
+        EvalRun.status.in_([EvalRunStatus.pending, EvalRunStatus.running]),
+    ).exists()
     res = db.execute(
         update(EvalTask)
-        .where(EvalTask.id == task.id, cond)
+        .where(EvalTask.id == task.id, EvalTask.last_batch_id == batch_id, cond, ~unfinished)
         .values(pipeline_status="running")
     )
     db.commit()
@@ -100,10 +104,10 @@ def _run_pipeline_thread(task_id: int, project_id: int, task_name: str, batch_id
         # 兜底收口:无论编排如何结束,都用一条【全新 session】把可能残留的 running 落 failed。
         # 用新连接(而非编排里那条可能已随长跑失效的连接)是关键——pool_pre_ping 取连接时探活,
         # 确保这步一定写得进库。正常结束时门闩已是 done、综合评价已是 done/failed,此步无改动(幂等)。
-        _reconcile_stuck_status(SessionLocal, task_id)
+        _reconcile_stuck_status(SessionLocal, task_id, batch_id)
 
 
-def _reconcile_stuck_status(session_factory, task_id: int) -> None:
+def _reconcile_stuck_status(session_factory, task_id: int, batch_id: str | None = None) -> None:
     """用全新 session 把某任务残留的 pipeline_status/summary_status='running' 收口为 failed。幂等、吞异常。"""
     try:
         db = session_factory()
@@ -111,14 +115,20 @@ def _reconcile_stuck_status(session_factory, task_id: int) -> None:
         logger.exception("一条龙兜底收口开 session 失败 task=%s", task_id)
         return
     try:
-        t = db.get(EvalTask, task_id)
-        if t is None:
+        t = db.query(EvalTask).filter_by(id=task_id).with_for_update().populate_existing().first()
+        if t is None or (batch_id is not None and t.last_batch_id != batch_id):
             return
         changed = False
         if t.pipeline_status == "running":
             t.pipeline_status = "failed"; changed = True
         if t.summary_status == "running":
             t.summary_status = "failed"; changed = True
+        from app.services.eval_summary_store import batch_summary
+        row = batch_summary(db, t, batch_id or t.last_batch_id)
+        if row and row.summary_status == "running":
+            row.summary_status = "failed"
+            row.generation_token = None
+            changed = True
         if changed:
             db.commit()
             logger.info("一条龙兜底收口残留 running task=%s", task_id)
@@ -145,8 +155,11 @@ def reap_stale_running_on_startup(db: Session) -> dict:
                     .values(summary_status="failed"))
     r2 = db.execute(update(EvalTask).where(EvalTask.pipeline_status == "running")
                     .values(pipeline_status="failed"))
+    from app.models.ai_eval import EvalBatchSummary
+    r3 = db.execute(update(EvalBatchSummary).where(EvalBatchSummary.summary_status == "running")
+                    .values(summary_status="failed", generation_token=None))
     n_sum, n_pipe = r1.rowcount or 0, r2.rowcount or 0
-    if n_sum or n_pipe:
+    if n_sum or n_pipe or r3.rowcount:
         db.commit()
         logger.info("启动收口僵尸 running:综合评价 %d 条、一条龙 %d 条", n_sum, n_pipe)
     else:
@@ -310,7 +323,7 @@ def _summary_with_retry(session_factory, task_id, batch_id):
     return res
 
 
-def _summary_share_url(session_factory, task_id) -> str | None:
+def _summary_share_url(session_factory, task_id, batch_id=None) -> str | None:
     """综合评价在线链接:优先 nami 公网直链(部署整页 HTML),失败/未配则回落自托管 /r/<code>。
 
     - nami:把 render_report_page 的完整 HTML 上传 n.cn → 公网 …/index.html 直链,任何人可点开
@@ -327,7 +340,9 @@ def _summary_share_url(session_factory, task_id) -> str | None:
         t = db.get(EvalTask, task_id)
         if t is None:
             return None
-        code = t.summary_share_code
+        from app.services.eval_summary_store import summary_view
+        t = summary_view(db, t, batch_id)
+        code = t.summary_share_code if t.summary_status == "done" else None
         page_html = render_report_page(t, db) if (t.summary_status == "done" and t.summary_html) else None
     finally:
         db.close()
@@ -370,6 +385,14 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
 
     COLOR_BLUE, COLOR_GREEN = "blue", "green"
 
+    def is_current():
+        with session_factory() as check:
+            task = check.get(EvalTask, task_id)
+            return bool(task and task.last_batch_id == batch_id)
+
+    if not is_current():
+        return
+
     # 步骤 1:对话已完成(钩子触发即代表所有 run 已达终态)
     db = session_factory()
     try:
@@ -395,9 +418,12 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
     finally:
         db.close()
 
+    if not is_current():
+        return
+
     # 步骤 3:综合评价(无头,短命 session,繁忙退避重试);成功则生成在线短链
     summary_res = _summary_with_retry(session_factory, task_id, batch_id)
-    share_url = _summary_share_url(session_factory, task_id) if summary_res.get("ok") else None
+    share_url = _summary_share_url(session_factory, task_id, batch_id) if summary_res.get("ok") else None
     if summary_res.get("ok"):
         lines = ["综合评价已生成,可在平台查看 HTML 报告。"]
         if share_url:
@@ -407,6 +433,9 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
         why = summary_res.get("reason") or summary_res.get("error") or "未知原因"
         notify.notify_eval_pipeline(task_name, project_id, "⚠️ 综合评价未生成",
                                     [f"原因:{why}"], "orange")
+
+    if not is_current():
+        return
 
     # 步骤 4:结果摘要
     db = session_factory()
@@ -436,11 +465,9 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
         notify.notify_eval_pipeline(task_name, project_id, "🎉 测评任务执行完毕", lines, COLOR_GREEN)
 
         # 落门闩 done
-        t2 = db.get(EvalTask, task_id)
-        if t2:
-            t2.pipeline_status = "done"
-            t2.pipeline_at = datetime.now()
-            db.commit()
+        db.execute(update(EvalTask).where(EvalTask.id == task_id, EvalTask.last_batch_id == batch_id)
+                   .values(pipeline_status="done", pipeline_at=datetime.now()))
+        db.commit()
     finally:
         db.close()
     logger.info("测评一条龙完成 task=%s batch=%s", task_id, batch_id)

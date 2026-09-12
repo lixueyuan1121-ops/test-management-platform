@@ -63,7 +63,7 @@ def judge_batch(body: JudgeBatchIn, db: Session = Depends(get_db), user: User = 
     job_ids, skipped = [], []
     for r in rows:
         st = getattr(r.status, "value", r.status)
-        if st in ("pending", "running", "cancelled"):
+        if st not in ("done", "judged"):
             skipped.append({"run_id": r.id, "reason": f"状态 {st},不判定"})
             continue
         job = ai_jobs.enqueue(db, "eval_judge", provider=body.provider, project_id=body.project_id,
@@ -135,11 +135,8 @@ def _batch_judge_results(db: Session, project_id: int, run_ids: list[int] | None
     results = []
     for r in rows:
         st = getattr(r.status, "value", r.status)
-        if st in ("pending", "running"):
-            results.append({"run_id": r.id, "skipped": True, "reason": f"状态 {st},尚未执行完成"})
-            continue
-        if st == "cancelled":
-            results.append({"run_id": r.id, "skipped": True, "reason": "状态 cancelled,已取消不判定"})
+        if st not in ("done", "judged"):
+            results.append({"run_id": r.id, "skipped": True, "reason": f"状态 {st},不判定"})
             continue
         try:
             res = eval_judge.judge_run(db, r, provider=provider, votes=votes)

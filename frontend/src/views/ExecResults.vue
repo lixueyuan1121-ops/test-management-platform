@@ -197,6 +197,7 @@
 </template>
 
 <script setup>
+import { execResultBatches } from '@/utils/execResultBatches'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 import { ref, computed, onMounted } from 'vue'
@@ -255,41 +256,7 @@ const hasReport = (row) => Array.isArray(row.report) && row.report.length > 0
 // 重试链聚合:被自动重试覆盖的原始行(id 出现在他行 retry_of)标 _superseded,
 // 展示保留(留痕)但**不计入**批次汇总——与后端批次/门禁/质量卡同口径。
 const batches = computed(() => {
-  const map = new Map()
-  const supersededIds = new Set(rows.value.map((r) => r.retry_of).filter(Boolean))
-  for (const r of rows.value) {
-    r._superseded = supersededIds.has(r.id)
-    const key = r.batch_id || '__none__'
-    if (!map.has(key)) map.set(key, [])
-    map.get(key).push(r)
-  }
-  const out = []
-  for (const [key, list] of map) {
-    const eff = list.filter((r) => !r._superseded)
-    const passed = eff.filter((r) => r.verdict === 'pass').length
-    const failed = eff.filter((r) => r.verdict === 'fail').length
-    const blocked = eff.filter((r) => r.verdict === 'blocked' || r.status === 'blocked').length
-    const flaky = eff.filter((r) => r.flaky).length
-    const total = eff.length
-    const durSum = list.reduce((n, r) => n + (r.duration_ms || 0), 0)
-    const time = list.reduce((t, r) => {
-      const s = r.updated_at || r.created_at || ''
-      return s > t ? s : t
-    }, '')
-    const fnDenom = passed + failed
-    out.push({
-      id: key,
-      label: key === '__none__' ? '(未分批 · 历史记录)' : `批次 ${key}`,
-      rows: list,
-      total, passed, failed, blocked, flaky,
-      rate: fnDenom ? Math.round((passed / fnDenom) * 100) : 0,
-      runner: [...new Set(list.map((r) => r.runner).filter(Boolean))].join(', ') || '—',
-      durationText: durSum ? (durSum / 1000).toFixed(1) + 's' : '—',
-      time,
-    })
-  }
-  out.sort((a, b) => (a.time < b.time ? 1 : -1))
-  return out
+  return execResultBatches(rows.value)
 })
 
 onMounted(async () => {

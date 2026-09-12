@@ -94,11 +94,16 @@ def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str
     复用 exec_queue 的 payload 快照(_payload_of)/kind 判定/平台校验/批次号——
     保证计划执行与「回归库勾选执行」产出完全同构的 run，runner 侧零改动。
     """
-    from app.api.exec_queue import _check_platform, _kind_of, _new_batch_id, _payload_of
+    from app.api.exec_queue import (
+        _check_platform, _check_capability, _resolve_runner, _dispatch_device_id,
+        _kind_of, _new_batch_id, _payload_of,
+    )
 
     ids = list(dict.fromkeys(case_ids))
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
     found = {c.id: c for c in cases}
+    owner_id = started_by if started_by is not None else plan.created_by
+    auto_cache, resolved, devices = {}, {}, {}
     for cid in ids:
         tc = found.get(cid)
         if tc is None:
@@ -111,7 +116,11 @@ def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str
                 detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
-        _check_platform(runner, tc_platform, db, owner_id=started_by)
+        actual_runner = _resolve_runner(db, runner, tc_platform, auto_cache)
+        _check_platform(actual_runner, tc_platform, db, owner_id=owner_id)
+        _check_capability(actual_runner, db, owner_id=owner_id)
+        resolved[cid] = actual_runner
+        devices[cid] = _dispatch_device_id(db, actual_runner, owner_id)
 
     batch_id = _new_batch_id()
     run_ids = []
@@ -123,7 +132,9 @@ def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str
             task_id=getattr(tc, "task_id", None),
             project_id=tc.project_id,
             batch_id=batch_id,
-            runner=runner,
+            runner=resolved[cid],
+            runner_device_id=devices[cid],
+            auto_reassign=runner == "auto",
             kind=_kind_of(tc),
             status=ExecStatus.pending,
             payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),

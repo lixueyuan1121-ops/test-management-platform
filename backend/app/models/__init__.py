@@ -18,7 +18,7 @@ from app.models.selector import SelectorKey, SelectorScope, ProbeRequest, Select
 from app.models.api_env import ApiEnv
 from app.models.perf import PerfRun
 from app.models.perf_report_set import PerfReportSet
-from app.models.ai_eval import EvalQuery, EvalRun, EvalClientDevice, EvalTask, EvalRunHistory
+from app.models.ai_eval import EvalQuery, EvalRun, EvalClientDevice, EvalTask, EvalRunHistory, EvalBatchSummary
 from app.models.feedback import (
     FeedbackImport, FeedbackCase, FeedbackRegressionSet, FeedbackSetCase, FeedbackRun,
 )
@@ -63,6 +63,7 @@ __all__ = [
     "EvalClientDevice",
     "EvalTask",
     "EvalRunHistory",
+    "EvalBatchSummary",
     "FeedbackImport",
     "FeedbackCase",
     "FeedbackRegressionSet",

@@ -1,6 +1,6 @@
 """综合评价在线短链(匿名只读):把测评任务的 AI 综合评价 HTML 片段渲染成一张独立网页。
 
-- 短链码(summary_share_code)在综合评价 done 时由 ensure_share_code 生成一次并稳定复用;
+- 短链码(summary_share_code)按执行批次生成并稳定复用，兼容旧任务级链接；
   对外 URL = PLATFORM_BASE_URL + /r/<code>(见 notify/pipeline 推链)。
 - GET /r/<code> 无鉴权(匿名可达,便于推推群内直接点开):只暴露已消毒的 summary_html
   (_sanitize_html 已去除脚本/事件属性),不泄露任何其它任务数据;码是 8 字节随机 hex,不可枚举。
@@ -15,14 +15,14 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from app.models.ai_eval import EvalTask
+from app.models.ai_eval import EvalTask, EvalBatchSummary
 
 # 独立 prefix(不挂 /api):短链要短、要像页面 URL。
 router = APIRouter(tags=["eval-report"])
 
 
-def ensure_share_code(db: Session, task: EvalTask) -> str:
-    """给任务分配稳定的综合评价短链码(已有则复用)。调用方负责 commit。
+def ensure_share_code(db: Session, task: EvalTask | EvalBatchSummary) -> str:
+    """给批次报告分配稳定短链码，兼容旧任务(已有则复用)。调用方负责 commit。
 
     码 = 8 字节随机 hex(16 字符,列宽 16),几乎不可能碰撞;真撞了重取。
     """
@@ -32,7 +32,7 @@ def ensure_share_code(db: Session, task: EvalTask) -> str:
         code = secrets.token_hex(8)
         exists = (db.query(EvalTask.id)
                   .filter(EvalTask.summary_share_code == code).first())
-        if not exists:
+        if not exists and not db.query(EvalBatchSummary.id).filter(EvalBatchSummary.summary_share_code == code).first():
             task.summary_share_code = code
             return code
     # 极端连撞:退化用更长的码(仍落 16 列宽内的前缀不可行 → 直接用 token_hex(8),接受一次重试后放弃)
@@ -90,6 +90,9 @@ def render_report_page(task: EvalTask, db: Session | None = None) -> str:
 
     summary 未就绪 → 提示页。db 为 None 时(向后兼容)只渲染评价片段,不查明细。
     """
+    if db is not None and isinstance(task, EvalTask):
+        from app.services.eval_summary_store import summary_view
+        task = summary_view(db, task)
     title = _html.escape(f"测评综合评价 · {task.name or ''}".strip(" ·"))
     if task.summary_status != "done" or not task.summary_html:
         tip = {
@@ -99,9 +102,9 @@ def render_report_page(task: EvalTask, db: Session | None = None) -> str:
         content = f'<div class="tip">{_html.escape(tip)}</div>'
         meta = ""
     else:
-        content = task.summary_html + _detail_table_html(db, task)  # 已消毒片段 + 自生成(已 escape)明细表
+        content = task.summary_html + (getattr(task, "detail_html", None) or _detail_table_html(db, task))  # 已消毒片段 + 自生成(已 escape)明细表
         at = task.summary_at.isoformat(sep=" ", timespec="seconds") if task.summary_at else ""
-        meta = _html.escape(f"生成时间 {at} · 引擎 {task.summary_provider or ''}".strip(" ·"))
+        meta = _html.escape(f"批次 {task.last_batch_id or '—'} · 生成时间 {at} · 引擎 {task.summary_provider or ''}".strip(" ·"))
     return _PAGE_TMPL.format(title=title, meta=meta, content=content)
 
 
@@ -150,7 +153,7 @@ def _detail_table_html(db: Session | None, task: EvalTask) -> str:
             p = {}
         q = qmap.get(r.eval_query_id)
         title = p.get("title") or (q.title if q else f"run#{r.id}")
-        dim = p.get("dimension") or (q.dimension if q else "") or "—"
+        dim = p.get("dimension", q.dimension if q else "") or "—"
         verdict = _VERDICT_LABEL.get(r.verdict, "—")
         score = r.score if r.score is not None else "—"
         trs.append(
@@ -169,8 +172,12 @@ def view_shared_report(code: str):
     from app.db.session import SessionLocal
     db = SessionLocal()
     try:
-        task = (db.query(EvalTask)
-                .filter(EvalTask.summary_share_code == code).first()) if code else None
+        from app.services.eval_summary_store import summary_view
+        summary = db.query(EvalBatchSummary).filter_by(summary_share_code=code).first() if code else None
+        task = db.get(EvalTask, summary.eval_task_id) if summary else (
+            db.query(EvalTask).filter(EvalTask.summary_share_code == code).first() if code else None)
+        if task:
+            task = summary_view(db, task, summary.batch_id if summary else None)
         if not task:
             return HTMLResponse(
                 _PAGE_TMPL.format(title="报告不存在", meta="",

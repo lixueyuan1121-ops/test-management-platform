@@ -32,6 +32,20 @@
         <el-tab-pane label="提问与回答" name="conversation">
           <section v-for="block in conversation" :key="block.label" class="evidence-section"><h3>{{ block.label }}</h3><div class="prose" v-html="renderMd(block.text)"></div></section>
         </el-tab-pane>
+        <el-tab-pane label="重试历史" name="history">
+          <div v-if="historyLoading" class="trace-state" role="status">正在读取重试历史…</div>
+          <div v-else-if="historyError" class="trace-state" role="alert">{{ historyError }}<el-button text type="primary" @click="loadHistory">重新加载</el-button></div>
+          <div v-else-if="!history.length" class="trace-state">暂无重试前的执行记录</div>
+          <el-collapse v-else>
+            <el-collapse-item v-for="attempt in history" :key="attempt.id" :name="attempt.id" :title="`第 ${attempt.attempt} 次执行 · ${attempt.archived_at?.replace('T', ' ') || ''}`">
+              <div class="run-meta"><span>{{ attempt.verdict || attempt.status }}</span><span v-if="attempt.score != null">{{ attempt.score }} / 5 分</span><span v-if="attempt.bean_cost != null">算力豆 {{ attempt.bean_cost }}</span></div>
+              <h4>判定与复核</h4><div class="prose" v-html="renderMd([attempt.verdict_reason || attempt.reason, attempt.review_note].filter(Boolean).join('\n\n'))"></div>
+              <h4>回答</h4><div class="prose" v-html="renderMd(attempt.answer)"></div>
+              <el-link v-if="historyTraceUrl(attempt.trace)" :href="historyTraceUrl(attempt.trace)" target="_blank" rel="noopener noreferrer" type="primary">查看当次采集记录</el-link>
+              <template v-if="attempt.raw_message"><h4>原始 message</h4><pre>{{ pretty(attempt.raw_message) }}</pre></template>
+            </el-collapse-item>
+          </el-collapse>
+        </el-tab-pane>
         <el-tab-pane label="采集记录" name="trace">
           <div v-if="traceLoading" role="status" class="trace-state">正在读取采集记录…</div>
           <div v-else-if="traceError" role="alert" class="trace-state">{{ traceError }}<el-button text type="primary" @click="loadTrace">重新加载</el-button></div>
@@ -64,6 +78,7 @@ import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { Close, Link, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
+import { listEvalRunAttempts } from '@/api'
 
 const props = defineProps({ visible: Boolean, row: Object, title: String })
 defineEmits(['update:visible'])
@@ -72,6 +87,29 @@ const trace = ref(null)
 const traceLoading = ref(false)
 const traceError = ref('')
 let controller
+const history = ref([])
+const historyLoading = ref(false)
+const historyError = ref('')
+let historyRequest = 0
+const historyTraceUrl = source => {
+  if (typeof source !== 'string') return null
+  try {
+    const url = new URL(source, window.location.origin)
+    return url.origin === window.location.origin && url.pathname.startsWith('/uploads/eval_traces/') ? url.href : null
+  } catch { return null }
+}
+async function loadHistory() {
+  const request = ++historyRequest
+  if (!props.visible || !Number.isInteger(props.row?.run_id)) return
+  historyLoading.value = true
+  historyError.value = ''
+  try {
+    const rows = await listEvalRunAttempts(props.row.run_id)
+    if (request === historyRequest) history.value = rows || []
+  } catch {
+    if (request === historyRequest) historyError.value = '重试历史读取失败。'
+  } finally { if (request === historyRequest) historyLoading.value = false }
+}
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 const renderMd = text => DOMPurify.sanitize(md.render(String(text || '暂无内容')))
 const pretty = value => {
@@ -110,14 +148,18 @@ async function loadTrace() {
   } finally { if (!current.signal.aborted) traceLoading.value = false }
 }
 watch(() => [props.visible, props.row?.run_id, props.row?.trace], () => {
+  historyRequest++
+  history.value = []
+  historyError.value = ''
+  historyLoading.value = false
   controller?.abort()
   activeTab.value = 'verdict'
   trace.value = null
   traceError.value = ''
   traceLoading.value = false
 })
-watch(activeTab, tab => { if (tab === 'trace') loadTrace() })
-onBeforeUnmount(() => controller?.abort())
+watch(activeTab, tab => { if (tab === 'trace') loadTrace(); if (tab === 'history') loadHistory() })
+onBeforeUnmount(() => { controller?.abort(); historyRequest++ })
 </script>
 
 <style scoped>

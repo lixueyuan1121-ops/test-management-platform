@@ -142,6 +142,14 @@ def judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: int
     started = time.monotonic()
     logger.info("判定开始 run_id=%s provider=%s", run_id, provider)
     try:
+        if isinstance(run, EvalRun):
+            # 排队期间可能已重试；先锁定终态结果，避免旧判定把 pending 覆盖回 done。
+            run = db.query(EvalRun).filter_by(id=run_id).with_for_update().populate_existing().first()
+            if run is None or run.status not in (EvalRunStatus.done, EvalRunStatus.judged):
+                db.rollback()
+                return {"skipped": True, "reason": "执行状态已变化或正在判定，请完成后再判定"}
+            run.status = EvalRunStatus.judging
+            db.commit()
         result = _judge_run(db, run, provider=provider, votes=votes)
         logger.info("判定结束 run_id=%s verdict=%s elapsed=%.1fs", run_id, result.get("verdict"), time.monotonic() - started)
         return result
@@ -168,13 +176,8 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     (平票/全 error → error 供复核,不猜);score 取有效均值。代价是 N 倍引擎调用时长,默认 1。
     """
     votes = max(1, min(5, int(votes or 1)))
-    expected = ""
-    dimension = None
-    if run.eval_query_id:
-        q = db.get(EvalQuery, run.eval_query_id)
-        if q:
-            expected = q.expected or ""
-            dimension = q.dimension
+    from app.services.eval_snapshot import rubric_of
+    expected, dimension = rubric_of(db, run)
     trace = _load_trace(run)
 
     provider_id = generators.normalize_provider(provider)

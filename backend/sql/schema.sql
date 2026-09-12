@@ -946,6 +946,7 @@ CREATE TABLE IF NOT EXISTS `eval_run_history` (
   `artifact_share_link` VARCHAR(512) DEFAULT NULL,
   `answer` TEXT,
   `trace` TEXT,
+  `raw_message` LONGTEXT,
   `reported_duration` VARCHAR(32) DEFAULT NULL,
   `bean_cost` VARCHAR(32) DEFAULT NULL,
   `tokens` VARCHAR(32) DEFAULT NULL,
@@ -963,4 +964,22 @@ CREATE TABLE IF NOT EXISTS `eval_run_history` (
   PRIMARY KEY (`id`),
   KEY `idx_erh_run` (`eval_run_id`),
   CONSTRAINT `fk_erh_run` FOREIGN KEY (`eval_run_id`) REFERENCES `eval_run` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS `eval_batch_summary` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `eval_task_id` BIGINT NOT NULL,
+  `batch_id` VARCHAR(64) NOT NULL,
+  `generation_token` VARCHAR(32) DEFAULT NULL,
+  `summary_html` TEXT,
+  `detail_html` TEXT,
+  `summary_status` VARCHAR(16) DEFAULT NULL,
+  `summary_provider` VARCHAR(16) DEFAULT NULL,
+  `summary_at` DATETIME DEFAULT NULL,
+  `summary_share_code` VARCHAR(16) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_eval_summary_batch` (`eval_task_id`, `batch_id`),
+  UNIQUE KEY `uk_eval_summary_share` (`summary_share_code`),
+  CONSTRAINT `fk_eval_summary_task` FOREIGN KEY (`eval_task_id`) REFERENCES `eval_task` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

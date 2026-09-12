@@ -311,7 +311,7 @@
           <span class="cmp-seg cmp-bw">B 胜 {{ compareInfo.bWin }}</span>
           <span class="cmp-seg">平 {{ compareInfo.tie }}</span>
           <span class="cmp-seg cmp-und">未决 {{ compareInfo.undecided }}</span>
-          <span v-if="compareInfo.aAvg || compareInfo.bAvg" class="cmp-seg">
+          <span v-if="compareInfo.aAvg != null || compareInfo.bAvg != null" class="cmp-seg">
             均分 <span class="cmp-a">A {{ compareInfo.aAvg ?? '—' }}</span> / <span class="cmp-bw">B {{ compareInfo.bAvg ?? '—' }}</span>
           </span>
           <span class="cmp-total">共 {{ compareInfo.total }} 对（判定后自动更新）</span>
@@ -446,7 +446,7 @@ import {
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions } from '@/utils/dialogOptions'
-import { groupEvalRuns } from '@/utils/evalRunGroups'
+import { groupEvalRuns, compareEvalRuns } from '@/utils/evalRunGroups'
 import { buildEvalReportHtml } from '@/utils/evalReportHtml'
 
 const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', stopped: '已停止', archived: '已归档' }
@@ -557,32 +557,11 @@ const avgScore = computed(() => {
   const ss = (detail.value?.runs || []).map((r) => r.score).filter((s) => s != null)
   return ss.length ? (ss.reduce((a, b) => a + b, 0) / ss.length).toFixed(1) : null
 })
-// A/B 对比批次统计:按 eval_query_id 配对(多轮逐轮配对),pass/fail 定胜负——
+// A/B 对比批次统计:按批次、产品和 eval_query_id 配对(多轮逐轮配对),pass/fail 定胜负——
 // A pass B fail 记 A 胜,反之 B 胜,同 pass/同 fail 记平,任一侧无判定或 error 记未决;
 // 另算 A/B 各自均分(评分比 pass/fail 更细腻,平局多时靠它分高下)
 const compareInfo = computed(() => {
-  const runs = detail.value?.runs || []
-  if (!runs.some((r) => r.payload?.compare_group)) return null
-  const byQuery = new Map()
-  const scores = { A: [], B: [] }
-  for (const r of runs) {
-    const g = r.payload?.compare_group
-    if (!g) continue
-    const k = r.eval_query_id ?? r.payload?.eval_query_id ?? r.run_id
-    if (!byQuery.has(k)) byQuery.set(k, {})
-    byQuery.get(k)[g] = r
-    if (r.score != null && scores[g]) scores[g].push(r.score)
-  }
-  let aWin = 0, bWin = 0, tie = 0, undecided = 0
-  for (const pair of byQuery.values()) {
-    const va = pair.A?.verdict, vb = pair.B?.verdict
-    if (va === 'pass' && vb === 'fail') aWin++
-    else if (va === 'fail' && vb === 'pass') bWin++
-    else if ((va === 'pass' || va === 'fail') && va === vb) tie++
-    else undecided++
-  }
-  const avg = (arr) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null
-  return { aWin, bWin, tie, undecided, total: byQuery.size, aAvg: avg(scores.A), bAvg: avg(scores.B) }
+  return compareEvalRuns(detail.value?.runs || [])
 })
 const judgeableRuns = computed(() =>
   (detail.value?.runs || []).filter((r) => r.status === 'done' || r.status === 'judged'))

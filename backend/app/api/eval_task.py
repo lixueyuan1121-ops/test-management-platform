@@ -15,7 +15,7 @@ from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import EvalRunStatus, EvalTaskStatus, ProjectRole
 from app.db.session import get_db
 from app.models import EvalQuery, EvalRun, User
-from app.models.ai_eval import EvalTask
+from app.models.ai_eval import EvalTask, EvalBatchSummary
 from app.schemas.common import ok
 from app.services import generators, claude_runner
 
@@ -101,16 +101,17 @@ def _parse_seconds(raw) -> int:
     return 0
 
 
-def _batch_totals(db: Session, task: EvalTask) -> dict:
+def _batch_totals(db: Session, task: EvalTask, batch_id: str | None = None) -> dict:
     """任务最近批次的耗时/算力豆聚合(列表页展示)。
     - total_reported_duration_s: 该批次各 run 上报耗时(reported_duration,纯秒)之和 —— 列表页耗时列展示口径,
       对齐对话页「已完成 Ns」;bean_cost/reported_duration 都是字符串,Python 侧容错累加。
     - total_duration_ms: 墙钟之和,保留兼容(前端已不展示)。"""
-    if not task.last_batch_id:
+    bid = batch_id or task.last_batch_id
+    if not bid:
         return {"total_duration_ms": 0, "total_bean_cost": 0, "total_reported_duration_s": 0}
     rows = (db.query(EvalRun.duration_ms, EvalRun.bean_cost, EvalRun.reported_duration)
             .filter(EvalRun.eval_task_id == task.id,
-                    EvalRun.batch_id == task.last_batch_id).all())
+                    EvalRun.batch_id == bid).all())
     total_ms = sum((d or 0) for d, _, _ in rows)
     total_bean = sum(_parse_bean(b) for _, b, _ in rows)
     total_reported_s = sum(_parse_seconds(rd) for _, _, rd in rows)
@@ -118,17 +119,20 @@ def _batch_totals(db: Session, task: EvalTask) -> dict:
             "total_reported_duration_s": total_reported_s}
 
 
-def _to_out(task: EvalTask, db: Session) -> dict:
+def _to_out(task: EvalTask, db: Session, batch_id: str | None = None) -> dict:
+    from app.services.eval_summary_store import summary_view
+    summary = summary_view(db, task, batch_id)
+    bid = batch_id or task.last_batch_id
     qids = json.loads(task.query_ids) if task.query_ids else []
     run_count = db.query(EvalRun).filter(
         EvalRun.eval_task_id == task.id,
-        EvalRun.batch_id == task.last_batch_id,
-    ).count() if task.last_batch_id else 0
+        EvalRun.batch_id == bid,
+    ).count() if bid else 0
     done_count = db.query(EvalRun).filter(
         EvalRun.eval_task_id == task.id,
-        EvalRun.batch_id == task.last_batch_id,
+        EvalRun.batch_id == bid,
         EvalRun.status.in_([EvalRunStatus.done.value, EvalRunStatus.judged.value]),
-    ).count() if task.last_batch_id else 0
+    ).count() if bid else 0
     return {
         "id": task.id,
         "project_id": task.project_id,
@@ -139,18 +143,19 @@ def _to_out(task: EvalTask, db: Session) -> dict:
         "dialog_options": json.loads(task.dialog_options) if task.dialog_options else None,
         "status": getattr(task.status, "value", task.status),
         "last_batch_id": task.last_batch_id,
-        "summary_html": task.summary_html,
-        "summary_status": task.summary_status,
-        "summary_provider": task.summary_provider,
-        "summary_at": task.summary_at.isoformat() if task.summary_at else None,
-        "summary_share_code": task.summary_share_code,
+        "summary_html": summary.summary_html,
+        "summary_status": summary.summary_status,
+        "summary_provider": summary.summary_provider,
+        "summary_at": summary.summary_at.isoformat() if summary.summary_at else None,
+        "summary_share_code": summary.summary_share_code,
+        "summary_batch_id": summary.last_batch_id,
         "schedule_enabled": bool(task.schedule_enabled),
         "schedule_cron": task.schedule_cron,
         "schedule_runner": task.schedule_runner,
         "last_auto_run_at": task.last_auto_run_at.isoformat() if task.last_auto_run_at else None,
         "run_count": run_count,
         "done_count": done_count,
-        **_batch_totals(db, task),
+        **_batch_totals(db, task, bid),
         "auto_pipeline": bool(task.auto_pipeline),
         "pipeline_status": task.pipeline_status,
         "pipeline_at": task.pipeline_at.isoformat() if task.pipeline_at else None,
@@ -346,6 +351,9 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
     from app.services.eval_engines import EVAL_ENGINES, normalize_engines
     from app.services.dispatcher import online_eval_runners
 
+    task = db.query(EvalTask).filter_by(id=task.id).with_for_update().populate_existing().first()
+    if task is None:
+        raise ValueError("测评任务不存在")
     engines = normalize_engines(target_engines)
 
     qids = json.loads(task.query_ids) if task.query_ids else []
@@ -427,12 +435,18 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
             enqueued_by=user_id,
         )
         db.add(row); db.flush(); created.append(row.id)
+    from app.services.eval_summary_store import batch_summary, SUMMARY_FIELDS
+    if task.last_batch_id and task.summary_status:
+        batch_summary(db, task, task.last_batch_id, create=True)
+    for field in SUMMARY_FIELDS:
+        setattr(task, field, None)
     task.last_batch_id = batch_id
     task.status = EvalTaskStatus.running
     # 换批执行后旧综合评价作废(针对旧批次)
     task.summary_status = None
     # 换批重置一条龙门闩(NULL=可抢占):保证新批次能触发一次编排,旧批次的编排状态不残留。
     task.pipeline_status = None
+    task.pipeline_at = None
     return created, batch_id
 
 
@@ -576,9 +590,6 @@ def retry_run(task_id: int, run_id: int, db: Session = Depends(get_db), user: Us
     if getattr(r.status, "value", r.status) != "failed":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="仅执行失败(failed)的可重跑")
     reset_conversation_for_retry(db, r)
-    # 任务若已收口(done)则拉回 running,详情页状态与实际一致
-    if task.status == EvalTaskStatus.done:
-        task.status = EvalTaskStatus.running
     db.commit(); db.refresh(r)
     return ok(_run_out(r))
 
@@ -634,7 +645,7 @@ def task_runs(task_id: int, batch_id: str | None = Query(None),
         q = q.filter(EvalRun.batch_id == bid)
     rows = q.order_by(EvalRun.id).all()
     # 执行完批次自动收口任务状态(轻量:读接口顺带校正,不引入后台轮询)
-    if task.status == EvalTaskStatus.running and rows and all(
+    if bid == task.last_batch_id and task.status == EvalTaskStatus.running and rows and all(
         getattr(r.status, "value", r.status) in ("done", "judged", "failed") for r in rows
     ):
         task.status = EvalTaskStatus.done
@@ -647,9 +658,9 @@ def task_runs(task_id: int, batch_id: str | None = Query(None),
     out = []
     for r in rows:
         d = _run_out(r)
-        d["dimension"] = (d.get("payload") or {}).get("dimension") or dim_map.get(r.eval_query_id)
+        d["dimension"] = (d.get("payload") or {}).get("dimension", dim_map.get(r.eval_query_id))
         out.append(d)
-    return ok({"task": _to_out(task, db), "runs": out})
+    return ok({"task": _to_out(task, db, bid), "runs": out})
 
 
 @router.get("/{task_id}/batches")
@@ -721,10 +732,10 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
         cg = payload.get("compare_group")
         items.append({
             "title": (f"[{cg}组] " if cg else "") + (payload.get("title") or (q.title if q else f"run#{r.id}")),
-            "dimension": payload.get("dimension") or (q.dimension if q else None),
+            "dimension": payload.get("dimension", q.dimension if q else None),
             "engine": EVAL_ENGINES.get(r.target_engine, {}).get("label") if r.target_engine else None,
             "prompt": payload.get("prompt") or (q.prompt if q else ""),
-            "expected": (q.expected if q else "") or "",
+            "expected": payload.get("expected", q.expected if q else "") or "",
             "status": getattr(r.status, "value", r.status),
             "verdict": r.verdict,
             "score": r.score,
@@ -738,7 +749,8 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
     return items
 
 
-def _set_summary_status(session_factory, task_id: int, status: str) -> None:
+def _set_summary_status(session_factory, task_id: int, status: str,
+                        batch_id: str | None = None, generation_token: str | None = None) -> None:
     """用【全新 session】把某任务的 summary_status 落终态(running/failed/done)。吞一切异常。
 
     关键:无头综合评价要跑一次长达 AI_TIMEOUT_SECONDS(默认 15min)的 LLM 流,期间若一直
@@ -755,9 +767,17 @@ def _set_summary_status(session_factory, task_id: int, status: str) -> None:
         logger.exception("综合评价状态落库开 session 失败 task=%s status=%s", task_id, status)
         return
     try:
-        t = s.get(EvalTask, task_id)
+        t = s.query(EvalTask).filter_by(id=task_id).with_for_update().populate_existing().first()
         if t is not None:
-            t.summary_status = status
+            if batch_id is None:  # 兼容任务级状态修复调用
+                t.summary_status = status
+            else:
+                from app.services.eval_summary_store import batch_summary, sync_current_summary
+                row = batch_summary(s, t, batch_id)
+                if row is None or row.generation_token != generation_token:
+                    return
+                row.summary_status = status
+                sync_current_summary(t, row)
             s.commit()
     except Exception:  # noqa: BLE001
         logger.exception("综合评价状态落库失败 task=%s status=%s", task_id, status)
@@ -774,7 +794,8 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
     """无头生成综合评价(供一条龙后台编排调用,无 SSE、无前端连接)。
 
     与 summarize_task 端点同一套素材/prompt/消毒/落库逻辑,只是不流式:累积全文后落
-    task.summary_html。返回 {ok, share_code?} / {skipped, reason} / {error}。
+    eval_batch_summary；仅当前批次同步 task.summary_html。
+    返回 {ok, share_code?} / {skipped, reason} / {error}。
 
     ⚠️ 卡死根治:running/failed/done 三个状态写库都走【全新 session】(_set_summary_status /
     终态段另开 SessionLocal),不复用传入的 db——因为本函数会跑一次最长 15min 的 LLM 流,
@@ -785,6 +806,8 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
     from app.db.session import SessionLocal
     sf = session_factory or SessionLocal
     task_id = task.id
+    from app.services.eval_summary_store import batch_revision
+    source_revision = batch_revision(db, task_id, batch_id)
 
     provider_id = generators.normalize_provider(provider)
     engine = generators.get_provider(provider_id)
@@ -808,10 +831,26 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
         pass
     logger.info("无头综合评价开始 task=%s batch=%s provider=%s runs=%d prompt_len=%d",
                 task_id, batch_id, provider_id, len(runs), len(prompt))
-    # 标记生成中(全新 session,不占用长跑连接)
-    _set_summary_status(sf, task_id, "running")
+    # 每批次有独立生成令牌；并发重生成或重试使旧请求无法覆盖新结果。
+    import secrets
+    from app.services.eval_summary_store import batch_summary, sync_current_summary, summary_view
+    from app.api.eval_report import _detail_table_html
+    generation_token = secrets.token_hex(16)
     raw = ""
     try:
+        with sf() as start:
+            current = start.query(EvalTask).filter_by(id=task_id).with_for_update().populate_existing().first()
+            if current is None:
+                return {"error": "任务记录丢失"}
+            if batch_revision(start, task_id, batch_id) != source_revision:
+                return {"skipped": True, "reason": "批次结果已变化，请重新生成评价"}
+            row = batch_summary(start, current, batch_id, create=True)
+            row.generation_token = generation_token
+            row.summary_status = "running"
+            row.summary_html = None
+            row.detail_html = _detail_table_html(start, summary_view(start, current, batch_id))
+            sync_current_summary(current, row)
+            start.commit()
         for evt in engine.stream_generate(
             task_name,
             prompt_builder=lambda _p=prompt: _p,
@@ -823,33 +862,43 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
             elif etype == "result" and evt.get("text"):
                 raw = evt["text"]
             elif etype == "error":
-                _set_summary_status(sf, task_id, "failed")
+                _set_summary_status(sf, task_id, "failed", batch_id, generation_token)
                 return {"error": evt.get("msg") or "引擎报错"}
         html = claude_runner.extract_html_fragment(raw)
         if not html:
-            _set_summary_status(sf, task_id, "failed")
+            _set_summary_status(sf, task_id, "failed", batch_id, generation_token)
             return {"error": "引擎没有产出有效 HTML 评价"}
         # 终态成功:全新 session 落 summary_html/done/provider/at + 分配短链码。
         from app.api.eval_report import ensure_share_code
         s2 = sf()
         try:
-            t2 = s2.get(EvalTask, task_id)
+            t2 = s2.query(EvalTask).filter_by(id=task_id).with_for_update().first()
             if t2 is None:
                 return {"error": "任务记录丢失"}
-            t2.summary_html = _sanitize_html(html)
-            t2.summary_status = "done"
-            t2.summary_provider = provider_id
-            t2.summary_at = datetime.now()
-            share_code = ensure_share_code(s2, t2)
+            row = s2.query(EvalBatchSummary).filter_by(
+                eval_task_id=task_id, batch_id=batch_id).with_for_update().first()
+            if row is None or row.generation_token != generation_token:
+                return {"skipped": True, "reason": "该批次已重试或重新生成，请查看最新评价"}
+            if batch_revision(s2, task_id, batch_id) != source_revision:
+                row.summary_status = "failed"
+                sync_current_summary(t2, row)
+                s2.commit()
+                return {"skipped": True, "reason": "批次结果已变化，请重新生成评价"}
+            row.summary_html = _sanitize_html(html)
+            row.summary_status = "done"
+            row.summary_provider = provider_id
+            row.summary_at = datetime.now()
+            share_code = ensure_share_code(s2, row)
+            sync_current_summary(t2, row)
             s2.commit()
-            html_len = len(t2.summary_html or "")
+            html_len = len(row.summary_html or "")
         finally:
             s2.close()
         logger.info("无头综合评价完成 task=%s batch=%s html_len=%d", task_id, batch_id, html_len)
         return {"ok": True, "share_code": share_code}
     except Exception as e:  # noqa: BLE001
         logger.exception("无头综合评价生成失败 task=%s batch=%s", task_id, batch_id)
-        _set_summary_status(sf, task_id, "failed")
+        _set_summary_status(sf, task_id, "failed", batch_id, generation_token)
         return {"error": f"生成中断:{e}"}
 
 
@@ -919,7 +968,7 @@ def run_eval_summary_job(db: Session, job) -> dict:
         try:
             from app.services import notify
             from app.services.eval_pipeline import _summary_share_url
-            share_url = _summary_share_url(sf, task.id)
+            share_url = _summary_share_url(sf, task.id, inp["batch_id"])
             lines = ["综合评价已重新生成,可在平台查看 HTML 报告。"]
             if share_url:
                 lines.append(f"在线报告: {share_url}")

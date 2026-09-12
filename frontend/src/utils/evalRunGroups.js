@@ -66,3 +66,29 @@ function makeGroupRow(key, turns) {
     verdict_reason: null,
   }
 }
+
+// 同一批次、同一产品、同一题目内配对，避免多产品 A/B 相互覆盖。
+export function compareEvalRuns(runs) {
+  if (!runs.some((r) => r.payload?.compare_group)) return null
+  const byQuery = new Map()
+  const scores = { A: [], B: [] }
+  for (const r of runs) {
+    const g = r.payload?.compare_group
+    if (g !== 'A' && g !== 'B') continue
+    const k = JSON.stringify([r.batch_id || '', r.target_engine || '',
+      r.eval_query_id ?? r.payload?.eval_query_id ?? r.run_id])
+    if (!byQuery.has(k)) byQuery.set(k, {})
+    byQuery.get(k)[g] = r
+    if (r.score != null && scores[g]) scores[g].push(r.score)
+  }
+  let aWin = 0, bWin = 0, tie = 0, undecided = 0
+  for (const pair of byQuery.values()) {
+    const va = pair.A?.verdict, vb = pair.B?.verdict
+    if (va === 'pass' && vb === 'fail') aWin++
+    else if (va === 'fail' && vb === 'pass') bWin++
+    else if ((va === 'pass' || va === 'fail') && va === vb) tie++
+    else undecided++
+  }
+  const avg = (arr) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null
+  return { aWin, bWin, tie, undecided, total: byQuery.size, aAvg: avg(scores.A), bAvg: avg(scores.B) }
+}

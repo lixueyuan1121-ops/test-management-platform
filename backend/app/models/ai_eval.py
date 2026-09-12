@@ -175,6 +175,23 @@ class EvalTask(Base):
     )
 
 
+class EvalBatchSummary(Base):
+    """综合评价按执行批次保存；任务上的 summary_* 仅作为当前批次的缓存。"""
+
+    __tablename__ = "eval_batch_summary"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    eval_task_id: Mapped[int] = mapped_column(ForeignKey("eval_task.id", ondelete="CASCADE"))
+    batch_id: Mapped[str] = mapped_column(String(64))
+    generation_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    summary_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    summary_share_code: Mapped[str | None] = mapped_column(String(16), unique=True, nullable=True)
+    __table_args__ = (UniqueConstraint("eval_task_id", "batch_id", name="uk_eval_summary_batch"),)
+
+
 class EvalClientDevice(Base):
     """执行机(runner)连上的纳米 Work 客户端里的可切换设备(vm)快照。
 
@@ -221,6 +238,7 @@ class EvalRunHistory(Base):
     artifact_share_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     reported_duration: Mapped[str | None] = mapped_column(String(32), nullable=True)
     bean_cost: Mapped[str | None] = mapped_column(String(32), nullable=True)
     tokens: Mapped[str | None] = mapped_column(String(32), nullable=True)

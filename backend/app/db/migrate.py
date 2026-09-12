@@ -541,6 +541,11 @@ def ensure_eval_run_history_table(engine=None) -> None:
     from app.models.ai_eval import EvalRunHistory
     eng = engine if engine is not None else _default_engine
     EvalRunHistory.__table__.create(bind=eng, checkfirst=True)
+    from sqlalchemy import inspect, text
+    if "raw_message" not in {c["name"] for c in inspect(eng).get_columns("eval_run_history")}:
+        column_type = "LONGTEXT" if eng.dialect.name == "mysql" else "TEXT"
+        with eng.begin() as conn:
+            conn.execute(text(f"ALTER TABLE eval_run_history ADD COLUMN raw_message {column_type} NULL"))
 
 
 def ensure_eval_task_status_enum() -> None:
