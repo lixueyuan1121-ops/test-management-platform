@@ -312,15 +312,13 @@ class DesktopRunner {
   }
 
   // 抓取当前显示对话的回填字段（复用 DialogRunner 抓取方法 + 补填）。answerOnly 时只抓正文。
-  // opts.skipPanels=true（多轮中间轮）：跳过「开面板」类抓取（产物分享/对话分享/算力豆——开顶栏面板/
-  // 明细弹窗会改变对话视图、污染下一轮发送），只留纯 DOM 的正文/tokens/耗时；末轮再抓全字段。
+  // opts.skipPanels=true（多轮中间轮）：跳过产物/对话分享面板；
+  // 正文、tokens、耗时和本轮算力豆逐轮读取，末轮再抓分享字段。
   async _extractCurrent(testCase, opts = {}) {
     const skipPanels = !!opts.skipPanels;
     const dr = this.dr;
     dr.frame = this._fl();
     dr._skipPanelFields = skipPanels; // 供 dr._missingFields:中间轮不把开面板字段算作「应有却为空」
-    // 桌面版单 DialogRunner 复用：抓取前按「当前用例」重设带附件标记，供 extractBeanCost 精确匹配消耗来源。
-    dr._hasAttachment = (testCase.attachmentPaths || []).length > 0;
     const out = {
       answer: '', shareLink: '', artifactShareLink: '', hasArtifact: false,
       reportedDuration: '', reportedDurationRaw: '', beanCost: '', cost: '', costRaw: '',
@@ -338,10 +336,10 @@ class DesktopRunner {
       try { const d = await dr._withCritical(() => dr.extractReportedDuration()); out.reportedDuration = d.value; out.reportedDurationRaw = d.raw; } catch {}
       if (!skipPanels) {
         try { out.shareLink = await dr._withCritical(() => dr.extractConversationShareLink()); } catch {}
-        try { out.beanCost = (await dr._withCritical(() => dr.extractBeanCost(testCase.question))).value; } catch {}
-        // 就地补填（桌面版不做 reload 补填：会打乱其他后台任务的显示定位）
-        try { await dr._refillEmptyFields(out, testCase.question); } catch {}
       }
+      try { out.beanCost = (await dr._withCritical(() => dr.extractBeanCost())).value; } catch {}
+      // 普通缺失字段只做就地补填；算力豆刷新由 extractBeanCost 单独控制并核对会话。
+      try { await dr._refillEmptyFields(out, testCase.question); } catch {}
     }
     return out;
   }

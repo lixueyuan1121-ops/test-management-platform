@@ -117,22 +117,9 @@ module.exports = {
     durationAttrSelector: '.chat-token-cost ui-tooltip',
     durationAttrName: 'content',
 
-    // —— 算力豆消耗 → F 列（头像→“算力豆”，按 query 匹配“消耗来源”行，读“变动”值）——
-    avatarSelector: '.topbar-avatar-image',
-    // 进入算力豆账本的入口菜单项：点头像展开菜单后点它。平台已把入口从“明细”改名为“算力豆”，
-    // 故默认用正则兼容两者（新 UI“算力豆”/旧 UI“明细”）。若页面顶栏也有“算力豆”文字导致误点，
-    // 请用 F12 核对后改成菜单项专属 class（如 '.user-menu__item:has-text("算力豆")'）。
-    ledgerEntrySelector: 'text=/算力豆|明细/',
-    ledgerRowSelector: '.coin-info__row',
-    ledgerRowQuerySelector: '.coin-info__row-query',
-    ledgerRowChangeSelector: '.coin-info__change-amount',
-    // 明细面板（config-modal 设置弹窗「算力豆明细」）关闭按钮。实测：该弹窗 Escape 关不掉，
-    // 必须点右上角 × .config-modal__close，否则读完账本后面板不关、遮住左侧任务列表致后续任务定位失败。
-    ledgerCloseSelector: '.config-modal__close',
-    // 带附件用例的「消耗来源」精确匹配：来源须含下列任一「上传字样」，且其“用户问题：”后文本≈用例 query。
-    // 平台把带附件来源包成“用户上传了以下文件…用户问题：<query>”；靠此避免误配到别的行。留空/失配则退回宽松匹配。
-    ledgerAttachmentMarkers: ['用户上传了以下图片', '用户上传了以下文件'],
-    ledgerUserQuestionMarker: '用户问题',
+    // —— 算力豆消耗 → F 列（当前回答底部「本次回答消耗…（23 算力豆）」）——
+    // 读取整个消费栏，兼容 tokens 和算力豆分属不同子节点；限定在最新 assistant 回答组内。
+    beanCostSelector: '.chat-token-cost',
 
     // —— 执行过程中的确认弹窗（反问/授权/风险确认等）——
     // 任务执行时若平台弹出确认框，自动点击“肯定”类按钮让任务继续。
@@ -291,14 +278,11 @@ module.exports = {
     // 兜底 tooltip：从 content“…耗时10秒”中提取耗时；不匹配时回填原文
     durationRegex: '耗时[：:]*\\s*([^，,。\\n]+)',
 
-    // ========== 算力豆(F)账本抓取稳健化（降低回填失败率）==========
-    // 「头像→明细」账本面板的打开、以及平台把本次消耗记账落库，都可能有延迟：
-    //  · beanCostAttempts   ：每条用例内最多重开明细面板几次（记账延迟/AI 标题晚生成时多试几轮）。
-    //  · beanCostRetryGapMs ：两次重开之间的等待毫秒（给记账入库留时间，别刚答完就判定没有）。
-    //  · ledgerRowsTimeoutMs：点「明细」后，轮询等账本行渲染出来的最长毫秒（网络慢时行会晚出现）。
-    beanCostAttempts: 4,
-    beanCostRetryGapMs: 2500,
-    ledgerRowsTimeoutMs: 8000,
+    // 算力豆比回答/tokens 晚显示：每秒重读当前回答消费栏，单次最多等 30 秒。
+    // 首次超时刷新当前对话一次，再等数值；仍缺失保持空值，不回退到账号账本。
+    beanCostTimeoutMs: 30000,
+    beanCostRetryGapMs: 1000,
+    beanCostReloadOnce: true,
 
     // 是否抓取「产物分享链接(D)」。false=彻底不抓：跳过产物卡片→预览→分享弹窗→读链接这一长串
     // 最脆弱、最耗时的 UI 操作，且不再因产物缺失触发整条用例重跑（省最多墙钟）。测评判定不读该 URL

@@ -3,6 +3,14 @@
 从飞书表格读取 query（含附件）→ 自动在测评平台（work.n.cn / 纳米Work）逐条对话 →
 把【对话分享链接 / 产物分享链接 / 耗时 / 算力豆消耗 / 正文】实时回填到飞书表格。
 
+纳米 Work 的算力豆读取当前回答底部「本次回答消耗：… tokens（23 算力豆）」中的数值，
+同时用于平台回填。多轮对话逐轮记录各自消耗，不再打开账号账本匹配标题。
+消费数值延迟出现时默认每秒重读、单次最多等待 30 秒；仍无数值则刷新当前对话一次，
+核对会话及轮次后再等最多 30 秒。仍缺失保持空值并沿用就地补填，不会用其他会话的数值填充。
+可通过 `execution.beanCostTimeoutMs`、`execution.beanCostRetryGapMs` 调整等待时间和间隔，
+通过 `execution.beanCostReloadOnce: false` 关闭刷新兜底，
+通过 `platform.beanCostSelector` 调整当前回答内的消费栏选择器（默认 `.chat-token-cost`）。
+
 ## 快速上手（Windows）
 
 1. 装 [Node.js 18+](https://nodejs.org/zh-cn/)（LTS，默认安装即可）
@@ -61,4 +69,3 @@ node bin\ai-eval.js desktop --exe "D:\path\namiwork.exe" --cdp-port 9222  # 覆�
 
 客户端 exe 路径、调试端口等在 `config\default.config.js` 的 `desktop` 段配置。零基础同事直接双击
 **`桌面并发验证.bat`** 即可。
-

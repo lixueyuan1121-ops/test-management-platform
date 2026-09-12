@@ -7,7 +7,7 @@ const { pickShareUrl } = require('./share-url');
 // 分享链接经系统剪贴板传递，并发下多个标签会互相覆盖剪贴板，故这一步需串行化
 let _shareLock = Promise.resolve();
 
-// 「抓取临界区」占用标记：抓分享链接依赖系统剪贴板（全机共享，非页面级）、抓算力豆要开明细弹窗、
+// 「抓取临界区」占用标记：抓分享链接依赖系统剪贴板（全机共享，非页面级）、抓算力豆需等待当前回答消费栏、
 // 抓耗时要 hover tooltip——这些都会被「并发观察器」点击左侧列表切换对话的动作打断/污染。
 // 进入这些抓取时 >0，观察器读到就暂停本轮切换（等抓完再切），避免把回填字段抓空。
 // 用计数而非布尔：同账号多任务的抓取经 _shareLock 串行，但耗时/算力豆不在该锁内、可能并发进入。
@@ -132,16 +132,14 @@ class DialogRunner {
   }
 
   // opts.isLastTurn：多轮会话里本轮是否为末轮。中间轮(非末轮)禁用「开面板」类抓取
-  // （分享链接/算力豆/产物分享——会打开顶栏面板/明细弹窗，改变对话视图，污染下一轮发送），
-  // 只抓答案+tokens+耗时；末轮抓全字段。单轮会话恒为末轮，抓全字段（行为不变）。
+  // （分享链接/产物分享——会打开顶栏面板，改变对话视图，污染下一轮发送），
+  // 只抓答案+tokens+耗时+本轮算力豆；末轮抓全字段。单轮会话恒为末轮，抓全字段（行为不变）。
   async sendMessage(question, attachmentPaths = [], opts = {}) {
     const isLastTurn = opts.isLastTurn !== false; // 默认 true（单轮/末轮都抓全字段）
     const skipPanelExtracts = this.multiTurn && !isLastTurn; // 多轮中间轮：跳过开面板抓取
-    // 供 _missingFields 判定：中间轮不把开面板字段(分享链接/算力豆/产物)算作「应有却为空」，
+    // 供 _missingFields 判定：中间轮不把开面板字段(分享链接/产物)算作「应有却为空」，
     // 否则 _refillEmptyFields 会因它们空而反复开面板重抓（违背跳过初衷）。
     this._skipPanelFields = skipPanelExtracts;
-    // 供 extractBeanCost 判定：本条用例是否带附件（带附件时对「消耗来源」行做更精确匹配）。
-    this._hasAttachment = (attachmentPaths || []).length > 0;
     const startTime = Date.now();
     let endTime = null;
     let errorMsg = null;
@@ -155,7 +153,7 @@ class DialogRunner {
       hasArtifact: false,       // 是否检测到产物卡片（决定 D 为空是否算“缺失”）
       reportedDuration: '',     // E 耗时（平台上报）
       reportedDurationRaw: '',  // E 原始 tooltip 文本（排查用）
-      beanCost: '',             // F 算力豆变动值
+      beanCost: '',             // F 本轮算力豆消耗
       cost: '',                 // 附加：本次 tokens（footer，仅记录）
       costRaw: '',
       reloadRecoveredFields: [] // 靠「刷新页面重抓」才补上的字段（诊断用：如耗时需刷新才拿到）
@@ -226,11 +224,11 @@ class DialogRunner {
         // 抓取及补填/刷新重抓全部跳过。配合 --skip-writeback 即「只跑多轮对话，零抓取零回填」。
         if (this.logger) this.logger.info(`       ↳ [${this.label}] answer-only：仅取答案正文(完成判定必需)，跳过全部字段抓取`);
       } else {
-        // 产物分享/耗时/对话分享/算力豆这几步依赖系统剪贴板 / 明细弹窗 / hover tooltip，
+        // 产物分享/耗时/对话分享依赖剪贴板或 tooltip，算力豆需等待当前回答消费栏，
         // 会被并发观察器切换动作打断，故整体置于抓取临界区（观察器读到即暂停切换）。
         // 正文、tokens 是纯 DOM 读取，不怕切换，放在临界区外。
-        // 多轮中间轮：跳过「开面板」类抓取（产物分享/对话分享/算力豆——开顶栏面板/明细弹窗会
-        // 改变对话视图、污染下一轮发送），只留纯 DOM 的 tokens/耗时；末轮再抓全字段。
+        // 多轮中间轮：跳过「开面板」类抓取（产物分享/对话分享——开顶栏面板会
+        // 改变对话视图、污染下一轮发送），只留 tokens/耗时/本轮算力豆；末轮再抓全字段。
         if (!skipPanelExtracts && this.execution.captureArtifact !== false) {
           const art = await this._withCritical(() => this.extractArtifactShareLink());
           out.artifactShareLink = art.link; out.hasArtifact = art.hasCard;
@@ -241,10 +239,11 @@ class DialogRunner {
         out.reportedDuration = durInfo.value; out.reportedDurationRaw = durInfo.raw;
         if (!skipPanelExtracts) {
           out.shareLink = await this._withCritical(() => this.extractConversationShareLink());
-          out.beanCost = (await this._withCritical(() => this.extractBeanCost(question))).value;
         } else if (this.logger) {
-          this.logger.info(`       ↳ [${this.label}] 多轮中间轮：已跳过分享链接/算力豆/产物抓取（末轮再抓）`);
+          this.logger.info(`       ↳ [${this.label}] 多轮中间轮：已跳过分享链接/产物抓取（末轮再抓）`);
         }
+
+        out.beanCost = (await this._withCritical(() => this.extractBeanCost())).value;
 
         // 补填：对话还开着时，对“应有却为空”的字段就地重抓（代价小，无需翻历史会话）
         await this._refillEmptyFields(out, question);
@@ -277,7 +276,7 @@ class DialogRunner {
       hasArtifact: out.hasArtifact,          // 是否检测到产物（诊断/补填判定用）
       reportedDuration: out.reportedDuration,   // E 耗时（平台上报）
       reportedDurationRaw: out.reportedDurationRaw, // E 原始 tooltip 文本（排查用）
-      beanCost: out.beanCost,                // F 算力豆变动值
+      beanCost: out.beanCost,                // F 本轮算力豆消耗
       cost: out.cost,                        // 附加：本次 tokens（footer，仅记录）
       costRaw: out.costRaw,
       durationMs: endTime - startTime, // 附加：墙钟耗时（仅记录，不回填）
@@ -440,8 +439,8 @@ class DialogRunner {
   _missingFields(out) {
     // --answer-only：只抓答案、不抓字段，没有任何“应有却为空”的字段，返回空（也不因缺失触发重跑）
     if (this.execution.answerOnly) return [];
-    // 多轮中间轮：跳过了开面板抓取(分享链接/算力豆/产物)，这些字段不算缺失，避免补填时开面板
-    const panelFields = this._skipPanelFields ? ['conversationShareLink', 'artifactShareLink', 'beanCost'] : null;
+    // 多轮中间轮：跳过了开面板抓取(分享链接/产物)，这些字段不算缺失，避免补填时开面板
+    const panelFields = this._skipPanelFields ? ['conversationShareLink', 'artifactShareLink'] : null;
     const missing = [];
     for (const f of this._requiredFields()) {
       if (panelFields && panelFields.includes(f)) continue;
@@ -473,7 +472,7 @@ class DialogRunner {
               const d = await this.extractReportedDuration();
               out.reportedDuration = d.value; out.reportedDurationRaw = d.raw;
             } else if (f === 'beanCost') {
-              out.beanCost = (await this.extractBeanCost(question)).value;
+              out.beanCost = (await this.extractBeanCost({ reload: false })).value;
             }
           } catch (_) { /* 单字段补填失败不影响其他字段，留待下一轮或最终判缺失 */ }
         }
@@ -487,7 +486,8 @@ class DialogRunner {
   async _reloadAndRefill(out, question) {
     if (!this.execution.refillReloadOnce) return [];        // 默认关闭；开启才刷新重抓
     if (this.multiTurn) return [];                          // 多轮会话禁用 reload：会打乱对话 iframe 状态，连累后续轮发送失败
-    const before = this._missingFields(out);
+    // 算力豆已有独立的「刷新一次 + 会话核对」，不再因它缺失重复整页刷新。
+    const before = this._missingFields(out).filter(f => f !== 'beanCost');
     if (before.length === 0) return [];                      // 没缺失，不必刷新
     if (this.logger) this.logger.info(`       ↳ 补填仍缺 ${before.join(', ')}，刷新页面重抓一次...`);
     try {
@@ -1392,184 +1392,74 @@ class DialogRunner {
     } catch { return ''; }
   }
 
-  // 关闭「算力豆明细」面板（config-modal 设置弹窗）。实测：该弹窗 Escape 关不掉，
-  // 必须点右上角关闭按钮 .config-modal__close；关不掉会遮住左侧任务列表，导致后续任务定位失败。
-  // 返回是否已关闭（面板已不在）。selector 可经 platform.ledgerCloseSelector 覆盖。
-  async _closeLedgerPanel(ctx) {
-    const closeSel = this.platform.ledgerCloseSelector || '.config-modal__close';
-    const rowSel = this.platform.ledgerRowSelector || '.coin-info__row';
-    const isOpen = async () =>
-      (await ctx.locator('config-modal[open]').count().catch(() => 0)) > 0 ||
-      (await ctx.locator(rowSel).count().catch(() => 0)) > 0;
-    if (!(await isOpen())) return true;
-    // 点关闭按钮（最多 3 次，兼容动画/首次点击被吞）；每次点后校验是否真关掉
-    for (let i = 0; i < 3; i++) {
-      const btn = ctx.locator(closeSel).first();
-      if (await btn.count().catch(() => 0) > 0) {
-        await btn.click({ timeout: 3000, force: i > 0 }).catch(() => {});
-        await this.page.waitForTimeout(400);
-        if (!(await isOpen())) return true;
-      } else break;
+  // F 算力豆：只读当前回答底部「本次回答消耗：… tokens（23 算力豆）」；
+  // tokens 可能先出现，算力豆稍后才渲染；等待后刷新一次，再核对会话并读取。
+  async extractBeanCost({ reload = true } = {}) {
+    if (reload) this._beanCostExpectedTurn = '';
+    const first = await this._pollBeanCost(this._beanCostExpectedTurn || '');
+    if (first.value || !reload || this.execution.beanCostReloadOnce === false) return first;
+    const turn = await this._beanCostTurnKey().catch(() => '');
+    if (!turn) return first; // 没有可核对的当前会话，不盲目刷新。
+    this._beanCostExpectedTurn = turn; // 后续就地补填也必须核对，不能在刷新失配后读取别的会话。
+    try {
+      if (this.logger) this.logger.info(`       ↳ [${this.label}] 算力豆尚未显示，刷新当前对话后重读一次`);
+      const frame = this._liveFrame();
+      const options = { waitUntil: 'domcontentloaded', timeout: this.execution.timeout || 60000 };
+      // iframe 形态只重载对话 frame，保留桌面外壳和其他任务列表。
+      // 主文档形态直接刷新当前页；全程处于调用方的抓取临界区内。
+      if (frame === this.page.mainFrame()) await this.page.reload(options);
+      else await frame.goto(frame.url(), options);
+      this.frame = await this._waitForFrame(options.timeout);
+      return await this._pollBeanCost(turn);
+    } catch (e) {
+      if (this.logger) this.logger.warn(`       ↳ [${this.label}] 算力豆刷新重读失败: ${e.message}`);
+      return first;
     }
-    // 兜底：Escape（对个别其它弹窗有效；对 config-modal 无效但无害）
-    await this.page.keyboard.press('Escape').catch(() => {});
-    await this.page.waitForTimeout(300);
-    return !(await isOpen());
   }
 
-  // 打开「头像→明细」算力豆账本面板，并等明细行渲染出来。返回是否成功打开（行已出现）。
-  // 稳健化要点（针对回填失败）：①先关掉残留弹窗/上次的明细面板，保证读到的是刷新后的最新记账、
-  // 且头像不被遮住；②点头像后「等『明细』入口真正可见」再点（不再用固定等待），点不出就再点一次
-  // （兼容 toggle/慢动画/首次坐标点击被吞）；③点「明细」后轮询等账本行渲染，不在空列表上直接读。
-  async _openLedgerPanel(ctx, avSel, entrySel, rowSel) {
-    // 先关掉可能残留的弹窗/明细面板（上次抓取或分享弹窗没关干净会遮住头像、或让你读到旧数据）。
-    // config-modal 明细面板 Escape 关不掉，须走 _closeLedgerPanel 点关闭按钮。
-    if ((await ctx.locator(rowSel).count().catch(() => 0)) > 0) await this._closeLedgerPanel(ctx);
-    // 点头像展开菜单 → 等「明细」入口可见；不可见就再点一次（首次坐标点击可能没触发/被动画吞掉/被遮）
-    const entry = ctx.locator(entrySel).first();
-    let entryReady = false;
-    for (let i = 0; i < 3 && !entryReady; i++) {
-      await ctx.locator(avSel).first().click({ timeout: 4000, force: i > 0 }).catch(() => {});
-      try { await entry.waitFor({ state: 'visible', timeout: 2500 }); entryReady = true; }
-      catch { await this.page.keyboard.press('Escape').catch(() => {}); await this.page.waitForTimeout(300); }
-    }
-    if (!entryReady) return false;
-    await entry.click({ timeout: 4000 }).catch(() => {});
-    // 轮询等账本行渲染（记账/网络延迟下行会晚出现），出现即成功；到点仍无行则视为失败（交由外层重开重试）。
-    const deadline = Date.now() + (this.execution.ledgerRowsTimeoutMs || 8000);
-    while (Date.now() < deadline) {
-      if ((await ctx.locator(rowSel).count().catch(() => 0)) > 0) return true;
-      await this.page.waitForTimeout(400);
-    }
-    return (await ctx.locator(rowSel).count().catch(() => 0)) > 0;
+  // 刷新前后核对 URL、完整用户轮次和回答组数量，避免读取刷新后误切到的其他对话/轮次。
+  async _beanCostTurnKey() {
+    return this._liveFrame().evaluate(({ groupSel, userSel, baseGroups }) => {
+      const answers = document.querySelectorAll(groupSel);
+      const users = [...document.querySelectorAll(userSel)].map(el => (el.textContent || '').trim());
+      if (answers.length <= baseGroups || !users.length || !users[users.length - 1]) return '';
+      return JSON.stringify({ url: location.href, users, answers: answers.length });
+    }, { groupSel: this.platform.answerGroupSelector || '.chat-group.assistant',
+      userSel: this.platform.userGroupSelector || '.chat-group.user', baseGroups: this._baseGroups() });
   }
 
-  // F 算力豆：点头像→“明细”，在列表中按 query 匹配“消耗来源”行，读取该行“变动”值。
-  // 带附件用例更精确：来源须含“用户上传了以下图片/文件”字样，且其“用户问题：”后的文本≈本用例 query
-  // （平台把带附件来源包成“用户上传了以下文件…用户问题：<query>”，仅凭 query 子串易与别的行混淆/误配）。
-  // 严格匹配无命中时退回原有宽松匹配（不比改前更差）；不带附件时仅走宽松匹配，行为完全不变。
-  // 回填失败稳健化：①面板打开+行渲染都做等待/重试（见 _openLedgerPanel）；②标题键每轮补抓——复杂任务的
-  // 「消耗来源」是答完后才由 AI 生成的会话标题，首轮常还没出来，一次抓不到就永久失配；③匹配到但「变动值」
-  // 暂空不算成功（继续找有值的行或重试，而非提前返回空）；④全部尝试仍空时打印 keys 与账本前几行来源样本，
-  // 便于定位失败到底是「面板没打开 / 没匹配上 / 记账还没落库」。
-  async extractBeanCost(question, opts = {}) {
-    const avSel = this.platform.avatarSelector;
-    const entrySel = this.platform.ledgerEntrySelector || 'text=/算力豆|明细/';  // 头像→算力豆(旧 UI 明细),正则兼容
-    if (!avSel || !question) return { value: '', raw: '' };
-    const ctx = this._ctx();
-    const rowSel = this.platform.ledgerRowSelector || '.coin-info__row';
-    const qSel = this.platform.ledgerRowQuerySelector || '.coin-info__row-query';
-    const cSel = this.platform.ledgerRowChangeSelector || '.coin-info__change-amount';
-    // 是否带附件：优先显式入参，否则读实例字段（sendMessage / 桌面抓取入口按当前用例设置）。
-    const hasAttachment = opts.hasAttachment != null ? !!opts.hasAttachment : !!this._hasAttachment;
-    const uploadMarkers = this.platform.ledgerAttachmentMarkers || ['用户上传了以下图片', '用户上传了以下文件'];
-    const questionMarker = this.platform.ledgerUserQuestionMarker || '用户问题';
-
-    // 匹配键：当前会话侧栏标题 + 原始 query（“消耗来源”通常等于会话名，复杂任务是 AI 生成标题）。
-    const norm = (s) => ('' + (s || '')).replace(/\s+/g, '');
-    const keys = [norm(question)];
-    let haveTitle = false;
-    // 复杂任务的会话标题（= 账本「消耗来源」）是答完后才由 AI 生成的，首次可能还没出来 → 每轮补抓一次。
-    const captureTitleKey = async () => {
-      if (haveTitle) return;
+  async _pollBeanCost(expectedTurn = '') {
+    const groupSel = this.platform.answerGroupSelector || '.chat-group.assistant';
+    const sel = this.platform.beanCostSelector || '.chat-token-cost';
+    const timeout = this.execution.beanCostTimeoutMs ?? 30000;
+    const retryGap = Math.max(1, this.execution.beanCostRetryGapMs ?? 1000);
+    const deadline = Date.now() + Math.max(0, timeout);
+    const baseGroups = this._baseGroups();
+    let raw = '';
+    do {
       try {
-        const title = await this._liveFrame().evaluate(() => {
-          const el = document.querySelector('.aside-panel-task-list__item.is-selected .aside-panel-task-list__title-text')
-            || document.querySelector('.aside-panel-task-list__item.is-selected');
-          return el ? el.textContent : '';
-        });
-        const t = norm(title);
-        if (t) { keys.unshift(t); haveTitle = true; }
-      } catch (_) {}
-    };
-    await captureTitleKey();
-
-    const attempts = this.execution.beanCostAttempts || 4;      // 记账延迟/标题晚生成时多重开几次
-    const retryGap = this.execution.beanCostRetryGapMs || 2500;  // 每次重开前的等待（给记账落库留时间）
-    let lastRows = -1, lastSamples = [];                         // 诊断：末次账本行数与来源样本
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      try {
-        await captureTitleKey(); // 标题可能本轮才生成，补进匹配键
-        const opened = await this._openLedgerPanel(ctx, avSel, entrySel, rowSel);
-        if (!opened) {
-          await this._closeLedgerPanel(ctx);
-          if (attempt < attempts - 1) await this.page.waitForTimeout(retryGap);
-          continue; // 面板没打开/无行，重开重试
+        if (expectedTurn && await this._beanCostTurnKey() !== expectedTurn) {
+          raw = ''; // SPA 尚未恢复目标会话，继续等，绝不读取当前其他会话的消费。
+        } else {
+          raw = await this._liveFrame().evaluate(({ groupSel, sel, baseGroups }) => {
+            const groups = document.querySelectorAll(groupSel);
+            if (groups.length <= baseGroups) return '';
+            // 只在最新回答组找消费栏；本轮尚未渲染时绝不回退到上一轮的 footer。
+            const footers = groups[groups.length - 1].querySelectorAll(sel);
+            return footers.length ? (footers[footers.length - 1].textContent || '').trim() : '';
+          }, { groupSel, sel, baseGroups });
+          // 单位必须是「算力豆」，避免把前面的 279.9K tokens 当成豆数。
+          // 支持小数、千分位和跨 DOM 节点的空白；显式 0 是有效消耗，缺失保持空。
+          const match = raw.replace(/\s+/g, ' ').match(/(?:^|[^\d.,+\-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*算力豆/);
+          if (match) return { value: match[1].replace(/,/g, ''), raw };
         }
-
-        const res = await this._liveFrame().evaluate(({ keys, question, rowSel, qSel, cSel, hasAttachment, uploadMarkers, questionMarker }) => {
-          const norm = s => ('' + (s || '')).replace(/\s+/g, '').replace(/[…]+/g, '').replace(/\.{3,}/g, '');
-          // 公共前缀长度：应对「消耗来源」被省略号截断——来源与 query 前若干字一致即视为同一条。
-          const commonPrefix = (x, y) => { let i = 0; const n = Math.min(x.length, y.length); while (i < n && x[i] === y[i]) i++; return i; };
-          // 宽松匹配（原逻辑）：头一致外再双向 includes——带附件来源里 query 只被内含而非打头，
-          // 仅靠 startsWith 会漏掉（CASE-3 算力豆一直为空的根因）。阈值≥8 防短文误配。
-          const matchPlain = (rk) => keys.some(k => {
-            if (!k) return false;
-            if (rk.length >= 4 && k.startsWith(rk)) return true;
-            if (k.length >= 4 && rk.startsWith(k)) return true;
-            if (k.length >= 8 && rk.includes(k)) return true;
-            if (rk.length >= 8 && k.includes(rk)) return true;
-            if (commonPrefix(rk, k) >= 12) return true; // 来源被截断/带省略号时，前 12 字一致即认定
-            return false;
-          });
-          // 带附件严格匹配：① 来源含“用户上传了以下图片/文件”字样 ② “用户问题：”后文本≈本用例 query。
-          const normMarkers = (uploadMarkers || []).map(norm).filter(Boolean);
-          const qMarker = norm(questionMarker);
-          const qKey = norm(question); // 原始 query 归一化（带附件时以它为准，不掺会话标题，避免 AI 标题干扰）
-          const matchAttachment = (rk) => {
-            if (!normMarkers.some(mk => rk.includes(mk))) return false;       // 条件①：含上传字样
-            if (!qKey || qKey.length < 2) return false;
-            let rkq = rk;                                                     // 条件②：取“用户问题”后的文本作为该行 query
-            const idx = qMarker ? rk.indexOf(qMarker) : -1;
-            if (idx >= 0) rkq = rk.slice(idx + qMarker.length).replace(/^[:：]+/, '');
-            if (rkq.includes(qKey) || qKey.includes(rkq)) return true;
-            return commonPrefix(rkq, qKey) >= Math.min(12, qKey.length);
-          };
-          const readChange = (r) => { const c = r.querySelector(cSel); return c ? norm(c.textContent).replace(/[^\d.]/g, '') : ''; }; // 只留数字，去“-”等符号
-          // 返回首个「匹配且变动值非空」的行的值；仅匹配到但变动值暂空 → 返回 ''（触发重试/回退，不误当成功）；无任何匹配 → null。
-          const pick = (matchFn) => {
-            const rows = document.querySelectorAll(rowSel);
-            let matchedButEmpty = false;
-            for (const r of rows) {
-              const q = r.querySelector(qSel);
-              if (!q) continue;
-              if (matchFn(norm(q.textContent))) {
-                const change = readChange(r);
-                if (change) return change;   // 匹配且拿到变动值 → 直接用
-                matchedButEmpty = true;      // 匹配到但变动值暂空 → 记住，继续找有值的行
-              }
-            }
-            return matchedButEmpty ? '' : null;
-          };
-          // 带附件：先严格匹配（拿到非空值才用）；无有值命中再退回宽松匹配。不带附件：仅宽松匹配（行为不变）。
-          let value = null;
-          if (hasAttachment) { const s = pick(matchAttachment); if (s) value = s; }
-          if (!value) { const p = pick(matchPlain); if (p) value = p; }
-          // 诊断：账本行数 + 前几行「消耗来源」样本（截断），失败时用于判断是没匹配上还是记账没出来。
-          const allRows = document.querySelectorAll(rowSel);
-          const samples = [];
-          for (let i = 0; i < allRows.length && samples.length < 5; i++) {
-            const qc = allRows[i].querySelector(qSel);
-            if (qc) samples.push(norm(qc.textContent).slice(0, 24));
-          }
-          return { value: value || '', rows: allRows.length, samples };
-        }, { keys, question, rowSel, qSel, cSel, hasAttachment, uploadMarkers, questionMarker });
-
-        await this._closeLedgerPanel(ctx);
-        if (res && res.value) return { value: res.value, raw: res.value };
-        if (res) { lastRows = res.rows; lastSamples = res.samples || []; }
-      } catch {
-        await this._closeLedgerPanel(ctx);
-      }
-      if (attempt < attempts - 1) await this.page.waitForTimeout(retryGap); // 明细可能有记账延迟，稍等重开重试
-    }
-    await this._closeLedgerPanel(ctx);
-    if (this.logger) {
-      const ks = keys.filter(Boolean).map(k => k.slice(0, 14)).join(' | ');
-      const smp = lastRows < 0 ? '面板始终未打开(点头像/明细失败)' : `账本${lastRows}行[${lastSamples.join(' / ')}]`;
-      this.logger.warn(`       ↳ [${this.label}] 算力豆未抓到(尝试${attempts}次) keys=[${ks}] ${smp}`);
-    }
-    return { value: '', raw: '' };
+      } catch (_) { /* 页面/iframe 短暂重渲染，下轮重新定位。 */ }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.page.waitForTimeout(Math.min(retryGap, remaining));
+    } while (true);
+    if (this.logger) this.logger.warn(`       ↳ [${this.label}] 当前回答算力豆在 ${timeout}ms 内未显示或会话尚未恢复，保留空值`);
+    return { value: '', raw };
   }
 
   // 多轮对话：在「同一对话」里按顺序连发 turns（已按 turnIndex 排好的同会话用例数组）。
@@ -1577,14 +1467,13 @@ class DialogRunner {
   // 于是不新建对话、直接在当前对话追加提问，形成多轮上下文。每轮各自抓字段、返回一条 result。
   // 逐轮回调 onTurnDone(result, testCase) 便于「每轮完成即回填对应行」。整段多轮跑完由调用方 close。
   async runConversation(turns, onTurnDone) {
-    // 多轮标记：turns>1 即多轮会话。会话期内禁用 _reloadAndRefill（reload 会重置对话 iframe/VM 状态，
-    // 下一轮 follow-up 发送时 iframe 处于重挂中间态，input.waitFor/click 命中失败 30s 超时——
-    // 实测 CASE-4/6 根因）。多轮上下文连续性远比补一个耗时字段重要。
+    // 多轮标记：turns>1 即多轮会话。会话期内禁用通用 _reloadAndRefill，避免整页重载打断后续发送。
+    // 算力豆独立刷新会等待对话 frame 就绪，并核对完整轮次后才读取。
     this.multiTurn = turns.length > 1;
     const results = [];
     for (const testCase of turns) {
       const isFollowUp = (testCase.turnIndex || 0) > 0;
-      const isLastTurn = (testCase.turnIndex || 0) === turns.length - 1; // 末轮才抓分享链接/算力豆/产物
+      const isLastTurn = (testCase.turnIndex || 0) === turns.length - 1; // 末轮才抓分享链接/产物
       let result;
       try {
         result = await this.runWithRetry(testCase, { isFollowUp, isLastTurn });
