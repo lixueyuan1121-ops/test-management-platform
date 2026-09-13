@@ -605,6 +605,10 @@ def enqueue_cases(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    return ok(enqueue_case_runs(db, user, body))
+
+
+def enqueue_case_runs(db, user, body, commit=True):
     """回归执行:直接按用例 id 下发,不经验收清单(不依赖任务/采纳)。
 
     与 /enqueue 的区别:ExecRun.checklist_item_id=None(runner 回写时不回流清单,见 report 的判空);
@@ -657,9 +661,10 @@ def enqueue_cases(
         db.add(row)
         db.flush()
         created.append(row.id)
-    db.commit()
-    return ok({"run_ids": created, "batch_id": batch_id,
-               "runner": auto_cache or body.runner})
+    if commit:
+        db.commit()
+    return {"run_ids": created, "batch_id": batch_id,
+            "runner": auto_cache or body.runner}
 
 
 # ---- 执行历史查询(用户侧,独立"执行结果"页用)----

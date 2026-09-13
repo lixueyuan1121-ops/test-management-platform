@@ -183,10 +183,11 @@
         :project-id="pid" :task-id="taskId" :requirement="requirement" :provider="engine"
         :source-id="sourceId" :source-url="sourceUrl" :source-title="sourceInfo?.label || ''" :input-type="inputType"
         :source-warnings="sourceWarnings" :materials="sourceMaterials" :disabled="running || extracting" :available="aiAvailable"
-        @ready="baselineId = $event" @busy="analysisBusy = $event" @restore="restoreRequirement"
+        @loaded="missionAnalysisId = $event.id" @ready="baselineId = $event" @busy="analysisBusy = $event" @restore="restoreRequirement"
       />
 
       <div class="actions">
+        <el-button v-if="baselineId && missionAnalysisId" size="large" @click="$router.push({ path: '/commander', query: { project_id: pid, analysis_id: missionAnalysisId } })">以此验收版本开始测试目标</el-button>
         <el-button
           type="primary"
           size="large"
@@ -417,6 +418,7 @@ const urlInput = ref('')
 const extracting = ref(false)
 const sourceInfo = ref(null)   // { label, chars }
 const sourceUrl = ref('')      // 需求文档来源 url(extract-url 成功后记录,生成时随请求上报做需求追溯)
+const missionAnalysisId = ref(null)
 const sourceId = ref(null), sourceMaterials = ref([]), sourceWarnings = ref([])
 const baselineId = ref(null), analysisBusy = ref(false)
 const busy = computed(() => running.value || extracting.value || analysisBusy.value)

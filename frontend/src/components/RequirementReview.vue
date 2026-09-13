@@ -1,16 +1,16 @@
 <template>
   <section class="requirement-review" aria-label="需求澄清与验收确认">
-    <el-steps :active="baselineId ? 3 : draft ? 2 : 1" simple class="review-steps">
+    <el-steps v-if="!embedded" :active="baselineId ? 3 : draft ? 2 : 1" simple class="review-steps">
       <el-step title="导入需求" /><el-step title="澄清与确认" /><el-step title="生成用例" />
     </el-steps>
     <div class="review-head">
       <div><h3>需求澄清与验收确认</h3><p>先确认本期做什么、如何验收，再生成可追溯的测试用例。</p></div>
-      <el-select v-model="historyId" placeholder="恢复历史需求分析" clearable :disabled="working || disabled" @change="restoreAnalysis" style="width:260px">
+      <el-select v-if="!embedded" v-model="historyId" placeholder="恢复历史需求分析" clearable :disabled="working || disabled" @change="restoreAnalysis" style="width:260px">
         <el-option v-for="item in history" :key="item.id" :value="item.id" :label="`#${item.id} · ${item.source_title || '文本需求'} · ${statusLabel(item.status)}`" />
       </el-select>
     </div>
     <div class="review-actions">
-      <el-button type="primary" :disabled="disabled || !available || !projectId || !taskId || !requirement.trim() || working" @click="startAnalysis">{{ draft ? '重新分析需求' : '分析需求' }}</el-button>
+      <el-button v-if="!embedded" type="primary" :disabled="disabled || !available || !projectId || !taskId || !requirement.trim() || working" @click="startAnalysis">{{ draft ? '重新分析需求' : '分析需求' }}</el-button>
       <el-button v-if="analysis && !draft && !working && ['pending', 'running'].includes(analysis.status)" @click="resumeAnalysis">继续查看分析进度</el-button>
       <el-button v-if="working" @click="stopWaiting">停止等待</el-button>
       <span v-if="!taskId" class="hint">请先选择关联任务</span>
@@ -24,6 +24,21 @@
       <ul><li v-for="(warning, i) in warnings" :key="i">{{ warning }}</li></ul>
     </el-alert>
 
+    <article v-if="draft" class="review-focus">
+      <h4>先处理这些决定</h4>
+      <p>{{ draft.summary }}</p>
+      <div class="review-actions">
+        <el-button size="small" @click="tab = 'questions'">{{ unansweredCount }} 个问题待处理</el-button>
+        <el-button size="small" @click="tab = 'rules'">{{ draft.rules.filter(r => r.source_type === 'inferred').length }} 条推导需核对</el-button>
+        <el-button size="small" @click="tab = 'images'">{{ visuals.filter(v => v.status !== 'read').length }} 张图片存在不确定内容</el-button>
+      </div>
+      <p v-if="analysis?.review_focus" class="hint">{{ analysis.review_focus.note }}</p>
+      <el-collapse v-if="analysis?.review_focus?.rules.some(r => r.baseline_id)">
+        <el-collapse-item title="与历史人工确认的规则比较" name="changes">
+          <p v-for="r in analysis.review_focus.rules.filter(r => r.baseline_id)" :key="r.id">{{ r.id }} · {{ r.kind === 'unchanged' ? '业务条件与历史一致，核对本期适用范围' : `已变化：${r.changed_fields.map(k => changeLabels[k] || k).join('、')}` }} · 历史版本 #{{ r.baseline_id }} · 确认人 #{{ r.confirmed_by }}</p>
+        </el-collapse-item>
+      </el-collapse>
+    </article>
     <el-tabs v-if="draft || visuals.length" v-model="tab" class="review-tabs">
       <el-tab-pane v-if="draft" label="本期范围" name="summary">
         <el-form label-position="top" :disabled="disabled || working || saving">
@@ -99,13 +114,14 @@ import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({ projectId: Number, taskId: Number, requirement: { type: String, default: '' }, provider: String,
   sourceId: Number, sourceUrl: String, sourceTitle: String, inputType: String, sourceWarnings: { type: Array, default: () => [] },
-  materials: { type: Array, default: () => [] }, disabled: Boolean, available: Boolean })
-const emit = defineEmits(['ready', 'busy', 'restore'])
+  materials: { type: Array, default: () => [] }, disabled: Boolean, available: Boolean, analysisId: Number, embedded: Boolean })
+const emit = defineEmits(['ready', 'busy', 'restore', 'loaded'])
 const analysis = ref(null), draft = ref(null), history = ref([]), historyId = ref(null)
 const working = ref(false), saving = ref(false), dirty = ref(false), error = ref(''), jobStatus = ref(''), baselineId = ref(null)
 const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('summary'), editingRule = ref(null)
 const imageOpen = ref(false), imageLoading = ref(false), imageUrl = ref(''), imageReading = ref(null)
 let version = 0, historyVersion = 0, controller = null, hydrating = false, restoring = false, disposed = false, imageVersion = 0
+const changeLabels = { scope: '本期范围', module: '模块', platform: '平台', condition: '前提', action: '操作', expected: '预期结果', forbidden: '禁止行为', boundaries: '边界', evidence: '验证方式', criteria: '验收条件' }
 const overviewFields = [{ key: 'summary', label: '产品理解：用户、入口与最终结果' }, { key: 'scope', label: '本期范围与平台' }, { key: 'out_of_scope', label: '本期不做什么' }, { key: 'flow', label: '关键流程 / 判定顺序' }]
 const ruleFields = [{ key: 'title', label: '规则标题' }, { key: 'module', label: '模块' }, { key: 'platform', label: '适用平台' }, { key: 'condition', label: '前提条件' }, { key: 'action', label: '触发操作 / 事件' }, { key: 'expected', label: '应发生的结果' }, { key: 'forbidden', label: '不得发生的结果' }, { key: 'boundaries', label: '边界与例外' }, { key: 'evidence', label: '如何验证 / 缺少的测试条件' }, { key: 'source_section', label: '原文章节 / 图片位置' }, { key: 'source_quote', label: '原文摘录' }]
 const visuals = computed(() => analysis.value?.visual_readings || [])
@@ -142,6 +158,8 @@ watch(() => [props.projectId, props.taskId, props.requirement, props.sourceId, p
 })
 watch(() => [props.projectId, props.taskId], loadHistory, { immediate: true })
 
+watch(() => props.analysisId, id => { if (id) restoreAnalysis(id) }, { immediate: true })
+
 async function loadHistory() {
   const id = ++historyVersion
   history.value = []; historyId.value = null
@@ -154,7 +172,7 @@ async function replaceAnalysis(data) {
   analysis.value = data; draft.value = data.draft ? structuredClone(data.draft) : null
   baselineId.value = data.baseline_id || null; dirty.value = false; scopeReviewed.value = !!data.baseline_id
   if (data.baseline_id) confirmationNote.value = data.confirmation_note || ''
-  emit('ready', baselineId.value)
+  emit('ready', baselineId.value); emit('loaded', data)
   await nextTick(); hydrating = false
 }
 async function restoreAnalysis(id) {
@@ -242,6 +260,8 @@ onBeforeUnmount(() => { disposed = true; version++; historyVersion++; controller
 
 <style scoped>
 .requirement-review { margin-top:24px; padding:20px; border:1px solid var(--el-border-color); border-radius:12px; background:var(--el-bg-color); }
+.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:10px; }
+.review-focus h4 { margin:0 0 8px; }
 .review-steps { margin-bottom:20px; }
 .review-head,.review-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .review-head { justify-content:space-between; align-items:flex-start; }
@@ -253,5 +273,7 @@ h3 { margin:0; font-size:16px; }.review-head p,.hint { color:var(--el-text-color
 .criteria-edit { display:grid; gap:10px; width:100%; }.image-comparison { display:grid; grid-template-columns:1fr 1fr; gap:20px; min-height:100px; }.image-comparison img { width:100%; height:auto; object-fit:contain; align-self:start; }
 .visual-text { max-height:440px; overflow:auto; font-size:13px; }.visual-text :deep(table) { border-collapse:collapse; }.visual-text :deep(td),.visual-text :deep(th) { padding:6px; border:1px solid var(--el-border-color); }
 .requirement-review :deep(.el-alert) { margin:12px 0; }.requirement-review :deep(.el-table .cell) { overflow-wrap:anywhere; }
-@media(max-width:760px) { .requirement-review { padding:12px; }.image-comparison { grid-template-columns:1fr; }.review-head .el-select { width:100%!important; }.review-steps { padding:12px 8px; } }
+@media(max-width:760px) { .requirement-review { padding:12px; }.image-comparison { grid-template-columns:1fr; }.review-head .el-select { width:100%!important; }.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:10px; }
+.review-focus h4 { margin:0 0 8px; }
+.review-steps { padding:12px 8px; } }
 </style>

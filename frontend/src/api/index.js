@@ -561,3 +561,12 @@ export async function commanderAsk(body, { onTick } = {}) {
 }
 // 能力清单（登录即可看）→ { capabilities:[{name,desc,params,kind}] }
 export const commanderCapabilities = () => http.get('/commander/capabilities')
+
+// Persistent goal → plan → authorized execution → evidence.
+export const listTestMissions = (project_id) => http.get('/test-missions', { params: { project_id } })
+export const createTestMission = (data) => http.post('/test-missions', data)
+export const getTestMission = (id) => http.get(`/test-missions/${id}`)
+export const decideTestMission = (id, data) => http.post(`/test-missions/${id}/decisions`, data)
+export const testMissionMetrics = (params) => http.get('/test-missions/metrics', { params })
+
+export const getMissionRunEvidence = (id, runId) => http.get(`/test-missions/${id}/runs/${runId}`)

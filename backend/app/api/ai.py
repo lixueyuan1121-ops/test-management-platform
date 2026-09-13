@@ -834,6 +834,14 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     baseline_payload = json.loads(baseline.payload) if baseline else None
     if baseline_id and not baseline_payload:
         raise ValueError("已确认验收版本不存在")
+    if baseline_payload and "criterion_ids" in inp:
+        # Mission planning generates only uncovered criteria, retaining the immutable baseline.
+        requested = set(inp["criterion_ids"])
+        if not requested or not requested.issubset(approved_criteria(baseline_payload)):
+            raise ValueError("目标请求包含无效验收条件")
+        baseline_payload["rules"] = [{**r, "criteria": [c for c in r.get("criteria", []) if c["id"] in requested]}
+                                     for r in baseline_payload["rules"] if r.get("status") == "confirmed"
+                                     and any(c["id"] in requested for c in r.get("criteria", []))]
     # P1 根治(诊断文档):读完输入快照立即 commit,把 DB 连接还回池——避免生成的百秒级耗时里
     # 一直借着连接空闲、被 4963 端口中间层掐断,写库时 2013 Lost connection。生成引擎(plan_shards/
     # _load_api_contract/_load_selector_keys)全自开独立 SessionLocal,不用传入 db,故生成期零连接持有。

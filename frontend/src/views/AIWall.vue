@@ -1,9 +1,12 @@
 <template>
   <WorkspacePage title="AI 战绩墙" class="viz-root" data-theme="light">
     <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新战绩" title="刷新战绩" :loading="loading" @click="load" />
+      <el-button :icon="Refresh" circle aria-label="刷新战绩" title="刷新战绩" :loading="loading" @click="refreshAll" />
     </template>
-    <template #filters>
+
+
+    <NativeMissionMetrics ref="nativeMetrics" />
+    <h2 class="legacy-metrics-title">生成与采纳统计</h2>
       <div class="controls">
         <el-radio-group v-model="range" size="small" @change="onRangeChange">
           <el-radio-button value="7d">近 7 天</el-radio-button>
@@ -24,7 +27,6 @@
           @change="onCustomChange"
         />
       </div>
-    </template>
 
     <div v-loading="loading" element-loading-background="rgba(255,255,255,0.6)" class="viz-body">
       <!-- 空态：所选区间无 AI 生成数据 -->
@@ -274,12 +276,15 @@
 </template>
 
 <script setup>
+import NativeMissionMetrics from '@/components/NativeMissionMetrics.vue'
 import { ref, computed, onMounted } from 'vue'
 import { aiStats, aiFunnel } from '@/api'
 import TargetMark from '@/components/TargetMark.vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import { Refresh } from '@element-plus/icons-vue'
 
+const nativeMetrics = ref(null)
+function refreshAll() { nativeMetrics.value?.load(); load() }
 const stats = ref(null)
 const loading = ref(false)
 const loadError = ref(false)

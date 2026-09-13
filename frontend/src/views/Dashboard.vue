@@ -3,6 +3,7 @@
     <!-- ① 控制台头条 -->
     <header class="workspace-head"><h1>工作台</h1><span>{{ greeting }}，{{ auth.user?.name || auth.user?.username }} · {{ dateLine }}</span></header>
 
+    <section class="goal-entry"><div><strong>从测试目标推进到质量结论</strong><p>交给 AI 理解需求、准备方案和跟进执行，集中处理业务决定与证据缺口。</p></div><el-button type="primary" @click="$router.push('/commander')">进入测试目标</el-button></section>
     <!-- ② KPI 指标墙：今日派单流转状态维度 -->
     <div v-if="!isEmpty" class="kpi-wall" v-loading="ovLoading" element-loading-background="rgba(255,255,255,0.6)">
       <div class="kpi ring">
@@ -291,6 +292,7 @@ function roleClass(pid) {
 </script>
 
 <style scoped>
+.goal-entry{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:20px;margin:20px 0;background:var(--el-color-primary-light-9);border-radius:12px}.goal-entry p{color:var(--el-text-color-secondary);margin:8px 0 0;line-height:1.6}
 .workspace-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; }
 .workspace-head h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
 .workspace-head span { font-size: 13px; color: var(--el-text-color-secondary); }

@@ -172,11 +172,15 @@ def create_app() -> FastAPI:
             from app.services.scheduler import reap_stale_ai_tasks
             reap_stale_ai_tasks(max_age_minutes=0)
             ai_jobs.start_pool()
+            from app.services import test_missions
+            test_missions.start()
         except Exception:
             logger.exception("启动 AI 任务队列/worker 池失败（不影响主服务）")
 
     @app.on_event("shutdown")
     def _shutdown():
+        from app.services import test_missions
+        test_missions.stop()
         try:
             from app.services.scheduler import shutdown_scheduler
             shutdown_scheduler()

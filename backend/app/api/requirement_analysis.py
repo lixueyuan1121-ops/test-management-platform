@@ -63,6 +63,8 @@ def to_out(db, row, detail=True):
               "confirmed_at": baseline.created_at.isoformat() if baseline else None,
               "created_at": row.created_at.isoformat() if row.created_at else None}
     if detail:
+        from app.services.requirement_memory import focus
+        result["review_focus"] = focus(db, row)
         result.update(source_text=row.source_text, source_info=json.loads(row.source_info),
                       visual_readings=json.loads(row.visual_readings or "[]"), draft=json.loads(row.draft) if row.draft else None)
         source = db.get(RequirementSource, row.source_id) if row.source_id else None
@@ -72,6 +74,10 @@ def to_out(db, row, detail=True):
 
 @router.post("/analyze")
 def analyze(body: RequirementAnalyzeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return ok(create_analysis(db, user, body))
+
+
+def create_analysis(db, user, body, commit=True):
     assert_project_role(db, user, body.project_id, WRITE)
     task = db.get(Task, body.task_id)
     if not db.get(Project, body.project_id) or not task or task.project_id != body.project_id:
@@ -92,10 +98,12 @@ def analyze(body: RequirementAnalyzeIn, db: Session = Depends(get_db), user: Use
     db.add(row)
     db.flush()
     job = ai_jobs.enqueue(db, "requirement_analysis", provider=provider, project_id=body.project_id,
-                         user_id=user.id, input={"analysis_id": row.id}, ref_kind="requirement_analysis", ref_id=row.id)
+                         user_id=user.id, input={"analysis_id": row.id}, ref_kind="requirement_analysis", ref_id=row.id, commit=False)
     row.job_id = job.id
-    db.commit()
-    return ok({"analysis_id": row.id, "job_id": job.id})
+    if commit:
+        db.commit()
+        ai_jobs.notify_new_job()
+    return {"analysis_id": row.id, "job_id": job.id}
 
 
 @router.get("/analyses")

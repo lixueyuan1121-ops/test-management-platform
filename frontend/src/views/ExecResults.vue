@@ -266,6 +266,7 @@ onMounted(async () => {
     const qPid = Number(route.query.project_id)
     pid.value = (qPid && projects.value.some((p) => p.id === qPid)) ? qPid : pickDefaultProjectId(projects.value)
     await onProjectChange()
+    if (tasks.value.some(t => t.id === Number(route.query.task_id))) { taskId.value = Number(route.query.task_id); await load() }
     const qBatch = route.query.batch_id
     if (qBatch && batches.value.some((b) => b.id === qBatch)) activeBatches.value = [qBatch]
   }

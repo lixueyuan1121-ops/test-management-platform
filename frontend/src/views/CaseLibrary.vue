@@ -228,7 +228,7 @@ import { Search } from '@element-plus/icons-vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAppStore } from '@/store/app'
 import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -258,7 +258,7 @@ const PLATFORMS = [
 ]
 
 const app = useAppStore()
-const router = useRouter()
+const router = useRouter(), route = useRoute()
 const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
@@ -347,8 +347,9 @@ onMounted(async () => {
   if (myDevices.value.length) runner.value = myDevices.value[0].runner_id
   projects.value = projectsRes.status === 'fulfilled' ? projectsRes.value : []
   if (projects.value.length) {
-    pid.value = pickDefaultProjectId(projects.value)
+    pid.value = projects.value.find(p => p.id === Number(route.query.project_id))?.id || pickDefaultProjectId(projects.value)
     await onProjectChange()
+    if (tasks.value.some(t => t.id === Number(route.query.task_id))) { taskId.value = Number(route.query.task_id); await reload() }
   }
 })
 

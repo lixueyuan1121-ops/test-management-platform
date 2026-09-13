@@ -272,7 +272,7 @@ def test_run_job_eval_judge():
 
 class _FakeScriptEngine:
     def is_available(self): return True
-    def generate_script(self, kind, title, steps, expected, project_id=None):
+    def generate_script(self, kind, title, steps, expected, project_id=None, sub_product=""):
         return [{"action": "goto", "url": "/"}], None   # (script_list, err)
 
 
@@ -314,7 +314,7 @@ class _FakeGenEngine:
     def stream_generate(self, *_a, **_kw):
         yield {"type": "result", "text": self._CASES,
                "output_tokens": 10, "cost_usd": 0.01, "duration_ms": 123}
-    def parse_testcases(self, raw, project_id=None):
+    def parse_testcases(self, raw, project_id=None, sub_product=""):
         from app.services import claude_runner
         return claude_runner.parse_testcases(raw, project_id=project_id)
 
@@ -364,7 +364,7 @@ class _ShardAwareEngine:
 
     def is_available(self): return True
 
-    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None, no_script=False):
+    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None, no_script=False, sub_product=""):
         return f"P::{shard['id'] if shard else 'full'}"
 
     def stream_generate(self, requirement, project_id=None, timeout=None, pages=None,
@@ -379,7 +379,7 @@ class _ShardAwareEngine:
                                     "expected": "成", "priority": "P1", "kind": "manual"}], ensure_ascii=False),
                "output_tokens": 10, "cost_usd": 0.01, "duration_ms": 123}
 
-    def parse_testcases(self, raw, project_id=None):
+    def parse_testcases(self, raw, project_id=None, sub_product=""):
         from app.services import claude_runner
         return claude_runner.parse_testcases(raw, project_id=project_id)
 
@@ -519,4 +519,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with patch("app.db.session.SessionLocal", _Session):
+        main()

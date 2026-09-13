@@ -34,7 +34,7 @@ def register_handler(kind: str, fn) -> None:
 def enqueue(db: Session, kind: str, *, provider: str | None = None,
             project_id: int | None = None, user_id: int | None = None,
             input: dict | None = None, ref_kind: str | None = None,
-            ref_id: int | None = None) -> AiJob:
+            ref_id: int | None = None, commit: bool = True) -> AiJob:
     """建一条 pending job(输入快照 json.dumps),commit,唤醒 worker。返回该 job。"""
     job = AiJob(
         kind=kind,
@@ -46,8 +46,12 @@ def enqueue(db: Session, kind: str, *, provider: str | None = None,
         ref_kind=ref_kind,
         ref_id=ref_id,
     )
-    db.add(job); db.commit(); db.refresh(job)
-    notify_new_job()
+    db.add(job)
+    if commit:
+        db.commit(); db.refresh(job)
+        notify_new_job()
+    else:
+        db.flush()  # caller commits the job pointer and domain transition atomically
     return job
 
 
@@ -97,6 +101,8 @@ def get_job(db: Session, job_id: int) -> AiJob | None:
 
 def _ensure_handlers() -> None:
     """惰性 import 各特性模块,触发其 register_handler(避免循环导入,worker 启动/首跑前确保就位)。"""
+    if "mission_plan" not in _HANDLERS:
+        import app.services.test_missions  # noqa: F401
     if "requirement_analysis" not in _HANDLERS:
         import app.services.requirement_analysis  # noqa: F401
     if "triage" not in _HANDLERS:

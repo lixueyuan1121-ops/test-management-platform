@@ -132,6 +132,11 @@ def run_analysis_job(db, job):
     source = db.get(RequirementSource, row.source_id) if row.source_id else None
     materials = json.loads(source.materials) if source else []
     provider = row.provider
+    from app.services.requirement_memory import context
+    previous_context = context(db, row)
+    from app.models import TestMission
+    mission = db.get(TestMission, inp["mission_id"]) if inp.get("mission_id") else None
+    goal = mission.goal if mission and mission.analysis_id == row.id and mission.project_id == row.project_id else None
     db.commit()  # Release the database connection before model calls.
     engine = generators.get_provider(provider)
     vision_engine, vision_provider = engine, provider
@@ -151,6 +156,11 @@ def run_analysis_job(db, job):
         return [], None
     ai_jobs._persist_with_retry(store_visuals, factory)
     prompt = analysis_prompt(text, visuals, source_info)
+    if goal:
+        prompt += "\n【用户测试目标】\n" + encode(goal) + "\n用目标帮助组织理解和识别重点；不得因此静默删除需求中的范围，范围取舍需人确认。"
+    if previous_context:
+        prompt += "\n【同项目历史人工确认，仅供核对关联与发现冲突】\n" + encode(previous_context)
+        prompt += "\n历史规则不是当前需求原文，不得标为原文明确或自动确认为本期范围；冲突必须列入澄清问题。"
     if len(prompt) > 200000:
         raise ValueError("正文与图片识别内容过长，请按模块拆分；图片识别结果已保留")
     obj = parse_object(collect(engine, prompt))
