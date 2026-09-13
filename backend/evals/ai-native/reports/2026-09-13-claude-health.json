@@ -1,0 +1,16 @@
+{
+  "duration_seconds": 6.29,
+  "events": [
+    {
+      "type": "delta",
+      "text": "OK"
+    },
+    {
+      "type": "result",
+      "text": "OK",
+      "cost_usd": 0.42659400000000003
+    }
+  ],
+  "prompt": "仅回复 OK，不执行任何工具。",
+  "contains_requirement_data": false
+}

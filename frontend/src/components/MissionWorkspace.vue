@@ -41,11 +41,11 @@
             <el-button size="small" @click="reviewOpen = true">查看需求与图片依据</el-button>
           </el-collapse-item></el-collapse>
           <section v-if="mission.plan?.cases?.length && (mission.phase !== 'completed' || showPlan)" aria-label="测试方案" class="plan-card">
-            <h3>测试方案</h3><p>{{ mission.plan.summary }}</p>
+            <h3>测试方案</h3><p>{{ mission.plan.summary }}</p><MissionQualityReview :quality="mission.plan.quality" :cases="mission.plan.cases" :repairs="mission.policy.repairs || []" :disabled="!canWrite || acting || mission.paused || mission.phase !== 'awaiting_approval'" @repair="data => act('apply_repair', data)" @clarify="reviewOpen = true" />
             <ul v-if="mission.plan.risks?.length"><li v-for="risk in mission.plan.risks" :key="risk">{{ risk }}</li></ul>
             <el-alert v-if="mission.plan.missing_criteria?.length" :title="`方案尚未覆盖 ${mission.plan.missing_criteria.length} 个验收条件；会保留在最终报告中`" type="warning" :closable="false" />
             <article v-for="c in mission.plan.cases" :key="c.id" class="case-row">
-              <el-checkbox v-if="mission.phase === 'awaiting_approval'" :model-value="selectedIds.includes(c.id)" :disabled="!canWrite || c.kind === 'manual' || acting || mission.paused" @change="toggleCase(c.id, $event)">{{ c.kind === 'manual' ? '待人工处理' : '纳入本次执行' }}</el-checkbox>
+              <el-checkbox v-if="mission.phase === 'awaiting_approval'" :model-value="selectedIds.includes(c.id)" :disabled="!canWrite || c.kind === 'manual' || !caseClear(c) || acting || mission.paused" @change="toggleCase(c.id, $event)">{{ c.kind === 'manual' ? '待人工处理' : '纳入本次执行' }}</el-checkbox>
               <h4>#{{ c.id }} {{ c.title }} <el-tag size="small" :type="c.reused ? 'success' : 'info'">{{ c.reused ? '复用已有用例' : '新补充用例' }}</el-tag></h4>
               <p>{{ c.reason }}</p><p class="hint">{{ c.platform }} · {{ c.kind }} · 验收条件 {{ c.criterion_ids.join('、') }}</p>
               <el-collapse><el-collapse-item title="核对前置、步骤、预期与来源" :name="c.id"><dl><dt>前置条件</dt><dd>{{ c.precondition || '未填写' }}</dd><dt>操作步骤</dt><dd>{{ c.steps }}</dd><dt>预期结果</dt><dd>{{ c.expected }}</dd><dt>覆盖关联来源</dt><dd v-for="p in c.provenance" :key="p.criterion_id">{{ p.criterion_id }} ← 版本 #{{ p.baseline_id }} / {{ p.source_criterion_id }}</dd></dl><el-button size="small" @click="openCases">在用例库查看或修订</el-button></el-collapse-item></el-collapse>
@@ -58,18 +58,18 @@
                 <el-form-item label="执行预算（分钟，包含排队）"><el-input-number v-model="budget" :min="5" :max="240" aria-label="执行预算" /></el-form-item>
                 <el-checkbox v-model="retry">允许环境阻塞自动复测一次（仅 AI 高置信度归因，保留原失败）</el-checkbox>
                 <el-checkbox v-model="reviewed" class="reviewed-check">我已核对所选用例的前置、步骤、预期及验收关联，授权在该设备和预算内执行</el-checkbox>
-                <el-button type="primary" :loading="acting" :disabled="!reviewed || !runner || !selectedIds.length" @click="act('approve')">确认方案并开始执行</el-button>
+                <el-button type="primary" :loading="acting" :disabled="!reviewed || !runner || !selectedIds.length || selectedIds.some(id => !caseClear(mission.plan.cases.find(c => c.id === id)))" @click="act('approve')">确认方案并开始执行</el-button>
               </el-form>
             </div>
           </section>
           <section v-if="mission.report && (mission.report.runs.length || mission.phase === 'completed')" aria-label="验收证据与质量结论" class="report-card">
-            <h3>{{ mission.phase === 'completed' ? '质量结论' : '执行证据' }}</h3>
+            <h3>{{ mission.phase === 'completed' ? '质量结论' : '执行证据' }}</h3><el-button v-if="canWrite && mission.phase === 'completed' && !mission.stale" size="small" :loading="acting" @click="act('recheck_evidence')">重新核验证据</el-button>
             <el-alert :title="mission.report.summary" :type="mission.report.verdict === 'ready_for_review' ? 'success' : 'warning'" :closable="false" />
             <p><b>{{ mission.report.verified }} / {{ mission.report.total }}</b> 个验收条件具备有效执行证据 · {{ mission.report.pending_rules.length }} 条规则仍待确认</p>
             <p class="hint">流程完成不等于可以发布。以下状态按当前版本与执行结果核对；重试通过保留为不稳定。</p>
-            <el-table class="desktop-evidence" :data="mission.report.criteria" size="small" border><el-table-column prop="id" label="验收条件" width="110" /><el-table-column prop="text" label="产品预期" min-width="180" /><el-table-column label="证据状态" width="115"><template #default="{ row }">{{ evidenceLabel(row.state) }}</template></el-table-column><el-table-column label="追溯" min-width="150"><template #default="{ row }"><span>执行 {{ row.run_ids.map(i => `#${i}`).join('、') || '未执行' }}</span><p class="hint">{{ row.source_section }} {{ row.source_quote }}</p><span v-if="row.unexecuted_case_ids?.length">未执行用例：{{ row.unexecuted_case_ids.join('、') }}</span></template></el-table-column></el-table>
-            <div class="mobile-evidence"><article v-for="c in mission.report.criteria" :key="c.id"><strong>{{ c.id }} · {{ evidenceLabel(c.state) }}</strong><p>{{ c.text }}</p><p class="hint">执行 {{ c.run_ids.map(i => `#${i}`).join('、') || '未执行' }} · {{ c.source_section }}</p><p class="hint">{{ c.source_quote }}</p></article></div>
-            <el-collapse><el-collapse-item v-if="mission.report.excluded_rules?.length" title="本期排除及原因" name="excluded"><p v-for="r in mission.report.excluded_rules" :key="r.id">{{ r.id }} · {{ r.reason }}</p></el-collapse-item><el-collapse-item title="执行记录、失败归因与重试链" name="runs"><article v-for="r in mission.report.runs" :key="r.id" class="run-row"><strong>#{{ r.id }} · {{ evidenceLabel(r.status) }} · 第 {{ r.attempt }} 次{{ r.retry_of ? ` · 复测自 #${r.retry_of}` : '' }}</strong><p>{{ r.reason }}</p><p v-if="r.triage?.kind">AI 归因参考：{{ r.triage.kind }} · {{ r.triage.reason }}<br />建议：{{ r.triage.suggestion }}</p><p v-if="r.triage_error">归因失败：{{ r.triage_error }}</p><el-button v-if="r.has_report" size="small" @click="showRunEvidence(r.id)">查看执行步骤</el-button><a v-if="safeEvidence(r.evidence_url)" :href="r.evidence_url" target="_blank" rel="noopener noreferrer">查看证据</a></article><el-button size="small" @click="openResults">打开执行结果详情</el-button></el-collapse-item>
+            <el-table class="desktop-evidence" :data="mission.report.criteria" size="small" border><el-table-column prop="id" label="验收条件" width="110" /><el-table-column prop="text" label="产品预期" min-width="180" /><el-table-column label="证据状态" width="115"><template #default="{ row }">{{ evidenceLabel(row.state) }}</template></el-table-column><el-table-column label="追溯" min-width="150"><template #default="{ row }"><span>执行 {{ row.run_ids.map(i => `#${i}`).join('、') || '未执行' }}</span><p class="hint">{{ row.source_section }} {{ row.source_quote }}</p><CriterionEvidence :assessments="row.assessments" @open="showRunEvidence" /><span v-if="row.unexecuted_case_ids?.length">未执行用例：{{ row.unexecuted_case_ids.join('、') }}</span></template></el-table-column></el-table>
+            <div class="mobile-evidence"><article v-for="c in mission.report.criteria" :key="c.id"><strong>{{ c.id }} · {{ evidenceLabel(c.state) }}</strong><p>{{ c.text }}</p><p class="hint">执行 {{ c.run_ids.map(i => `#${i}`).join('、') || '未执行' }} · {{ c.source_section }}</p><p class="hint">{{ c.source_quote }}</p><CriterionEvidence :assessments="c.assessments" @open="showRunEvidence" /></article></div>
+            <el-collapse><el-collapse-item v-if="mission.report.excluded_rules?.length" title="本期排除及原因" name="excluded"><p v-for="r in mission.report.excluded_rules" :key="r.id">{{ r.id }} · {{ r.reason }}</p></el-collapse-item><el-collapse-item title="执行记录、失败归因与重试链" name="runs"><article v-for="r in mission.report.runs" :key="r.id" class="run-row"><strong>#{{ r.id }} · {{ evidenceLabel(r.status) }} · 第 {{ r.attempt }} 次{{ r.retry_of ? ` · 复测自 #${r.retry_of}` : '' }}</strong><p>{{ r.reason }}</p><p v-if="r.triage?.kind">AI 归因参考：{{ r.triage.kind }} · {{ r.triage.reason }}<br />建议：{{ r.triage.suggestion }}</p><p v-if="r.assessment?.error">证据核验失败：{{ r.assessment.error }}</p><p v-if="r.triage_error">归因失败：{{ r.triage_error }}</p><el-button v-if="r.has_report" size="small" @click="showRunEvidence(r.id)">查看执行步骤</el-button><a v-if="safeEvidence(r.evidence_url)" :href="r.evidence_url" target="_blank" rel="noopener noreferrer">查看证据</a></article><el-button size="small" @click="openResults">打开执行结果详情</el-button></el-collapse-item>
               <el-collapse-item v-if="mission.final_report?.generated_at" title="查看流程收口时的报告快照" name="snapshot"><p>{{ mission.final_report.generated_at }} · {{ mission.final_report.summary }}</p><p>{{ mission.final_report.verified }} / {{ mission.final_report.total }} 个验收条件；后续纠偏或版本变化会在上方当前证据中体现。</p></el-collapse-item></el-collapse>
           </section>
           <section class="timeline-card"><h3>推进记录与人工决定</h3><ol><li v-for="e in mission.events" :key="e.id"><time>{{ e.created_at?.replace('T', ' ') }}</time><span>{{ e.message }}</span><small v-if="e.actor_id">决定人 #{{ e.actor_id }}</small><small v-if="e.data?.job_id">AI 任务 #{{ e.data.job_id }}</small></li></ol></section>
@@ -95,12 +95,14 @@
       </el-form>
       <template #footer><el-button @click="createOpen = false">取消</el-button><el-button type="primary" :loading="creating || importing" :disabled="!canCreate" @click="create">创建目标并开始分析</el-button></template>
     </el-dialog>
-    <el-dialog v-model="reviewOpen" title="产品理解与验收依据" width="min(1100px, 96vw)"><RequirementReview v-if="reviewOpen && analysis" :analysis-id="analysis.id" :project-id="mission.project_id" :task-id="mission.task_id" :requirement="analysis.source_text" embedded disabled /></el-dialog>
-    <el-dialog v-model="runOpen" title="执行证据" width="min(900px, 95vw)"><div v-loading="evidenceLoading"><template v-if="runEvidence"><p>#{{ runEvidence.id }} · {{ evidenceLabel(runEvidence.status) }} · {{ runEvidence.reason }}</p><ol v-if="Array.isArray(runEvidence.report)"><li v-for="(s, i) in runEvidence.report" :key="i" class="run-row"><strong>{{ s.ok === true ? '通过' : s.ok === false ? '失败' : '执行记录' }} · {{ s.action }}</strong><p>{{ s.desc || s.description }}</p><p v-if="s.error">{{ s.error }}</p><pre v-if="s.check">{{ JSON.stringify(s.check, null, 2) }}</pre></li></ol><pre v-else>{{ JSON.stringify(runEvidence.report, null, 2) }}</pre></template></div></el-dialog>
+    <el-dialog v-model="reviewOpen" title="产品理解与验收依据" width="min(1100px, 96vw)"><RequirementReview v-if="reviewOpen && analysis" :analysis-id="analysis.id" :project-id="mission.project_id" :task-id="mission.task_id" :requirement="analysis.source_text" embedded :disabled="!canWrite || mission.paused || !['clarifying', 'awaiting_approval', 'attention'].includes(mission.phase)" /></el-dialog>
+    <el-dialog v-model="runOpen" title="执行证据" width="min(900px, 95vw)"><div v-loading="evidenceLoading"><template v-if="runEvidence"><p>#{{ runEvidence.id }} · {{ evidenceLabel(runEvidence.status) }} · {{ runEvidence.reason }}</p><ol v-if="Array.isArray(runEvidence.report)"><li v-for="(s, i) in runEvidence.report" :key="i" class="run-row"><strong>{{ s.ok === true ? '通过' : s.ok === false ? '失败' : '执行记录' }} · {{ s.action }}</strong><p>{{ s.desc || s.description }}</p><p v-if="s.error">{{ s.error }}</p><p>步骤 {{ i + 1 }}</p><img v-if="typeof s.shot === 'string' && new RegExp(`^/uploads/execs/${runEvidence.id}/[0-9]+\\.png$`).test(s.shot)" :src="s.shot" :alt="`执行步骤 ${i + 1} 截图`" style="max-width:100%" /><pre v-if="s.check">{{ JSON.stringify(s.check, null, 2) }}</pre></li></ol><pre v-else>{{ JSON.stringify(runEvidence.report, null, 2) }}</pre></template></div></el-dialog>
     <el-dialog v-model="finishOpen" title="保留缺口并收口" width="min(520px, 94vw)"><p>未执行与未确认内容会保留为风险，不会标记为通过。</p><el-input v-model="finishNote" type="textarea" :rows="3" placeholder="例如：剩余场景需线下人工验证，本次先收口自动化准备" /><template #footer><el-button :disabled="!finishNote.trim()" :loading="acting" @click="act('finish')">记录原因并收口</el-button></template></el-dialog>
   </WorkspacePage>
 </template>
 <script setup>
+import MissionQualityReview from './MissionQualityReview.vue'
+import CriterionEvidence from './CriterionEvidence.vue'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/store/app'
@@ -118,9 +120,9 @@ const selectedIds = ref([]), runner = ref(''), budget = ref(60), retry = ref(fal
 let timer, disposed = false, selectionVersion = 0, projectVersion = 0, refreshing = false
 const canWrite = computed(() => auth.isPlatformAdmin || auth.memberships?.some(m => m.project_id === projectId.value && ['admin', 'member'].includes(m.role)))
 const canCreate = computed(() => canWrite.value && goal.value.trim().length >= 3 && (sourceMode.value === 'existing' ? !!existingAnalysisId.value : !!taskId.value && !!requirement.value.trim() && (!sourceUrl.value.trim() || sourceUrl.value === importedUrl.value) && providers.value.some(p => p.id === provider.value && p.available)))
-const phaseLabel = p => ({ analyzing:'理解需求', clarifying:'待确认验收', generating:'补充用例', planning:'制定方案', awaiting_approval:'待授权执行', executing:'执行中', triaging:'归因与复测', attention:'需要处理', completed:'已收口' }[p] || p)
-const evidenceLabel = s => ({ verified:'证据齐备', missing:'待补验证', stale:'内容已变化', pending:'等待执行', running:'执行中', passed:'执行通过', failed:'执行失败', blocked:'执行阻塞', flaky:'重试后通过', unreviewed:'待核对用例', no_evidence:'缺少证据' }[s] || s)
-const progressMessage = computed(() => ({ analyzing:'AI 正在理解正文、图片与历史项目规则', clarifying:'需要你确认业务意图', generating:'AI 正在为未覆盖的验收条件补充用例', planning:'AI 正在选择用例并说明风险与取舍', awaiting_approval:'需要你核对方案并授权执行', executing:'正在等待执行机回传结果', triaging:'AI 正在归因，并按授权条件决定是否复测', attention:'存在需要处理的阻碍', completed:'流程已收口，请查看质量结论与证据缺口' }[mission.value?.phase] || ''))
+const phaseLabel = p => ({ analyzing:'理解需求', clarifying:'待确认验收', generating:'补充用例', planning:'规划与独立审查', verifying:'核验证据', awaiting_approval:'待授权执行', executing:'执行中', triaging:'归因与复测', attention:'需要处理', completed:'已收口' }[p] || p)
+const evidenceLabel = s => ({ verified:'证据支持', verifying:'核验中', insufficient:'证据不足', contradicted:'证据冲突', missing:'待补验证', stale:'内容已变化', pending:'等待执行', running:'执行中', passed:'执行通过', failed:'执行失败', blocked:'执行阻塞', flaky:'重试后通过', unreviewed:'待核对用例', no_evidence:'缺少证据' }[s] || s)
+const progressMessage = computed(() => mission.value?.phase === 'awaiting_approval' && mission.value?.plan?.quality?.status !== 'passed' ? '需要处理用例审查问题，或重新准备方案完成审查' : ({ analyzing:'AI 正在理解正文、图片与历史项目规则', clarifying:'需要你确认业务意图', generating:'AI 正在为未覆盖的验收条件补充用例', planning:'AI 正在规划方案并独立检查用例质量', verifying:'AI 正在对照实际断言和截图核验产品预期', awaiting_approval:'需要你核对方案并授权执行', executing:'正在等待执行机回传结果', triaging:'AI 正在归因，并按授权条件决定是否复测', attention:'存在需要处理的阻碍', completed:'流程已收口，请查看质量结论与证据缺口' }[mission.value?.phase] || ''))
 const messageOf = e => e?.response?.data?.msg || e?.response?.data?.detail || e?.message || '操作失败'
 const safeEvidence = url => typeof url === 'string' && (/^https?:\/\//i.test(url) || /^\/(?!\/)/.test(url))
 async function loadContext() {
@@ -156,7 +158,7 @@ async function fetchSelected(id, version) {
   const value = await getTestMission(id)
   if (disposed || version !== selectionVersion || (mission.value?.id === id && value.revision < mission.value.revision)) return
   if (mission.value?.id !== id || mission.value?.plan?.baseline_id !== value.plan?.baseline_id || JSON.stringify(mission.value?.plan?.cases?.map(c => c.hash)) !== JSON.stringify(value.plan?.cases?.map(c => c.hash))) {
-    selectedIds.value = (value.plan?.cases || []).filter(c => c.kind !== 'manual').map(c => c.id); reviewed.value = false
+    selectedIds.value = (value.plan?.cases || []).filter(c => c.kind !== 'manual' && caseClear(c, value.plan)).map(c => c.id); reviewed.value = false
   }
   const needsAnalysis = analysis.value?.id !== value.analysis_id || (value.phase === 'clarifying' && mission.value?.phase !== 'clarifying')
   mission.value = value
@@ -189,14 +191,19 @@ async function create() {
   } catch(e){ error.value=messageOf(e) } finally{ creating.value=false }
 }
 function toggleCase(id, checked) { selectedIds.value = checked ? [...new Set([...selectedIds.value, id])] : selectedIds.value.filter(i => i !== id); reviewed.value=false }
-async function act(action) {
+async function act(action, extra = {}) {
   acting.value=true; error.value=''
-  try { const value=await decideTestMission(mission.value.id,{ revision:mission.value.revision, action, runner:runner.value, max_retries:retry.value ? 1 : 0, time_budget_minutes:budget.value, case_ids:selectedIds.value, reviewed:reviewed.value, note:finishNote.value }); mission.value=value; finishOpen.value=false; await refresh() }
+  try { const value=await decideTestMission(mission.value.id,{ ...extra, revision:mission.value.revision, action, runner:runner.value, max_retries:retry.value ? 1 : 0, time_budget_minutes:budget.value, case_ids:selectedIds.value, reviewed:reviewed.value, note:finishNote.value }); mission.value=value; finishOpen.value=false; await refresh() }
   catch(e) { error.value=messageOf(e); await refresh() }
   finally { acting.value=false }
 }
 async function showRunEvidence(runId) { runOpen.value=true; runEvidence.value=null; evidenceLoading.value=true; try { runEvidence.value=await getMissionRunEvidence(mission.value.id,runId) } catch(e){error.value=messageOf(e);runOpen.value=false} finally{evidenceLoading.value=false} }
 function openCases() { router.push({ path:'/case-library', query:{ project_id:projectId.value, task_id:mission.value.task_id } }) }
+function caseClear(c, plan = mission.value?.plan) {
+  const q = plan?.quality
+  const r = q?.cases?.find(r => r.case_id === c?.id)
+  return !!r && q.version === 'mission-quality-v1' && r.case_hash === c.hash && !r.findings.length
+}
 function openResults() { router.push({ path:'/exec-results', query:{ project_id:projectId.value, task_id:mission.value.task_id, batch_id:mission.value.report?.runs?.[0]?.batch_id } }) }
 onMounted(async () => {
   try {

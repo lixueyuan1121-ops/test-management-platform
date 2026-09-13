@@ -18,10 +18,11 @@ from app.models import (TestMission, MissionEvent, MissionRun, RequirementAnalys
 from app.core.deps import assert_project_role
 from app.core.enums import ExecStatus, AiTaskStatus, ReviewStatus, WRITE_ROLES, UserStatus
 from app.services import ai_jobs, generators
+from app.services import mission_quality as quality
 from app.services.requirement_analysis import approved_criteria, case_hash, collect, encode, parse_object
 
 log = logging.getLogger("test_platform")
-ACTIVE = {"analyzing", "clarifying", "generating", "planning", "executing", "triaging"}
+ACTIVE = {"analyzing", "clarifying", "generating", "planning", "executing", "triaging", "verifying"}
 RUNNING = {ExecStatus.pending, ExecStatus.running}
 
 
@@ -86,6 +87,8 @@ def candidates(db, mission):
     found = {}
     cache = {}
     for link, tc, previous, analysis in links:
+        if tc.id in unpack(mission.policy).get("superseded_case_ids", []):
+            continue
         if previous.id == baseline.id:
             cid = link.criterion_id if link.criterion_id in criteria else None
         else:
@@ -102,6 +105,7 @@ def candidates(db, mission):
         item = found.setdefault(tc.id, {"id": tc.id, "title": tc.title, "steps": tc.steps or "",
             "expected": tc.expected or "", "precondition": tc.precondition or "", "priority": tc.priority,
             "kind": tc.exec_kind, "platform": tc.platform, "hash": execution_hash(tc),
+            "script": unpack(tc.script, []),
             "criterion_ids": [], "reused": tc.ai_task_id != mission.ai_task_id,
             "provenance": [], "reviewed": tc.adopted and link.reviewed_hash == case_hash(tc)})
         if cid not in item["criterion_ids"]:
@@ -182,6 +186,8 @@ AI 无权确认产品规则、修改验收结论或扩大执行权限。
             "missing_criteria": sorted(set(approved_criteria(payload)) - covered),
             "risks": [str(r)[:1000] for r in proposed.get("risks", [])[:20]] if isinstance(proposed.get("risks"), list) else [],
             "baseline_id": None, "candidate_count": len(options)}
+    # A separate call sees the confirmed contract and cases, not the planner's justification.
+    plan["quality"] = quality.review_plan(generators.get_provider(provider), payload, chosen)
     def persist(s):
         row = lock(s, mid)
         if row.active_job_id == jid and row.phase == "planning":
@@ -211,6 +217,8 @@ def evidence_report(db, m):
     superseded = {r.retry_of for _, r in pairs if r.retry_of}
     latest = [(link, r) for link, r in pairs if r.id not in superseded]
     stale = not baseline_current(db, m)
+    assessments = {r.id: quality.current_assessment(db, m, link, r, baseline)
+                   for link, r in latest if r.status == ExecStatus.passed} if baseline else {}
     rows = []
     run_rows = []
     for link, r in pairs:
@@ -218,7 +226,8 @@ def evidence_report(db, m):
             "attempt": r.attempt, "retry_of": r.retry_of, "flaky": bool(r.flaky or (r.attempt > 1 and r.status == ExecStatus.passed)),
             "reason": r.reason, "evidence_url": r.evidence_url, "has_report": bool(r.report),
             "triage": unpack(r.triage), "triage_error": jobs[link.triage_job_id].error if link.triage_job_id in jobs else None,
-            "criterion_ids": unpack(link.criterion_ids, []), "latest": r.id not in superseded})
+            "criterion_ids": unpack(link.criterion_ids, []), "latest": r.id not in superseded,
+            "assessment": assessments.get(r.id)})
     for cid, criterion in criteria.items():
         related = [(link, r) for link, r in latest if cid in unpack(link.criterion_ids, [])]
         states = []
@@ -239,10 +248,14 @@ def evidence_report(db, m):
             elif not has_evidence(r):
                 state = "no_evidence"
             else:
-                state = "verified"
+                assessment = assessments.get(r.id, {})
+                judgment = next((c for c in assessment.get("criteria", []) if c["criterion_id"] == cid), {})
+                state = ("verified" if judgment.get("verdict") == "supported" else
+                         "contradicted" if judgment.get("verdict") == "contradicted" else
+                         "verifying" if assessment.get("status") in {"pending", "running"} else "insufficient")
             states.append(state)
         # One successful happy path cannot hide another failed/missing path for the same criterion.
-        priority = ["stale", "failed", "blocked", "pending", "flaky", "unreviewed", "no_evidence", "verified"]
+        priority = ["stale", "failed", "blocked", "contradicted", "pending", "flaky", "unreviewed", "no_evidence", "verifying", "insufficient", "verified"]
         state = next((s for s in priority if s in states), "missing")
         unexecuted = [c["id"] for c in unpack(m.plan).get("cases", []) if cid in c["criterion_ids"]
                       and c["id"] not in {r.test_case_id for _, r in related}]
@@ -250,6 +263,8 @@ def evidence_report(db, m):
             state = "missing"
         rows.append({"id": cid, "text": criterion["text"], "rule_id": criterion["rule_id"],
             "state": state, "unexecuted_case_ids": unexecuted, "run_ids": [r.id for _, r in related], "source_quote": criterion["rule"].get("source_quote"),
+            "assessments": [{"run_id": r.id, "status": assessments.get(r.id, {}).get("status"),
+                **item} for _, r in related for item in assessments.get(r.id, {}).get("criteria", []) if item["criterion_id"] == cid],
             "source_section": criterion["rule"].get("source_section"), "source_material_ids": criterion["rule"].get("source_material_ids", [])})
     pending_rules = [r["id"] for r in payload.get("rules", []) if r.get("status") == "pending"]
     verified = sum(r["state"] == "verified" for r in rows)
@@ -322,7 +337,7 @@ def advance(db, mid):
             # Domain output may have committed just before a restart interrupted job bookkeeping.
             if m.phase == "generating" and m.ai_task_id and db.query(TestCase.id).filter_by(ai_task_id=m.ai_task_id).first():
                 start_plan(db, m); return
-            if m.phase == "planning" and unpack(m.plan).get("cases"):
+            if m.phase == "planning" and unpack(m.plan).get("cases") and unpack(m.plan).get("quality"):
                 m.phase = "awaiting_approval"
                 event(db, m, "plan_ready", "测试方案已恢复，请核对并授权执行")
                 return
@@ -385,7 +400,15 @@ def advance(db, mid):
     if waiting:
         m.phase = "triaging"
     else:
-        finish(db, m)
+        baseline = db.get(RequirementBaseline, m.baseline_id)
+        verifying = False
+        for link, run in latest:
+            if run.status == ExecStatus.passed:
+                verifying = quality.enqueue_assessment(db, m, link, run, baseline) or verifying
+        if verifying:
+            m.phase = "verifying"
+        else:
+            finish(db, m)
 
 
 _stop = threading.Event()

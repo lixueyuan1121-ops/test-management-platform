@@ -270,3 +270,11 @@ test('mock cleanup failure cannot be reported as a clean pass', async () => {
   const r = await runScript(gui, [{ action: 'assert_visible', target: { key: 'status' } }]);
   assert.equal(r.verdict, 'fail'); assert.match(r.reason, /清理失败/);
 });
+
+test("通过的文本断言保留真实值及对象，供独立验收核验", async () => {
+  const r = await runScript(fakeGui(), [{ action: "assert_text", target: { key: "file-name" }, args: { expected: "x" }, desc: "确认原文件存在" }], () => {}, null);
+  assert.equal(r.verdict, "pass");
+  assert.equal(r.report[0].check.actual, "x");
+  assert.equal(r.report[0].check.expected, "x");
+  assert.equal(r.report[0].check.target.key, "file-name");
+});

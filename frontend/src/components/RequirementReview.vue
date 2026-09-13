@@ -40,6 +40,7 @@
       </el-collapse>
     </article>
     <el-tabs v-if="draft || visuals.length" v-model="tab" class="review-tabs">
+      <el-tab-pane v-if="draft" :label="`具体场景（${draft.scenarios?.length || 0}）`" name="scenarios"><AcceptanceScenarios :draft="draft" :disabled="disabled || working || saving" @image="id => showImage(visuals.find(v => v.id === id))" /></el-tab-pane>
       <el-tab-pane v-if="draft" label="本期范围" name="summary">
         <el-form label-position="top" :disabled="disabled || working || saving">
           <el-form-item v-for="field in overviewFields" :key="field.key" :label="field.label">
@@ -110,6 +111,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { analyzeRequirement, listRequirementAnalyses, getRequirementAnalysis, saveRequirementDraft, confirmRequirement, getRequirementImage, pollAiJob } from '@/api'
+import AcceptanceScenarios from './AcceptanceScenarios.vue'
 import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({ projectId: Number, taskId: Number, requirement: { type: String, default: '' }, provider: String,
@@ -118,7 +120,7 @@ const props = defineProps({ projectId: Number, taskId: Number, requirement: { ty
 const emit = defineEmits(['ready', 'busy', 'restore', 'loaded'])
 const analysis = ref(null), draft = ref(null), history = ref([]), historyId = ref(null)
 const working = ref(false), saving = ref(false), dirty = ref(false), error = ref(''), jobStatus = ref(''), baselineId = ref(null)
-const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('summary'), editingRule = ref(null)
+const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('scenarios'), editingRule = ref(null)
 const imageOpen = ref(false), imageLoading = ref(false), imageUrl = ref(''), imageReading = ref(null)
 let version = 0, historyVersion = 0, controller = null, hydrating = false, restoring = false, disposed = false, imageVersion = 0
 const changeLabels = { scope: '本期范围', module: '模块', platform: '平台', condition: '前提', action: '操作', expected: '预期结果', forbidden: '禁止行为', boundaries: '边界', evidence: '验证方式', criteria: '验收条件' }
@@ -143,6 +145,12 @@ const blockers = computed(() => {
     if (visuals.value.some(v => rule.source_material_ids.includes(v.id) && v.status !== 'read') && !rule.review_note.trim()) messages.push(`${rule.id}：请说明关联图片的核对结论`)
   }
   for (const q of draft.value.questions) if (q.blocking && !q.answer.trim() && (!q.rule_ids.length || selected.some(r => q.rule_ids.includes(r.id)))) messages.push(`${q.id}：${q.question}`)
+  if (draft.value.scenario_review_required || draft.value.scenarios?.length) {
+    const scenes = (draft.value.scenarios || []).filter(s => selected.some(r => r.id === s.rule_id))
+    const covered = new Set(scenes.flatMap(s => s.criterion_ids))
+    for (const r of selected) for (const c of r.criteria) if (!covered.has(c.id)) messages.push(`${c.id}：请补充具体场景`)
+    for (const s of scenes) if (!s.reviewed || !s.actor.trim() || !s.given.trim() || !s.when.trim() || !s.then.trim()) messages.push(`${s.id}：请补齐场景并核对`)
+  }
   if (warnings.value.length && !confirmationNote.value.trim()) messages.push('请在确认说明中记录资料缺口的处理或排除范围')
   return messages
 })
@@ -229,6 +237,7 @@ async function save() {
 async function confirm() {
   if (blockers.value.length || !scopeReviewed.value) return
   if (!(await save())) return
+  if (blockers.value.length) { error.value = '修改已保存，请重新核对受影响的场景后确认'; return }
   saving.value = true; error.value = ''
   try {
     const data = await confirmRequirement(analysis.value.id, { revision: analysis.value.revision, source_hash: analysis.value.source_hash, scope_reviewed: scopeReviewed.value, confirmation_note: confirmationNote.value })
@@ -248,6 +257,7 @@ function addCriterion() {
   r.criteria.push({ id: `${r.id}-C${i}`, text: '' }); r.status = 'pending'
 }
 async function showImage(reading) {
+  if (!reading) return
   clearImage(); imageReading.value = reading; imageOpen.value = true; imageLoading.value = true
   const current = ++imageVersion
   try { const blob = await getRequirementImage(analysis.value.source_id, reading.id); if (current === imageVersion && !disposed) imageUrl.value = URL.createObjectURL(blob) }

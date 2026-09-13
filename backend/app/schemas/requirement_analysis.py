@@ -44,6 +44,19 @@ class ClarificationQuestion(ReviewModel):
     answer: str = Field(default="", max_length=3000)
 
 
+class AcceptanceScenario(ReviewModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    rule_id: str
+    criterion_ids: list[str] = Field(min_length=1, max_length=16)
+    actor: str = Field(default="", max_length=300)
+    given: str = Field(default="", max_length=2000)
+    when: str = Field(default="", max_length=2000)
+    then: str = Field(default="", max_length=3000)
+    counterexample: str = Field(default="", max_length=2000)
+    kind: Literal["normal", "boundary", "error"] = "normal"
+    reviewed: bool = False
+
+
 class RequirementDraft(ReviewModel):
     summary: str = Field(default="", max_length=10000)
     scope: str = Field(default="", max_length=10000)
@@ -51,6 +64,8 @@ class RequirementDraft(ReviewModel):
     flow: str = Field(default="", max_length=10000)
     rules: list[AcceptanceRule] = Field(min_length=1, max_length=120)
     questions: list[ClarificationQuestion] = Field(default_factory=list, max_length=120)
+    scenarios: list[AcceptanceScenario] = Field(default_factory=list, max_length=500)
+    scenario_review_required: bool = False  # Old baselines remain readable.
 
     @model_validator(mode="after")
     def unique_references(self):
@@ -65,6 +80,12 @@ class RequirementDraft(ReviewModel):
         for q in self.questions:
             if set(q.rule_ids) - set(rule_ids):
                 raise ValueError(f"问题 {q.id} 引用了不存在的规则")
+        if len({s.id for s in self.scenarios}) != len(self.scenarios):
+            raise ValueError("场景编号重复")
+        by_rule = {r.id: {c.id for c in r.criteria} for r in self.rules}
+        for s in self.scenarios:
+            if s.rule_id not in by_rule or set(s.criterion_ids) - by_rule[s.rule_id]:
+                raise ValueError(f"场景 {s.id} 必须关联同一规则内的有效验收条件")
         return self
 
 

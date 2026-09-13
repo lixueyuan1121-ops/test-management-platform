@@ -12,6 +12,7 @@ from app.schemas.test_mission import MissionCreate, MissionDecision
 from app.schemas.exec_queue import EnqueueCasesIn
 from app.services import ai_jobs
 from app.services import test_missions as svc
+from app.services import mission_quality as quality
 from app.services.requirement_analysis import encode, case_hash, approved_criteria
 
 router = APIRouter(prefix="/api/test-missions", tags=["test-missions"])
@@ -45,11 +46,23 @@ def output(db, m, detail=False):
 @router.post("")
 def create(body: MissionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, tuple(WRITE_ROLES))
+    fresh_analysis = bool(body.requirement)
     if body.analysis_id:
         from app.api.requirement_analysis import get_analysis
         analysis = get_analysis(db, user, body.analysis_id, True)
         if analysis.project_id != body.project_id or not analysis.task_id:
             raise HTTPException(400, "请选择当前项目且有关联任务的需求分析")
+        if analysis.draft and not svc.unpack(analysis.draft).get("scenario_review_required"):
+            # Upgrade old inputs through a new analysis; never rewrite an approved baseline.
+            from app.api.requirement_analysis import create_analysis
+            from app.schemas.requirement_analysis import RequirementAnalyzeIn
+            data = create_analysis(db, user, RequirementAnalyzeIn(project_id=analysis.project_id, task_id=analysis.task_id,
+                requirement=analysis.source_text, provider=analysis.provider, source_id=analysis.source_id,
+                source_url=analysis.source_url, source_title=analysis.source_title,
+                input_type=svc.unpack(analysis.source_info).get("input_type", "text"),
+                source_warnings=svc.unpack(analysis.source_info).get("warnings", [])), commit=False)
+            analysis = db.get(RequirementAnalysis, data["analysis_id"])
+            fresh_analysis = True
     else:
         from app.api.requirement_analysis import create_analysis
         data = create_analysis(db, user, body.requirement, commit=False)
@@ -59,7 +72,7 @@ def create(body: MissionCreate, db: Session = Depends(get_db), user: User = Depe
         active_job_id=analysis.job_id, phase="analyzing", revision=1,
         policy=encode({"max_cases": body.max_cases}), interventions=0)
     db.add(m); db.flush()
-    if body.requirement and analysis.job_id:
+    if fresh_analysis and analysis.job_id:
         db.get(AiJob, analysis.job_id).input = encode({"analysis_id": analysis.id, "mission_id": m.id})
     svc.event(db, m, "created", "测试目标已保存，后台将持续推进；业务验收与执行授权由人确认", actor=user.id)
     db.commit()
@@ -100,7 +113,7 @@ def metrics(project_id: int | None = None, days: int = Query(30, ge=1, le=365),
         "avg_duration_minutes": round(sum(durations) / len(durations) / 60, 1) if durations else None,
         "verified_criteria": covered, "total_criteria": total,
         "recorded_generation_cost_usd": round(sum(costs), 4) if costs else None,
-        "cost_samples": len(costs), "cost_note": "仅统计有实际费用记录的用例生成；分析、规划及执行费用未完整采集，不估算总成本。",
+        "cost_samples": len(costs), "cost_note": "仅统计有实际费用记录的用例生成；分析、规划、独立审查、证据核验及执行费用未完整采集，不估算总成本。",
         "metric_note": "按目标创建时间统计；完成表示流程收口，具备发布评审条件另计。有效覆盖按当前验收版本、用例核对与执行证据重算；平均耗时包含人工等待。"})
 
 
@@ -118,7 +131,8 @@ def run_evidence(mid: int, run_id: int, db: Session = Depends(get_db), user: Use
         raise HTTPException(404, "执行记录不属于该目标")
     # Never expose the execution payload: it contains API environment credentials.
     return ok({"id": run.id, "status": run.status.value, "reason": run.reason,
-               "report": svc.unpack(run.report, []), "evidence_url": run.evidence_url})
+               "report": svc.unpack(run.report, []), "evidence_url": run.evidence_url,
+               "assessment": quality.current_assessment(db, m, link, run, db.get(RequirementBaseline, m.baseline_id))})
 
 
 @router.post("/{mid}/decisions")
@@ -157,6 +171,51 @@ def decision(mid: int, body: MissionDecision, db: Session = Depends(get_db), use
         m.baseline_id = b.id; m.plan = "{}"; m.error = None; m.paused = False
         svc.event(db, m, "replan", "根据当前验收版本和用例内容重新准备方案", actor=user.id)
         svc.start_generation(db, m)
+    elif body.action == "apply_repair":
+        if m.phase != "awaiting_approval" or m.paused or not svc.baseline_current(db, m):
+            raise HTTPException(409, "只能修订当前待授权方案，请重新规划")
+        plan = svc.unpack(m.plan)
+        item = next((c for c in plan.get("cases", []) if c["id"] == body.repair_case_id), None)
+        review = next((c for c in plan.get("quality", {}).get("cases", []) if c["case_id"] == body.repair_case_id), {})
+        findings = review.get("findings", [])
+        repairs = svc.unpack(m.policy).get("repairs", [])
+        if not item or body.repair_finding_index >= len(findings) or item["id"] in repairs:
+            raise HTTPException(422, "没有可应用建议，或该用例已应用一次 AI 修订；请在用例库人工处理")
+        finding = findings[body.repair_finding_index]
+        if finding["kind"] == "clarification":
+            raise HTTPException(422, "业务歧义需要重新确认验收，不能自动修订预期")
+        db.execute(update(TestCase).where(TestCase.id == item["id"]).values(id=item["id"]))
+        tc = db.get(TestCase, item["id"])
+        if not tc:
+            raise HTTPException(409, "用例已删除，请重新准备方案")
+        db.refresh(tc)
+        if tc.project_id != m.project_id or svc.execution_hash(tc) != item["hash"]:
+            raise HTTPException(409, "用例已变化，请重新准备方案")
+        changes = {k: finding[f"suggested_{k}"] for k in ("steps", "expected", "precondition") if finding.get(f"suggested_{k}")}
+        if not changes:
+            raise HTTPException(422, "该问题没有可应用的修订建议")
+        before = {k: getattr(tc, k) for k in changes}
+        copied = {k: getattr(tc, k) for k in ("ai_task_id", "provider", "project_id", "sub_product", "task_id", "requirement_id",
+            "category", "title", "steps", "expected", "priority", "exec_kind", "platform", "kind_reason", "script", "page", "precondition")}
+        revised = TestCase(**{**copied, **changes}, adopted=False, review_status=ReviewStatus.pending)
+        db.add(revised); db.flush()
+        criteria = approved_criteria(svc.unpack(db.get(RequirementBaseline, m.baseline_id).payload))
+        for cid in item["criterion_ids"]:
+            db.add(RequirementCaseLink(test_case_id=revised.id, baseline_id=m.baseline_id, rule_id=criteria[cid]["rule_id"], criterion_id=cid))
+        m.policy = encode({**svc.unpack(m.policy), "repairs": [*repairs, tc.id, revised.id],
+            "superseded_case_ids": [*svc.unpack(m.policy).get("superseded_case_ids", []), tc.id]})
+        svc.event(db, m, "case_repaired", "已保存人工选择的修订副本，保留原用例；将重新规划并独立审查", {
+            "case_id": revised.id, "original_case_id": tc.id, "before": before, "after": changes, "reason": finding["reason"]}, user.id)
+        m.plan = "{}"; svc.start_plan(db, m)
+    elif body.action == "recheck_evidence":
+        if m.phase != "completed" or not svc.baseline_current(db, m):
+            raise HTTPException(409, "仅可重新核验当前版本的已收口目标")
+        baseline = db.get(RequirementBaseline, m.baseline_id)
+        for link in db.query(MissionRun).filter_by(mission_id=m.id).all():
+            run = db.get(ExecRun, link.run_id)
+            if run and run.status.value == "passed":
+                quality.enqueue_assessment(db, m, link, run, baseline, retry=True)
+        svc.event(db, m, "recheck_evidence", "已重新检查证据；只更新当前核验，不修改收口快照或重跑用例", actor=user.id)
     elif body.action == "approve":
         if m.phase != "awaiting_approval" or m.paused or not svc.baseline_current(db, m):
             raise HTTPException(409, "方案未就绪、已暂停或验收版本已变化，请刷新后重新规划")
@@ -175,6 +234,8 @@ def decision(mid: int, body: MissionDecision, db: Session = Depends(get_db), use
         ids = list(dict.fromkeys(body.case_ids))
         if not ids or len(ids) > svc.unpack(m.policy)["max_cases"] or any(i not in by_id for i in ids):
             raise HTTPException(422, "请选择方案内且不超过预算的自动化用例")
+        if any(not quality.case_is_clear(plan, by_id[i]) for i in ids):
+            raise HTTPException(422, "所选用例的独立审查未通过或已过期，请处理问题并重新准备方案")
         criteria = approved_criteria(svc.unpack(db.get(RequirementBaseline, m.baseline_id).payload))
         for cid in ids:
             db.execute(update(TestCase).where(TestCase.id == cid).values(id=cid))

@@ -26,6 +26,9 @@ class MissionTests(unittest.TestCase):
 
     def tick(self):
         svc.tick(self.Session); self.db.expire_all()
+        for job in self.db.query(AiJob).filter_by(kind="mission_evidence",status="pending").all():
+            ai_jobs.run_job(self.Session,job.id)
+        svc.tick(self.Session); self.db.expire_all()
 
     def decide(self,m,action,**kw):
         return self.client.post(f"/api/test-missions/{m['id']}/decisions",json={'revision':m['revision'],'action':action,**kw})
@@ -71,7 +74,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(self.decide(m,'approve',reviewed=True,runner='test-mac',case_ids=[m['plan']['cases'][0]['id']]).status_code,409)
         for _ in range(3): self.tick()
         self.assertEqual(self.db.query(ExecRun).count(),1)
-        run=self.db.query(ExecRun).one(); run.status=ExecStatus.passed; run.report=encode([{'ok':True,'action':'assert','desc':'确认弹窗，取消后文件保留'}])
+        run=self.db.query(ExecRun).one(); run.status=ExecStatus.passed; run.report=encode([{'ok':True,'action':'assert_text','desc':'确认弹窗，取消后文件保留','check':{'actual':'显示确认弹窗，取消后文件保留','expected':'显示确认弹窗，取消后文件保留','mode':'equals'}}])
         self.db.commit(); self.tick(); done=self.get(m['id'])
         self.assertEqual(done['phase'],'completed'); self.assertEqual((done['report']['verified'],done['report']['total']),(2,2))
         self.assertEqual(done['report']['verdict'],'ready_for_review')
@@ -173,7 +176,7 @@ class MissionTests(unittest.TestCase):
         plan['cases'].append({**plan['cases'][0], 'id':99999, 'kind':'manual', 'criterion_ids':['R1-C1']})
         row.plan=encode(plan); self.db.commit()
         self.approve(m)
-        run=self.db.query(ExecRun).one(); run.status=ExecStatus.passed; run.report='[{"ok":true}]'; self.db.commit(); self.tick()
+        run=self.db.query(ExecRun).one(); run.status=ExecStatus.passed; run.report=encode([{'ok':True,'action':'assert_text','check':{'actual':'显示确认弹窗，取消后文件保留','expected':'显示确认弹窗，取消后文件保留','mode':'equals'}}]); self.db.commit(); self.tick()
         report=self.get(m['id'])['report']
         self.assertEqual(report['total'],2); self.assertEqual(report['verified'],1)
         self.assertEqual(report['criteria'][0]['state'],'missing')

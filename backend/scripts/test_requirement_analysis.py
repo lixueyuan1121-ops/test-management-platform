@@ -39,6 +39,7 @@ def draft():
          "criteria": [{"id": "R1-C1", "text": "保护目录删除显示确认弹窗"},
                       {"id": "R1-C2", "text": "取消确认后文件保留"}]},
         {"id": "R2", "title": "可选回收策略", "source_type": "inferred"}],
+        "scenarios": [{"id":"S1", "rule_id":"R1", "criterion_ids":["R1-C1","R1-C2"], "actor":"文件所有者", "given":"保护目录内有文件", "when":"点击删除后取消", "then":"显示确认弹窗，取消后文件保留", "counterexample":"", "reviewed":False}],
         "questions": [{"id": "Q1", "question": "是否启用回收站？", "rule_ids": ["R2"]}]
     }).model_dump()
 
@@ -52,7 +53,16 @@ class FakeEngine:
 
     def stream_generate(self, _text, **kwargs):
         self.calls.append({"prompt": kwargs["prompt_builder"](), "images": kwargs.get("images")})
-        data = {"kind": "表格", "text": "|目录|行为|\n|保护目录|必须确认|", "uncertainties": ""} if kwargs.get("images") else self.response
+        prompt = kwargs["prompt_builder"]()
+        if prompt.startswith("[独立用例审查"):
+            inp = json.loads(prompt.rsplit("\n",1)[-1])
+            data = getattr(self, "quality_response", None) or {"cases":[{"case_id":c["id"], "checked_criterion_ids":c["criterion_ids"], "findings":[]} for c in inp["cases"]]}
+        elif prompt.startswith("[独立证据核验"):
+            inp = json.loads(prompt.rsplit("\n",1)[-1])
+            observed = [s for s in inp["steps"] if "actual" in s.get("check",{})]
+            data = getattr(self,"evidence_response",None) or {"criteria":[{"criterion_id":c["id"],"verdict":"supported" if observed else "insufficient","reason":"对照实际观察", "refs":[{"step_no":s["step_no"],"kind":"check","quote":json.dumps(s["check"],ensure_ascii=False),"region":""} for s in observed]} for c in inp["criteria"]]}
+        else:
+            data = {"kind": "表格", "text": "|目录|行为|\n|保护目录|必须确认|", "uncertainties": ""} if kwargs.get("images") else self.response
         yield {"type": "result", "text": json.dumps(data, ensure_ascii=False)}
 
 
@@ -106,6 +116,10 @@ class ReviewAPITests(unittest.TestCase):
         return response.json()["data"]
 
     def confirm(self, analysis, **kwargs):
+        if any(r["status"] == "confirmed" for r in analysis["draft"]["rules"]):
+            for scene in analysis["draft"].get("scenarios", []): scene["reviewed"] = True
+            saved = self.client.patch(f"/api/ai/requirements/analyses/{analysis['id']}", json={"revision":analysis["revision"],"draft":analysis["draft"]})
+            if saved.status_code == 200: analysis.update(saved.json()["data"])
         return self.client.post(f"/api/ai/requirements/analyses/{analysis['id']}/confirm", json={
             "revision": analysis["revision"], "source_hash": analysis["source_hash"], "scope_reviewed": True, **kwargs})
 

@@ -3,10 +3,9 @@
 设计要点：
 - **非交互**：`claude -p <prompt> --output-format stream-json --verbose`，逐行解析事件。
 - **安全**（关键）：`--disallowedTools` 禁用一切可改文件/执行命令/联网的内置工具，
-  `--strict-mcp-config` + 空 MCP 隔离本机 MCP 服务，cwd 指向临时目录避免读到项目
-  CLAUDE.md。纯文本生成本不需要工具，禁用是纵深防御。
-- **噪音过滤**：本机 SessionStart hook 会往 stream 里灌 system 事件（memory/skills），
-  解析层只挑 `assistant` 文本与最终 `result`，其余一律跳过。
+  `--strict-mcp-config` + 空 MCP 隔离本机 MCP 服务，关闭 skills 与非托管 hooks，
+  cwd 指向临时目录避免读到项目 CLAUDE.md。纯文本生成本不需要这些扩展。
+- **噪音过滤**：解析层只挑 `assistant` 文本与最终 `result`，其余事件跳过。
 - **成本/资源控制**：全局并发信号量（拿不到即拒绝），单次硬超时（后台读线程 + 队列，
   超时 kill 子进程）。
 - runner 只负责「跑 + 解析 + yield 事件」，不碰数据库；落库由 api 层完成。
@@ -564,12 +563,18 @@ def build_testcase_prompt(requirement: str, project_id: int | None = None, pages
 _PROMPT_ARGV_MAX = 12000
 
 
+# Keep existing auth/model/provider settings; only suppress unrelated local context.
+# Managed hooks still follow the CLI's organization policy and cannot be overridden here.
+_CONTEXT_ISOLATION_ARGS = ("--disable-slash-commands", "--settings", '{"disableAllHooks":true}')
+
+
 def _build_cmd(prompt: str, system_prompt: str | None = None, prompt_via_stdin: bool = False) -> list[str]:
     cmd = [
         _claude_bin(), "-p",
         *([] if prompt_via_stdin else [prompt]),
         "--output-format", "stream-json", "--verbose",
         "--append-system-prompt", system_prompt or _SYSTEM_PROMPT,
+        *_CONTEXT_ISOLATION_ARGS,
         "--disallowedTools", *_DISALLOWED_TOOLS,
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     ]
@@ -631,6 +636,7 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     cmd = [
         _claude_bin(), "-p", prompt, "--output-format", "json",
         "--append-system-prompt", _SYSTEM_PROMPT,
+        *_CONTEXT_ISOLATION_ARGS,
         "--disallowedTools", *_DISALLOWED_TOOLS,
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     ]

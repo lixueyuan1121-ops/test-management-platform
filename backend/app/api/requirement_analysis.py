@@ -127,6 +127,16 @@ def save_draft(aid: int, body: RequirementDraftIn, db: Session = Depends(get_db)
     if not row.draft or row.revision != body.revision:
         raise HTTPException(409, "分析尚未完成或内容已被其他人修改，请重新加载")
     old = RequirementDraft.model_validate_json(row.draft)
+    body.draft.scenario_review_required = old.scenario_review_required or bool(body.draft.scenarios)
+    old_scenes = {s.id: s for s in old.scenarios}
+    old_rules = {r.id: r.model_dump(exclude={"status"}) for r in old.rules}
+    global_change = any(getattr(old, k) != getattr(body.draft, k) for k in ("scope", "out_of_scope", "questions"))
+    for scene in body.draft.scenarios:
+        previous = old_scenes.get(scene.id)
+        rule = next(r for r in body.draft.rules if r.id == scene.rule_id)
+        if (global_change or old_rules.get(rule.id) != rule.model_dump(exclude={"status"})
+                or not previous or previous.model_dump(exclude={"reviewed"}) != scene.model_dump(exclude={"reviewed"})):
+            scene.reviewed = False
     if {r.id for r in old.rules} - {r.id for r in body.draft.rules}:
         raise HTTPException(422, "规则不能直接删除，请标记本期排除并记录原因")
     if {q.id for q in old.questions} - {q.id for q in body.draft.questions}:

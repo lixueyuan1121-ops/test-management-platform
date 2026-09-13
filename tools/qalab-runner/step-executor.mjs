@@ -168,7 +168,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
             const why = r.locatable === false ? (kind === "business" ? "超时后仍未出现预期元素" : "选择器无法完成检查") : (r.error || "");
             return await failAt(i, action, desc, `step${i + 1} 断言可见失败:${desc || target.key || target.selector}(${why})`, kind);
           }
-          const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
+          const rep = rec(i, action, desc, true);
+          rep.check = { actual: true, expected: true, mode: "equals", target };
+          await capShot(rep);   // 关键步通过后存证
           break;
         }
         case "assert_absent": {
@@ -176,7 +178,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
           const r = await gui.assertAbsent(operationArgs);
           steps.push({ action, ...r, desc });
           if (!r.pass) return await failAt(i, action, desc, `step${i + 1} 断言消失失败:${desc || target.key || target.selector}(元素仍可见,未按预期消失)`, "business");
-          const rep = rec(i, action, desc, true); await capShot(rep);
+          const rep = rec(i, action, desc, true);
+          rep.check = { actual: false, expected: false, mode: "equals", target };
+          await capShot(rep);
           break;
         }
         case "assert_text": {
@@ -189,7 +193,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
             await capShot(rep);
             return finish({ verdict: "fail", fail_kind: "business", reason: rep.error, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps, report });
           }
-          const rep = rec(i, action, desc, true); await capShot(rep);   // 关键步通过后存证
+          const rep = rec(i, action, desc, true);
+          rep.check = { actual: r.actual, expected: args.expected, mode: r.mode, negate: !!r.negate, target };
+          await capShot(rep);   // 关键步通过后存证
           break;
         }
       }

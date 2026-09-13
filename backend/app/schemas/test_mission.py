@@ -21,7 +21,9 @@ class MissionCreate(BaseModel):
 
 class MissionDecision(BaseModel):
     revision: int
-    action: str = Field(pattern="^(approve|pause|resume|replan|finish)$")
+    action: str = Field(pattern="^(approve|pause|resume|replan|finish|apply_repair|recheck_evidence)$")
+    repair_case_id: int | None = None
+    repair_finding_index: int = Field(0, ge=0, le=31)
     runner: str = Field("", max_length=64)
     max_retries: int = Field(0, ge=0, le=1)
     time_budget_minutes: int = Field(60, ge=5, le=240)

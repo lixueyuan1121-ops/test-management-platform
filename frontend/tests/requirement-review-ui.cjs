@@ -4,7 +4,7 @@ const base = process.env.UI_BASE_URL || 'http://127.0.0.1:5195';
 const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4XcAAAAASUVORK5CYII=', 'base64');
 const rule = { id: 'R1', title: '保护目录删除确认', module: '文件管理', platform: 'Windows', condition: '文件在保护目录', action: '点击删除', expected: '显示确认弹窗', forbidden: '直接删除', boundaries: '', evidence: '', source_type: 'explicit', source_quote: '保护目录必须确认', source_section: '权限矩阵', source_material_ids: ['IMG1'], criteria: [{ id: 'R1-C1', text: '保护目录删除前必须显示确认弹窗' }], status: 'pending', review_note: '' };
 const material = { id: 'IMG1', location: '权限矩阵', mime_type: 'image/png' };
-const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, source_id: 30, source_text: '保护目录必须确认', source_hash: 'test-hash', source_title: '权限需求.docx', source_url: '', source_info: { input_type: 'file', warnings: [] }, materials: [material], visual_readings: [{ ...material, status: 'uncertain', text: '|目录|删除行为|\n|---|---|\n|保护目录|必须确认|', uncertainties: '脚注文字不清' }], draft: { summary: '删除前确认', scope: 'Windows', out_of_scope: '不涉及 Mac', flow: '判断目录→确认→删除', rules: [rule], questions: [{ id: 'Q1', question: '保护目录是否包含子目录？', evidence: '图中脚注不清', options: ['包含', '不包含'], rule_ids: ['R1'], blocking: true, answer: '' }] } };
+const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, source_id: 30, source_text: '保护目录必须确认', source_hash: 'test-hash', source_title: '权限需求.docx', source_url: '', source_info: { input_type: 'file', warnings: [] }, materials: [material], visual_readings: [{ ...material, status: 'uncertain', text: '|目录|删除行为|\n|---|---|\n|保护目录|必须确认|', uncertainties: '脚注文字不清' }], draft: { scenario_review_required: true, scenarios:[{id:'S1',rule_id:'R1',criterion_ids:['R1-C1'],actor:'文件所有者',given:'保护目录内有文件',when:'点击删除',then:'显示确认弹窗',counterexample:'未确认时直接删除',kind:'normal',reviewed:false}], summary: '删除前确认', scope: 'Windows', out_of_scope: '不涉及 Mac', flow: '判断目录→确认→删除', rules: [rule], questions: [{ id: 'Q1', question: '保护目录是否包含子目录？', evidence: '图中脚注不清', options: ['包含', '不包含'], rule_ids: ['R1'], blocking: true, answer: '' }] } };
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
@@ -80,12 +80,20 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
     await drawer.getByRole('button', { name: '完成编辑', exact: true }).click();
     await drawer.waitFor({ state: 'hidden' });
     await page.getByRole('textbox', { name: '验收确认说明', exact: true }).fill('已核实图片脚注：包含子目录');
+    await page.getByRole('button', { name: '保存评审草稿', exact:true }).click();
+    await page.getByRole('tab', { name: '具体场景（1）', exact:true }).click();
+    await page.getByRole('button', { name:'演示状态变化', exact:true }).click();
+    assert.equal(await page.locator('.scene-flow .active').count(),1);
+    assert(await confirm.isDisabled());
+    await page.getByText('已对照依据核对这个场景及其验收关联', {exact:true}).click();
+    assert(await page.getByRole('checkbox', {name:'S1 核对场景',exact:true}).isChecked());
+    await page.screenshot({path:'/tmp/mission-p0-scenes.png',fullPage:true});
     await page.getByText('我已核对本期范围、资料完整性及选中的验收规则', { exact: true }).click();
     await confirm.click();
     await page.getByText('已确认版本 #40', { exact: true }).waitFor();
     assert(!await generate.isDisabled());
     const confirmation = writes.find(w => w.path.endsWith('/confirm')).body;
-    assert.equal(confirmation.revision, 2); assert.equal(confirmation.source_hash, 'test-hash');
+    assert.equal(confirmation.revision, 3); assert.equal(confirmation.source_hash, 'test-hash');
     await generate.click();
     await page.getByRole('button', { name: '保护目录删除弹窗', exact: true }).waitFor();
     assert.equal(writes.find(w => w.path === '/api/ai/testcases').body.baseline_id, 40);

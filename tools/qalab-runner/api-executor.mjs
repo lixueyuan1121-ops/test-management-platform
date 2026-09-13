@@ -78,6 +78,7 @@ export async function run(script, apiEnv, log = () => {}, fetchImpl = fetch) {
   const signAuth = apiEnv.auth_type === "sign" ? (apiEnv.auth || {}) : null;
 
   const steps = [];
+  const report = [];
   const normals = [];
   const cleanups = [];
   script.forEach((st, i) => (st && st.cleanup ? cleanups : normals).push({ st, i }));
@@ -119,6 +120,14 @@ export async function run(script, apiEnv, log = () => {}, fetchImpl = fetch) {
     // 断言
     for (const a of st.asserts || []) {
       const { ok, actual } = checkAssert(a, statusCode, body);
+      if (!isCleanup) {
+        const sensitive = /token|secret|password|pwd|authorization|cookie|api[_-]?key|credential|access[_-]?key/i.test(a.path || "");
+        const scalar = actual === null || ["string", "number", "boolean"].includes(typeof actual);
+        const safe = !sensitive && scalar && JSON.stringify(actual).length <= 2000;
+        report.push({ no: report.length + 1, action: "assert_api", desc: `${name} · ${a.type === "status" ? "HTTP status" : a.path}`, ok,
+          check: safe ? { actual, expected: a.value ?? null, mode: a.op, target: a.type === "status" ? "HTTP status" : a.path }
+            : { unavailable: "敏感字段、缺失值或复杂响应需专门核验，未复制原值" } });
+      }
       if (!ok) {
         const tgt = a.type === "status" ? "status" : `jsonpath ${a.path}`;
         return { ok: false, reason: `${name} 断言失败: ${tgt} 期望 ${a.op} ${a.value ?? ""},实际 ${JSON.stringify(actual)}` };
@@ -148,8 +157,8 @@ export async function run(script, apiEnv, log = () => {}, fetchImpl = fetch) {
   }
 
   const duration_ms = Date.now() - started;
-  if (failed) return { verdict: "fail", reason: failed, evidence: null, duration_ms, steps };
+  if (failed) return { verdict: "fail", reason: failed, evidence: null, duration_ms, steps, report };
   // 只计普通步断言(cleanup 尽力而为、不计入判定,避免"全部满足"虚高)。
   const checks = normals.reduce((n, { st }) => n + ((st.asserts || []).length), 0);
-  return { verdict: "pass", reason: `api 确定性执行通过: ${normals.length} 步, ${checks} 处断言全部满足`, evidence: null, duration_ms, steps };
+  return { verdict: "pass", reason: `api 确定性执行通过: ${normals.length} 步, ${checks} 处断言全部满足`, evidence: null, duration_ms, steps, report };
 }

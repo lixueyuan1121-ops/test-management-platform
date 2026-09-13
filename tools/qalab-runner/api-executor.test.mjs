@@ -111,3 +111,16 @@ test("run fixed 鉴权预置 header", async () => {
   await run(script, { base_url: "https://svc", auth_type: "fixed", auth: { headers: { Authorization: "Bearer FIX" } } }, () => {}, stubFetch(routes, calls));
   assert.equal(calls[0].headers.Authorization, "Bearer FIX");
 });
+
+test("API 断言报告保留字段实际值，不复制敏感字段或鉴权", async () => {
+  const script = [{ name: "查询状态", request: { method: "GET", path: "/state" }, asserts: [
+    { type: "jsonpath", path: "state", op: "eq", value: "cancelled" },
+    { type: "jsonpath", path: "token", op: "exists" },
+  ] }];
+  const result = await run(script, { base_url: "https://test.invalid", auth_type: "fixed", auth: { headers: { Authorization: "private-auth" } } }, () => {},
+    async () => ({ status: 200, json: async () => ({ state: "cancelled", token: "private-token" }) }));
+  assert.equal(result.verdict, "pass");
+  assert.deepEqual(result.report[0].check, { actual: "cancelled", expected: "cancelled", mode: "eq", target: "state" });
+  assert(result.report[1].check.unavailable);
+  assert(!JSON.stringify(result.report).includes("private-"));
+});

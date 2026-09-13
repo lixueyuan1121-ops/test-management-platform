@@ -28,7 +28,7 @@ from app.models.requirement import Requirement
 from app.models.requirement_analysis import RequirementSource, RequirementAnalysis, RequirementBaseline, RequirementGeneration, RequirementCaseLink
 from app.models.fail_cluster import FailCluster
 from app.models.rts import RtsRecommendation
-from app.models.test_mission import TestMission, MissionEvent, MissionRun
+from app.models.test_mission import TestMission, MissionEvent, MissionRun, MissionAssessment
 
 __all__ = [
     "ModuleEntry",

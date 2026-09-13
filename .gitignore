@@ -24,3 +24,7 @@ backend/logs/
 
 # 本机录制未确认事件，不分发、不入库
 .record-outbox/
+
+# 私有需求评测只保留本地，不随公开仓库分发
+backend/evals/ai-native/reports/*-private*.json
+docs/reviews/*-private-evaluation.md

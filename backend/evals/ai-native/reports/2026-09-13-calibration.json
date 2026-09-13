@@ -1,0 +1,286 @@
+{
+  "version": "mission-quality-v1",
+  "provider": "claude",
+  "dataset_sha256": "41ccc9fdb1e8b820ebd2dc4b85f9d20c63d322b415547a361318948cebae4416",
+  "created_at": "2026-09-13T02:25:33.057378+00:00",
+  "rows": [
+    {
+      "id": "evidence-observed",
+      "stage": "evidence",
+      "label_status": "synthetic",
+      "expected": {
+        "verdict": "supported"
+      },
+      "sample_sha256": "8a31fe7a71a9b06f2de2fe547ee08c6a21d9b49b275713762d76d381146c1db1",
+      "prediction": {
+        "verdict": "supported"
+      },
+      "matches_label": true,
+      "result": {
+        "criteria": [
+          {
+            "criterion_id": "R1-C1",
+            "verdict": "supported",
+            "reason": "步骤1的 check.target 指向 file_path 为 /test-only/demo.txt、field 为 state，且 check.actual 实际值等于“保留”，与断言条件完全一致。",
+            "refs": [
+              {
+                "step_no": 1,
+                "kind": "check",
+                "quote": "\"target\": {\"file_path\": \"/test-only/demo.txt\", \"field\": \"state\"}",
+                "region": ""
+              },
+              {
+                "step_no": 1,
+                "kind": "check",
+                "quote": "\"actual\": \"保留\"",
+                "region": ""
+              }
+            ]
+          }
+        ],
+        "version": "mission-quality-v1"
+      },
+      "duration_seconds": 32.07,
+      "calls": [
+        {
+          "prompt_hash": "bccc34fc54a12cbe62899968af2c6b8922baf9da0869f3a826fc17d4d062257b",
+          "cost_usd": 0.53067375,
+          "output_tokens": 900
+        }
+      ]
+    },
+    {
+      "id": "evidence-unidentified-target",
+      "stage": "evidence",
+      "label_status": "synthetic",
+      "expected": {
+        "verdict": "insufficient"
+      },
+      "sample_sha256": "c0b4de1ae0effbfa53d7fb8e829e4b55034e8363c9b498189f15e561f2d3a611",
+      "prediction": {
+        "verdict": "insufficient"
+      },
+      "matches_label": true,
+      "result": {
+        "criteria": [
+          {
+            "criterion_id": "R1-C1",
+            "verdict": "insufficient",
+            "reason": "step 1 的 check.actual 实际值为「保留」，虽与期望一致，但 check 内仅有 actual/expected/mode，没有任何字段标明被读取的是哪个文件、也未标明该值来自「状态字段」。description 仅为泛化的「检查文件状态」，无法确认所读对象就是规则要求的目标文件及其状态字段（rule 本身即 evidence-unidentified-target，目标对应关系未被证明），故无法证明验收条件。",
+            "refs": [
+              {
+                "step_no": 1,
+                "kind": "check",
+                "quote": "保留",
+                "region": ""
+              }
+            ]
+          }
+        ],
+        "version": "mission-quality-v1"
+      },
+      "duration_seconds": 77.75,
+      "calls": [
+        {
+          "prompt_hash": "74636e98f5df9d5c430fc1c3335669624dcb125e556e92297218089e78a7c593",
+          "cost_usd": 0.2496105,
+          "output_tokens": 670
+        }
+      ]
+    },
+    {
+      "id": "synthetic-counter-aligned",
+      "stage": "case_review",
+      "label_status": "synthetic",
+      "expected": {
+        "blocked": false
+      },
+      "sample_sha256": "c72bdabdc839de253b3abaceea073670ad33c2bed38f36d937f7ad1c03d04653",
+      "prediction": {
+        "blocked": false
+      },
+      "matches_label": true,
+      "result": {
+        "version": "mission-quality-v1",
+        "status": "passed",
+        "cases": [
+          {
+            "case_id": 1,
+            "checked_criterion_ids": [
+              "R1-C1"
+            ],
+            "findings": [],
+            "case_hash": "evaluation"
+          }
+        ],
+        "note": "独立 AI 审查参考；仍需人工核对方案。修订后重新审查，不沿用旧结论。"
+      },
+      "duration_seconds": 13.25,
+      "calls": [
+        {
+          "prompt_hash": "0587e48adb315008a8e07458e8bf3f36f12fa55823ca2064955baf83dcfe6d15",
+          "cost_usd": 0.2207055,
+          "output_tokens": 225
+        }
+      ]
+    },
+    {
+      "id": "synthetic-counter-drift",
+      "stage": "case_review",
+      "label_status": "synthetic",
+      "expected": {
+        "blocked": true
+      },
+      "sample_sha256": "4193aa867b8ef415fe532ee9a29ba9253511d05dc87fb2605614255e0523f39f",
+      "error": "1 validation error for ReviewResult\ncases.0.findings.0.kind\n  Input should be 'unsupported_expected', 'missing_branch', 'unobservable', 'precondition' or 'clarification' [type=literal_error, input_value='incorrect_expected', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.10/v/literal_error",
+      "matches_label": false,
+      "duration_seconds": 16.48,
+      "calls": [
+        {
+          "prompt_hash": "f769dbdb8518d2d1c6e5cd9a6132af1d90d8e9cc943767c68c18fa7de073e608",
+          "cost_usd": 0.2540655,
+          "output_tokens": 671
+        }
+      ]
+    },
+    {
+      "id": "synthetic-counter-understanding",
+      "stage": "analysis",
+      "label_status": "synthetic",
+      "expected": {
+        "scene_coverage": true,
+        "human_decisions_unset": true
+      },
+      "sample_sha256": "e3575b082acd2dbae0000483bcb711286889c84a2861fc9e2447d490002e740c",
+      "prediction": {
+        "scene_coverage": true,
+        "human_decisions_unset": true
+      },
+      "matches_label": true,
+      "result": {
+        "summary": "管理员在操作界面点击\"加一\"按钮递增计数器，最终结果为计数值增加（如从0变为1）。",
+        "scope": "计数器递增功能；每日零点计数处理逻辑（平台未在摘录中指明）。",
+        "out_of_scope": "摘录未明确说明本期非目标。",
+        "flow": "管理员点击\"加一\" → 计数值递增；每日零点系统触发计数处理（清零或保留累计值，尚未拍板）。",
+        "rules": [
+          {
+            "id": "R1",
+            "title": "管理员点击加一使计数递增",
+            "module": "计数器",
+            "platform": "",
+            "condition": "计数当前值为0",
+            "action": "管理员点击\"加一\"",
+            "expected": "计数值从0变为1",
+            "forbidden": "",
+            "boundaries": "摘录仅给出0→1的示例，未说明其他起始值、上限、连续点击或非管理员点击的行为。",
+            "evidence": "UI上计数显示值由0变为1；可辅以点击事件与计数变更日志。",
+            "source_type": "explicit",
+            "source_quote": "管理员点击加一，计数从0变为1",
+            "source_section": "正文",
+            "source_material_ids": [],
+            "criteria": [
+              {
+                "id": "R1-C1",
+                "text": "当计数为0时，管理员点击\"加一\"，计数值应变为1。"
+              }
+            ],
+            "status": "pending",
+            "review_note": ""
+          },
+          {
+            "id": "R2",
+            "title": "每日零点的计数处理行为",
+            "module": "计数器",
+            "platform": "",
+            "condition": "到达每天零点",
+            "action": "系统触发零点计数处理",
+            "expected": "",
+            "forbidden": "",
+            "boundaries": "存在两种互斥说明：说明A每天零点清零；说明B每天零点保留累计值。摘录明确指出该行为需产品决定，故预期未定。",
+            "evidence": "零点定时任务日志；零点前后计数值对比（是否归零或保留）。",
+            "source_type": "explicit",
+            "source_quote": "零点行为需要产品决定",
+            "source_section": "正文",
+            "source_material_ids": [],
+            "criteria": [],
+            "status": "pending",
+            "review_note": ""
+          }
+        ],
+        "questions": [
+          {
+            "id": "Q1",
+            "question": "每天零点的计数处理应采用哪种行为：清零还是保留累计值？",
+            "evidence": "说明A：每天零点清零。说明B：每天零点保留累计值。零点行为需要产品决定。",
+            "options": [
+              "A：每天零点将计数清零为0",
+              "B：每天零点保留累计值不变"
+            ],
+            "rule_ids": [
+              "R2"
+            ],
+            "blocking": true,
+            "answer": ""
+          },
+          {
+            "id": "Q2",
+            "question": "本次评测仅包含已保存摘录而非整篇需求，是否存在未纳入的入口、平台、上限或其他计数规则需要补充？",
+            "evidence": "评测仅包含已保存摘录，不是整篇需求",
+            "options": [
+              "摘录已覆盖本期全部计数规则",
+              "存在未纳入的规则，需提供完整需求后补充抽取"
+            ],
+            "rule_ids": [],
+            "blocking": true,
+            "answer": ""
+          }
+        ],
+        "scenarios": [
+          {
+            "id": "S1",
+            "rule_id": "R1",
+            "criterion_ids": [
+              "R1-C1"
+            ],
+            "actor": "管理员",
+            "given": "计数当前值为0",
+            "when": "管理员点击\"加一\"",
+            "then": "计数显示值变为1",
+            "counterexample": "",
+            "kind": "normal",
+            "reviewed": false
+          }
+        ],
+        "scenario_review_required": true
+      },
+      "human_rubric": "保留明确的加一场景；零点行为列为待澄清，不能自行选择。结构校验通过不等于语义已通过人工评审。",
+      "needs_semantic_review": true,
+      "duration_seconds": 70.5,
+      "calls": [
+        {
+          "prompt_hash": "ec9b4caae38d9d5a359d3c5af45834b0e68ac853de02055e9e6de666e5ed2ca3",
+          "cost_usd": 0.4030005,
+          "output_tokens": 2440
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "human_reviewed": {
+      "samples": 0,
+      "matches": 0,
+      "errors": 0
+    },
+    "synthetic": {
+      "samples": 5,
+      "matches": 4,
+      "errors": 1
+    },
+    "provisional": {
+      "samples": 0,
+      "matches": 0,
+      "errors": 0
+    },
+    "note": "草案标签结果只供校准，不代表产品预期正确率；合成样本只验证指定能力，不能证明线上效果。费用缺失不估算。"
+  }
+}

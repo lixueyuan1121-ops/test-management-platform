@@ -1,6 +1,6 @@
 """Durable goal orchestration; all transitions and side-effect pointers commit together."""
 from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Boolean, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Boolean, UniqueConstraint, func
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -56,3 +56,15 @@ class MissionRun(Base):
     reviewed_by: Mapped[int | None] = mapped_column(Integer)
     criterion_ids: Mapped[str] = mapped_column(JSON_TEXT, default="[]")
     triage_job_id: Mapped[int | None] = mapped_column(Integer)
+
+
+class MissionAssessment(Base):
+    __tablename__ = "test_mission_assessment"
+    __table_args__ = (UniqueConstraint("mission_id", "run_id", "source_hash", name="uq_mission_run_evidence"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    mission_id: Mapped[int] = mapped_column(ForeignKey("test_mission.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("exec_run.id", ondelete="CASCADE"), index=True)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[int | None] = mapped_column(Integer)
+    result: Mapped[str] = mapped_column(JSON_TEXT, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
