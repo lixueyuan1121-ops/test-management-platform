@@ -339,7 +339,7 @@ module.exports = {
   // WORKBUDDY_REMOTE_DEBUGGING_PORT=<port> 开调试端口（非 --remote-debugging-port 命令行参数）。
   // env 覆盖便于多机/多端口；默认 cdpPort 与纳米 9222 错开，避免同机冲突。
   workbuddyDesktop: {
-    executablePath: process.env.WORKBUDDY_EXE || '/Applications/WorkBuddy.app/Contents/MacOS/Electron',
+    executablePath: process.env.WORKBUDDY_EXE || '/Applications/WorkBuddy.app', // 支持 .app 或内部可执行文件
     envPort: 'WORKBUDDY_REMOTE_DEBUGGING_PORT',
     cdpHost: '127.0.0.1',
     cdpPort: parseInt(process.env.WORKBUDDY_CDP_PORT, 10) || 9335,

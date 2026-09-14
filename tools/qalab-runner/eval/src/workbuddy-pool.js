@@ -1,14 +1,15 @@
 // src/workbuddy-pool.js
 // WorkBuddy Electron 客户端的 CDP 连接池（独立于 DesktopPool，零改动纳米链路）。
 // WorkBuddy 单 page 单 frame（本地 asar React UI），无 work.n.cn iframe、无 clawDeviceService。
-const { spawn, execFileSync } = require('child_process');
+const childProcess = require('child_process');
 const http = require('http');
 const { chromium } = require('playwright');
+const { resolveExecutable } = require('./electron-executable');
 
 class WorkbuddyPool {
   constructor(desktopConfig = {}, logger = null) {
     const d = desktopConfig;
-    this.executablePath = d.executablePath || '/Applications/WorkBuddy.app/Contents/MacOS/Electron';
+    this.executablePath = d.executablePath || '/Applications/WorkBuddy.app';
     this.envPort = d.envPort || 'WORKBUDDY_REMOTE_DEBUGGING_PORT';  // WorkBuddy 用环境变量开调试端口
     this.cdpHost = d.cdpHost || '127.0.0.1';
     this.cdpPort = d.cdpPort || 9335;
@@ -17,6 +18,7 @@ class WorkbuddyPool {
     this.killExisting = d.killExisting !== false;
     this.logger = logger;
     this.browser = null; this.context = null; this.mainPage = null; this._launched = false;
+    this._launchError = null;
   }
   get cdpUrl() { return `http://${this.cdpHost}:${this.cdpPort}`; }
   _log(m) { if (this.logger) this.logger.info(m); }
@@ -31,25 +33,62 @@ class WorkbuddyPool {
   async _portReady() { try { await this._fetchJson(`${this.cdpUrl}/json/version`); return true; } catch { return false; } }
   async _waitPort(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) { if (await this._portReady()) return true; await this._sleep(500); }
+    while (Date.now() < deadline) {
+      if (this._launchError) throw this._launchError;
+      const ready = await this._portReady();
+      if (this._launchError) throw this._launchError;
+      if (ready) return true;
+      await this._sleep(500);
+    }
+    if (this._launchError) throw this._launchError;
     throw new Error(`WorkBuddy 调试端口 ${this.cdpPort} 未就绪超时`);
   }
   _killExisting() {
-    try { execFileSync('pkill', ['-9', '-f', this.executablePath], { stdio: 'ignore' }); } catch (_) {}
+    try { childProcess.execFileSync('pkill', ['-9', '-f', this.executablePath], { stdio: 'ignore' }); } catch (_) {}
   }
-  _spawnClient() {
-    const child = spawn(this.executablePath, [], {
-      detached: true, stdio: 'ignore',
-      env: { ...process.env, [this.envPort]: String(this.cdpPort) },  // 关键：env 开调试端口
+  _resolveExecutable() {
+    const resolved = resolveExecutable(this.executablePath);
+    if (resolved !== this.executablePath) this._log(`   WorkBuddy 应用路径解析为：${resolved}`);
+    this.executablePath = resolved;
+  }
+  async _spawnClient() {
+    this._resolveExecutable();
+    this._launched = false;
+    this._launchError = null;
+    // spawn 的 EACCES/ENOENT 通过异步 error 事件抛出，try/catch 本身捕获不到。
+    // 等 spawn 事件后才标记已启动，让 init 的调用方能正常回写失败而不崩溃。
+    await new Promise((resolve, reject) => {
+      const failed = error => {
+        this._launched = false;
+        this._launchError = new Error(`WorkBuddy 启动失败${error.code ? `（${error.code}）` : ''}：${this.executablePath}；${error.message}`);
+        reject(this._launchError);
+      };
+      try {
+        const child = childProcess.spawn(this.executablePath, [], {
+          detached: true, stdio: 'ignore',
+          env: { ...process.env, [this.envPort]: String(this.cdpPort) },
+        });
+        child.on('error', failed);
+        child.once('exit', (code, signal) => {
+          this._launched = false;
+          this._launchError ||= new Error(`WorkBuddy 启动进程已退出（${signal || `退出码 ${code}`}），调试端口 ${this.cdpPort} 未就绪`);
+          reject(this._launchError);
+        });
+        child.once('spawn', () => {
+          child.unref(); this._launched = true;
+          this._log(`   已启动 WorkBuddy：${this.executablePath}（${this.envPort}=${this.cdpPort}）`);
+          resolve();
+        });
+      } catch (error) { failed(error); }
     });
-    child.unref(); this._launched = true;
-    this._log(`   已启动 WorkBuddy：${this.executablePath}（${this.envPort}=${this.cdpPort}）`);
   }
   async init() {
     // 1) 端口未就绪则（可选杀旧后）启动
     if (!(await this._portReady())) {
+      // 先解析并验证启动文件，配置错误时不能先关闭正在使用的客户端。
+      this._resolveExecutable();
       if (this.killExisting) { this._killExisting(); await this._sleep(1000); }
-      this._spawnClient();
+      await this._spawnClient();
       await this._waitPort(this.launchTimeout);
     } else {
       this._log('   WorkBuddy 调试端口已就绪，直接 attach');
