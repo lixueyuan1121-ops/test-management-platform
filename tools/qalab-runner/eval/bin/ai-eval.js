@@ -11,6 +11,7 @@ const DesktopPool = require('../src/desktop-pool');
 const DesktopRunner = require('../src/desktop-runner');
 const { WorkbuddyPool } = require('../src/workbuddy-pool');
 const { WorkbuddyRunner } = require('../src/workbuddy-runner');
+const { formatFailureReason } = require('../src/execution-result');
 const { groupIntoConversations, convHasAttachments } = require('../src/conversation-group');
 const { downloadAttachments } = require('../src/attachment-downloader');
 const ResultReporter = require('../src/reporter');
@@ -774,7 +775,7 @@ async function runWorkbuddyBatch(items, client, config, logger) {
           answer: result.answer || null, raw_message: result.rawMessage || null, reported_duration: result.reportedDuration || null,
           bean_cost: result.beanCost || null, tokens: result.cost || null,
           session_id: trace.session_id || null,
-          reason: result.success ? null : (result.errorCode ? `[${result.errorCode}] ${result.errorMessage || ""}` : result.completeReason || null),
+          reason: formatFailureReason(result),
           duration_ms: result.durationMs || null,
         });
         logger.info(`✅ [workbuddy] 回写 run ${runId} (${result.success ? 'done' : 'failed'})`);
@@ -966,7 +967,7 @@ program
             answer: result.answer || null, reported_duration: result.reportedDuration || null,
             bean_cost: result.beanCost || null, tokens: result.cost || null,
             session_id: trace.session_id || null,
-            reason: result.success ? null : (result.errorCode ? `[${result.errorCode}] ${result.errorMessage || ""}` : result.completeReason || null),
+            reason: formatFailureReason(result),
             duration_ms: result.durationMs || null,
           });
           logger.info(`✅ 回写 run ${runId} (${result.success ? 'done' : 'failed'}, ws=${trace.ws_captured})`);

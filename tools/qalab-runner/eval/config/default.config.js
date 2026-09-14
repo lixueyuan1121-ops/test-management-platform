@@ -358,7 +358,7 @@ module.exports = {
     // 模型下拉（挨着语音输入 cr-voice-trigger）
     modelTriggerSelector: 'button.cr-model-selector__trigger',
     modelOptionSelector: '.cr-model-selector__item',
-    modelOptionNameSelector: '.cr-model-selector__item-info',
+    modelOptionNameSelector: '.cr-model-selector__item-name',    // 纯模型名；不含优惠标签/积分倍率
     modelSelectedHint: 'cr-model-selector__item--selected',
     // 回答正文
     answerSelector: '.cr-markdown',

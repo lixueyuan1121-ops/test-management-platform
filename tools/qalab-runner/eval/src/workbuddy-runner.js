@@ -51,7 +51,40 @@ class WorkbuddyRunner {
     return true;
   }
 
-  // 选模型档：点开 cr-model-selector__trigger，选名字匹配 dialogOptions.model 的 item。未指定则不动。
+  // WorkBuddy 5.5.6 的整行文本还含优惠标签和积分倍率，只比较名称节点。
+  // 列表中的屏外项已挂载；定位后由 Playwright 滚入列表视区，无需逐屏猜测位置。
+  async _findModelOption(wanted) {
+    const target = normalize(wanted);
+    if (!target) throw configError('模型名称不能为空');
+    const options = this.page.locator(this.wb.modelOptionSelector);
+    const deadline = Date.now() + 4000;
+    let available = [];
+    do {
+      available = await options.evaluateAll((items, nameSelector) => items.flatMap((item, index) => {
+        if (!item.getClientRects().length || getComputedStyle(item).visibility === 'hidden'
+          || item.getAttribute('role') === 'menuitem') return [];
+        // 兼容旧配置仍指向 item-info（其中包含徽标），优先读取真实名称叶节点。
+        const label = item.querySelector('.cr-model-selector__item-name')
+          || (nameSelector && item.querySelector(nameSelector)) || item;
+        return [{ index, name: label.innerText.trim(),
+          disabled: item.matches(':disabled, [aria-disabled="true"], .cr-model-selector__item--disabled') }];
+      }), this.wb.modelOptionNameSelector);
+      const matches = available.filter(item => normalize(item.name) === target);
+      if (matches.length > 1) throw configError(`模型列表存在多个同名模型「${wanted}」，无法确认选择`);
+      if (matches.length === 1) {
+        if (matches[0].disabled) throw configError(`模型「${matches[0].name}」在当前列表中不可选，请检查账号权限或客户端状态`);
+        return options.nth(matches[0].index);
+      }
+      // 等待下拉动画及异步加载完成，避免固定等待后只查一次造成误报。
+      await this.page.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    const names = [...new Set(available.map(item => item.name).filter(Boolean))];
+    throw configError(names.length
+      ? `找不到模型「${wanted}」。当前模型列表：${names.slice(0, 30).join('、')}${names.length > 30 ? '…' : ''}（名称匹配不区分大小写）`
+      : `找不到模型「${wanted}」：模型列表未加载或没有可见选项，请检查客户端状态`);
+  }
+
+  // 选模型档并回读验证，英文大小写/空白归一化，但不同版本或后缀不互相替代。
   async _applyDialogOptions() {
     const options = this.execution.dialogOptions || {};
     this.executionConfig = { schema_version: 1, requested: { ...options }, observed: {}, status: 'checking' };
@@ -60,14 +93,8 @@ class WorkbuddyRunner {
       const trigger = this.page.locator(this.wb.modelTriggerSelector).first();
       if (options.model) {
         await trigger.click({ timeout: 4000 });
-        await this.page.waitForTimeout(600);
-        const opts = this.page.locator(this.wb.modelOptionSelector);
-        let selected = null;
-        for (let i = 0; i < await opts.count(); i++) {
-          const option = opts.nth(i);
-          if (normalize(await option.innerText()) === normalize(options.model)) { selected = option; break; }
-        }
-        if (!selected) throw configError(`找不到模型「${options.model}」`);
+        const selected = await this._findModelOption(options.model);
+        await selected.scrollIntoViewIfNeeded({ timeout: 4000 });
         await selected.click({ timeout: 4000 });
         await this.page.keyboard.press('Escape').catch(() => {});
         this.executionConfig.observed.model = await verifySelection(this.page, trigger, options.model);
