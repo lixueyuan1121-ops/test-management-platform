@@ -40,3 +40,26 @@ export function rankElements(key, ctx, elements) {
     .map((el) => ({ el, score: scoreElement(key, ctxTokens, el) }))
     .sort((a, b) => b.score - a.score)
 }
+
+// 自动配对必须有目标本身的依据；页面词或整段祖先 CSS 只能用于排序，不能代表控件。
+export function hasSpecificMatch(key, el, hint = {}) {
+  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  const cands = el.candidates?.length ? el.candidates : (el.best ? [el.best] : [])
+  const labels = [el.text, ...cands.flatMap(c => c.by === 'text' ? [c.value] : c.by === 'role' ? [c.name] : [])]
+    .map(normalize).filter(Boolean)
+  const expected = (hint?.expectedTexts || []).map(normalize).filter(Boolean)
+  // 严格使用控件文案，不能用含该词的整页文本来代表子控件。
+  if (expected.length) return expected.every(text => labels.includes(text))
+  const ownValues = cands.flatMap(c => {
+    if (c.by === 'css') {
+      // 复合路径里的 home 等祖先信息不是当前元素的身份。
+      return /[\s>+~]/.test(c.value || '') ? [] : [c.value]
+    }
+    if (c.by === 'xpath') return []
+    return [c.value, c.name]
+  })
+  const hay = new Set(tokenize([el.text, ...ownValues].filter(Boolean).join(' ')))
+  const words = [...new Set(tokenize(key))]
+  const hit = words.filter(word => hay.has(word))
+  return words.length > 0 && hit.length >= Math.min(2, words.length) && hit.length / words.length >= 0.6
+}

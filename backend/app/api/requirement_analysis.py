@@ -1,5 +1,6 @@
 import base64
 import json
+from app.services.focused_review import apply_review_policy
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import update, func, or_, and_
@@ -69,6 +70,9 @@ def to_out(db, row, detail=True):
         result["review_focus"] = focus(db, row)
         result.update(source_text=row.source_text, source_info=json.loads(row.source_info),
                       visual_readings=json.loads(row.visual_readings or "[]"), draft=json.loads(row.draft) if row.draft else None)
+        if result['draft'] and not baseline:
+            preview = RequirementDraft.model_validate(result['draft'])
+            result['draft'] = apply_review_policy(preview, result['visual_readings']).model_dump()
         source = db.get(RequirementSource, row.source_id) if row.source_id else None
         result["materials"] = public_materials(json.loads(source.materials)) if source else []
         parts = db.query(RequirementAnalysisPart.id, RequirementAnalysisPart.part_key,
@@ -196,6 +200,7 @@ def save_draft(aid: int, body: RequirementDraftIn, db: Session = Depends(get_db)
         draft = validate_evidence(body.draft, row.source_text, json.loads(row.visual_readings))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    draft = apply_review_policy(draft, json.loads(row.visual_readings))
     serialized = encode(draft.model_dump())
     if json.loads(serialized) != json.loads(row.draft):
         result = db.execute(update(RequirementAnalysis).where(RequirementAnalysis.id == aid,
@@ -224,6 +229,7 @@ def confirm(aid: int, body: RequirementConfirmIn, db: Session = Depends(get_db),
     if (warnings or any(v["status"] != "read" for v in visuals)) and not body.confirmation_note:
         raise HTTPException(422, "存在未读取或不确定的资料，请说明如何补充或排除其影响")
     draft = RequirementDraft.model_validate_json(row.draft)
+    draft = apply_review_policy(validate_evidence(draft, row.source_text, visuals), visuals)
     errors = confirmation_errors(draft, visuals)
     if errors:
         raise HTTPException(422, "；".join(errors))

@@ -4,7 +4,7 @@
       <el-step title="导入需求" /><el-step title="澄清与确认" /><el-step title="生成用例" />
     </el-steps>
     <div class="review-head">
-      <div><h3>需求澄清与验收确认</h3><p>先确认本期做什么、如何验收，再生成可追溯的测试用例。</p></div>
+      <div><h3>需求澄清与验收确认</h3><p>原文说清楚的内容直接使用；只处理缺失、矛盾或需要你决定的问题。</p></div>
       <el-select v-if="!embedded" v-model="historyId" placeholder="恢复历史需求分析" clearable :disabled="working || disabled" @change="restoreAnalysis" style="width:260px">
         <el-option v-for="item in history" :key="item.id" :value="item.id" :label="`#${item.id} · ${item.source_title || '文本需求'} · ${statusLabel(item.status)}`" />
       </el-select>
@@ -37,11 +37,11 @@
     </el-alert>
 
     <article v-if="draft" class="review-focus">
-      <h4>先处理这些决定</h4>
+      <h4>只处理需要你决定的内容</h4>
       <p>{{ draft.summary }}</p>
       <div class="review-actions">
-        <el-button size="small" @click="tab = 'questions'">{{ unansweredCount }} 个问题待处理</el-button>
-        <el-button size="small" @click="tab = 'rules'">{{ draft.rules.filter(r => r.source_type === 'inferred').length }} 条推导需核对</el-button>
+        <el-button size="small" @click="tab = 'questions'">{{ attentionCount }} 个问题待处理</el-button>
+        <el-button size="small" @click="filterPending">{{ pendingCount }} 条规则待确认</el-button>
         <el-button size="small" @click="tab = 'images'">{{ visuals.filter(v => v.status !== 'read').length }} 张图片存在不确定内容</el-button>
       </div>
       <p v-if="analysis?.review_focus" class="hint">{{ analysis.review_focus.note }}</p>
@@ -61,25 +61,44 @@
         </el-form>
       </el-tab-pane>
       <el-tab-pane v-if="draft" :label="`验收规则（${draft.rules.length}）`" name="rules">
-        <div class="review-actions"><span>已确认 {{ confirmedCount }} · 待确认 {{ pendingCount }} · 本期排除 {{ excludedCount }}</span><el-button size="small" :disabled="disabled || saving || working" @click="addRule">补充规则</el-button></div>
-        <el-table :data="draft.rules" border size="small" row-key="id">
+        <div class="review-actions"><span>已明确 {{ confirmedCount }} · 待确认 {{ pendingCount }} · 本期排除 {{ excludedCount }}</span><el-button size="small" :disabled="disabled || saving || working" @click="addRule">补充规则</el-button></div>
+        <p>已经说清楚的规则默认用于生成；待确认的先保留，不会混入本次用例。</p>
+        <el-radio-group v-model="ruleFilter" aria-label="筛选验收规则" class="rule-filters">
+          <el-radio-button value="all">全部（{{ rows.length }}）</el-radio-button>
+          <el-radio-button value="pending">待确认（{{ pendingCount }}）</el-radio-button>
+          <el-radio-button value="confirmed">已明确（{{ confirmedCount }}）</el-radio-button>
+          <el-radio-button value="excluded">本期不测（{{ excludedCount }}）</el-radio-button>
+        </el-radio-group>
+        <el-empty v-if="!visibleRules.length" :description="ruleFilter === 'pending' ? '没有待确认的规则' : '没有符合筛选条件的规则'" />
+        <el-table v-if="visibleRules.length" :data="visibleRules" border size="small" row-key="id">
           <el-table-column prop="id" label="编号" width="90" />
-          <el-table-column label="规则与验收条件" min-width="290">
-            <template #default="{ row }"><button class="rule-title" @click="editingRule = row">{{ row.title }}</button><p class="hint">{{ row.platform }} {{ row.module }} · {{ row.criteria.length }} 个验收条件</p><div>{{ row.expected || '预期结果尚待澄清' }}</div></template>
+          <el-table-column label="要测什么、应该看到什么" min-width="290">
+            <template #default="{ row }"><button class="rule-title" @click="editingRule = row">{{ row.title }}</button><p class="hint">{{ row.platform }} {{ row.module }} · {{ row.criteria.length }} 个验收条件</p><p><b>什么时候：</b>{{ row.condition || '还没说清楚' }}</p><p><b>做什么：</b>{{ row.action || '还没说清楚' }}</p><p><b>应该看到：</b>{{ row.expected || '还没说清楚' }}</p></template>
           </el-table-column>
-          <el-table-column label="依据" width="110"><template #default="{ row }"><el-tag :type="row.source_type === 'explicit' ? 'info' : 'warning'" size="small">{{ row.source_type === 'explicit' ? '原文明确' : '推导建议' }}</el-tag></template></el-table-column>
-          <el-table-column label="评审" width="155"><template #default="{ row }"><el-select v-model="row.status" :disabled="disabled || working || saving" :aria-label="`${row.id} 评审状态`"><el-option label="待确认" value="pending" /><el-option label="确认本期验收" value="confirmed" /><el-option label="本期排除" value="excluded" /></el-select></template></el-table-column>
+          <el-table-column label="依据" width="110"><template #default="{ row }"><el-tag :type="row.source_type === 'explicit' ? 'info' : 'warning'" size="small">{{ row.source_type === 'explicit' ? '原文已说清楚' : '资料未说清楚' }}</el-tag></template></el-table-column>
+          <el-table-column label="是否需要处理" width="200"><template #default="{ row }"><el-tag :type="stateOf(row) === 'confirmed' ? 'success' : stateOf(row) === 'excluded' ? 'info' : 'warning'">{{ {confirmed:'已明确，无需逐条确认',pending:'待确认',excluded:'本期不测'}[stateOf(row)] }}</el-tag><el-button v-if="stateOf(row) === 'pending'" link type="primary" @click="tab = 'questions'">去处理问题</el-button></template></el-table-column>
         </el-table>
-        <p class="hint">点击规则可编辑条件、预期与原文依据。推导规则确认、本期排除、图片不确定时，请填写说明。</p>
+        <p class="hint">发现不对可以点标题修改；本次不测的内容可在编辑中排除并说明原因。</p>
       </el-tab-pane>
-      <el-tab-pane v-if="draft" :label="`澄清问题（${unansweredCount} 待处理）`" name="questions">
-        <el-empty v-if="!draft.questions.length" description="未发现需要拍板的问题，仍请核对规则与原文" />
-        <article v-for="question in draft.questions" :key="question.id" class="question-card">
+      <el-tab-pane v-if="draft" :label="`澄清问题（${attentionCount} 待处理）`" name="questions">
+        <p>只需回答影响测试结果的问题。明确的规则不用再确认，也不用逐个勾选场景。</p>
+        <el-checkbox v-model="showAnswered">显示已处理的问题和补充建议</el-checkbox>
+        <el-empty v-if="!questionsToShow.length && !pendingRows.length" description="没有必须处理的问题，可以直接确认本次生成范围" />
+        <article v-for="question in questionsToShow" :key="question.id" class="question-card">
           <strong>{{ question.id }} · {{ question.question }}</strong>
           <p class="hint">{{ question.rule_ids.length ? `影响：${question.rule_ids.join('、')}` : '影响：本期整体范围' }} · {{ question.blocking ? '影响相关规则确认' : '补充建议' }}</p>
           <p class="evidence">{{ question.evidence }}</p>
           <ul><li v-for="option in question.options" :key="option">{{ option }}</li></ul>
-          <el-input v-model="question.answer" type="textarea" :disabled="disabled || working || saving" :aria-label="`${question.id} 处理结论`" placeholder="填写产品决定及适用范围，并把结论落实到关联规则中" @input="resetQuestionRules(question)" />
+          <el-input v-model="question.answer" type="textarea" :disabled="disabled || working || saving" :aria-label="`${question.id} 处理结论`" placeholder="请写清最终怎么做，例如：任务结束后立即恢复分享；同时检查下方对应规则是否一致。" @input="resetQuestionRules(question)" />
+          <el-button v-for="rule in draft.rules.filter(r => !question.rule_ids.length || question.rule_ids.includes(r.id))" :key="rule.id" link type="primary" @click="editingRule = rule">修改对应规则：{{ rule.title }}</el-button>
+        </article>
+      <article v-for="item in pendingRows" :key="item.rule.id" class="question-card">
+          <strong>{{ item.rule.title }}：{{ item.issues.length ? '还需要补充什么？' : '已补齐，保存后生效' }}</strong>
+          <ul><li v-for="issue in item.issues" :key="issue">{{ issue }}</li></ul>
+          <el-input v-if="item.rule.source_type !== 'explicit' || visuals.some(v => item.rule.source_material_ids.includes(v.id) && v.status !== 'read')" v-model="item.rule.review_note" type="textarea" :disabled="disabled || working || saving" :aria-label="`${item.rule.id} 处理说明`" placeholder="请写清按什么理解测试，以及依据是什么。" />
+          <el-button link type="primary" @click="editingRule = item.rule">补充或修改规则</el-button>
+          <el-button v-if="item.issues.some(x => x.includes('场景') || x.includes('操作示例'))" link type="primary" @click="tab = 'scenarios'">补充操作示例</el-button>
+          <el-button link @click="editingRule = item.rule">本期不测并填写原因</el-button>
         </article>
       </el-tab-pane>
       <el-tab-pane :label="`图片与图表（${visuals.length}）`" name="images">
@@ -94,22 +113,22 @@
     </el-tabs>
 
     <div v-if="draft" class="confirm-area">
-      <el-checkbox v-model="scopeReviewed" :disabled="disabled || working || saving">我已核对本期范围、资料完整性及选中的验收规则</el-checkbox>
+      <el-checkbox v-model="scopeReviewed" :disabled="disabled || working || saving">我同意用已明确的规则生成用例，待确认的内容暂不生成</el-checkbox>
       <el-input v-model="confirmationNote" type="textarea" :disabled="disabled || working || saving" :rows="2" placeholder="确认说明：资料缺失或图片识别不确定时，说明补充内容或本期排除范围" aria-label="验收确认说明" />
-      <ul v-if="blockers.length" class="blockers"><li v-for="message in blockers.slice(0, 8)" :key="message">{{ message }}</li><li v-if="blockers.length > 8">还有 {{ blockers.length - 8 }} 项，请逐条处理</li></ul>
-      <div class="review-actions"><el-button :loading="saving" :disabled="disabled || working || !dirty" @click="save">保存评审草稿</el-button><el-button type="primary" :loading="saving" :disabled="disabled || working || !scopeReviewed || !!blockers.length || !!baselineId" @click="confirm">确认验收规则</el-button><span class="hint">仅生成已确认规则；待澄清规则保留并单独列出。</span></div>
+      <ul v-if="blockers.length" class="blockers"><li v-for="message in blockers" :key="message">{{ message }}</li></ul>
+      <div class="review-actions"><el-button :loading="saving" :disabled="disabled || working || !dirty" @click="save">保存评审草稿</el-button><el-button type="primary" :loading="saving" :disabled="disabled || working || !scopeReviewed || !!blockers.length || !!baselineId" @click="confirm">确认本次生成范围（{{ confirmedCount }} 条）</el-button><span class="hint">本次使用 {{ confirmedCount }} 条；另有 {{ pendingCount }} 条待确认、{{ excludedCount }} 条本期不测。</span></div>
     </div>
 
     <el-drawer :model-value="!!editingRule" title="编辑验收规则" size="min(760px, 100vw)" @close="editingRule = null">
       <el-form v-if="editingRule" label-position="top" :disabled="disabled || working || saving">
         <el-form-item v-for="field in ruleFields" :key="field.key" :label="field.label"><el-input v-model="editingRule[field.key]" type="textarea" :autosize="{ minRows: 1, maxRows: 6 }" @input="editingRule.status = 'pending'" /></el-form-item>
-        <el-form-item label="依据性质"><el-select v-model="editingRule.source_type" @change="editingRule.status = 'pending'"><el-option value="explicit" label="原文明确" /><el-option value="inferred" label="推导建议" /></el-select></el-form-item>
+        <el-form-item label="依据性质"><el-select v-model="editingRule.source_type" @change="editingRule.status = 'pending'"><el-option value="explicit" label="原文已说清楚" /><el-option value="inferred" label="资料未说清楚" /></el-select></el-form-item>
         <el-form-item label="关联图片"><el-select v-model="editingRule.source_material_ids" multiple @change="editingRule.status = 'pending'"><el-option v-for="visual in visuals" :key="visual.id" :value="visual.id" :label="`${visual.id} · ${visual.location}`" /></el-select></el-form-item>
         <el-form-item label="必须验证的验收条件">
           <div class="criteria-edit"><div v-for="criterion in editingRule.criteria" :key="criterion.id"><span class="hint">{{ criterion.id }}</span><el-input v-model="criterion.text" type="textarea" :rows="2" @input="editingRule.status = 'pending'" /></div><el-button size="small" @click="addCriterion">增加验收条件</el-button></div>
         </el-form-item>
-        <el-form-item label="评审说明 / 本期排除原因"><el-input v-model="editingRule.review_note" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="评审状态"><el-radio-group v-model="editingRule.status"><el-radio value="pending">待确认</el-radio><el-radio value="confirmed">确认本期验收</el-radio><el-radio value="excluded">本期排除</el-radio></el-radio-group></el-form-item>
+        <el-form-item label="处理说明 / 这次不测的原因"><el-input v-model="editingRule.review_note" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="这次要不要测"><el-button v-if="editingRule.status === 'excluded'" @click="includeRule(editingRule)">恢复到本次范围</el-button><el-button v-else @click="editingRule.status = 'excluded'">本期不测（请填写原因）</el-button><p>内容完整且没有疑问时自动纳入，无需另点确认。</p></el-form-item>
       </el-form>
       <template #footer><el-button @click="editingRule = null">完成编辑</el-button></template>
     </el-drawer>
@@ -124,6 +143,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { analyzeRequirement, listRequirementAnalyses, getRequirementAnalysis, retryRequirementAnalysis, getRequirementOutput, saveRequirementDraft, confirmRequirement, getRequirementImage, pollAiJob } from '@/api'
 import AcceptanceScenarios from './AcceptanceScenarios.vue'
+import { reviewRows, filterRules } from '@/utils/focusedReview'
 import AiJobProgress from './AiJobProgress.vue'
 import { renderMarkdown } from '@/utils/markdown'
 
@@ -141,39 +161,35 @@ const reusableImages = computed(() => visuals.value.filter(v => ['read', 'uncert
 const completedParts = computed(() => new Set(savedOutputs.value.filter(p => p.status === 'done').map(p => p.part_key)).size)
 const outputLabel = (key, id) => key === 'analysis' ? '需求规则' : key?.startsWith('scenes-v2-') ? `具体场景 · 返回记录 #${id}` : key?.startsWith('scenes-') ? `具体场景 ${key.slice(7)}` : key
 const working = ref(false), saving = ref(false), dirty = ref(false), error = ref(''), baselineId = ref(null)
-const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('scenarios'), editingRule = ref(null)
+const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('questions'), editingRule = ref(null)
 const imageOpen = ref(false), imageLoading = ref(false), imageUrl = ref(''), imageReading = ref(null)
 let version = 0, historyVersion = 0, controller = null, hydrating = false, restoring = false, disposed = false, imageVersion = 0
 const changeLabels = { scope: '本期范围', module: '模块', platform: '平台', condition: '前提', action: '操作', expected: '预期结果', forbidden: '禁止行为', boundaries: '边界', evidence: '验证方式', criteria: '验收条件' }
 const overviewFields = [{ key: 'summary', label: '产品理解：用户、入口与最终结果' }, { key: 'scope', label: '本期范围与平台' }, { key: 'out_of_scope', label: '本期不做什么' }, { key: 'flow', label: '关键流程 / 判定顺序' }]
-const ruleFields = [{ key: 'title', label: '规则标题' }, { key: 'module', label: '模块' }, { key: 'platform', label: '适用平台' }, { key: 'condition', label: '前提条件' }, { key: 'action', label: '触发操作 / 事件' }, { key: 'expected', label: '应发生的结果' }, { key: 'forbidden', label: '不得发生的结果' }, { key: 'boundaries', label: '边界与例外' }, { key: 'evidence', label: '如何验证 / 缺少的测试条件' }, { key: 'source_section', label: '原文章节 / 图片位置' }, { key: 'source_quote', label: '原文摘录' }]
+const ruleFields = [{ key: 'title', label: '要测试的事情' }, { key: 'module', label: '模块' }, { key: 'platform', label: '适用平台' }, { key: 'condition', label: '什么时候 / 什么情况下' }, { key: 'action', label: '用户做什么，或发生什么事' }, { key: 'expected', label: '应该看到什么结果' }, { key: 'forbidden', label: '不得发生的结果' }, { key: 'boundaries', label: '边界与例外' }, { key: 'evidence', label: '如何验证 / 缺少的测试条件' }, { key: 'source_section', label: '原文章节 / 图片位置' }, { key: 'source_quote', label: '原文摘录' }]
 const visuals = computed(() => analysis.value?.visual_readings || [])
 const warnings = computed(() => [...(analysis.value?.source_info?.warnings || props.sourceWarnings), ...visuals.value.filter(v => v.status !== 'read').map(v => `${v.id}：${v.uncertainties}`)])
-const confirmedCount = computed(() => draft.value?.rules.filter(r => r.status === 'confirmed').length || 0)
-const pendingCount = computed(() => draft.value?.rules.filter(r => r.status === 'pending').length || 0)
-const excludedCount = computed(() => draft.value?.rules.filter(r => r.status === 'excluded').length || 0)
-const unansweredCount = computed(() => draft.value?.questions.filter(q => !q.answer.trim()).length || 0)
+const ruleFilter = ref('all'), showAnswered = ref(false)
+const rows = computed(() => baselineId.value && !dirty.value ? (draft.value?.rules || []).map(rule => ({rule, status:rule.status, issues:[]})) : reviewRows(draft.value, visuals.value))
+const visibleRules = computed(() => filterRules(rows.value, ruleFilter.value).map(row => row.rule))
+const stateOf = rule => rows.value.find(row => row.rule.id === rule.id)?.status || rule.status
+const confirmedCount = computed(() => rows.value.filter(r => r.status === 'confirmed').length)
+const pendingCount = computed(() => rows.value.filter(r => r.status === 'pending').length)
+const excludedCount = computed(() => rows.value.filter(r => r.status === 'excluded').length)
+const unansweredCount = computed(() => draft.value?.questions.filter(q => !q.answer.trim() && q.blocking && (!q.rule_ids.length || q.rule_ids.some(id => rows.value.some(r => r.rule.id === id && r.status !== 'excluded')))).length || 0)
+const attentionCount = computed(() => unansweredCount.value + rows.value.filter(r => r.status === 'pending' && r.issues.some(issue => !issue.startsWith('还有影响'))).length)
+const questionsToShow = computed(() => (draft.value?.questions || []).filter(q => showAnswered.value || (q.blocking && (!q.answer.trim() || !analysis.value?.draft?.questions.find(saved => saved.id === q.id)?.answer?.trim()) && (!q.rule_ids.length || q.rule_ids.some(id => rows.value.some(r => r.rule.id === id && r.status !== 'excluded'))))))
+const pendingRows = computed(() => rows.value.filter(r => r.status === 'pending' || (dirty.value && r.status !== 'excluded' && analysis.value?.draft?.rules.find(saved => saved.id === r.rule.id)?.status === 'pending')))
 const blockers = computed(() => {
   if (!draft.value) return []
-  const messages = [], selected = draft.value.rules.filter(r => r.status === 'confirmed')
-  if (!selected.length) messages.push('至少确认一条验收规则')
-  for (const rule of draft.value.rules) {
-    if (rule.status === 'excluded' && !rule.review_note.trim()) messages.push(`${rule.id}：请填写本期排除原因`)
-    if (rule.status !== 'confirmed') continue
-    if (!rule.condition.trim() || !rule.action.trim() || !rule.expected.trim() || !rule.criteria.length || rule.criteria.some(c => !c.text.trim())) messages.push(`${rule.id}：请补齐前提、操作、预期和验收条件`)
-    if (rule.source_type === 'inferred' && !rule.review_note.trim()) messages.push(`${rule.id}：推导规则需要确认依据或假设说明`)
-    if (visuals.value.some(v => rule.source_material_ids.includes(v.id) && v.status !== 'read') && !rule.review_note.trim()) messages.push(`${rule.id}：请说明关联图片的核对结论`)
-  }
-  for (const q of draft.value.questions) if (q.blocking && !q.answer.trim() && (!q.rule_ids.length || selected.some(r => q.rule_ids.includes(r.id)))) messages.push(`${q.id}：${q.question}`)
-  if (draft.value.scenario_review_required || draft.value.scenarios?.length) {
-    const scenes = (draft.value.scenarios || []).filter(s => selected.some(r => r.id === s.rule_id))
-    const covered = new Set(scenes.flatMap(s => s.criterion_ids))
-    for (const r of selected) for (const c of r.criteria) if (!covered.has(c.id)) messages.push(`${c.id}：请补充具体场景`)
-    for (const s of scenes) if (!s.reviewed || !s.actor.trim() || !s.given.trim() || !s.when.trim() || !s.then.trim()) messages.push(`${s.id}：请补齐场景并核对`)
-  }
-  if (warnings.value.length && !confirmationNote.value.trim()) messages.push('请在确认说明中记录资料缺口的处理或排除范围')
+  const messages = []
+  if (!confirmedCount.value) messages.push('还没有可以生成用例的明确规则，请先处理一个问题。')
+  for (const r of draft.value.rules) if (r.status === 'excluded' && !r.review_note.trim()) messages.push(`${r.title}：请说明这次为什么不测。`)
+  if (warnings.value.length && !confirmationNote.value.trim()) messages.push('资料还有缺失，请在下方说明如何处理，或这次不测哪些内容。')
   return messages
 })
+function filterPending() { tab.value = 'rules'; ruleFilter.value = 'pending' }
+function includeRule(rule) { rule.status = 'pending' }
 const statusLabel = status => ({ pending: '排队中', running: '分析中', done: '可评审', failed: '失败', cancelled: '已取消' }[status] || status)
 const messageOf = e => e?.response?.data?.msg || e?.message || '操作失败，请重试'
 
@@ -293,7 +309,7 @@ async function save() {
 async function confirm() {
   if (blockers.value.length || !scopeReviewed.value) return
   if (!(await save())) return
-  if (blockers.value.length) { error.value = '修改已保存，请重新核对受影响的场景后确认'; return }
+  if (blockers.value.length) { error.value = '修改已保存，还有内容没说清楚，请查看澄清问题'; return }
   saving.value = true; error.value = ''
   try {
     const data = await confirmRequirement(analysis.value.id, { revision: analysis.value.revision, source_hash: analysis.value.source_hash, scope_reviewed: scopeReviewed.value, confirmation_note: confirmationNote.value })
@@ -349,4 +365,8 @@ h3 { margin:0; font-size:16px; }.review-head p,.hint { color:var(--el-text-color
 .recovery-info .el-button { max-width: 100%; height: auto; white-space: normal; line-height: 1.6; }
 .recovery-info .el-button :deep(span) { overflow-wrap: anywhere; }
 .saved-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font-size: 13px; line-height: 1.7; padding: 12px; background: #f6f8fb; }
+</style>
+
+<style scoped>
+.rule-filters{margin:8px 0 16px;display:flex;flex-wrap:wrap;gap:6px}.question-card{scroll-margin-top:80px}
 </style>

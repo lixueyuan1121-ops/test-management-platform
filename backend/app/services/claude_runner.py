@@ -26,6 +26,8 @@ from typing import Iterator
 from urllib.parse import urlsplit
 
 from app.core.config import settings
+from app.services import generation_trace as trace
+from app.services.model_text import event_text as _event_text
 
 logger = logging.getLogger("test_platform")
 
@@ -761,6 +763,12 @@ def _parse_line(line: str, stream_state: dict | None = None) -> dict | None:
                 return {"type": "delta", "text": delta.get("partial_json") or "", "reset": first}
         text = (delta.get("text") if kind == "content_block_delta" and delta.get("type") == "text_delta"
                 else block.get("text") if kind == "content_block_start" and block.get("type") == "text" else None)
+        # Some gateways place reasoning blocks inside a text field. Drop those
+        # before setting has_text, otherwise the later real assistant snapshot is lost.
+        value = text
+        text = _event_text(value, '', 'protocol_delta')
+        if value and not isinstance(value, str) and not text:
+            trace.emit('model_nontext_ignored', event_type=kind, value_type=type(value).__name__)
         # Only user-facing text. Never forward thinking, tool input or signatures.
         if text:
             if stream_state is not None:
@@ -773,7 +781,7 @@ def _parse_line(line: str, stream_state: dict | None = None) -> dict | None:
         if stream_state and stream_state.get("has_text") and message.get("id") == stream_state.get("message_id"):
             return None
         parts = [
-            b.get("text", "")
+            _event_text(b.get("text", ""), "", "assistant_text")
             for b in evt.get("message", {}).get("content", [])
             if isinstance(b, dict) and b.get("type") == "text"
         ]
@@ -792,7 +800,7 @@ def _parse_line(line: str, stream_state: dict | None = None) -> dict | None:
             detail = "模型 API 连接失败（UnsupportedProxyProtocol）：Claude 代理协议不兼容，请检查代理配置或设置 CLAUDE_PROXY_URL 为有效 HTTP/HTTPS 代理"
         return {
             "type": "result",
-            "text": json.dumps(evt["structured_output"], ensure_ascii=False) if isinstance(evt.get("structured_output"), dict) else evt.get("result", "") or "",
+            "text": json.dumps(evt["structured_output"], ensure_ascii=False) if isinstance(evt.get("structured_output"), dict) else _event_text(evt.get("result", ""), "", "protocol_result"),
             "duration_ms": evt.get("duration_ms"),
             "cost_usd": evt.get("total_cost_usd"),
             "output_tokens": usage.get("output_tokens"),
@@ -811,6 +819,7 @@ def supports_effort():
     return True
 
 
+@trace.model_call
 def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None, output_schema: dict | None = None, effort: str | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
@@ -847,10 +856,13 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                 for im in images
             ]}}, ensure_ascii=False) + "\n"
 
+    slot_started = time.monotonic()
+    trace.emit("model_slot_wait", prompt_chars=len(prompt), prompt_sha256=trace.fingerprint(prompt), timeout_seconds=timeout, via_stdin=via_stdin)
     if not _acquire_slot(_slots):
         yield {"type": "error", "msg": "AI 生成繁忙（等待超时，并发持续打满），请稍后重试"}
         return
 
+    trace.emit("model_slot_acquired", wait_ms=int((time.monotonic()-slot_started)*1000))
     proc: subprocess.Popen | None = None
     try:
         proc = subprocess.Popen(
@@ -877,9 +889,10 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
             try:
                 proc.stdin.write(stdin_text)
                 proc.stdin.close()
-            except OSError:
-                pass
-        threading.Thread(target=_feed, daemon=True).start()
+                trace.emit("model_input_written", bytes_count=len(stdin_text.encode("utf-8")))
+            except OSError as error:
+                trace.emit("model_input_failed", error_type=type(error).__name__)
+        threading.Thread(target=trace.bind(_feed), daemon=True).start()
 
     q: Queue = Queue()
 
@@ -897,10 +910,18 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     hb = 0            # 心跳计数(claude 思考、未吐字的空转轮数)
     out_chars = 0     # 已产出正文字符数(超时诊断:0=claude 全程没吐字/纯 hang)
     start = time.monotonic()
+    transport_lines, parsed_events = 0, 0
+    first_output_ms, last_text_at = None, start
+    last_report = start
     stream_state = {"structured": bool(output_schema)}
+    trace.emit("model_process_started", process_id=getattr(proc, "pid", None))
     logger.info("claude 生成启动 via_stdin=%s prompt_len=%d timeout=%ss", via_stdin, len(prompt), timeout)
     try:
         while True:
+            now = time.monotonic()
+            if now - last_report >= 30:
+                trace.emit("model_wait", elapsed_ms=int((now-start)*1000), idle_ms=int((now-last_text_at)*1000), transport_lines=transport_lines, parsed_events=parsed_events, output_chars=out_chars, heartbeats=hb)
+                last_report = now
             remaining = timeout - (time.monotonic() - start)
             if remaining <= 0:
                 proc.kill()
@@ -920,6 +941,9 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                 continue
             if line is None:
                 break
+            transport_lines += 1
+            if transport_lines == 1:
+                trace.emit("model_first_transport", elapsed_ms=int((time.monotonic()-start)*1000), bytes_count=len(line.encode("utf-8")))
             evt = _parse_line(line, stream_state)
             if evt is None:
                 stripped = line.strip()
@@ -931,18 +955,32 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                     # Ignored protocol records may contain thinking/tool input.
                     # Never echo them in the error returned after an interrupted stream.
                 continue
+            parsed_events += 1
             if evt["type"] == "result":
                 got_result = True
                 if evt.get("is_error"):
                     yield evt
                     yield {"type": "error", "msg": f"模型服务返回错误：{evt.get('error') or evt.get('subtype') or '未提供原因'}"}
                     return
+                result_text = evt.get("text")
+                if isinstance(result_text, str) and result_text:
+                    out_chars = len(result_text)
+                    if first_output_ms is None:
+                        first_output_ms = int((time.monotonic()-start)*1000)
+                        trace.emit("model_first_text", first_output_ms=first_output_ms, value_type="str")
             elif evt["type"] == "delta":
-                out_chars += len(evt.get("text") or "")
+                text = evt.get("text") or ""
+                out_chars += len(text) if isinstance(text, str) else 0
+                if text:
+                    last_text_at = time.monotonic()
+                    if first_output_ms is None:
+                        first_output_ms = int((last_text_at-start)*1000)
+                        trace.emit("model_first_text", first_output_ms=first_output_ms, value_type=type(text).__name__)
             yield evt
     finally:
         if proc and proc.poll() is None:
             proc.kill()
+        trace.emit("model_process_end", elapsed_ms=int((time.monotonic()-start)*1000), output_chars=out_chars, first_output_ms=first_output_ms, transport_lines=transport_lines, parsed_events=parsed_events, heartbeats=hb, got_result=got_result, exit_code=proc.poll() if proc else None)
         _slots.release()
 
     logger.info("claude 生成结束 got_result=%s 耗时=%.1fs hb=%d 输出=%d字",

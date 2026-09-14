@@ -1,0 +1,5 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><div id="app"></div><script type="module">
+import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createRouter,createMemoryHistory} from 'vue-router';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';import CaseLibrary from '/src/views/CaseLibrary.vue';
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CaseLibrary},{path:'/selectors',name:'selectors',component:{render:()=>h('div','选择器页面')}}]});
+await router.push('/');await router.isReady();createApp({render:()=>h(CaseLibrary)}).use(createPinia()).use(router).use(ElementPlus).mount('#app');
+</script></html>

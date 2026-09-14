@@ -18,6 +18,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.models import AiJob
+from app.services import generation_trace as trace
 
 logger = logging.getLogger("test_platform")
 
@@ -52,6 +53,7 @@ def enqueue(db: Session, kind: str, *, provider: str | None = None,
         notify_new_job()
     else:
         db.flush()  # caller commits the job pointer and domain transition atomically
+    trace.emit("job_enqueued", job_id=job.id, kind=kind, provider=job.provider, project_id=project_id, ref_id=ref_id, ref_kind=ref_kind, commit_requested=commit)
     return job
 
 
@@ -144,6 +146,7 @@ def _persist_with_retry(persist_fn, session_factory, retries: int = 2) -> tuple[
             return persist_fn(s)
         except OperationalError as e:
             last_err = e
+            trace.emit("persistence_retry", attempt=attempt + 1, error_type=type(e).__name__)
             logger.warning("写库断连(第 %d 次),重连重试: %s", attempt + 1, str(e)[:200])
             try:
                 s.rollback()
@@ -195,10 +198,15 @@ def run_job(session_factory, job_id: int) -> None:
     _ensure_handlers()
     s = session_factory()
     kind = None
+    context = None
+    started = time.monotonic()
     try:
         job = s.get(AiJob, job_id)
         if job is None:
             return
+        context = trace.scope(job_id=job.id, kind=job.kind, provider=job.provider, project_id=job.project_id, ref_id=job.ref_id)
+        context.__enter__()
+        trace.emit("job_started")
         kind = job.kind   # 缓存:session 健康时取出,异常日志/落 failed 都不再回读 ORM 属性
         handler = _HANDLERS.get(kind)
         if handler is None:
@@ -210,6 +218,7 @@ def run_job(session_factory, job_id: int) -> None:
         try:
             result = handler(s, job) or {}
         except Exception as e:  # noqa: BLE001
+            trace.emit("job_failed", error_code=trace.error_code(e), error_type=type(e).__name__, elapsed_ms=int((time.monotonic()-started)*1000))
             logger.exception("AI job 执行失败 id=%s kind=%s", job_id, kind)
             try:
                 s.rollback()
@@ -224,7 +233,9 @@ def run_job(session_factory, job_id: int) -> None:
             job.output_raw = result.get("output_raw")
         job.duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
         s.commit()
+        trace.emit("job_done", elapsed_ms=int((time.monotonic()-started)*1000))
     except Exception as e:  # noqa: BLE001  成功路径的 commit 等也可能断连,同样用独立 session 兜底
+        trace.emit("job_finalize_failed", error_code=trace.error_code(e), error_type=type(e).__name__)
         logger.exception("AI job 收尾失败 id=%s kind=%s", job_id, kind)
         try:
             s.rollback()
@@ -233,6 +244,8 @@ def run_job(session_factory, job_id: int) -> None:
         _fail_job_isolated(session_factory, job_id, kind or "", str(e))
     finally:
         s.close()
+        if context is not None:
+            context.__exit__(None, None, None)
 
 
 # ── 唤醒 / worker 池 ──────────────────────────────────────────────────────────────

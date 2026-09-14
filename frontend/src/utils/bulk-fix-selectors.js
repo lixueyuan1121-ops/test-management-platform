@@ -1,7 +1,7 @@
 // 批量补选择器纯逻辑(无 Vue/DOM 依赖,便于单测)。
 // 服务于用例库「批量补选择器」:汇总选中待补用例缺的 key、去重剔重复,
 // 以及探测后把探测元素按语义批量配对到各待补 key。候选来自真实探测,不臆造 CSS。
-import { scoreElement, tokenize } from "./selector-match.js";
+import { scoreElement, tokenize, hasSpecificMatch } from "./selector-match.js";
 
 // 汇总选中用例里「选择器待补」的缺失 key。
 // cases:用例数组(每条含 selector_fix / selector_fix_keys / title / steps)。
@@ -15,6 +15,7 @@ export function collectMissingKeys(cases, registered) {
   const skipped = [];
   const ctxParts = [];
   const contexts = {};
+  const hints = {};
   let caseCount = 0;
   for (const c of cases || []) {
     if (!c || !c.selector_fix) continue; // 只处理「选择器待补」用例
@@ -24,7 +25,10 @@ export function collectMissingKeys(cases, registered) {
       if (!k) continue;
       let script = c.script;
       try { if (typeof script === 'string') script = JSON.parse(script); } catch { script = []; }
-      const matchingSteps = (Array.isArray(script) ? script : []).filter(s => JSON.stringify(s.target || {}).includes(JSON.stringify(k)));
+      const matchingSteps = (Array.isArray(script) ? script : []).filter(s => s?.target?.key === k);
+      const expectedTexts = matchingSteps.filter(s => s.action === 'assert_text' && !s.args?.negate && typeof s.args?.expected === 'string')
+        .map(s => s.args.expected.trim()).filter(Boolean);
+      hints[k] = { expectedTexts: [...new Set([...(hints[k]?.expectedTexts || []), ...expectedTexts])] };
       const localContext = matchingSteps.length ? matchingSteps.map(s => `${s.desc || ''} ${s.args?.expected || ''}`).join(' ') : `${c.title || ''} ${c.steps || ''}`;
       contexts[k] = `${contexts[k] || ''} ${localContext}`.trim().slice(0, 1200);
       if (seen.has(k)) continue;
@@ -33,18 +37,18 @@ export function collectMissingKeys(cases, registered) {
       keys.push(k);
     }
   }
-  return { keys, skipped, caseCount, contexts, ctx: ctxParts.join(" ").trim().slice(0, 400) };
+  return { keys, skipped, caseCount, contexts, hints, ctx: ctxParts.join(" ").trim().slice(0, 400) };
 }
 
 // 把探测元素按语义批量配对到待补 key(贪心:分数从高到低,一元素配一 key、一 key 配一元素)。
 // keys:待补 key 名数组;ctx:用例上下文(中文文案助配);elements:探测结果元素数组。
 // 返回 [{ key, el:配上的元素或null, score }],每个 key 一条(未配上 el=null,留待换状态再探)。
-export function matchElementsToKeys(keys, ctx, elements) {
+export function matchElementsToKeys(keys, ctx, elements, hints = {}) {
   const ranked = new Map();
   for (const key of keys || []) {
     const context = typeof ctx === 'object' ? (ctx?.[key] || '') : ctx;
-    ranked.set(key, (elements || []).map(el => ({ key, el, score: scoreElement(key, tokenize(context), el) }))
-      .filter(p => p.score > 0).sort((a, b) => b.score - a.score));
+    ranked.set(key, (elements || []).map(el => ({ key, el, score: scoreElement(key, tokenize(context), el) + (hints?.[key]?.expectedTexts?.length && hasSpecificMatch(key, el, hints[key]) ? 6 : 0) }))
+      .filter(p => p.score > 0 && hasSpecificMatch(key, p.el, hints?.[key])).sort((a, b) => b.score - a.score));
   }
   // 仅采用明确领先的首选；冲突时不拿第二名凑数，保留人工选择入口。
   const proposed = [...ranked.values()].map(list => {

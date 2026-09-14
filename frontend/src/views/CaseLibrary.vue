@@ -142,8 +142,8 @@
     </WorkspacePage>
 
     <!-- 编辑弹窗 -->
-    <el-dialog v-model="edit.visible" title="编辑用例" width="560px">
-      <el-form label-width="72px">
+    <el-dialog v-model="edit.visible" title="编辑用例" width="560px" :close-on-click-modal="!edit.regen" :close-on-press-escape="!edit.regen" :show-close="!edit.regen">
+      <el-form label-width="72px" :disabled="edit.regen || edit.saving">
         <el-form-item label="标题"><el-input v-model="edit.title" /></el-form-item>
         <el-form-item label="维度">
           <el-select v-model="edit.category" clearable style="width:140px">
@@ -168,11 +168,13 @@
           <span class="edit-hint" style="margin-left:10px">纳入回归用例库后,可在「仅回归」视图按页面勾选直接执行(不依赖任务/采纳)</span>
         </el-form-item>
       </el-form>
+      <el-alert v-if="edit.error" :title="edit.error" type="error" :closable="false" show-icon />
+      <p v-if="edit.progress" role="status">{{ edit.progress }}</p>
       <template #footer>
         <span class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
-        <el-button @click="edit.visible = false">取消</el-button>
-        <el-button :loading="edit.regen" @click="doEditAndRegen">保存并重生 script</el-button>
-        <el-button type="primary" :loading="edit.saving" @click="doEdit">保存</el-button>
+        <el-button :disabled="edit.regen || edit.saving" @click="edit.visible = false">取消</el-button>
+        <el-button :loading="edit.regen" :disabled="edit.saving" @click="doEditAndRegen">保存并重生 script</el-button>
+        <el-button type="primary" :loading="edit.saving" :disabled="edit.regen" @click="doEdit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -437,6 +439,7 @@ async function locateMissingKeys(row) {
       case_ids: String(row.id),
       fix_keys: (row.selector_fix_keys || []).join(','),
       key_contexts: JSON.stringify(contexts),
+        key_hints: JSON.stringify(hints),
       ctx: `${row.title || ''} ${row.steps || ''}`.trim().slice(0, 200),
     },
   })
@@ -465,7 +468,7 @@ async function bulkFixSelectors() {
     for (let i = 0; i < fixCases.length; i += 8) {
       detailedCases.push(...await Promise.all(fixCases.slice(i, i + 8).map(c => getTestcase(c.id))))
     }
-    const { keys, skipped, caseCount, ctx, contexts } = collectMissingKeys(detailedCases, registered)
+    const { keys, skipped, caseCount, ctx, contexts, hints } = collectMissingKeys(detailedCases, registered)
     if (!keys.length) {
       ElMessage.info(skipped.length
         ? `选中 ${caseCount} 条待补用例的 key 均已注册,试试「批量回填」或去选择器管理确认`
@@ -494,8 +497,10 @@ async function bulkFixSelectors() {
 }
 
 // ---- 编辑 ----
-const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, pages: [], is_regression: false, saving: false, regen: false })
+const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, pages: [], is_regression: false, saving: false, regen: false, error: '', progress: '' })
 function openEdit(row) {
+  edit.error = ''
+  edit.progress = ''
   edit.id = row.id
   edit.title = row.title || ''
   edit.steps = row.steps || ''
@@ -524,20 +529,30 @@ async function doEdit() {
 
 // 保存正文后重生 script。gui/e2e 按最新 steps 重生;「待补选择器」降级的 manual 用例后端会一键按原意图恢复。
 async function doEditAndRegen() {
+  if (edit.regen || edit.saving) return
   if (!edit.title.trim()) { ElMessage.warning('标题不能为空'); return }
   edit.regen = true
+  edit.error = ''
+  edit.progress = '正在保存用例…'
+  let saved = false
   try {
     await updateTestcase(edit.id, {
       title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
       category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
       is_regression: edit.is_regression,
     })
-    await genTestcaseScript(edit.id)   // 后端按最新 steps 重生并写回(并按新 script 的 key 重推页面)
+    saved = true
+    edit.progress = '正文已保存，正在提交脚本生成任务…'
+    await genTestcaseScript(edit.id, { forceRegenerate: true, silent: true, onTick: job => {
+      edit.progress = job.status === 'pending' ? '正文已保存，脚本生成正在排队…' : '正文已保存，正在按最新步骤和预期生成脚本…'
+    } })
     edit.visible = false
     ElMessage.success('已保存并重生 script')
     await load()
-  } catch { /* http 拦截器已提示(如非 gui/e2e、生成失败)*/ }
-  finally { edit.regen = false }
+  } catch (error) {
+    const reason = error.response?.data?.detail || error.message || '请重试'
+    edit.error = `${saved ? '正文已保存，但脚本未生成成功' : '保存失败'}：${reason}`
+  } finally { edit.regen = false; edit.progress = '' }
 }
 
 // ---- 详情 ----

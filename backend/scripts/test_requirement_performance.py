@@ -174,6 +174,17 @@ class LegacyCacheTests(unittest.TestCase):
         self.assertEqual(engine.calls, 1)
         self.assertIsNone(self.parts.read_checkpoint('probe', 'synthetic', {}, lambda x: x))
 
+    def test_unsupported_envelope_saves_failure_without_reusing_partial_object(self):
+        class Engine:
+            def stream_generate(self, *args, **kwargs):
+                yield {'type': 'delta', 'text': '{"ok":true}'}
+                yield {'type': 'delta', 'text': [{'unknown': 'payload'}]}
+        with self.assertRaises(OutputError) as error:
+            self.parts.run('probe', '合成批次', Engine(), 'synthetic', {}, lambda x: x)
+        self.assertEqual(error.exception.code, 'unsupported_text')
+        self.assertEqual(error.exception.raw, '{"ok":true}')
+        self.assertIsNone(self.parts.read_checkpoint('probe', 'synthetic', {}, lambda x: x))
+
     def test_old_successes_survive_new_batching_and_rule_changes_invalidate_them(self):
         interpretation = workload(48)
         old_batch = entries(interpretation)[:6]

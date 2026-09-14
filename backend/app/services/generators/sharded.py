@@ -13,6 +13,7 @@ prompt 里明确"其余维度由其它分片并行产出,你不要产出"。本�
 
 本模块只做编排 + 合并,不碰 DB(落库仍由 api 层 run_testcase_gen_job 完成)。
 """
+from app.services import generation_trace as trace
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -38,23 +39,11 @@ def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, 
     sid = shard["id"]
     raw, meta, err = "", None, None
     try:
-        for evt in engine.stream_generate(
+        from app.services.generation_stream import consume
+        raw, meta, err = consume(engine.stream_generate(
             requirement, project_id=project_id, pages=pages, timeout=timeout,
             prompt_builder=lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard, no_script, sub_product=sub_product),
-        ):
-            et = evt.get("type")
-            if et == "delta":
-                raw += evt.get("text") or ""
-            elif et == "result":
-                meta = evt
-                if evt.get("text"):
-                    raw = evt["text"]
-                if evt.get("is_error"):
-                    err = evt.get("error") or evt.get("text") or "模型服务返回错误，未提供原因"
-            elif et == "error":
-                err = evt.get("msg")
-            if on_progress and not err:
-                on_progress(raw if et in ("delta", "result") and raw else None)
+        ), on_progress)
     except Exception as e:  # noqa: BLE001  单片失败不外溢
         logger.exception("分片生成失败 shard=%s", sid)
         return {"shard": sid, "cases": [], "raw": raw, "meta": meta,
@@ -104,13 +93,13 @@ def generate_sharded(engine, requirement: str, *, project_id: int | None = None,
     def run_shard(shard):
         if progress:
             progress.unit(shard["id"], status="running")
-        result = _run_one_shard(engine, requirement, project_id, pages, shard, timeout, no_script, sub_product,
-                                on_progress=progress.callback(shard["id"]) if progress else None)
+        result = trace.run_stage(lambda: _run_one_shard(engine, requirement, project_id, pages, shard, timeout, no_script, sub_product,
+                                on_progress=progress.callback(shard["id"]) if progress else None), batch_id=shard["id"], stage="case_shard")
         if progress:
             progress.unit(shard["id"], status="failed" if result["error"] else "done")
         return result
     with ThreadPoolExecutor(max_workers=n, thread_name_prefix="shard-gen") as ex:
-        results = list(ex.map(run_shard, shards))
+        results = list(ex.map(trace.bind(run_shard), shards))
 
     cases: list[dict] = []
     seen: set[str] = set()

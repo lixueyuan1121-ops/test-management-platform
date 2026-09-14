@@ -128,11 +128,13 @@ class ReviewAPITests(unittest.TestCase):
         self.fake.response["rules"][0].update(status="confirmed", review_note="模型自行确认")
         self.fake.response["questions"][0]["answer"] = "模型自行决定"
         analysis = self.analyze()
-        self.assertEqual(analysis["draft"]["rules"][0]["status"], "pending")
+        self.assertEqual(analysis["draft"]["rules"][0]["status"], "confirmed")
+        self.assertEqual(analysis["draft"]["rules"][0]["review_note"], "")
+        self.assertEqual(analysis["draft"]["rules"][1]["status"], "pending")
         self.assertEqual(analysis["draft"]["questions"][0]["answer"], "")
-        self.assertEqual(self.confirm(analysis).status_code, 422)
-        analysis["draft"]["rules"][0]["status"] = "confirmed"
-        analysis = self.save(analysis)
+        self.assertFalse(analysis["draft"]["scenarios"][0]["reviewed"])
+        response = self.client.post(f"/api/ai/requirements/analyses/{analysis['id']}/confirm", json={"revision": analysis["revision"], "source_hash": analysis["source_hash"], "scope_reviewed": True})
+        self.assertEqual(response.status_code, 200, response.text)
         confirmation = self.confirm(analysis)
         self.assertEqual(confirmation.status_code, 200, confirmation.text)
         bid = confirmation.json()["data"]["baseline_id"]

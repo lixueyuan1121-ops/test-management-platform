@@ -5,6 +5,7 @@
 点重生应走**确定性回填**(不调 AI)→ 恢复 exec_kind、清待补标识。桩引擎故意抛异常:
 一旦被调用即测试失败,以此证明"回填路径确实没碰 AI"。
 """
+import json
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.deps import get_current_user
 from app.db.session import Base, get_db
-from app.models import AiTask, TestCase, Project, SelectorKey
+from app.models import AiJob, AiTask, TestCase, Project, SelectorKey
 from app.services import generators
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -72,7 +73,32 @@ def main():
     _s.expire_all()
     row = _s.get(TestCase, 1)
     assert row.exec_kind == "gui" and row.kind_reason is None
-    print("OK test_gen_script_backfill")
+    # 编辑正文后的重生必须跳过旧脚本回填，并把新预期带给引擎。
+    before_regen = row.script
+    row.exec_kind = 'manual'
+    row.kind_reason = '[选择器待补] 补齐选择器 key:submitOrderBtn 后即可执行 gui'
+    row.steps = '点击下单后确认最新提示'
+    row.expected = '显示新提示'
+    _s.commit()
+    response = client.post('/api/ai/testcases/1/gen-script?force_regenerate=true')
+    job_id = response.json()['data']['job_id']
+    assert job_id, response.text
+    job = _s.get(AiJob, job_id)
+    assert json.loads(job.input)['expected'] == '显示新提示'
+    _s.refresh(row)
+    assert row.script == before_regen, '生成完成前保留原脚本'
+    calls = []
+    def generate(kind, title, steps, expected, **kwargs):
+        calls.append((steps, expected))
+        return [{'action':'assert_text','target':{'key':'submitOrderBtn'},'args':{'expected':expected},'desc':'新提示'}], None
+    generators.get_provider = lambda name=None: SimpleNamespace(is_available=lambda: True, generate_script=generate)
+    from app.services import ai_jobs
+    ai_jobs.run_job(_Session, job_id)
+    _s.expire_all()
+    assert _s.get(AiJob, job_id).status == 'done'
+    assert calls == [('点击下单后确认最新提示', '显示新提示')]
+    assert '显示新提示' in _s.get(TestCase, 1).script
+    print("OK test_gen_script_backfill: backfill and explicit regeneration")
 
 
 if __name__ == "__main__":

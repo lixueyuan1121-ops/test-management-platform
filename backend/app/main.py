@@ -23,6 +23,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 _LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 try:
     os.makedirs(_LOG_DIR, exist_ok=True)
+    from app.services.generation_trace import configure
+    configure(_LOG_DIR)
     _fh = logging.handlers.RotatingFileHandler(
         os.path.join(_LOG_DIR, "backend.log"), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
     _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))

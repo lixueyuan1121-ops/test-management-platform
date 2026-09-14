@@ -1,0 +1,4 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><div id="app"></div><script type="module">
+import {createApp,h} from 'vue';import {createPinia} from 'pinia';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';import Review from '/src/components/RequirementReview.vue';
+createApp({render:()=>h('main',{style:'max-width:1200px;margin:32px auto;padding:20px'},[h(Review,{projectId:1,taskId:2,analysisId:10,requirement:'保护目录删除必须确认',provider:'claude',available:true})])}).use(createPinia()).use(ElementPlus).mount('#app');
+</script></html>

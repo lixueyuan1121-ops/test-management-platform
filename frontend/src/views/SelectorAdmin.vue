@@ -679,6 +679,7 @@ onMounted(async () => {
     fixCtx.ctx = String(q.ctx || '')
     fixCtx.caseIds = String(q.case_ids || '').split(',').map(Number).filter(Boolean)
     try { fixCtx.contexts = JSON.parse(String(q.key_contexts || '{}')) } catch { fixCtx.contexts = {} }
+    try { fixCtx.hints = JSON.parse(String(q.key_hints || '{}')) } catch { fixCtx.hints = {} }
     fixCtx.bulk = q.bulk === '1'
     fixCtx.done = []
     // 批量模式不预选单个 activeKey(整批一起匹配);单条模式仍激活第一个 key 走原高亮排序。
@@ -1092,7 +1093,7 @@ async function submitImport() {
 
 // 「定位缺失 key」上下文（从用例库带 query 跳来）：待补的 key 列表 + 语义匹配上下文 + 当前选中的 key。
 // bulk=true 时为「批量补选择器」模式:显示待补清单 + 探测后批量匹配/建 key(不逐个选 activeKey)。
-const fixCtx = reactive({ keys: [], ctx: '', contexts: {}, caseIds: [], activeKey: '', bulk: false, done: [] })
+const fixCtx = reactive({ keys: [], ctx: '', contexts: {}, hints: {}, caseIds: [], activeKey: '', bulk: false, done: [] })
 const route = useRoute()
 
 // ---- 设备探测（discover / verify）----
@@ -1596,7 +1597,7 @@ const bulkMatches = computed(() => {
   if (!remaining.length) return []
   const els = enrichedGroups.value.flatMap((g) => g.elements.map((el) => ({ ...el, _frame: el._frameMatch })))
   const withBest = els.filter((el) => el.best)  // 已存在的元素不重复建
-  return matchElementsToKeys(remaining, Object.keys(fixCtx.contexts).length ? fixCtx.contexts : fixCtx.ctx, withBest)
+  return matchElementsToKeys(remaining, Object.keys(fixCtx.contexts).length ? fixCtx.contexts : fixCtx.ctx, withBest, fixCtx.hints)
     .filter((p) => p.el && p.el.best)
     .map((p) => ({ key: p.key, el: p.el, cand: toCand(p.el.best), frame: p.el._frame || 'auto', score: p.score, reuseKey: matchStatus(p.el).key || '' }))
 })

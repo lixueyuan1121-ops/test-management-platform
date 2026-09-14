@@ -97,8 +97,8 @@ export const removeReleaseChecklist = (project_id, test_case_ids) =>
 // 重生单条 script(方案2 P2 改入队):确定性回填快路径 job_id=null 直接返回;AI 路径返回 job_id → 轮询。
 // opts.silent=true 抑制 POST 的拦截器 toast(批量逐条调用时用);job 失败统一抛错交调用方提示。
 export async function genTestcaseScript(id, opts = {}) {
-  const res = await http.post(`/ai/testcases/${id}/gen-script`, null, { silent: !!opts.silent })
-  if (res && res.job_id) return pollAiJob(res.job_id)   // AI 路径:等 worker 池跑完
+  const res = await http.post(`/ai/testcases/${id}/gen-script`, null, { silent: !!opts.silent, params: opts.forceRegenerate ? { force_regenerate: true } : undefined })
+  if (res && res.job_id) return pollAiJob(res.job_id, { onTick: opts.onTick })   // AI 路径:等 worker 池跑完
   return res   // 快路径:已同步写回(含 case out)
 }
 

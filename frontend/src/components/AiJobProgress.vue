@@ -4,6 +4,7 @@
       <strong role="status">{{ heading }}</strong>
       <span>{{ progress?.started_at ? '已执行' : '已等待' }} {{ elapsed }} · 已返回 {{ progress?.chars || 0 }} 字</span>
     </div>
+    <p v-if="job?.id" class="live-note">任务编号：#{{ job.id }}（反馈问题时可提供此编号）</p>
     <p v-if="progress?.total" class="live-note">已处理 {{ progress.completed }} / {{ progress.total }} 项<span v-if="failedCount"> · {{ failedCount }} 项需要核对</span>。{{ active ? '完成校验后可查看正式结果。' : '' }}</p>
     <p v-if="active && !progress?.chars" class="live-note">{{ job?.status === 'pending' ? '任务已入队，开始执行后会自动展示返回内容。' : '等待模型返回正文，收到后会自动展示。' }}</p>
     <p v-else-if="active && idleSeconds >= 30" class="live-note">{{ idleSeconds }} 秒未收到新正文，正在等待后续返回。已收到的内容保留在下方。</p>
@@ -45,7 +46,7 @@ const statusLabel = unit => ({ pending: '等待', paused: '尚未开始', runnin
 const failedCount = computed(() => units.value.filter(u => ['failed', 'warning'].includes(u.status)).length)
 const heading = computed(() => {
   const status = props.job?.status
-  if (status === 'failed') return '生成失败 · 已保留返回内容'
+  if (status === 'failed') return progress.value?.chars ? '生成失败 · 已保留返回内容' : '生成失败 · 未收到有效正文'
   if (status === 'cancelled') return '任务已取消'
   if (status === 'done') return '生成已完成'
   if (!props.active) return '已停止等待 · 显示最后收到的内容'

@@ -12,6 +12,7 @@ import time
 from sqlalchemy import update
 
 from app.models import AiJob
+from app.services import generation_trace as trace
 
 logger = logging.getLogger("test_platform")
 
@@ -42,6 +43,7 @@ class JobProgress:
 
     def phase(self, stage):
         with self.lock:
+            trace.emit("phase_changed", job_id=self.job_id, stage=stage)
             self.stage = stage
             self._save(force=True)
 
@@ -64,6 +66,8 @@ class JobProgress:
                 unit["text"] = _tail(raw, 12000)
                 unit["truncated"] = len(unit["text"]) < len(raw)
                 self.last_output_at = int(time.time() * 1000)
+            if changed_status or first_text:
+                trace.emit("unit_progress", job_id=self.job_id, batch_id=str(key), stage=self.stage, status=unit["status"], output_chars=unit["chars"], elapsed_ms=int(time.time()*1000)-self.started_at)
             self._save(force=bool(changed_status or first_text))
 
     def callback(self, key):
@@ -105,4 +109,5 @@ class JobProgress:
                 db.commit()
         except Exception:
             # No model text in logs. Subsequent chunks/phase boundaries retry.
+            trace.emit("progress_save_failed", job_id=self.job_id)
             logger.warning("AI progress snapshot unavailable job=%s", self.job_id)

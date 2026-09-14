@@ -22,6 +22,7 @@ from app.models import AiTask, ChecklistItem, Project, Task, TestCase, User
 from app.schemas.ai import ExtractUrlIn, TestCaseGenIn, TestCaseReviewIn, BulkRegressionIn
 from app.schemas.common import ok
 from app.services import claude_runner, generators, selectors
+from app.services import generation_trace as trace
 from app.services.claude_runner import selector_fix_info, _SELECTOR_FIX_MARK, pages_for_script, revalidate_for_backfill, validate_script_for_edit
 from app.services.generators.sharded import generate_sharded
 from app.services.playwright_exporter import export_case_to_playwright
@@ -632,6 +633,7 @@ def delete_testcase(
 @router.post("/testcases/{cid}/gen-script")
 def gen_script(
     cid: int,
+    force_regenerate: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -669,7 +671,7 @@ def gen_script(
     # ---- 确定性回填快路径(仅「选择器待补」的 gui/e2e)----
     # 补 key 后,若旧 script 引用的 key 现已全部注册且结构合法 → 直接回填,不调 AI:
     # 避免 AI 盲重写导致 key 名漂移、反复降级(同批次多条缺同一 key 时补一次即可全部回填)。
-    if sel_fix and kind in ("gui", "e2e") and tc_old_script:
+    if not force_regenerate and sel_fix and kind in ("gui", "e2e") and tc_old_script:
         norm, verr = revalidate_for_backfill(tc_old_script, project_id=tc_project_id, sub_product=tc.sub_product, db=db)
         if verr is None:
             db.close()
@@ -784,21 +786,9 @@ def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str]
     builder = None
     if shard or no_script or sub_product:
         builder = lambda: engine.build_testcase_prompt(requirement, project_id, pages, shard, no_script, sub_product=sub_product)  # noqa: E731
-    for evt in engine.stream_generate(requirement, project_id=project_id, pages=pages, prompt_builder=builder):
-        et = evt.get("type")
-        if et == "delta":
-            raw += evt.get("text") or ""
-        elif et == "result":
-            meta = evt
-            if evt.get("text"):
-                raw = evt["text"]
-            if evt.get("is_error"):
-                err = evt.get("error") or evt.get("text") or "模型服务返回错误，未提供原因"
-        elif et == "error":
-            err = evt.get("msg")
-        if on_progress and not err:
-            on_progress(raw if et in ("delta", "result") and raw else None)
-    return raw, meta, err
+    from app.services.generation_stream import consume
+    return consume(engine.stream_generate(requirement, project_id=project_id, pages=pages, prompt_builder=builder), on_progress)
+
 
 
 def run_testcase_gen_job(db: Session, job) -> dict:
@@ -851,6 +841,7 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     job_id = job.id
     db.commit()
     progress = JobProgress(sessionmaker(bind=db.get_bind(), expire_on_commit=False), job_id)
+    trace.emit("case_generation_start", job_id=job_id, ai_task_id=ai_task_id, baseline_id=baseline_id, provider=provider_id, criterion_count=len(approved_criteria(baseline_payload)) if baseline_payload else None)
     progress.phase("generating")
 
     t0 = _time.monotonic()
@@ -878,6 +869,7 @@ def run_testcase_gen_job(db: Session, job) -> dict:
             logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
                         ai_task_id, len(shards), res["shard_stats"], res["dropped_dup"])
 
+    trace.emit("case_persistence_start", ai_task_id=ai_task_id, case_count=len(cases), output_chars=len(raw), warning_count=len(part_errors))
     progress.phase("saving")
     duration_ms = (meta.get("duration_ms") if meta else None) or int((_time.monotonic() - t0) * 1000)
     cost_usd = meta.get("cost_usd") if meta else None
@@ -937,6 +929,7 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     objs, fail_detail = _persist_with_retry(
         _persist, sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False))
 
+    trace.emit("case_persistence_done", ai_task_id=ai_task_id, case_count=len(objs), status="failed" if fail_detail else "done")
     if fail_detail is not None:   # 无有效用例:已落 AiTask=failed,抛错让 run_job 置 job failed
         raise ValueError(fail_detail)
 

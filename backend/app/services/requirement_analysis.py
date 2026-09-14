@@ -1,6 +1,8 @@
 """Requirement interpretation, human confirmation and evidence-level coverage."""
+from app.services import generation_trace as trace
 import hashlib
 import json
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -28,6 +30,9 @@ def case_hash(case):
     return source_hash(encode([case.title, case.steps, case.expected, case.precondition]))
 
 
+from app.services.model_text import event_text as _event_text
+
+
 def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, output_schema=None, effort=None):
     from app.services.requirement_output import OutputError
     raw, completed = "", False
@@ -44,7 +49,7 @@ def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, outp
     for event in engine.stream_generate("", **kwargs):
         kind = event.get("type")
         if kind == "delta":
-            raw = ("" if event.get("reset") else raw) + (event.get("text") or "")
+            raw = ("" if event.get("reset") else raw) + _event_text(event.get("text"), raw, kind)
         elif kind == "error" or event.get("is_error"):
             message = str(event.get("msg") or event.get("error") or "AI 分析失败")
             if any(marker in message.lower() for marker in ('empty or malformed response', 'streamnoeventserror', 'no_events')):
@@ -52,7 +57,7 @@ def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, outp
             code = "provider_timeout" if any(marker in message.lower() for marker in ('超时', 'timed out', 'timeout')) else "provider_error"
             raise OutputError(code, message, raw)
         elif kind == "result":
-            raw = event.get("text") or raw
+            raw = _event_text(event.get("text"), raw, kind) or raw
             if event.get("finish_reason") == "length":
                 raise OutputError("truncated", "模型输出达到长度上限，当前阶段尚未完整返回", raw)
             if event.get("complete") is False:
@@ -112,10 +117,12 @@ source_quote 必须是输入正文或图片识别结果中的连续短摘录；�
 遇到会改变验收结果的矛盾/缺失列出 questions，附候选解释和受影响 rule_ids；没有具体关联的全局问题 rule_ids=[]。
 未给出明确优先关系时，不得因章节位置、总则/细则名称或措辞自行裁决冲突；summary、scope、flow 与规则字段同样不能把候选解释写成确定结论。仅适用于某档位、平台或操作的例外必须保留完整条件，不能扩大到整个功能。冲突规则保留待定内容与关联问题，未确定的预期及 criteria 留空，不编出确定性场景。
 可由输入直接回答的事项不要重复提问。尚未确定预期的规则可留 expected 空、criteria 空，但不能漏掉规则。
-规则 status 一律 pending，review_note 一律空；问题 answer 一律空。你不能代表人确认。
+规则 status 一律 pending，review_note 一律空；问题 answer 一律空。平台会按资料是否明确决定哪些需要人处理，你不能代表人确认。
+面向普通测试人员，用大白话写标题、规则和问题：说清楚“谁在什么情况下做什么，应该看到什么”。不要写“原子规则、状态迁移、幂等、判定口径、兜底策略”等抽象术语；必须涉及技术名词时解释具体表现。保留准确的数字、条件、否定和例外，原文摘录不改写。
+澄清问题只问会改变测试预期且资料确实没有答案的事项。问题用“遇到……时，是……还是……？”的具体问法，候选项写实际行为。不要询问常规测试方法或重复让人确认明确原文。
 对已有明确规则，将必须验证的分支写入 criteria，每个条件一句话包含具体条件与可判定结果。
 为每个已有验收条件生成具体场景 scenarios：actor（谁）、given（操作前状态）、when（动作）、then（可观察结果）、counterexample（不应出现的结果，原文未规定则留空）、kind（normal/boundary/error）、rule_id、criterion_ids。
-场景不能引入额外业务预期。角色不明则 actor 留空并列澄清问题；reviewed 一律 false。未确定预期的规则不强行生成场景。
+场景不能引入额外业务预期。未区分角色且不影响结果时，actor 写“使用该功能的用户”，无需提问；只有权限或身份会改变预期而资料没写清时才列澄清问题。reviewed 一律 false。未确定预期的规则不强行生成场景。
 完整输出如下 JSON，不附其他内容；按真实复杂度抽取，不设凑数目标。最多120条规则/500个验收条件，过长需求需明确在问题中提示拆分。
 {"summary":"一句话目标及用户/入口/最终结果", "scope":"本期范围（含平台）", "out_of_scope":"本期非目标", "flow":"关键流程/决策顺序",
  "rules":[{"id":"R1","title":"规则标题","module":"模块","platform":"适用平台","condition":"前提","action":"触发操作",
@@ -209,8 +216,10 @@ def run_analysis_job(db, job):
             persist_visuals()
         return visual
     with ThreadPoolExecutor(max_workers=3) as pool:
-        visuals = list(pool.map(process_image, materials))
+        visuals = list(pool.map(trace.bind(process_image), materials))
     draft = build_draft(parts, engine, text, visuals, source_info, goal, previous_context)
+    from app.services.focused_review import apply_review_policy
+    draft = apply_review_policy(draft, visuals)
 
     def persist(s):
         saved = s.execute(update(RequirementAnalysis).where(RequirementAnalysis.id == analysis_id,
@@ -221,7 +230,9 @@ def run_analysis_job(db, job):
                 raise ValueError("分析已由新的重试任务接管，旧任务不写入草稿")
         s.commit()
         return [], None
+    trace.emit("analysis_persistence_start", analysis_id=analysis_id)
     ai_jobs._persist_with_retry(persist, factory)
+    trace.emit("analysis_persistence_done", analysis_id=analysis_id)
     progress.unit("analysis", status="done")
     return {"analysis_id": analysis_id}
 
@@ -269,7 +280,7 @@ def confirmation_errors(draft, visuals):
         if required - covered:
             errors.append("请补充具体场景：" + "、".join(sorted(required - covered)))
         for s in scenes:
-            if not s.reviewed or not all((s.actor, s.given, s.when, s.then)):
+            if not all((s.actor, s.given, s.when, s.then)):
                 errors.append(f"{s.id}：请补齐谁、起始状态、操作、结果并核对场景")
     return errors
 
@@ -296,7 +307,7 @@ def generate_from_baseline(engine, payload, project_id, pages, sub_product, scen
         requirement = encode({"summary": payload["summary"], "scope": payload["scope"],
                               "out_of_scope": payload["out_of_scope"], "flow": payload["flow"],
                               "rules": list(rules.values()), "assigned_criteria": [{k: v for k, v in c.items() if k != "rule"} for c in batch],
-                              "confirmed_scenarios": [s for s in payload.get("scenarios", []) if s.get("reviewed") and set(s["criterion_ids"]) & allowed],
+                              "confirmed_scenarios": [s for s in payload.get("scenarios", []) if set(s["criterion_ids"]) & allowed],
                               "decisions": [{"question": q["question"], "answer": q["answer"]} for q in payload["questions"] if q["answer"]]})
         shard = {"id": "acceptance", "name": "已确认验收条件 " + ", ".join(allowed),
                  "kinds": "gui/api/cli/e2e/manual", "focus": "逐一验证本批 assigned_criteria 中所有条件及其否定/边界。",
@@ -319,6 +330,7 @@ def generate_from_baseline(engine, payload, project_id, pages, sub_product, scen
         raw, meta, error = _gen_once(PromptEngine(), requirement, project_id, pages,
                                      shard=shard, no_script=scenario_only, sub_product=sub_product,
                                      on_progress=progress.callback(key) if progress else None)
+        trace.emit("case_parse_start", output_chars=len(raw), error_code=trace.error_code(error) if error else None)
         cases = engine.parse_testcases(raw, project_id=project_id, sub_product=sub_product) if raw and not error else []
         warnings = [error] if error else []
         valid_cases = []
@@ -334,6 +346,7 @@ def generate_from_baseline(engine, payload, project_id, pages, sub_product, scen
         missing = allowed - {cid for c in valid_cases for cid in c["criterion_ids"]}
         if missing:
             warnings.append("未生成验收条件：" + ", ".join(sorted(missing)))
+        trace.emit("case_validation_done", case_count=len(valid_cases), criterion_count=len(allowed), missing_count=len(missing), warning_count=len(warnings))
         return {"cases": valid_cases, "raw": raw, "meta": meta or {}, "warnings": warnings}
 
     workers = min(3, max(1, getattr(settings, "AI_SHARD_CONCURRENCY", 5)))
@@ -345,15 +358,15 @@ def generate_from_baseline(engine, payload, project_id, pages, sub_product, scen
             if progress:
                 progress.unit(key, status="running")
             try:
-                result = generate_batch(batch, key)
+                result = trace.run_stage(lambda: generate_batch(batch, key), batch_id=key, stage="case_batch")
                 if progress:
-                    progress.unit(key, status="warning" if result["warnings"] else "done")
+                    progress.unit(key, status=("failed" if not result["cases"] else "warning") if result["warnings"] else "done")
                 return result
             except Exception as exc:
                 if progress:
                     progress.unit(key, status="failed")
                 return {"cases": [], "raw": "", "meta": {}, "warnings": [f"{', '.join(c['id'] for c in batch)} 生成失败：{exc}"]}
-        results = list(pool.map(safe_batch, enumerate(batches)))
+        results = list(pool.map(trace.bind(safe_batch), enumerate(batches)))
     cases, seen = [], set()
     for result in results:
         for case in result["cases"]:

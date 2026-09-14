@@ -86,3 +86,33 @@ test("matchElementsToKeys: 无匹配元素时 key 落空 el=null score=0", () =>
   assert.equal(pairs[0].el, null);
   assert.equal(pairs[0].score, 0);
 });
+
+
+test('homeModeQuickOption 不凭 home 词配给首页 DOM', () => {
+  const home = {text: '首页', candidates: [{by:'testid',value:'home'}]};
+  const ancestor = {text: '其他', candidates: [{by:'css',value:'.home-mode-quick-option .unrelated'}]};
+  assert.equal(matchElementsToKeys(['homeModeQuickOption'], '首页', [home, ancestor])[0].el, null);
+  const option = {text: '快速模式', candidates: [{by:'testid',value:'home-mode-quick-option'}]};
+  assert.equal(matchElementsToKeys(['homeModeQuickOption'], '', [home, option])[0].el, option);
+});
+
+test('按该 key 的预期文案选择控件，拒绝包含文案的整个首页', () => {
+  const data = collectMissingKeys([{selector_fix:true,selector_fix_keys:['homeModeQuickOption'],script:[
+    {action:'assert_text',target:{key:'homeModeQuickOption'},args:{expected:'快速模式'},desc:'首页模式选项'},
+    {action:'assert_text',target:{key:'other'},args:{expected:'首页'},desc:'其他元素'},
+  ]}], []);
+  assert.deepEqual(data.hints.homeModeQuickOption.expectedTexts,['快速模式']);
+  const home = {text:'首页 快速模式 深度模式',candidates:[{by:'testid',value:'home-mode-quick-option-page'}]};
+  const option = {text:'快速模式',candidates:[{by:'testid',value:'choice-1'}]};
+  assert.equal(matchElementsToKeys(data.keys,data.contexts,[home,option],data.hints)[0].el,option);
+  assert.equal(matchElementsToKeys(data.keys,data.contexts,[home],data.hints)[0].el,null);
+});
+
+test('相同预期文案的多个控件不自动选择，否定断言不作为目标文案', () => {
+  const data = collectMissingKeys([{selector_fix:true,selector_fix_keys:['option'],script:[
+    {action:'assert_text',target:{key:'option'},args:{expected:'已禁用',negate:true}},
+  ]}],[]);
+  assert.deepEqual(data.hints.option.expectedTexts,[]);
+  const els=[1,2].map(i=>({text:'快速模式',candidates:[{by:'testid',value:'choice-'+i}]}));
+  assert.equal(matchElementsToKeys(['homeModeQuickOption'],'',els,{homeModeQuickOption:{expectedTexts:['快速模式']}})[0].el,null);
+});
