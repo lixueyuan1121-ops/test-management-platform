@@ -83,7 +83,14 @@
         <el-form-item label="需求来源"><el-radio-group v-model="sourceMode"><el-radio value="new">导入新需求</el-radio><el-radio value="existing">已有需求分析</el-radio></el-radio-group></el-form-item>
         <el-form-item v-if="sourceMode === 'existing'" label="选择需求分析"><el-select v-model="existingAnalysisId" filterable aria-label="已有需求分析"><el-option v-for="a in analyses" :key="a.id" :value="a.id" :label="`#${a.id} · ${a.source_title || '文本需求'} · ${a.baseline_id ? '已确认' : '待确认'}`" /></el-select></el-form-item>
         <template v-else>
-          <el-form-item label="关联测试任务"><el-select v-model="taskId" filterable aria-label="关联测试任务"><el-option v-for="t in tasks" :key="t.id" :value="t.id" :label="t.title" /></el-select><el-button link @click="$router.push('/tasks')">管理任务</el-button></el-form-item>
+          <el-form-item label="关联测试任务">
+            <template #label><div class="task-field-heading"><span>关联测试任务</span><el-button link type="primary" @click="$router.push('/tasks')">管理任务</el-button></div></template>
+            <el-select v-model="taskId" filterable fit-input-width popper-class="mission-task-popper" placeholder="搜索并选择测试任务" no-match-text="未找到匹配的测试任务" no-data-text="暂无测试任务" aria-label="关联测试任务">
+              <el-option v-for="t in tasks" :key="t.id" :value="t.id" :label="t.title" :title="t.title">
+                <span class="mission-task-option">{{ t.title }}</span>
+              </el-option>
+            </el-select>
+          </el-form-item>
           <el-form-item label="需求链接（支持飞书文档中的图片）"><el-input v-model="sourceUrl" placeholder="粘贴需求文档链接"><template #append><el-button @click="importUrl">读取</el-button></template></el-input></el-form-item>
           <div class="actions"><el-upload :auto-upload="false" :show-file-list="false" :on-change="importFile" accept=".docx,.pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp"><el-button>导入文档或图片</el-button></el-upload><el-upload v-if="sourceId" :auto-upload="false" :show-file-list="false" :on-change="appendImage" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp"><el-button>补充图片</el-button></el-upload></div>
           <p v-if="sourceId" class="hint">{{ sourceTitle }} · 已读取 {{ materials.length }} 张图片或页面</p>
@@ -220,7 +227,14 @@ onBeforeUnmount(() => { disposed=true; selectionVersion++; projectVersion++; cle
 .mission-layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:24px;align-items:start}.mission-list{display:grid;gap:8px}.mission-item{text-align:left;border:1px solid var(--el-border-color-lighter);border-radius:10px;padding:14px;background:var(--el-bg-color);cursor:pointer;color:var(--el-text-color-primary);overflow-wrap:anywhere}.mission-item span{display:block;font-size:12px;color:var(--el-text-color-secondary);margin-bottom:8px}.mission-item strong{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.mission-item.selected{border-color:var(--el-color-primary);background:var(--el-color-primary-light-9)}
 .mission-main{min-width:0}.mission-heading{display:flex;gap:16px;justify-content:space-between;align-items:start}.mission-heading h2{font-size:22px;line-height:1.5;margin:10px 0 20px;overflow-wrap:anywhere}.mission-heading small{color:var(--el-text-color-secondary)}.progress-card,.plan-card,.report-card,.timeline-card{border:1px solid var(--el-border-color-lighter);padding:20px;border-radius:12px;margin-bottom:20px;background:var(--el-bg-color)}.progress-card{background:var(--el-color-primary-light-9)}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions .el-button+.el-button{margin-left:0}.case-row{border-top:1px solid var(--el-border-color-lighter);padding:16px 0}.case-row h4{margin:10px 0}.case-row p,.run-row p{white-space:pre-wrap;overflow-wrap:anywhere}dl{margin:0}dt{font-weight:600;margin-top:10px}dd{margin:5px 0 12px;white-space:pre-wrap;line-height:1.7}.authorization{background:var(--el-fill-color-light);padding:16px;border-radius:8px}.reviewed-check{display:flex;margin:16px 0;height:auto}.reviewed-check :deep(.el-checkbox__label){white-space:normal;line-height:1.7}.source-detail{margin:16px 0}.timeline-card ol{padding-left:18px}.timeline-card li{padding:8px 0;line-height:1.6}.timeline-card time,.timeline-card small{display:block;color:var(--el-text-color-secondary);font-size:12px}.run-row{padding:12px 0;border-bottom:1px solid var(--el-border-color-lighter)}
 .mobile-evidence{display:none}.run-row pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.task-field-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 @media(max-width:600px){.desktop-evidence{display:none}.mobile-evidence{display:block}.mobile-evidence article{padding:14px 0;border-bottom:1px solid var(--el-border-color-lighter)}}
 @media(max-width:900px){.mission-layout{grid-template-columns:1fr}.mission-list{grid-template-columns:repeat(2,minmax(0,1fr));max-height:220px;overflow:auto}.mission-heading{flex-wrap:wrap}.progress-card,.plan-card,.report-card,.timeline-card{padding:14px}}
 @media(max-width:480px){.mission-list{grid-template-columns:1fr}.mission-heading h2{font-size:19px}.authorization :deep(.el-checkbox){height:auto;white-space:normal}.authorization :deep(.el-checkbox__label){white-space:normal}}
+</style>
+<style>
+/* The select popup is teleported outside the dialog. Keep these rules task-specific. */
+.mission-task-popper .el-select-dropdown__item { height:auto; min-height:36px; padding:8px 14px; line-height:20px; white-space:normal; }
+.mission-task-popper .mission-task-option { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+.mission-task-popper .el-select-dropdown__wrap { max-height:min(280px, 40vh); }
 </style>
