@@ -16,7 +16,7 @@
 const { chromium } = require('playwright');
 const { spawn, execFileSync } = require('child_process');
 const http = require('http');
-const { attachWsTrace } = require('./ws-trace');
+const { attachNamiTrace } = require('./nami-trace');
 const workFrame = require('./work-frame');
 
 class DesktopPool {
@@ -191,24 +191,13 @@ class DesktopPool {
       if (page) {
         // 遇到原生弹窗直接放行，避免卡住主窗口
         page.on('dialog', async (dg) => { try { await dg.accept(); } catch { try { await dg.dismiss(); } catch {} } });
-        // 平台模式:抓会话 WebSocket 轨迹(思考/工具)。挂在主 page,收集器存到 pool 供编排取。
-        // 本 while 循环拿到同一 page 后可能多次经过此处(输入框未就绪就重试),用标志确保只挂一次,避免重复注册。
-        // ⚠️ page.on('websocket') 只捕获【挂载后新建】的 WS。连"已运行客户端"时对话长连早于挂载建立 →
-        //   抓不到帧 → ws_captured=false(真机实测确认)。故挂载后【主动 reload 一次】让对话 WS 重连被捕获
-        //   (实测:静观0帧、reload后30帧)。reload 只做一次(_wsReloaded 标志),避免 while 重试里反复重载。
-        if (!this._wsTrace) {
-          this._wsTrace = attachWsTrace(page);
-          this._log('   已挂载 WS 轨迹抓取');
-        }
-        if (!this._wsReloaded) {
-          this._wsReloaded = true;
-          try {
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: this.readyTimeout });
-            this._log('   已 reload 对话页触发 WS 重连(确保 ws 轨迹可捕获)');
-            await this._sleep(1500);   // 给 WS 重连 + SPA 重挂一点时间
-          } catch (e) {
-            this._warn(`   reload 触发 WS 重连失败(不阻断,ws 可能抓不到): ${(e.message || '').split('\n')[0]}`);
-          }
+        // 纳米 Work 独立采集器：当前 gateway 消息（包含 Electron 桥接）+ 浏览器 WS 兼容。
+        // 直接监听已有连接，避免依赖 reload 重建一个并不存在于 CDP 的 WebSocket。
+        if (!this._wsTrace || this._tracePage !== page) {
+          await this._wsTrace?.dispose();
+          this._wsTrace = await attachNamiTrace(page);
+          this._tracePage = page;
+          this._log('   已挂载纳米 Work gateway 过程采集（兼容浏览器 WebSocket）');
         }
         try {
           // 自适应:有 work.n.cn iframe 走 frameLocator,否则主文档 page(不同设备对话 UI 挂载位置不同)。
@@ -329,9 +318,9 @@ class DesktopPool {
 
     // 导航后重新 resolve 主 page + 等对话输入框就绪 + 重挂 wsTrace
     await this._sleep(2000);
-    if (this._wsTrace?.dispose) this._wsTrace.dispose();
+    await this._wsTrace?.dispose();
     this._wsTrace = null;      // 允许重挂(挂在新导航的 page 上)
-    this._wsReloaded = false;  // 允许 _resolveMainPage 对新页面再 reload 一次触发 WS 重连(切设备后同样需要)
+    this._tracePage = null;
     this.mainPage = await this._resolveMainPage(this.readyTimeout);
     // 确认当前 vm 就是目标 + 输入框可用
     const nowVm = await this.currentVmId();
@@ -343,6 +332,9 @@ class DesktopPool {
   // 断开 CDP 连接。默认不关闭客户端（keepClient=true）：让用户重启后的客户端继续留用，
   // 下次可直接连（端口仍开着）。仅断开 Playwright 侧连接。
   async close({ keepClient = true } = {}) {
+    await this._wsTrace?.dispose();
+    this._wsTrace = null;
+    this._tracePage = null;
     try { if (this.browser) await this.browser.close(); } catch (_) {}
     this.browser = null;
     if (!keepClient && this._launched) {

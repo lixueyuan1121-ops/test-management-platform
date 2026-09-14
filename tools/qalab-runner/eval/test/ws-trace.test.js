@@ -53,3 +53,16 @@ test('disposing collector removes listeners before switching devices', () => {
   assert.equal(ws.listenerCount('framereceived'), 0);
   assert.equal(ws.listenerCount('close'), 0);
 });
+
+test('protocol connection readiness survives turn reset and ends when its socket closes', () => {
+  const { page, ws, collector } = setup();
+  const unrelated = new EventEmitter();
+  page.emit('websocket', unrelated);
+  assert.equal(collector.hasProtocolConnection(), false);
+  ws.emit('framereceived', { payload: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: {} }) });
+  assert.equal(collector.hasProtocolConnection(), true);
+  collector.reset();
+  assert.equal(collector.hasProtocolConnection(), true);
+  ws.emit('close');
+  assert.equal(collector.hasProtocolConnection(), false, '其它长连接不能冒充纳米 gateway');
+});

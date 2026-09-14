@@ -233,10 +233,9 @@ function handleFrame(state, frame) {
   }
 }
 
-// 挂到 page:监听 framereceived(收到的服务端帧即对话数据)。返回 collector。
-function attachWsTrace(page) {
+// 纳米协议解析与传输解耦：浏览器 WS 和客户端桥接使用同一解析器。
+function createTraceCollector() {
   const state = newState();
-  const sockets = new Map();
   const newDiagnostics = () => ({ frames: 0, binary_frames: 0, parse_errors: 0, ignored_frames: 0, events: {}, streams: {} });
   let diagnostics = newDiagnostics();
   const count = (map, key) => {
@@ -245,9 +244,7 @@ function attachWsTrace(page) {
     const bucket = Object.hasOwn(map, label) || Object.keys(map).length < 30 ? label : '(other)';
     Object.defineProperty(map, bucket, { value: (Object.hasOwn(map, bucket) ? map[bucket] : 0) + 1, writable: true, enumerable: true, configurable: true });
   };
-  const onWs = (ws) => {
-    state.wsConnected = true;   // 至少挂上了一个 WS(区分"WS没挂上"vs"挂上了但本次无对话活动")
-    const onFrame = (ev) => {
+  const onFrame = (ev) => {
       diagnostics.frames++;
       try {
         let payloadStr = typeof ev === 'string' ? ev : (ev && ev.payload);
@@ -265,29 +262,18 @@ function attachWsTrace(page) {
           if (frame.event === 'agent') count(diagnostics.streams, _unwrapPanel(frame.payload || {})?.stream);
         }
         handleFrame(state, frame);
+        return frame;
       } catch (_) { diagnostics.parse_errors++; }
-    };
-    const onClose = () => { sockets.delete(ws); state.wsConnected = sockets.size > 0; };
-    sockets.set(ws, { onFrame, onClose });
-    ws.on('framereceived', onFrame);
-    ws.on('close', onClose);
   };
-  try { page.on('websocket', onWs); } catch (_) {}
   return {
     _state: state,
+    ingest: onFrame,
+    setConnected(connected) { state.wsConnected = !!connected; },
     reset() {
+      const connected = state.wsConnected;
       Object.assign(state, newState());
-      state.wsConnected = sockets.size > 0;
+      state.wsConnected = connected;
       diagnostics = newDiagnostics();
-    },
-    dispose() {
-      page.off('websocket', onWs);
-      for (const [ws, handlers] of sockets) {
-        ws.off('framereceived', handlers.onFrame);
-        ws.off('close', handlers.onClose);
-      }
-      sockets.clear();
-      state.wsConnected = false;
     },
     buildTrace(runId) {
       const tool_calls = state.toolOrder.map(id => {
@@ -313,4 +299,38 @@ function attachWsTrace(page) {
   };
 }
 
-module.exports = { attachWsTrace, handleFrame, newState, sanitizeDialogText, splitThinkBlocks, _isMcp, _mcpServer, _isEmptyResult, _msgAnswer, _msgThinking, _assistantStreamText, _thinkingStreamText };
+// 兼容真正由浏览器创建的 WebSocket；客户端桥接见 nami-trace.js。
+function attachWsTrace(page) {
+  const collector = createTraceCollector();
+  const sockets = new Map();
+  const onWs = (ws) => {
+    collector.setConnected(true);
+    const handlers = { protocolSeen: false };
+    const onFrame = (ev) => {
+      const frame = collector.ingest(ev);
+      if (frame?.type === 'event' && ['agent', 'chat', 'connect.challenge'].includes(frame.event)) {
+        handlers.protocolSeen = true;
+      }
+    };
+    const onClose = () => { sockets.delete(ws); collector.setConnected(sockets.size > 0); };
+    Object.assign(handlers, { onFrame, onClose });
+    sockets.set(ws, handlers);
+    ws.on('framereceived', onFrame);
+    ws.on('close', onClose);
+  };
+  page.on('websocket', onWs);
+  return Object.assign(collector, {
+    hasProtocolConnection() { return [...sockets.values()].some(h => h.protocolSeen); },
+    dispose() {
+      page.off('websocket', onWs);
+      for (const [ws, handlers] of sockets) {
+        ws.off('framereceived', handlers.onFrame);
+        ws.off('close', handlers.onClose);
+      }
+      sockets.clear();
+      collector.setConnected(false);
+    },
+  });
+}
+
+module.exports = { attachWsTrace, createTraceCollector, handleFrame, newState, sanitizeDialogText, splitThinkBlocks, _isMcp, _mcpServer, _isEmptyResult, _msgAnswer, _msgThinking, _assistantStreamText, _thinkingStreamText };

@@ -733,7 +733,7 @@ program
 
 // ========== platform 命令：平台模式（从测试管理平台拉对话测评任务→驱动桌面客户端→回写） ==========
 // 大工程「对话测评链路」子项2 的集成入口。流程：PlatformClient 拉 eval-queue 待执行 → claim 认领 →
-// DesktopRunner 驱动纳米 Work 桌面客户端跑单条对话（DesktopPool 已在主 page 挂 attachWsTrace 抓 WS 轨迹）→
+// DesktopRunner 驱动纳米 Work 桌面客户端跑单条对话（DesktopPool 已在主 page 挂纳米 gateway 采集器抓过程事件）→
 // report 回写结果 + uploadTrace 上传会话轨迹。飞书模式（run/desktop）完全不受影响。
 // 命名约定（避免撞车）：config.platformApi = 平台对接凭据(baseUrl/token/runnerId/pollMs)；
 //                        config.platform    = work.n.cn 页面选择器段(现有，DesktopRunner/DesktopPool 用)。
@@ -892,7 +892,7 @@ program
       }
       // 无纳米任务则直接返回，避免白建纳米 DesktopPool。
       if (!namiPending.length) { logger.info('本轮仅 workbuddy 任务，已处理'); return 0; }
-      // DesktopPool 构造签名：(desktopConfig, platformConfig=选择器段, logger)。init 后主 page 已挂 attachWsTrace。
+      // DesktopPool 构造签名：(desktopConfig, platformConfig=选择器段, logger)。init 后主 page 已挂纳米 gateway 采集器。
       const pool = new DesktopPool(config.desktop, config.platform, logger);
       await pool.init();
       // Task7-Step1: 上报本机客户端设备(vm)列表,供平台前端下发时下拉选(失败不阻断执行)
@@ -923,6 +923,7 @@ program
       // 混合批(先 target 后空 target)时,空 target 项复用最近一次切换后的真实 pool 状态,而非循环外 stale 引用。
       let curRunner = runner;
       let curWsTrace = wsTrace;
+      runner.beforeSend = () => curWsTrace.ensureReady();
       // 按「会话」分组:同一 conversation_group 的多条=同一多轮会话的各轮,归一组、按 turn_index 升序;
       // 单轮(无 group)各自成组。多轮同组各轮将在【同一对话】里顺序连发(轮次0新建、后续轮复用),
       // 而非各自 runOne 新建对话——修正「轮次1 另起新对话、接不上轮次0 上下文」的问题。
@@ -934,15 +935,18 @@ program
       // 把一轮 run 的执行结果回写平台(report + uploadTrace),并清空 WS 收集器供下一轮/下一条独立抓取。
       // 多轮同一对话逐轮隔离靠此 reset:session_id 每帧都带,reset 后下一轮仍能复得同一 session_id。
       const reportRun = async (runId, result, ws) => {
-        const trace = ws ? ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
+        const trace = ws ? await ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
         trace.execution_config = result.executionConfig || null;
         const source = namiPending.find(item => item.run_id === runId);
-        trace.runtime = { ...runnerMetadata(), user_agent: await runner.page.evaluate(() => navigator.userAgent).catch(() => null) };
+        trace.runtime = { ...runnerMetadata(), user_agent: await curRunner.page.evaluate(() => navigator.userAgent).catch(() => null) };
         trace.input_files = inputDigests(source?._attachmentPaths);
-        await collectArtifacts({ page: runner.page, trace, rules: source?.payload?.verification_rules,
+        await collectArtifacts({ page: curRunner.page, trace, rules: source?.payload?.verification_rules,
           client, runId, selectors: config.platform }).catch(() => { trace.artifact_capture = { status: 'unknown', diagnostics: [{reason: '产物采集异常'}] }; });
         if (!trace.thinking && !trace.tool_calls?.length) {
-          logger.warn(`[trace] run=${runId} 缺过程记录: connected=${trace.ws_connected ?? false}, captured=${trace.ws_captured}, diagnostics=${JSON.stringify(trace.capture_diagnostics || {})}`);
+          logger.warn(`[trace] run=${runId} 缺过程记录: connected=${trace.ws_connected ?? false}, captured=${trace.ws_captured}, source=${trace.capture_source}, health=${JSON.stringify(trace.capture_health || {})}, diagnostics=${JSON.stringify(trace.capture_diagnostics || {})}`);
+        }
+        if (trace.capture_health?.status === 'incomplete') {
+          logger.warn(`[trace] run=${runId} 过程记录不完整: ${JSON.stringify(trace.capture_health)}`);
         }
         if (!String(trace.answer || '').trim() && result.answer) {
           trace.answer = result.answer;
@@ -972,7 +976,7 @@ program
           });
           logger.info(`✅ 回写 run ${runId} (${result.success ? 'done' : 'failed'}, ws=${trace.ws_captured})`);
         } catch (e) { logger.error(`回写 run ${runId} 失败: ${e.message}`); }
-        if (ws && ws.reset) ws.reset();
+        if (ws && ws.reset) await ws.reset();
       };
       // 整组直接判失败(设备切换失败 / 带附件跳过):claim 后 report failed,不执行。
       const failWholeGroup = async (conv, reason) => {
@@ -1002,6 +1006,7 @@ program
           // ⚠️ 仍传同一个 config.execution 引用(与循环外 runner 一致),保证修复#3 的"就地改 dialogOptions"仍生效。
           curRunner = new DesktopRunner(pool.getContext(), pool.getMainPage(), config.platform, config.execution, logger);
           curWsTrace = pool.getWsTrace();
+          curRunner.beforeSend = () => curWsTrace.ensureReady();
         }
         // 附件:平台附件为公开 CDN url,执行前逐轮下到本地、挂到 it._attachmentPaths 供桌面执行器上传。
         // 任一附件下载失败→整组 fail-closed 标记 failed,绝不「缺附件裸跑」污染判定(多轮里缺一轮附件更会连累整段上下文)。
@@ -1044,7 +1049,7 @@ program
         // 逐轮完成回调:回写该轮的 run(用当前 curWsTrace,随设备切换演进)。
         const onTurnDone = async (result, testCase) => { await reportRun(testCase.run_id, result, curWsTrace); };
 
-        if (curWsTrace && curWsTrace.reset) curWsTrace.reset(); // 会话开始前清空 WS 收集器(为首轮),避免上一会话轨迹串进来
+        if (curWsTrace && curWsTrace.reset) await curWsTrace.reset(); // 会话开始前清空 WS 收集器(为首轮),避免上一会话轨迹串进来
         try {
           if (testCases.length === 1) {
             // 单轮:走原有 runOne 路径(开干净对话→发送→扫列表判完成→抓取),行为与改前一致。

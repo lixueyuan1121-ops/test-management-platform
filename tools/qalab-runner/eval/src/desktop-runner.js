@@ -178,6 +178,9 @@ class DesktopRunner {
     try { await dr._applyDialogOptions(); }
     finally { testCase.executionConfig = structuredClone(dr.executionConfig || null); }
 
+    // 平台模式为纳米 Work 注入采集预检，每一轮发送前确认真实连接已被监听。
+    // 非平台桌面任务未配置此钩子时保持原行为。
+    await this.beforeSend?.();
     const input = ctx.locator(this.platform.inputSelector).first();
     await input.waitFor({ timeout: 10000 });
     // 输入 query 并读回校验:附件 setInputFiles 后 ProseMirror 常失焦致 pressSequentially 静默不进字符,
