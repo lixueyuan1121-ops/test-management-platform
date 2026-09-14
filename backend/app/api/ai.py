@@ -774,7 +774,7 @@ _ai_jobs_reg.register_handler("script_gen", run_script_gen_job)
 
 
 def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str] | None,
-              shard: dict | None = None, no_script: bool = False, sub_product: str = ""):
+              shard: dict | None = None, no_script: bool = False, sub_product: str = "", on_progress=None):
     """单次(不分片)跑引擎,累积流式事件。返回 (raw, meta, err)。
 
     分片被关掉(AI_SHARD_CONCURRENCY<=1)或只排到一片时走这条,行为与分片改造前一致。
@@ -796,6 +796,8 @@ def _gen_once(engine, requirement: str, project_id: int | None, pages: list[str]
                 err = evt.get("error") or evt.get("text") or "模型服务返回错误，未提供原因"
         elif et == "error":
             err = evt.get("msg")
+        if on_progress and not err:
+            on_progress(raw if et in ("delta", "result") and raw else None)
     return raw, meta, err
 
 
@@ -845,11 +847,15 @@ def run_testcase_gen_job(db: Session, job) -> dict:
     # P1 根治(诊断文档):读完输入快照立即 commit,把 DB 连接还回池——避免生成的百秒级耗时里
     # 一直借着连接空闲、被 4963 端口中间层掐断,写库时 2013 Lost connection。生成引擎(plan_shards/
     # _load_api_contract/_load_selector_keys)全自开独立 SessionLocal,不用传入 db,故生成期零连接持有。
+    from app.services.ai_progress import JobProgress
+    job_id = job.id
     db.commit()
+    progress = JobProgress(sessionmaker(bind=db.get_bind(), expire_on_commit=False), job_id)
+    progress.phase("generating")
 
     t0 = _time.monotonic()
     if baseline_payload:
-        res = generate_from_baseline(engine, baseline_payload, project_id, pages, sub_product, scenario_only)
+        res = generate_from_baseline(engine, baseline_payload, project_id, pages, sub_product, scenario_only, progress=progress)
         raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
         err = "；".join(part_errors) if not cases else None
     else:
@@ -858,18 +864,21 @@ def run_testcase_gen_job(db: Session, job) -> dict:
                   if scenario_only else claude_runner.plan_shards(project_id))
         if getattr(settings, "AI_SHARD_CONCURRENCY", 5) <= 1 or len(shards) <= 1:
             one = shards[0] if len(shards) == 1 else None
+            progress.unit("cases", "测试用例", status="running")
             raw, meta, err = _gen_once(engine, requirement, project_id, pages,
-                                       shard=one, no_script=scenario_only, sub_product=sub_product)
+                                       shard=one, no_script=scenario_only, sub_product=sub_product, on_progress=progress.callback("cases"))
             cases = engine.parse_testcases(raw, project_id=project_id, sub_product=sub_product) if raw and not err else []
+            progress.unit("cases", status="done" if cases else "failed")
             part_errors = []
         else:
             res = generate_sharded(engine, requirement, project_id=project_id, pages=pages,
-                                   shards=shards, no_script=scenario_only, sub_product=sub_product)
+                                   shards=shards, no_script=scenario_only, sub_product=sub_product, progress=progress)
             raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
             err = "；".join(part_errors) if not cases else None
             logger.info("分片生成完成 ai_task=%s 片数=%d 明细=%s 去重丢弃=%d",
                         ai_task_id, len(shards), res["shard_stats"], res["dropped_dup"])
 
+    progress.phase("saving")
     duration_ms = (meta.get("duration_ms") if meta else None) or int((_time.monotonic() - t0) * 1000)
     cost_usd = meta.get("cost_usd") if meta else None
     output_tokens = meta.get("output_tokens") if meta else None

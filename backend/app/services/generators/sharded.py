@@ -29,7 +29,7 @@ def _norm_title(title: str) -> str:
     return _NORM_RE.sub("", str(title or "")).lower()
 
 
-def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, no_script=False, sub_product="") -> dict:
+def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, no_script=False, sub_product="", on_progress=None) -> dict:
     """跑单个分片:引擎流式生成 → 解析。返回 {shard, cases, raw, meta, error}。
 
     引擎异常在此就地捕获成 error(不外抛),保证一片炸掉不影响其它片的 future。
@@ -53,6 +53,8 @@ def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, 
                     err = evt.get("error") or evt.get("text") or "模型服务返回错误，未提供原因"
             elif et == "error":
                 err = evt.get("msg")
+            if on_progress and not err:
+                on_progress(raw if et in ("delta", "result") and raw else None)
     except Exception as e:  # noqa: BLE001  单片失败不外溢
         logger.exception("分片生成失败 shard=%s", sid)
         return {"shard": sid, "cases": [], "raw": raw, "meta": meta,
@@ -77,7 +79,7 @@ def _run_one_shard(engine, requirement, project_id, pages, shard, timeout=None, 
 def generate_sharded(engine, requirement: str, *, project_id: int | None = None,
                      pages: list[str] | None = None, shards: list[dict] | None = None,
                      max_workers: int | None = None, timeout: int | None = None,
-                     no_script: bool = False, sub_product: str = "") -> dict:
+                     no_script: bool = False, sub_product: str = "", progress=None) -> dict:
     """并行跑各分片并合并结果。
 
     返回 {cases, raw, meta:{duration_ms,cost_usd,output_tokens}, errors:[str],
@@ -96,9 +98,19 @@ def generate_sharded(engine, requirement: str, *, project_id: int | None = None,
                 "shard_stats": [], "dropped_dup": 0}
 
     n = max_workers or min(len(shards), max(1, getattr(settings, "AI_SHARD_CONCURRENCY", 5)))
+    if progress:
+        for shard in shards:
+            progress.unit(shard["id"], shard["name"])
+    def run_shard(shard):
+        if progress:
+            progress.unit(shard["id"], status="running")
+        result = _run_one_shard(engine, requirement, project_id, pages, shard, timeout, no_script, sub_product,
+                                on_progress=progress.callback(shard["id"]) if progress else None)
+        if progress:
+            progress.unit(shard["id"], status="failed" if result["error"] else "done")
+        return result
     with ThreadPoolExecutor(max_workers=n, thread_name_prefix="shard-gen") as ex:
-        results = list(ex.map(
-            lambda sh: _run_one_shard(engine, requirement, project_id, pages, sh, timeout, no_script, sub_product), shards))
+        results = list(ex.map(run_shard, shards))
 
     cases: list[dict] = []
     seen: set[str] = set()

@@ -25,7 +25,7 @@ from app.models.feedback import (
 from app.models.release_checklist import ReleaseChecklistItem
 from app.models.test_plan import TestPlan, TestPlanCase, TestPlanRun
 from app.models.requirement import Requirement
-from app.models.requirement_analysis import RequirementSource, RequirementAnalysis, RequirementBaseline, RequirementGeneration, RequirementCaseLink
+from app.models.requirement_analysis import RequirementSource, RequirementAnalysis, RequirementBaseline, RequirementGeneration, RequirementCaseLink, RequirementAnalysisPart
 from app.models.fail_cluster import FailCluster
 from app.models.rts import RtsRecommendation
 from app.models.test_mission import TestMission, MissionEvent, MissionRun, MissionAssessment
@@ -78,6 +78,7 @@ __all__ = [
     "Requirement",
     "RequirementSource",
     "RequirementAnalysis",
+    "RequirementAnalysisPart",
     "RequirementBaseline",
     "RequirementGeneration",
     "RequirementCaseLink",

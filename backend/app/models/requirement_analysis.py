@@ -81,3 +81,20 @@ class RequirementCaseLink(Base):
     criterion_id: Mapped[str] = mapped_column(String(64))
     # Updated only when a person explicitly adopts the case; edits invalidate coverage.
     reviewed_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class RequirementAnalysisPart(Base):
+    """Full model output and validated checkpoints, isolated by immutable input hash."""
+    __tablename__ = "requirement_analysis_part"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("requirement_analysis.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[int] = mapped_column(Integer, index=True)
+    part_key: Mapped[str] = mapped_column(String(80))
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    raw: Mapped[str] = mapped_column(_Document, default="")
+    value: Mapped[str | None] = mapped_column(_Document, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

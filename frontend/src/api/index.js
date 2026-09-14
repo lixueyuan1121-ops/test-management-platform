@@ -394,8 +394,8 @@ export const extractFile = (file, appendTo) => {
 }
 
 // 测试点生成(方案2 P3b:改入队+轮询,不再 SSE 流式)。保持 onDone/onError 回调形状不变:
-// POST 建 job → 轮询 /api/ai-jobs/{id};done 时 onDone({cases, meta, status})。onDelta 不再触发
-// (现无逐字流,原也只是最后一把出结果)。onTick 回传排队位次供「排队第 N 位」。signal 支持中途放弃轮询。
+// POST 建 job → 轮询 /api/ai-jobs/{id};done 时 onDone({cases, meta, status})。
+// onTick 回传真实阶段和已持久化的流式正文快照。signal 只停止等待，不中断后台执行。
 export async function streamTestcases(payload, { onDone, onError, signal, onTick } = {}) {
   try {
     const { job_id } = await http.post('/ai/testcases', payload, { silent: true })
@@ -505,6 +505,8 @@ export const unlinkRequirementCases = (rid, case_ids) => http.delete(`/requireme
 export const analyzeRequirement = (payload) => http.post('/ai/requirements/analyze', payload)
 export const listRequirementAnalyses = (params) => http.get('/ai/requirements/analyses', { params })
 export const getRequirementAnalysis = (id) => http.get(`/ai/requirements/analyses/${id}`)
+export const retryRequirementAnalysis = (id) => http.post(`/ai/requirements/analyses/${id}/retry`, {}, { silent: true })
+export const getRequirementOutput = (id, partId) => http.get(`/ai/requirements/analyses/${id}/outputs/${partId}`)
 export const saveRequirementDraft = (id, payload) => http.patch(`/ai/requirements/analyses/${id}`, payload)
 export const confirmRequirement = (id, payload) => http.post(`/ai/requirements/analyses/${id}/confirm`, payload)
 export const getRequirementCoverage = (id) => http.get(`/ai/requirements/coverage/${id}`)
@@ -518,7 +520,8 @@ const _sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export async function pollAiJob(jobId, { interval = 2000, signal, onTick } = {}) {
   while (true) {
     if (signal?.aborted) throw new Error('已取消')
-    const job = await http.get(`/ai-jobs/${jobId}`, { silent: true })
+    const job = await http.get(`/ai-jobs/${jobId}`, { silent: true, signal })
+    if (signal?.aborted) throw new Error('已取消')
     onTick?.(job)
     if (job.status === 'done') return job.result
     if (job.status === 'failed') throw new Error(job.error || 'AI 任务失败')

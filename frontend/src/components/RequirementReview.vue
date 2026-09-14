@@ -12,14 +12,26 @@
     <div class="review-actions">
       <el-button v-if="!embedded" type="primary" :disabled="disabled || !available || !projectId || !taskId || !requirement.trim() || working" @click="startAnalysis">{{ draft ? '重新分析需求' : '分析需求' }}</el-button>
       <el-button v-if="analysis && !draft && !working && ['pending', 'running'].includes(analysis.status)" @click="resumeAnalysis">继续查看分析进度</el-button>
+      <el-button v-if="canRetry" type="primary" :disabled="disabled || saving || !available" @click="retryAnalysis">继续处理失败部分</el-button>
       <el-button v-if="working" @click="stopWaiting">停止等待</el-button>
       <span v-if="!taskId" class="hint">请先选择关联任务</span>
-      <span v-if="working" role="status">{{ jobStatus === 'pending' ? '等待分析…' : `正在识别图片并整理验收规则${materialCount ? `（${materialCount} 张图片）` : ''}…` }}</span>
       <el-tag v-if="baselineId" type="success">已确认版本 #{{ baselineId }}</el-tag>
       <el-tag v-else-if="draft" type="warning">{{ dirty ? '修改尚未保存' : '待确认验收规则' }}</el-tag>
     </div>
-    <el-progress v-if="working" :percentage="100" :indeterminate="true" :show-text="false" />
+    <AiJobProgress v-if="!draft && (working || liveJob?.progress)" :job="liveJob" :active="working" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+    <div v-if="!draft && analysis && (canRetry || savedOutputs.length)" class="recovery-info">
+      <p>已保存 {{ reusableImages }} 张图片识别结果、{{ completedParts }} 个分析阶段。继续处理会复用这些结果。</p>
+      <p class="hint">完整草稿生成后进入人工评审；确认版本在你核对并确认后创建。</p>
+      <el-button v-if="savedOutputs.length" size="small" @click="viewSavedOutput">查看已保存的返回内容</el-button>
+    </div>
+    <el-dialog v-model="savedOutputOpen" title="已保存的模型返回 · 未确认草稿" width="min(900px, 94vw)">
+      <el-select v-model="savedOutputId" fit-input-width style="width:100%" aria-label="选择保存的分析输出" @change="loadSavedOutput">
+        <el-option v-for="item in savedOutputs" :key="item.id" :value="item.id" :label="`${outputLabel(item.part_key)} · ${item.status === 'done' ? '已保存' : item.error_code || '未完成'} · ${item.chars} 字`" />
+      </el-select>
+      <p v-if="savedOutputError" class="blockers">{{ savedOutputError }}</p>
+      <pre v-loading="savedOutputLoading" class="saved-output">{{ savedOutputText || '此阶段尚未收到正文' }}</pre>
+    </el-dialog>
     <el-alert v-if="warnings.length" type="warning" :closable="false" show-icon title="资料范围需要核对">
       <ul><li v-for="(warning, i) in warnings" :key="i">{{ warning }}</li></ul>
     </el-alert>
@@ -110,8 +122,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { analyzeRequirement, listRequirementAnalyses, getRequirementAnalysis, saveRequirementDraft, confirmRequirement, getRequirementImage, pollAiJob } from '@/api'
+import { analyzeRequirement, listRequirementAnalyses, getRequirementAnalysis, retryRequirementAnalysis, getRequirementOutput, saveRequirementDraft, confirmRequirement, getRequirementImage, pollAiJob } from '@/api'
 import AcceptanceScenarios from './AcceptanceScenarios.vue'
+import AiJobProgress from './AiJobProgress.vue'
 import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({ projectId: Number, taskId: Number, requirement: { type: String, default: '' }, provider: String,
@@ -119,7 +132,15 @@ const props = defineProps({ projectId: Number, taskId: Number, requirement: { ty
   materials: { type: Array, default: () => [] }, disabled: Boolean, available: Boolean, analysisId: Number, embedded: Boolean })
 const emit = defineEmits(['ready', 'busy', 'restore', 'loaded'])
 const analysis = ref(null), draft = ref(null), history = ref([]), historyId = ref(null)
-const working = ref(false), saving = ref(false), dirty = ref(false), error = ref(''), jobStatus = ref(''), baselineId = ref(null)
+const liveJob = ref(null)
+const savedOutputOpen = ref(false), savedOutputId = ref(null), savedOutputText = ref(''), savedOutputError = ref(''), savedOutputLoading = ref(false)
+let outputVersion = 0
+const savedOutputs = computed(() => analysis.value?.saved_outputs || [])
+const canRetry = computed(() => !working.value && !draft.value && analysis.value && (analysis.value.can_retry || ['failed', 'cancelled'].includes(analysis.value.status)))
+const reusableImages = computed(() => visuals.value.filter(v => ['read', 'uncertain'].includes(v.status) && v.text).length)
+const completedParts = computed(() => new Set(savedOutputs.value.filter(p => p.status === 'done').map(p => p.part_key)).size)
+const outputLabel = key => key === 'analysis' ? '需求规则' : key?.startsWith('scenes-') ? `具体场景 ${key.slice(7)}` : key
+const working = ref(false), saving = ref(false), dirty = ref(false), error = ref(''), baselineId = ref(null)
 const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('scenarios'), editingRule = ref(null)
 const imageOpen = ref(false), imageLoading = ref(false), imageUrl = ref(''), imageReading = ref(null)
 let version = 0, historyVersion = 0, controller = null, hydrating = false, restoring = false, disposed = false, imageVersion = 0
@@ -127,7 +148,6 @@ const changeLabels = { scope: '本期范围', module: '模块', platform: '平�
 const overviewFields = [{ key: 'summary', label: '产品理解：用户、入口与最终结果' }, { key: 'scope', label: '本期范围与平台' }, { key: 'out_of_scope', label: '本期不做什么' }, { key: 'flow', label: '关键流程 / 判定顺序' }]
 const ruleFields = [{ key: 'title', label: '规则标题' }, { key: 'module', label: '模块' }, { key: 'platform', label: '适用平台' }, { key: 'condition', label: '前提条件' }, { key: 'action', label: '触发操作 / 事件' }, { key: 'expected', label: '应发生的结果' }, { key: 'forbidden', label: '不得发生的结果' }, { key: 'boundaries', label: '边界与例外' }, { key: 'evidence', label: '如何验证 / 缺少的测试条件' }, { key: 'source_section', label: '原文章节 / 图片位置' }, { key: 'source_quote', label: '原文摘录' }]
 const visuals = computed(() => analysis.value?.visual_readings || [])
-const materialCount = computed(() => analysis.value?.materials?.length || props.materials.length)
 const warnings = computed(() => [...(analysis.value?.source_info?.warnings || props.sourceWarnings), ...visuals.value.filter(v => v.status !== 'read').map(v => `${v.id}：${v.uncertainties}`)])
 const confirmedCount = computed(() => draft.value?.rules.filter(r => r.status === 'confirmed').length || 0)
 const pendingCount = computed(() => draft.value?.rules.filter(r => r.status === 'pending').length || 0)
@@ -162,6 +182,8 @@ watch(draft, () => { if (!hydrating) { dirty.value = true; baselineId.value = nu
 watch(() => [props.projectId, props.taskId, props.requirement, props.sourceId, props.sourceUrl], () => {
   if (restoring) return
   version++; controller?.abort(); working.value = false; analysis.value = null; draft.value = null
+  liveJob.value = null
+  outputVersion++; savedOutputOpen.value = false; savedOutputText.value = ''
   baselineId.value = null; editingRule.value = null; error.value = ''; scopeReviewed.value = false; confirmationNote.value = ''; emit('ready', null)
 })
 watch(() => [props.projectId, props.taskId], loadHistory, { immediate: true })
@@ -178,14 +200,17 @@ async function loadHistory() {
 async function replaceAnalysis(data) {
   hydrating = true
   analysis.value = data; draft.value = data.draft ? structuredClone(data.draft) : null
-  baselineId.value = data.baseline_id || null; dirty.value = false; scopeReviewed.value = !!data.baseline_id
-  if (data.baseline_id) confirmationNote.value = data.confirmation_note || ''
+  liveJob.value = { id: data.job_id, status: data.status, progress: data.progress || liveJob.value?.progress, error: data.error }
+  baselineId.value = data.draft && data.baseline_id || null; dirty.value = false; scopeReviewed.value = !!baselineId.value
+  if (baselineId.value) confirmationNote.value = data.confirmation_note || ''
   emit('ready', baselineId.value); emit('loaded', data)
   await nextTick(); hydrating = false
 }
 async function restoreAnalysis(id) {
   if (!id) return
   const current = ++version
+  controller?.abort(); working.value = false; liveJob.value = null
+  outputVersion++; savedOutputOpen.value = false; savedOutputText.value = ''
   error.value = ''; saving.value = true
   try {
     const data = await getRequirementAnalysis(id)
@@ -193,19 +218,28 @@ async function restoreAnalysis(id) {
     restoring = true; emit('restore', data); await nextTick()
     await replaceAnalysis(data); restoring = false
     if (data.error) error.value = data.error
+    else if (!data.draft && data.job_id && ['pending', 'running'].includes(data.status)) {
+      saving.value = false; working.value = true
+      await waitAnalysis(data.job_id, data.id, current)
+    }
   } catch (e) { if (current === version && !disposed) error.value = messageOf(e) }
   finally { restoring = false; if (current === version) saving.value = false }
 }
 async function waitAnalysis(jobId, analysisId, current) {
-  controller = new AbortController()
-  const timeout = setTimeout(() => controller?.abort(), 35 * 60 * 1000)
+  const waiting = new AbortController()
+  controller = waiting
+  const timeout = setTimeout(() => waiting.abort(), 35 * 60 * 1000)
   try {
-    await pollAiJob(jobId, { signal: controller.signal, onTick: job => { if (current === version) jobStatus.value = job.status } })
+    await pollAiJob(jobId, { signal: waiting.signal, onTick: job => {
+      if (current !== version || disposed) return
+      liveJob.value = { ...job, progress: job.progress || liveJob.value?.progress }
+      if (analysis.value) analysis.value.status = job.status
+    } })
     const data = await getRequirementAnalysis(analysisId)
     if (current === version && !disposed) { await replaceAnalysis(data); ElMessage.success('需求分析完成，请核对范围、图片和验收规则') }
   } catch (e) {
     if (current === version && !disposed) {
-      error.value = controller?.signal.aborted ? '已停止等待，后台仍可能继续；可从历史分析恢复查看。' : messageOf(e)
+      error.value = waiting.signal.aborted ? '已停止等待，后台仍可能继续；可从历史分析恢复查看。' : messageOf(e)
       try { const data = await getRequirementAnalysis(analysisId); if (current === version) await replaceAnalysis(data) } catch { /* Keep the recoverable task id. */ }
     }
   } finally {
@@ -215,6 +249,7 @@ async function waitAnalysis(jobId, analysisId, current) {
 }
 async function startAnalysis() {
   const current = ++version
+  liveJob.value = { status: 'pending' }
   error.value = ''; working.value = true; baselineId.value = null; emit('ready', null)
   try {
     const result = await analyzeRequirement({ project_id: props.projectId, task_id: props.taskId, requirement: props.requirement, provider: props.provider,
@@ -225,6 +260,27 @@ async function startAnalysis() {
   } catch (e) { if (current === version && !disposed) { error.value = messageOf(e); working.value = false } }
 }
 async function resumeAnalysis() { working.value = true; error.value = ''; await waitAnalysis(analysis.value.job_id, analysis.value.id, ++version) }
+async function retryAnalysis() {
+  if (!canRetry.value) return
+  const current = ++version, id = analysis.value.id
+  working.value = true; error.value = ''; liveJob.value = { status: 'pending' }
+  try {
+    const result = await retryRequirementAnalysis(id)
+    if (current !== version || disposed) return
+    analysis.value.job_id = result.job_id; analysis.value.status = 'pending'; analysis.value.can_retry = false
+    await waitAnalysis(result.job_id, id, current)
+  } catch (e) { if (current === version && !disposed) { error.value = messageOf(e); working.value = false } }
+}
+function viewSavedOutput() { savedOutputOpen.value = true; savedOutputId.value = savedOutputs.value[0]?.id; loadSavedOutput() }
+async function loadSavedOutput() {
+  const request = ++outputVersion, id = analysis.value?.id
+  savedOutputLoading.value = true; savedOutputText.value = ''; savedOutputError.value = ''
+  try {
+    const result = await getRequirementOutput(id, savedOutputId.value)
+    if (request === outputVersion && !disposed && analysis.value?.id === id) { savedOutputText.value = result.raw; savedOutputError.value = result.error || '' }
+  } catch (e) { if (request === outputVersion && !disposed) savedOutputError.value = messageOf(e) }
+  finally { if (request === outputVersion && !disposed) savedOutputLoading.value = false }
+}
 function stopWaiting() { controller?.abort() }
 async function save() {
   if (!draft.value || !analysis.value || !dirty.value) return true
@@ -286,4 +342,11 @@ h3 { margin:0; font-size:16px; }.review-head p,.hint { color:var(--el-text-color
 @media(max-width:760px) { .requirement-review { padding:12px; }.image-comparison { grid-template-columns:1fr; }.review-head .el-select { width:100%!important; }.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:10px; }
 .review-focus h4 { margin:0 0 8px; }
 .review-steps { padding:12px 8px; } }
+</style>
+
+<style scoped>
+.recovery-info { padding: 12px 16px; margin: 12px 0; border: 1px solid #dce5f5; border-radius: 8px; background: #f8faff; font-size: 14px; line-height: 1.7; }
+.recovery-info .el-button { max-width: 100%; height: auto; white-space: normal; line-height: 1.6; }
+.recovery-info .el-button :deep(span) { overflow-wrap: anywhere; }
+.saved-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font-size: 13px; line-height: 1.7; padding: 12px; background: #f6f8fb; }
 </style>

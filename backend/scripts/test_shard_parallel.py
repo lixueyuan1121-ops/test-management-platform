@@ -23,7 +23,7 @@ class FakeEngine:
         self.threads = set()
         self._lock = threading.Lock()
 
-    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None, no_script=False):
+    def build_testcase_prompt(self, requirement, project_id=None, pages=None, shard=None, no_script=False, sub_product=""):
         return f"PROMPT::{shard['id'] if shard else 'full'}::{requirement}"
 
     def stream_generate(self, requirement, project_id=None, timeout=None, pages=None,
@@ -41,7 +41,7 @@ class FakeEngine:
         yield {"type": "result", "text": f"RAW::{sid}", "output_tokens": 10,
                "cost_usd": 0.5, "duration_ms": 100}
 
-    def parse_testcases(self, raw, project_id=None):
+    def parse_testcases(self, raw, project_id=None, sub_product=""):
         sid = raw.split("::")[1]
         title = self.dup_title or f"{sid} 用例"
         return [{"category": "功能", "title": title, "steps": "", "expected": "",

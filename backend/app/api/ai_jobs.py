@@ -17,6 +17,7 @@ from app.db.session import get_db
 from app.models import AiJob, User
 from app.schemas.common import ok
 from app.services import ai_jobs
+from app.services.ai_progress import progress_of
 
 router = APIRouter(prefix="/api/ai-jobs", tags=["ai-jobs"])
 
@@ -45,13 +46,15 @@ def _authorize(db: Session, user: User, job: AiJob) -> None:
 
 
 def _to_out(db: Session, job: AiJob) -> dict:
+    progress = progress_of(job.result)
     return {
         "id": job.id,
         "kind": job.kind,
         "provider": job.provider,
         "status": job.status,
+        "progress": progress,
         "queue_position": ai_jobs.queue_position(db, job),
-        "result": _loads(job.result),
+        "result": None if progress else _loads(job.result),
         "output_raw": job.output_raw,
         "error": job.error,
         "ref_kind": job.ref_kind,

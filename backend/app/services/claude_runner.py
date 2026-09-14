@@ -568,11 +568,11 @@ _PROMPT_ARGV_MAX = 12000
 _CONTEXT_ISOLATION_ARGS = ("--disable-slash-commands", "--settings", '{"disableAllHooks":true}')
 
 
-def _build_cmd(prompt: str, system_prompt: str | None = None, prompt_via_stdin: bool = False) -> list[str]:
+def _build_cmd(prompt: str, system_prompt: str | None = None, prompt_via_stdin: bool = False, output_schema: dict | None = None) -> list[str]:
     cmd = [
         _claude_bin(), "-p",
         *([] if prompt_via_stdin else [prompt]),
-        "--output-format", "stream-json", "--verbose",
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         "--append-system-prompt", system_prompt or _SYSTEM_PROMPT,
         *_CONTEXT_ISOLATION_ARGS,
         "--disallowedTools", *_DISALLOWED_TOOLS,
@@ -580,6 +580,8 @@ def _build_cmd(prompt: str, system_prompt: str | None = None, prompt_via_stdin: 
     ]
     if settings.AI_MODEL:
         cmd += ["--model", settings.AI_MODEL]
+    if output_schema:
+        cmd += ["--json-schema", json.dumps(output_schema, ensure_ascii=False)]
     return cmd
 
 
@@ -723,7 +725,7 @@ def validate_script_for_edit(kind: str, script, project_id: int | None = None, d
     return [], f"仅 gui/e2e/api 用例支持编辑 script(当前 {kind})"
 
 
-def _parse_line(line: str) -> dict | None:
+def _parse_line(line: str, stream_state: dict | None = None) -> dict | None:
     """把一行 stream-json 解析为对外事件；非目标事件返回 None（跳过）。
 
     - assistant 文本 → {"type":"delta","text":...}
@@ -737,8 +739,39 @@ def _parse_line(line: str) -> dict | None:
         evt = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         return None
+    if not isinstance(evt, dict):
+        return None
     etype = evt.get("type")
+    if etype == "stream_event":
+        event = evt.get("event") or {}
+        kind = event.get("type")
+        if kind == "message_start" and stream_state is not None:
+            stream_state["message_id"] = (event.get("message") or {}).get("id")
+            stream_state["has_text"] = False
+            stream_state["output_blocks"] = set()
+        block = event.get("content_block") or {}
+        delta = event.get("delta") or {}
+        if stream_state is not None and stream_state.get("structured"):
+            if kind == "content_block_start" and block.get("type") == "tool_use" and block.get("name") == "StructuredOutput":
+                stream_state.setdefault("output_blocks", set()).add(event.get("index"))
+                stream_state["output_started"] = False
+            if kind == "content_block_delta" and delta.get("type") == "input_json_delta" and event.get("index") in stream_state.get("output_blocks", set()):
+                first = not stream_state.get("output_started")
+                stream_state["output_started"] = True
+                return {"type": "delta", "text": delta.get("partial_json") or "", "reset": first}
+        text = (delta.get("text") if kind == "content_block_delta" and delta.get("type") == "text_delta"
+                else block.get("text") if kind == "content_block_start" and block.get("type") == "text" else None)
+        # Only user-facing text. Never forward thinking, tool input or signatures.
+        if text:
+            if stream_state is not None:
+                stream_state["has_text"] = True
+            return {"type": "delta", "text": text}
+        return None
     if etype == "assistant":
+        message = evt.get("message") or {}
+        # With partial messages enabled the assistant snapshot repeats those chunks.
+        if stream_state and stream_state.get("has_text") and message.get("id") == stream_state.get("message_id"):
+            return None
         parts = [
             b.get("text", "")
             for b in evt.get("message", {}).get("content", [])
@@ -759,7 +792,7 @@ def _parse_line(line: str) -> dict | None:
             detail = "模型 API 连接失败（UnsupportedProxyProtocol）：Claude 代理协议不兼容，请检查代理配置或设置 CLAUDE_PROXY_URL 为有效 HTTP/HTTPS 代理"
         return {
             "type": "result",
-            "text": evt.get("result", "") or "",
+            "text": json.dumps(evt["structured_output"], ensure_ascii=False) if isinstance(evt.get("structured_output"), dict) else evt.get("result", "") or "",
             "duration_ms": evt.get("duration_ms"),
             "cost_usd": evt.get("total_cost_usd"),
             "output_tokens": usage.get("output_tokens"),
@@ -770,7 +803,11 @@ def _parse_line(line: str) -> dict | None:
     return None
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None) -> Iterator[dict]:
+def supports_structured_output():
+    return True
+
+
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None, output_schema: dict | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
@@ -790,7 +827,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
     via_stdin = bool(images) or len(prompt) > _PROMPT_ARGV_MAX
-    cmd = _build_cmd(prompt, system_prompt, prompt_via_stdin=via_stdin)
+    cmd = _build_cmd(prompt, system_prompt, prompt_via_stdin=via_stdin, output_schema=output_schema)
     stdin_text = prompt
     if images:
         # Anthropic image blocks are input data, not file-read tools. Keep all tool
@@ -852,6 +889,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     hb = 0            # 心跳计数(claude 思考、未吐字的空转轮数)
     out_chars = 0     # 已产出正文字符数(超时诊断:0=claude 全程没吐字/纯 hang)
     start = time.monotonic()
+    stream_state = {"structured": bool(output_schema)}
     logger.info("claude 生成启动 via_stdin=%s prompt_len=%d timeout=%ss", via_stdin, len(prompt), timeout)
     try:
         while True:
@@ -874,11 +912,16 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                 continue
             if line is None:
                 break
-            evt = _parse_line(line)
+            evt = _parse_line(line, stream_state)
             if evt is None:
                 stripped = line.strip()
                 if stripped:
-                    tail.append(stripped[:500])
+                    try:
+                        json.loads(stripped)
+                    except ValueError:
+                        tail.append(stripped[:500])
+                    # Ignored protocol records may contain thinking/tool input.
+                    # Never echo them in the error returned after an interrupted stream.
                 continue
             if evt["type"] == "result":
                 got_result = True

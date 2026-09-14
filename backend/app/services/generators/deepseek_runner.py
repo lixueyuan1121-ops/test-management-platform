@@ -76,7 +76,7 @@ def _headers() -> dict:
     return h
 
 
-def _body(prompt: str, stream: bool, system_prompt: str | None = None, images: list[dict] | None = None) -> dict:
+def _body(prompt: str, stream: bool, system_prompt: str | None = None, images: list[dict] | None = None, output_schema: dict | None = None) -> dict:
     return {
         "model": settings.DEEPSEEK_VISION_MODEL if images else settings.DEEPSEEK_MODEL or "deepseek-v4-flash",
         "messages": [
@@ -91,6 +91,7 @@ def _body(prompt: str, stream: bool, system_prompt: str | None = None, images: l
         ],
         "max_tokens": settings.DEEPSEEK_MAX_TOKENS or 49152,
         "stream": stream,
+        **({"response_format": {"type": "json_object"}} if output_schema else {}),
     }
 
 
@@ -145,7 +146,11 @@ def _post_with_retry(*, stream: bool, json_body: dict, timeout, sleep=time.sleep
     return None, "DeepSeek 请求失败：重试用尽"
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None) -> Iterator[dict]:
+def supports_structured_output():
+    return True
+
+
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None, output_schema: dict | None = None) -> Iterator[dict]:
     """流式生成测试点。yield delta/result/error/heartbeat，契约与 claude_runner 对齐。
 
     只累积 delta.content（正文）为 raw；delta.reasoning_content（思维链）丢弃。
@@ -171,10 +176,11 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     raw = ""
     out_tokens = None
     finish_reason = None
+    got_done = False
     last_beat = time.monotonic()
     try:
         resp, err = _post_with_retry(
-            stream=True, json_body=_body(prompt, stream=True, system_prompt=system_prompt, images=images),
+            stream=True, json_body=_body(prompt, stream=True, system_prompt=system_prompt, images=images, output_schema=output_schema),
             timeout=timeout)
         if err:
             yield {"type": "error", "msg": err}
@@ -192,6 +198,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                 continue
             data = line[5:].strip()
             if data == "[DONE]":
+                got_done = True
                 break
             try:
                 evt = json.loads(data)
@@ -227,7 +234,8 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
         yield {"type": "error", "msg": "DeepSeek 生成被 max_tokens 截断且无正文，请调大 DEEPSEEK_MAX_TOKENS"}
         return
     yield {"type": "result", "text": raw, "output_tokens": out_tokens,
-           "cost_usd": None, "duration_ms": None, "finish_reason": finish_reason}
+           "cost_usd": None, "duration_ms": None, "finish_reason": finish_reason,
+           "complete": got_done or finish_reason == "stop"}
 
 
 def generate_script(kind: str, title: str, steps: str, expected: str,

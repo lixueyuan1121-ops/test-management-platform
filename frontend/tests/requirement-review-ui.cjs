@@ -11,7 +11,17 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
     const writes = [], errors = [];
-    let adopted = false, analysisStarted = false;
+    let adopted = false, analysisStarted = false, analysisStage = 0, casesFinished = false, recoveryComplete = false;
+    const startedAt = Date.now();
+    const snapshot = (stage, units) => ({ stage, started_at: startedAt, updated_at: Date.now(), last_output_at: Date.now(),
+      total: units.length, completed: units.filter(u => u.status === 'done').length, chars: units.reduce((n, u) => n + (u.text?.length || 0), 0), units });
+    const imageUnit = { id: 'IMG1', title: 'IMG1 · 权限矩阵', status: 'running', text: '{"text":"保护目录删除必须确认，正在读取表格' };
+    const partialAnalysis = { id: 'analysis', title: '需求理解与验收规则', status: 'running', text: '{"summary":"删除确认规则已识别，正在整理验收条件' };
+    const analysisJob = () => analysisStage === 0 ? { id: 20, status: 'pending', queue_position: 2 }
+      : analysisStage === 3 ? { id: 20, status: 'done', result: { analysis_id: 10 } }
+      : analysisStage === 4 ? { id: 20, status: 'failed', error: '模型返回超时', progress: snapshot('analyzing', [partialAnalysis]) }
+      : { id: 20, status: 'running', progress: snapshot(analysisStage === 1 ? 'reading_images' : 'analyzing',
+          analysisStage === 1 ? [imageUnit] : [{ ...imageUnit, status: 'done' }, partialAnalysis]) };
     page.on('pageerror', error => errors.push(error.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'mock-local-only'));
     await page.route(url => url.pathname.startsWith('/api/'), async route => {
@@ -28,10 +38,16 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
       if (path === '/api/ai/extract-file') data = { source_id: 30, text: analysis.source_text, title: analysis.source_title, filename: analysis.source_title, chars: 9, materials: [material], warnings: [] };
       if (path === '/api/ai/requirements/analyses') data = analysisStarted ? [{ ...analysis, draft: undefined, status: 'done' }] : [];
       if (path === '/api/ai/requirements/analyze') { analysisStarted = true; data = { analysis_id: 10, job_id: 20 }; }
-      if (path === '/api/ai-jobs/20') data = { id: 20, status: 'done', result: { analysis_id: 10 } };
+      if (path === '/api/ai-jobs/20') data = analysisJob();
+      if (path === '/api/ai/requirements/analyses/10/retry') { data = { analysis_id: 10, job_id: 22 }; }
+      if (path === '/api/ai/requirements/analyses/10/outputs/71') data = { raw: '{"rules":[{"title":"已保存的保护目录规则"}]}', error: '具体场景未完整返回' };
+      if (path === '/api/ai-jobs/22') data = recoveryComplete ? { id: 22, status: 'done', result: { analysis_id: 10 } }
+        : { id: 22, status: 'running', progress: snapshot('scenarios', [{ id: 'scenes-2', title: '具体场景 2/2', status: 'running', text: '{"scenarios":[{"given":"恢复失败批次，复用已完成的规则' }]) };
       if (path === '/api/ai/requirements/analyses/10') {
         if (request.method() === 'PATCH') { analysis.draft = structuredClone(body.draft); analysis.revision++; analysis.baseline_id = null; }
-        data = analysis;
+        data = analysisStage === 3 || recoveryComplete ? analysis : { ...analysis, draft: null, visual_readings: [], ...analysisJob(), id: 10 };
+        if (analysisStage === 4 && !recoveryComplete) Object.assign(data, { can_retry: true, visual_readings: analysis.visual_readings,
+          saved_outputs: [{ id: 71, part_key: 'analysis', status: 'done', chars: 30 }] });
       }
       if (path.endsWith('/sources/30/images/IMG1')) {
         assert.equal(request.headers().authorization, 'Bearer mock-local-only');
@@ -39,7 +55,8 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
       }
       if (path === '/api/ai/requirements/analyses/10/confirm') { analysis.baseline_id = 40; analysis.confirmation_note = body.confirmation_note; data = { baseline_id: 40, revision: analysis.revision }; }
       if (path === '/api/ai/testcases') data = { job_id: 21, ai_task_id: 50 };
-      if (path === '/api/ai-jobs/21') data = { id: 21, status: 'done', result: { ai_task_id: 50, status: 'done', case_count: 1 } };
+      if (path === '/api/ai-jobs/21') data = casesFinished ? { id: 21, status: 'done', result: { ai_task_id: 50, status: 'done', case_count: 1 } }
+        : { id: 21, status: 'running', progress: snapshot('generating', [{ id: 'batch-0', title: '验收用例 1 · R1-C1', status: 'running', text: '[{"title":"保护目录删除弹窗","steps":"打开保护目录并点击删除' }]) };
       if (path === '/api/ai/tasks/50/cases') data = cases;
       if (path === '/api/ai/requirements/coverage/50') data = { baseline_id: 40, total: 1, linked: 1, reviewed: Number(adopted), pending_rules: ['R2'], excluded_rules: [{ id: 'R3', reason: '下期实现' }], unlinked_case_ids: [], criteria: [{ criterion_id: 'R1-C1', text: rule.criteria[0].text, case_ids: [61], state: adopted ? 'reviewed' : 'pending' }] };
       if (path === '/api/ai/testcases/61') { adopted = body.review_status === 'adopted'; data = { ...cases[0], review_status: body.review_status, adopted }; }
@@ -54,6 +71,36 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
     await page.locator('.upload-row input[type="file"]').setInputFiles({ name: '权限需求.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: Buffer.from('mock-document') });
     await page.getByText('保护目录必须确认', { exact: true }).waitFor();
     await page.getByRole('button', { name: '分析需求', exact: true }).click();
+    const live = page.getByRole('region', { name: 'AI 实时生成进度', exact: true });
+    await live.getByText('排队中 · 前面还有 2 个任务', { exact: true }).waitFor();
+    analysisStage = 1;
+    await live.getByText('正在识别需求图片', { exact: true }).waitFor();
+    await live.locator('.live-output').filter({ hasText: '正在读取表格' }).waitFor();
+    assert(await generate.isDisabled(), 'partial output must not unlock generation');
+    imageUnit.text += '，补充读取完成';
+    await live.locator('.live-output').filter({ hasText: '补充读取完成' }).waitFor();
+    analysisStage = 2;
+    await live.getByText('正在整理需求与验收规则', { exact: true }).waitFor();
+    await live.locator('.live-output').filter({ hasText: '正在整理验收条件' }).waitFor();
+    await live.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: '/tmp/ai-progress-desktop.png' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await live.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: '/tmp/ai-progress-mobile.png' });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.setViewportSize({ width: 1440, height: 1050 });
+    await page.getByRole('button', { name: '停止等待', exact: true }).click();
+    await live.getByText('已停止等待 · 显示最后收到的内容', { exact: true }).waitFor();
+    assert.match(await live.locator('.live-output').innerText(), /正在整理验收条件/);
+    await page.getByRole('button', { name: '继续查看分析进度', exact: true }).click();
+    await live.getByText('正在整理需求与验收规则', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '停止等待', exact: true }).click();
+    await live.getByText('已停止等待 · 显示最后收到的内容', { exact: true }).waitFor();
+    await page.getByText('恢复历史需求分析', { exact: true }).click();
+    await page.getByRole('option', { name: /#10/ }).click();
+    await live.getByText('正在整理需求与验收规则', { exact: true }).waitFor();
+    analysisStage = 3;
+
     await page.getByRole('tab', { name: '图片与图表（1）', exact: true }).click();
     await page.getByText('脚注文字不清', { exact: true }).last().waitFor();
     await page.getByRole('button', { name: '对照原图', exact: true }).click();
@@ -95,6 +142,10 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
     const confirmation = writes.find(w => w.path.endsWith('/confirm')).body;
     assert.equal(confirmation.revision, 3); assert.equal(confirmation.source_hash, 'test-hash');
     await generate.click();
+    await live.getByText('正在生成测试用例', { exact: true }).waitFor();
+    await live.locator('.live-output').filter({ hasText: '打开保护目录并点击删除' }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '保护目录删除弹窗', exact: true }).count(), 0);
+    casesFinished = true;
     await page.getByRole('button', { name: '保护目录删除弹窗', exact: true }).waitFor();
     assert.equal(writes.find(w => w.path === '/api/ai/testcases').body.baseline_id, 40);
     await page.getByText(/人工核验 0\/1/).waitFor();
@@ -121,7 +172,40 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
     assert(!await generate.isDisabled());
     await page.locator('.requirement-review').scrollIntoViewIfNeeded();
     await page.screenshot({ path: '/tmp/requirement-review-desktop.png' });
+    analysisStage = 4;
+    await page.getByRole('button', { name: '重新分析需求', exact: true }).click();
+    await live.getByText('生成失败 · 已保留返回内容', { exact: true }).waitFor();
+    assert.match(await live.locator('.live-output').innerText(), /正在整理验收条件/);
+    assert(await generate.isDisabled());
+    await page.getByRole('button', { name: '继续处理失败部分', exact: true }).waitFor();
+    await page.locator('.recovery-info').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: '/tmp/requirement-failure-recovery-desktop.png' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.querySelector('.aside').getBoundingClientRect().width <= 65);
+    await page.locator('.recovery-info').scrollIntoViewIfNeeded();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert(await page.locator('.recovery-info').evaluate(card => {
+      const button = card.querySelector('button').getBoundingClientRect();
+      const bounds = card.getBoundingClientRect();
+      return button.left >= bounds.left && button.right <= bounds.right && button.right <= innerWidth;
+    }), 'the saved-output button must fit within the recovery card on mobile');
+    await page.screenshot({ path: '/tmp/requirement-failure-recovery-mobile.png' });
+    await page.setViewportSize({ width: 1440, height: 1050 });
+    await page.getByRole('button', { name: '查看已保存的返回内容', exact: true }).click();
+    const savedDialog = page.getByRole('dialog', { name: '已保存的模型返回 · 未确认草稿', exact: true });
+    await savedDialog.locator('.saved-output').filter({ hasText: '已保存的保护目录规则' }).waitFor();
+    await savedDialog.locator('.el-dialog__headerbtn').click();
+    await savedDialog.waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: '继续处理失败部分', exact: true }).click();
+    await live.getByText('正在分批整理具体场景', { exact: true }).waitFor();
+    await live.locator('.live-output').filter({ hasText: '恢复失败批次' }).waitFor();
+    assert(await generate.isDisabled());
+    analysis.baseline_id = null; analysis.draft.rules[0].status = 'pending'; analysis.draft.scenarios[0].reviewed = false;
+    recoveryComplete = true;
+    await page.getByText('待确认验收规则', { exact: true }).waitFor();
+    assert(await generate.isDisabled(), 'recovery must not create a human-confirmed version');
+    assert.equal(writes.filter(w => w.path === '/api/ai/requirements/analyses/10/retry').length, 1);
     assert.deepEqual(errors, []);
-    console.log('Requirement review UI passed: images, clarification, confirmation, coverage, stale input, restore, mobile.');
+    console.log('Requirement review UI passed: live image/analysis/case output, stop/resume/history, failure preview, confirmation gate, coverage and mobile.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exit(1); });

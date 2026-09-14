@@ -2,7 +2,7 @@ import base64
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import update
+from sqlalchemy import update, func, or_, and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -10,7 +10,7 @@ from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import (AiJob, AiTask, Project, RequirementAnalysis, RequirementBaseline,
-                        RequirementSource, Task, User)
+                        RequirementSource, RequirementAnalysisPart, TestMission, Task, User)
 from app.schemas.common import ok
 from app.schemas.requirement_analysis import (RequirementAnalyzeIn, RequirementConfirmIn,
                                               RequirementDraft, RequirementDraftIn)
@@ -63,12 +63,21 @@ def to_out(db, row, detail=True):
               "confirmed_at": baseline.created_at.isoformat() if baseline else None,
               "created_at": row.created_at.isoformat() if row.created_at else None}
     if detail:
+        from app.services.ai_progress import progress_of
+        result["progress"] = progress_of(job.result) if job else None
         from app.services.requirement_memory import focus
         result["review_focus"] = focus(db, row)
         result.update(source_text=row.source_text, source_info=json.loads(row.source_info),
                       visual_readings=json.loads(row.visual_readings or "[]"), draft=json.loads(row.draft) if row.draft else None)
         source = db.get(RequirementSource, row.source_id) if row.source_id else None
         result["materials"] = public_materials(json.loads(source.materials)) if source else []
+        parts = db.query(RequirementAnalysisPart.id, RequirementAnalysisPart.part_key,
+                         RequirementAnalysisPart.status, RequirementAnalysisPart.error_code,
+                         func.length(RequirementAnalysisPart.raw)).filter_by(analysis_id=row.id).order_by(RequirementAnalysisPart.id.desc()).limit(300).all()
+        result["saved_outputs"] = [{"id": p[0], "part_key": p[1], "status": p[2], "error_code": p[3], "chars": p[4] or 0} for p in parts]
+        result["can_retry"] = not row.draft and (not job or job.status in {'failed', 'cancelled'})
+        if result["error"] and '需求分析结果不完整或格式错误' in result["error"]:
+            result["error"] = '需求分析草稿未完整生成。可复用已保存的图片识别结果继续处理；旧任务未保留完整模型响应，无法区分语法错误与截断。'
     return result
 
 
@@ -119,6 +128,48 @@ def analyses(project_id: int, task_id: int | None = None, limit: int = Query(20,
 @router.get("/analyses/{aid}")
 def analysis_detail(aid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return ok(to_out(db, get_analysis(db, user, aid)))
+
+
+@router.get("/analyses/{aid}/outputs/{part_id}")
+def analysis_output(aid: int, part_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    get_analysis(db, user, aid)
+    part = db.get(RequirementAnalysisPart, part_id)
+    if not part or part.analysis_id != aid:
+        raise HTTPException(404, '已保存输出不存在')
+    return ok({'id': part.id, 'part_key': part.part_key, 'status': part.status,
+               'raw': part.raw, 'error_code': part.error_code, 'error': part.error})
+
+
+@router.post("/analyses/{aid}/retry")
+def retry_analysis(aid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = get_analysis(db, user, aid, True)
+    if row.draft:
+        raise HTTPException(409, '分析草稿已完成，请直接核对确认')
+    old_id = row.job_id
+    old = db.get(AiJob, old_id) if old_id else None
+    if old and old.status in {'pending', 'running'}:
+        return ok({'analysis_id': aid, 'job_id': old_id})
+    if not generators.get_provider(row.provider).is_available():
+        raise HTTPException(503, '所选分析引擎不可用')
+    inp = json.loads(old.input or '{}') if old else {}
+    inp['analysis_id'] = aid
+    new = ai_jobs.enqueue(db, 'requirement_analysis', provider=row.provider, project_id=row.project_id,
+                         user_id=user.id, input=inp, ref_kind='requirement_analysis', ref_id=aid, commit=False)
+    changed = db.execute(update(RequirementAnalysis).where(RequirementAnalysis.id == aid,
+        RequirementAnalysis.job_id == old_id, RequirementAnalysis.draft.is_(None)).values(job_id=new.id))
+    if changed.rowcount != 1:
+        db.rollback()
+        current = db.get(RequirementAnalysis, aid)
+        if current.draft:
+            raise HTTPException(409, '分析草稿已完成，请重新加载')
+        return ok({'analysis_id': aid, 'job_id': current.job_id})
+    # Linked goals follow the replacement analysis job; existing pause choices stay intact.
+    db.execute(update(TestMission).where(TestMission.analysis_id == aid, TestMission.active_job_id == old_id,
+        or_(TestMission.phase == 'analyzing', and_(TestMission.phase == 'attention', TestMission.resume_phase == 'analyzing')))
+        .values(active_job_id=new.id, phase='analyzing', error=None, revision=TestMission.revision + 1))
+    job_id = new.id
+    db.commit(); ai_jobs.notify_new_job()
+    return ok({'analysis_id': aid, 'job_id': job_id})
 
 
 @router.patch("/analyses/{aid}")

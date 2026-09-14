@@ -212,20 +212,8 @@
       </div>
     </section>
 
-    <!-- 生成过程反馈 -->
-    <section v-if="running" class="stream-card" aria-live="polite">
-      <div class="running-head">
-        <span class="pulse-dot" :class="{ queued: jobStatus === 'pending' }" />
-        <el-tag v-if="jobStatus" :type="jobStatus === 'pending' ? 'warning' : 'success'" size="small" effect="light">
-          {{ jobStatus === 'pending' ? '排队中' : '执行中' }}
-        </el-tag>
-        <span class="running-text">{{ phaseText }}</span>
-        <span class="elapsed mono">{{ (elapsed / 1000).toFixed(1) }}s</span>
-      </div>
-      <el-progress :percentage="100" :indeterminate="true" :duration="3" :show-text="false" color="#00b386" />
-      <pre v-if="rawStream" class="raw-stream">{{ rawStream }}</pre>
-      <div v-else class="raw-hint">{{ statusHint }}</div>
-    </section>
+    <!-- Persisted model output remains visible if waiting is stopped or fails. -->
+    <AiJobProgress v-if="running || (generationJob?.progress && generationJob.status !== 'done')" :job="generationJob" :active="running" />
 
     <!-- 结果区 -->
     <section v-if="cases.length || viewingId" v-show="activePanel === 'results'" class="result-card">
@@ -353,6 +341,7 @@ import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { renderMarkdown } from '@/utils/markdown'
 import TaskPicker from '@/components/TaskPicker.vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
+import AiJobProgress from '@/components/AiJobProgress.vue'
 import RequirementReview from '@/components/RequirementReview.vue'
 import '@/styles/workspace-overlays.css'
 
@@ -367,9 +356,8 @@ const ENGINE_META = {
   deepseek: { label: 'DeepSeek', dot: '#3b82f6' },
 }
 const engineMeta = (id) => ENGINE_META[id] || { label: id, dot: '#94a3b8' }
-const PHASES = ['正在拆解需求要点…', '主流程 / 边界 / 异常 / 场景组合 多路并行生成中…', '合并去重、校验脚本…', '评估优先级并成稿…']
 // 前端轮询兜底阈值(告别无限转圈):后端单次生成硬上限 900s=15min,
-// running 超 16min 必是执行卡死;总时长(含排队)超 30min 兜底停等,不武断判失败。
+// 多批次可能超过单次调用上限；前端等待超限仅停止查看，不判定后台失败。
 const RUNNING_TIMEOUT_MS = 16 * 60 * 1000
 const TOTAL_TIMEOUT_MS = 30 * 60 * 1000
 const MODES = [
@@ -430,14 +418,10 @@ const apiLines = computed(() =>
   (apiContract.value.contract || '').split('\n').map((s) => s.trim()).filter(Boolean))
 
 const running = ref(false)
-const rawStream = ref('')
+const generationJob = ref(null)
 const elapsed = ref(0)          // 毫秒(总耗时:从提交开始)
-const phaseIdx = ref(0)
-// 真实任务状态(后端 /ai-jobs/{id} 轮询回传):pending=排队 / running=执行中;queuePos=排队位次
-const jobStatus = ref('')
-const queuePos = ref(0)
 const currentJobId = ref(null)  // 当前 job id,供「取消」调后端释放队列位
-const runningSince = ref(0)     // 进入 running 的时刻(ms),做执行超时判定 + PHASES 动画基准
+const runningSince = ref(0)     // 进入 running 的时刻(ms),做执行超时判定
 const abortReason = ref('')     // 中断原因:'user'(主动取消)/'timeout'(前端兜底停等),区分提示文案
 const cases = ref([])
 const activePanel = ref('config')
@@ -465,22 +449,6 @@ let ctrl = null
 let generationVersion = 0
 
 const adoptedCount = computed(() => cases.value.filter((c) => (c.review_status || (c.adopted ? 'adopted' : 'pending')) === 'adopted').length)
-// 进度文案:真实状态驱动(不再是纯时间假动画)。pending 显示排队位次,running 显示多路生成动态文案。
-const phaseText = computed(() => {
-  if (jobStatus.value === 'pending') {
-    return queuePos.value > 0 ? `排队中 · 前面还有 ${queuePos.value} 个任务` : '即将开始…'
-  }
-  if (jobStatus.value === 'running') {
-    return PHASES[Math.min(phaseIdx.value, PHASES.length - 1)]
-  }
-  return '提交中…'
-})
-// 进度卡辅助说明:随状态给合理预期(替换原「30–60 秒」死文案)
-const statusHint = computed(() => {
-  if (jobStatus.value === 'pending') return '任务已提交，正在排队等待空闲执行槽…'
-  if (jobStatus.value === 'running') return 'AI 正在多路并行生成，通常 1–3 分钟，长需求或高峰期更久，请稍候…'
-  return '正在提交任务…'
-})
 const reqPlaceholder = computed(() => PLACEHOLDERS[inputType.value] || PLACEHOLDERS.text)
 
 onMounted(async () => {
@@ -501,6 +469,7 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
+  generationJob.value = null
   historyVersion++
   historyLoading.value = false
   historyError.value = false
@@ -696,11 +665,8 @@ function generate() {
   acceptanceCoverage.value = null; resultTaskId.value = null; coverageError.value = false
   meta.value = null
   viewingId.value = null
-  rawStream.value = ''
+  generationJob.value = null
   elapsed.value = 0
-  phaseIdx.value = 0
-  jobStatus.value = ''
-  queuePos.value = 0
   currentJobId.value = null
   runningSince.value = 0
   abortReason.value = ''
@@ -709,8 +675,6 @@ function generate() {
   const startedAt = Date.now()
   timer = setInterval(() => {
     elapsed.value = Date.now() - startedAt
-    // PHASES 动画只在进入 running 后推进(排队再久也不该把文案顶到最后一档)
-    if (runningSince.value) phaseIdx.value = Math.floor((Date.now() - runningSince.value) / 12000)
     checkTimeout()
   }, 100)
 
@@ -724,8 +688,7 @@ function generate() {
       // 轮询回传真实状态:排队位次 / 执行中;记录进入 running 的时刻供超时判定
       onTick: (job) => {
         if (version !== generationVersion) return
-        jobStatus.value = job.status || ''
-        queuePos.value = job.queue_position || 0
+        generationJob.value = { ...job, progress: job.progress || generationJob.value?.progress }
         if (job.id) currentJobId.value = job.id
         if (job.status === 'running' && !runningSince.value) runningSince.value = Date.now()
       },
@@ -760,14 +723,14 @@ function generate() {
   )
 }
 
-// 前端超时兜底:running 超 16min(后端单次硬上限 15min,超了必是卡死)或总时长超 30min → 停止等待。
+// 前端等待超限仅停止查看。后台多批次生成可能继续完成。
 // 不武断判「失败」——running 的后端 job 即使前端不看了,worker 仍会跑完落库,故提示去历史查看/重试。
 function checkTimeout() {
   if (!running.value || abortReason.value) return
   const now = Date.now()
   if (runningSince.value && now - runningSince.value > RUNNING_TIMEOUT_MS) {
     abortReason.value = 'timeout'
-    ElMessage.warning({ message: '生成执行已超过 16 分钟仍未完成，疑似卡死。已停止等待——任务可能仍在后台完成，请稍后在「查看历史生成」中查看结果，或重试。', duration: 0, showClose: true })
+    ElMessage.warning({ message: '生成等待已超过 16 分钟，已停止等待。后台可能仍在处理后续批次，已返回的内容保留在页面；可稍后在「查看历史生成」中查看结果。', duration: 0, showClose: true })
     ctrl?.abort()
     return
   }
@@ -782,8 +745,6 @@ function stop() {
   running.value = false
   if (timer) { clearInterval(timer); timer = null }
   ctrl = null
-  jobStatus.value = ''
-  queuePos.value = 0
   const projectId = pid.value
   const version = generationVersion
   if (projectId) listAiTasks(projectId, 20).then((h) => {
@@ -829,7 +790,7 @@ async function onViewHistory(id) {
     acceptanceCoverage.value = coverageResult.status === 'fulfilled' ? coverageResult.value : null
     coverageError.value = coverageResult.status === 'rejected'
     meta.value = h ? { case_count: h.case_count, duration_ms: h.duration_ms, cost_usd: h.cost_usd, output_tokens: h.output_tokens } : null
-    rawStream.value = ''
+    generationJob.value = null
   } catch {
     if (version === historyVersion) historyError.value = true
   } finally {
@@ -882,7 +843,7 @@ function fmtTime(s) {
 
 .result-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
 .result-toolbar :deep(.el-select) { max-width:100%; }
-.input-card, .result-card, .stream-card { margin-top:16px; }
+.input-card, .result-card { margin-top:16px; }
 .case-title { padding:0; border:0; background:none; color:var(--el-color-primary); font:inherit; text-align:left; cursor:pointer; overflow-wrap:anywhere; }
 .detail-title { font-size:18px; overflow-wrap:anywhere; }
 .generation-detail { font-family:system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--el-text-color-primary); }
@@ -1012,38 +973,6 @@ function fmtTime(s) {
 .md-body :deep(hr) { border: none; border-top: 1px solid #e4e7ed; margin: 12px 0; }
 .actions { margin-top: 14px; display: flex; gap: 12px; }
 .btn-icon { margin-right: 4px; }
-
-/* 生成过程 */
-.stream-card :deep(.el-card__body) { padding: 16px 20px; }
-.running-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.running-text { font-size: 14px; color: #303133; flex: 1; }
-.elapsed { font-size: 13px; color: #00926e; }
-.pulse-dot {
-  width: 10px; height: 10px; border-radius: 50%; background: #00b386;
-  box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.6); animation: pulse 1.4s infinite;
-}
-/* 排队态:琥珀色脉冲,与「执行中」绿色一眼区分 */
-.pulse-dot.queued {
-  background: #e6a23c;
-  box-shadow: 0 0 0 0 rgba(230, 162, 60, 0.6); animation: pulse-queued 1.4s infinite;
-}
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.5); }
-  70% { box-shadow: 0 0 0 10px rgba(0, 179, 134, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(0, 179, 134, 0); }
-}
-@keyframes pulse-queued {
-  0% { box-shadow: 0 0 0 0 rgba(230, 162, 60, 0.5); }
-  70% { box-shadow: 0 0 0 10px rgba(230, 162, 60, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(230, 162, 60, 0); }
-}
-.raw-stream {
-  margin-top: 12px; max-height: 220px; overflow: auto;
-  background: #0f1c2e; color: #7fe7c4; border-radius: 6px; padding: 12px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;
-  white-space: pre-wrap; word-break: break-all;
-}
-.raw-hint { margin-top: 10px; font-size: 13px; color: #909399; }
 
 /* 战绩统计条 */
 .stat-strip {
