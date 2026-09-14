@@ -19,7 +19,8 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
     const partialAnalysis = { id: 'analysis', title: '需求理解与验收规则', status: 'running', text: '{"summary":"删除确认规则已识别，正在整理验收条件' };
     const analysisJob = () => analysisStage === 0 ? { id: 20, status: 'pending', queue_position: 2 }
       : analysisStage === 3 ? { id: 20, status: 'done', result: { analysis_id: 10 } }
-      : analysisStage === 4 ? { id: 20, status: 'failed', error: '模型返回超时', progress: snapshot('analyzing', [partialAnalysis]) }
+      : analysisStage === 4 ? { id: 20, status: 'failed', error: '模型返回超时', progress: snapshot('analyzing', [{ ...partialAnalysis, status: 'failed' },
+          { id: 'scenes-v2-pending', title: '具体场景 2/5', status: 'paused', text: '', note: '前序批次未完成，本批尚未调用模型；继续处理时恢复' }]) }
       : { id: 20, status: 'running', progress: snapshot(analysisStage === 1 ? 'reading_images' : 'analyzing',
           analysisStage === 1 ? [imageUnit] : [{ ...imageUnit, status: 'done' }, partialAnalysis]) };
     page.on('pageerror', error => errors.push(error.message));
@@ -176,6 +177,11 @@ const analysis = { id: 10, project_id: 1, task_id: 2, revision: 1, job_id: 20, s
     await page.getByRole('button', { name: '重新分析需求', exact: true }).click();
     await live.getByText('生成失败 · 已保留返回内容', { exact: true }).waitFor();
     assert.match(await live.locator('.live-output').innerText(), /正在整理验收条件/);
+    await live.locator('.el-select').click();
+    await page.getByRole('option', { name: '尚未开始 · 具体场景 2/5', exact: true }).click();
+    await live.getByText('前序批次未完成，本批尚未调用模型；继续处理时恢复', { exact: true }).waitFor();
+    await live.locator('.el-select').click();
+    await page.getByRole('option', { name: '失败 · 需求理解与验收规则', exact: true }).click();
     assert(await generate.isDisabled());
     await page.getByRole('button', { name: '继续处理失败部分', exact: true }).waitFor();
     await page.locator('.recovery-info').scrollIntoViewIfNeeded();

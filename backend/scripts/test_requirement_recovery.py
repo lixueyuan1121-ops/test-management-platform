@@ -15,7 +15,7 @@ from app.models import AiJob, RequirementAnalysis, RequirementAnalysisPart, Requ
 from app.services import ai_jobs, requirement_analysis as review, claude_runner
 from app.services.ai_progress import JobProgress
 from app.services.requirement_output import OutputError, parse_complete_object
-from app.services.requirement_pipeline import Parts, build_draft, exact_reference
+from app.services.requirement_pipeline import Parts, build_draft, exact_reference, legacy_scene_request
 from app.services.generators import deepseek_runner
 from scripts import test_requirement_analysis as fixtures
 
@@ -34,6 +34,8 @@ class FormatTests(unittest.TestCase):
                     interpretation['rules'].append(rule)
                 class CapacityParts:
                     progress = Mock()
+                    provider = 'claude'
+                    def read_checkpoint(self, *args): return None
                     def run(self, key, title, engine, prompt, schema, validate, **kwargs):
                         if key == 'analysis':
                             return validate(interpretation)
@@ -41,11 +43,10 @@ class FormatTests(unittest.TestCase):
                         by_id = {c['id']: r['id'] for r in data['rules'] for c in r['criteria']}
                         limit = schema['properties']['scenarios']['maxItems']
                         ids = data['assigned_criteria']
-                        scenes = [{'id':f'S{i}', 'rule_id':by_id[ids[i % len(ids)]],
-                            'criterion_ids':[ids[i % len(ids)]], 'when':'合成操作', 'then':'观察合成条件'}
+                        scenes = [{'criterion_id':ids[i % len(ids)], 'when':'合成操作', 'then':'观察合成条件'}
                             for i in range(limit)]
                         # A non-native provider must obey the same batch limit.
-                        with self_test.assertRaises(OutputError):
+                        with self_test.assertRaises(ValueError):
                             validate({'scenarios':scenes + [scenes[0]]})
                         return validate({'scenarios':scenes})
                 self_test = self
@@ -146,37 +147,41 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.parts.run('probe','阶段',Offline(),'same',{},lambda x:x),{'ok':True})
 
     def test_failed_scene_batch_resume_preserves_rules_and_other_batches(self):
-        interpretation=fixtures.draft(); interpretation['scenarios']=[]
-        interpretation['rules'][0]['criteria']=[{'id':f'R1-C{i}','text':f'合成验收条件 {i}'} for i in range(1,14)]
+        interpretation=fixtures.draft(); interpretation.update(scenarios=[], questions=[])
+        template=interpretation['rules'][0]
+        interpretation['rules']=[{**copy.deepcopy(template), 'id':f'R{r}', 'criteria':[
+            {'id':f'C{i}', 'text':f'合成验收条件 {i}'} for i in range(r*13+1,r*13+14)]} for r in range(4)]
         counts=Counter()
         class Engine:
             fail=True
             def stream_generate(inner,*a,**kw):
+                self.assertNotIn('timeout', kw, 'respect the configured engine deadline')
                 prompt=kw['prompt_builder']()
                 if not prompt.startswith('[需求具体场景]'):
                     counts['rules']+=1; obj=interpretation
                 else:
                     before=prompt.split('\n响应结构(JSON Schema)：')[0]
                     data=json.loads(before.split('\n')[-1])
-                    ids=data['assigned_criteria']; key=ids[0]; counts[key]+=1
-                    if inner.fail and 'R1-C7' in ids:
+                    ids=data['assigned_criteria']; key=tuple(ids); counts[key]+=1
+                    if inner.fail and 'C25' in ids:
                         yield {'type':'result','text':'{"scenarios":['}; return
-                    obj={'scenarios':[{'id':f'S{i}','rule_id':'R1','criterion_ids':[cid], 'actor':'测试者',
-                                      'given':'已有记录','when':'点击','then':f'观察条件 {cid}','kind':'normal','reviewed':True} for i,cid in enumerate(ids)]}
+                    obj={'scenarios':[{'criterion_id':cid, 'actor':'测试者',
+                                      'given':'已有记录','when':'点击','then':f'观察条件 {cid}'} for cid in ids]}
                 yield {'type':'result','text':json.dumps(obj,ensure_ascii=False)}
         engine=Engine()
         with self.assertRaises(OutputError):
             build_draft(self.parts,engine,'保护目录删除必须确认',[],{})
         with self.factory() as db:
             self.assertIsNone(db.get(RequirementAnalysis,1).draft)
-            self.assertTrue(db.query(RequirementAnalysisPart).filter_by(part_key='analysis',status='done').count())
+            self.assertEqual(db.query(RequirementAnalysisPart).filter_by(status='done').count(),3)
         first=counts.copy(); engine.fail=False
         draft=build_draft(self.parts,engine,'保护目录删除必须确认',[],{})
         self.assertEqual(counts['rules'],1)
-        self.assertEqual(counts['R1-C1'],first['R1-C1'])
-        self.assertEqual(counts['R1-C13'],first['R1-C13'])
+        for key, calls in first.items():
+            if key != 'rules' and 'C25' not in key:
+                self.assertEqual(counts[key], calls)
         self.assertEqual(sum(counts.values())-sum(first.values()),1)
-        self.assertEqual({cid for s in draft.scenarios for cid in s.criterion_ids}, {f'R1-C{i}' for i in range(1,14)})
+        self.assertEqual({cid for s in draft.scenarios for cid in s.criterion_ids}, {f'C{i}' for i in range(1,53)})
         self.assertTrue(all(not s.reviewed for s in draft.scenarios))
         self.assertTrue(all(r.status=='pending' for r in draft.rules))
 
@@ -199,13 +204,13 @@ class PipelineTests(unittest.TestCase):
             calls=0
             def stream_generate(inner,*a,**kw):
                 inner.calls+=1
-                obj={'scenarios':[original]} if kw['prompt_builder']().startswith('[需求具体场景]') else interpretation
+                obj={'scenarios':[{**{k: original[k] for k in ('actor','given','when','then')}, 'criterion_id':cid} for cid in original['criterion_ids']]} if kw['prompt_builder']().startswith('[需求具体场景]') else interpretation
                 yield {'type':'result','text':json.dumps(obj)}
         engine=Engine()
         result=build_draft(self.parts,engine,'保护目录删除必须确认',[],{})
         self.assertEqual(engine.calls,2, 'reference formatting must not trigger another model call')
         scene=result.scenarios[0]
-        self.assertEqual(scene.criterion_ids,['R1C1','R1C2'])
+        self.assertEqual({cid for scene in result.scenarios for cid in scene.criterion_ids},{'R1C1','R1C2'})
         self.assertEqual((scene.given,scene.when,scene.then),(original['given'],original['when'],original['then']))
 
     def test_superseded_worker_cannot_write_checkpoints(self):

@@ -807,7 +807,11 @@ def supports_structured_output():
     return True
 
 
-def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None, output_schema: dict | None = None) -> Iterator[dict]:
+def supports_effort():
+    return True
+
+
+def stream_generate(requirement: str, project_id: int | None = None, timeout: int | None = None, pages: list[str] | None = None, prompt_builder=None, system_prompt: str | None = None, images: list[dict] | None = None, output_schema: dict | None = None, effort: str | None = None) -> Iterator[dict]:
     """流式生成测试点。yield 事件 dict：delta / result / error。
 
     调用方（api 层）负责累积文本、落库、转 SSE。生成器自然结束即代表流结束。
@@ -821,6 +825,10 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
         return
     try:
         child_env = _claude_env()
+        if effort:
+            if effort not in {'low', 'medium', 'high', 'xhigh', 'max', 'auto'}:
+                raise ValueError('Claude 推理强度配置无效')
+            child_env['CLAUDE_CODE_EFFORT_LEVEL'] = effort
     except ValueError as exc:
         yield {"type": "error", "msg": str(exc)}
         return

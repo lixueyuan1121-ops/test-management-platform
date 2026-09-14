@@ -1,4 +1,5 @@
 from urllib.parse import quote
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,6 +44,9 @@ class Settings(BaseSettings):
     CLAUDE_PROXY_URL: str = ""      # Optional HTTP(S) proxy for Claude subprocesses only
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
+    # Only formatting existing criteria into scenes; full requirement analysis keeps the CLI default.
+    # Empty string inherits the configured Claude effort. This never changes the model itself.
+    AI_REQUIREMENT_SCENE_EFFORT: Literal['', 'low', 'medium', 'high', 'xhigh', 'max', 'auto'] = 'low'
     # 全局引擎并发上限(信号量)——控成本/机器负载;超限改为排队等待(非拒绝)。
     # 分片并行生成会同时占多个槽(一个 job 最多 AI_SHARD_CONCURRENCY 个),故须 ≥ 分片数,
     # 否则分片会被这道闸重新串行化、提效归零。

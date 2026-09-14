@@ -41,7 +41,7 @@ const preview = computed(() => {
   if (!unit?.text) return ''
   return unit.truncated ? unit.text : readableAiPreview(unit.text) || unit.text
 })
-const statusLabel = unit => ({ pending: '等待', running: unit.chars || unit.text ? '返回中' : '处理中', done: '已完成', warning: '需核对', failed: '失败' }[unit.status] || unit.status)
+const statusLabel = unit => ({ pending: '等待', paused: '尚未开始', running: unit.chars || unit.text ? '返回中' : '处理中', done: '已完成', warning: '需核对', failed: '失败' }[unit.status] || unit.status)
 const failedCount = computed(() => units.value.filter(u => ['failed', 'warning'].includes(u.status)).length)
 const heading = computed(() => {
   const status = props.job?.status
@@ -60,7 +60,8 @@ const elapsed = computed(() => {
 const idleSeconds = computed(() => Math.max(0, Math.floor((now.value - (progress.value?.last_output_at || now.value)) / 1000)))
 function chooseLatest() {
   const running = units.value.filter(u => u.status === 'running')
-  selectedId.value = (running.find(u => u.text) || running[0] || units.value.at(-1))?.id || ''
+  const failed = units.value.filter(u => u.status === 'failed' && u.text)
+  selectedId.value = (running.find(u => u.text) || running[0] || failed.at(-1) || units.value.filter(u => u.text).at(-1) || units.value.at(-1))?.id || ''
 }
 function onScroll() {
   const el = output.value

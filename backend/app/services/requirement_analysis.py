@@ -28,7 +28,7 @@ def case_hash(case):
     return source_hash(encode([case.title, case.steps, case.expected, case.precondition]))
 
 
-def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, output_schema=None):
+def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, output_schema=None, effort=None):
     from app.services.requirement_output import OutputError
     raw, completed = "", False
     kwargs = {"prompt_builder": lambda: prompt,
@@ -39,12 +39,18 @@ def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, outp
         kwargs["timeout"] = timeout
     if output_schema and getattr(engine, "supports_structured_output", lambda: False)():
         kwargs["output_schema"] = output_schema
+    if effort and getattr(engine, "supports_effort", lambda: False)():
+        kwargs["effort"] = effort
     for event in engine.stream_generate("", **kwargs):
         kind = event.get("type")
         if kind == "delta":
             raw = ("" if event.get("reset") else raw) + (event.get("text") or "")
         elif kind == "error" or event.get("is_error"):
-            raise OutputError("provider_error", event.get("msg") or event.get("error") or "AI 分析失败", raw)
+            message = str(event.get("msg") or event.get("error") or "AI 分析失败")
+            if any(marker in message.lower() for marker in ('empty or malformed response', 'streamnoeventserror', 'no_events')):
+                raise OutputError("gateway_error", "模型网关未返回有效响应（空响应或无流式事件），请检查模型服务后继续处理", raw)
+            code = "provider_timeout" if any(marker in message.lower() for marker in ('超时', 'timed out', 'timeout')) else "provider_error"
+            raise OutputError(code, message, raw)
         elif kind == "result":
             raw = event.get("text") or raw
             if event.get("finish_reason") == "length":

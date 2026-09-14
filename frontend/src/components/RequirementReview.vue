@@ -27,7 +27,7 @@
     </div>
     <el-dialog v-model="savedOutputOpen" title="已保存的模型返回 · 未确认草稿" width="min(900px, 94vw)">
       <el-select v-model="savedOutputId" fit-input-width style="width:100%" aria-label="选择保存的分析输出" @change="loadSavedOutput">
-        <el-option v-for="item in savedOutputs" :key="item.id" :value="item.id" :label="`${outputLabel(item.part_key)} · ${item.status === 'done' ? '已保存' : item.error_code || '未完成'} · ${item.chars} 字`" />
+        <el-option v-for="item in savedOutputs" :key="item.id" :value="item.id" :label="`${outputLabel(item.part_key, item.id)} · ${item.status === 'done' ? '已保存' : item.error_code || '未完成'} · ${item.chars} 字`" />
       </el-select>
       <p v-if="savedOutputError" class="blockers">{{ savedOutputError }}</p>
       <pre v-loading="savedOutputLoading" class="saved-output">{{ savedOutputText || '此阶段尚未收到正文' }}</pre>
@@ -139,7 +139,7 @@ const savedOutputs = computed(() => analysis.value?.saved_outputs || [])
 const canRetry = computed(() => !working.value && !draft.value && analysis.value && (analysis.value.can_retry || ['failed', 'cancelled'].includes(analysis.value.status)))
 const reusableImages = computed(() => visuals.value.filter(v => ['read', 'uncertain'].includes(v.status) && v.text).length)
 const completedParts = computed(() => new Set(savedOutputs.value.filter(p => p.status === 'done').map(p => p.part_key)).size)
-const outputLabel = key => key === 'analysis' ? '需求规则' : key?.startsWith('scenes-') ? `具体场景 ${key.slice(7)}` : key
+const outputLabel = (key, id) => key === 'analysis' ? '需求规则' : key?.startsWith('scenes-v2-') ? `具体场景 · 返回记录 #${id}` : key?.startsWith('scenes-') ? `具体场景 ${key.slice(7)}` : key
 const working = ref(false), saving = ref(false), dirty = ref(false), error = ref(''), baselineId = ref(null)
 const scopeReviewed = ref(false), confirmationNote = ref(''), tab = ref('scenarios'), editingRule = ref(null)
 const imageOpen = ref(false), imageLoading = ref(false), imageUrl = ref(''), imageReading = ref(null)
