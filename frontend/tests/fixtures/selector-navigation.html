@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<div id="app"></div>
+<script type="module">
+import { createApp, h } from 'vue'
+import { createPinia } from 'pinia'
+import { createRouter, createMemoryHistory, RouterView, useRoute } from 'vue-router'
+import ElementPlus from 'element-plus'
+import 'element-plus/dist/index.css'
+import CaseLibrary from '/src/views/CaseLibrary.vue'
+
+// 使用真实用例库和路由跳转，在目标页读回接收到的参数。
+const Destination = {
+  setup() {
+    const route = useRoute()
+    return () => h('pre', { 'data-testid': 'selector-query' }, JSON.stringify(route.query))
+  },
+}
+const router = createRouter({ history: createMemoryHistory(), routes: [
+  { path: '/', component: CaseLibrary },
+  { path: '/selectors', name: 'selectors', component: Destination },
+] })
+await router.push('/')
+await router.isReady()
+createApp({ render: () => h(RouterView) }).use(createPinia()).use(router).use(ElementPlus).mount('#app')
+</script>
+</html>

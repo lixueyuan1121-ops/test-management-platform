@@ -429,7 +429,7 @@ async function onReviewChange(row, val) {
 // steps/title 作为语义匹配上下文（中文文案命中元素可见文字，key 名命中英文属性）。见 SelectorAdmin fixKeys 分支。
 async function locateMissingKeys(row) {
   const detail = await getTestcase(row.id)
-  const { contexts } = collectMissingKeys([detail], [])
+  const { contexts, hints } = collectMissingKeys([detail], [])
   router.push({
     name: 'selectors',
     query: {
@@ -439,7 +439,7 @@ async function locateMissingKeys(row) {
       case_ids: String(row.id),
       fix_keys: (row.selector_fix_keys || []).join(','),
       key_contexts: JSON.stringify(contexts),
-        key_hints: JSON.stringify(hints),
+      key_hints: JSON.stringify(hints),
       ctx: `${row.title || ''} ${row.steps || ''}`.trim().slice(0, 200),
     },
   })
@@ -489,6 +489,7 @@ async function bulkFixSelectors() {
         case_ids: fixCases.map(c => c.id).join(','),
         fix_keys: keys.join(','),
         key_contexts: JSON.stringify(contexts),
+        key_hints: JSON.stringify(hints),
         ctx: ctx.slice(0, 200),
         bulk: '1',   // 标记批量模式:SelectorAdmin 展示待补清单 + 批量匹配/建 key
       },
