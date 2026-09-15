@@ -665,7 +665,7 @@ const groupedRows = computed(() => {
 const canImport = computed(() => !!pid.value && auth.roleIn(pid.value) === 'admin')
 
 onMounted(async () => {
-  try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
+  try { projects.value = (await app.fetchProjects()).filter(p => ['admin', 'member'].includes(auth.roleIn(p.id))) } catch { projects.value = [] }
   try { devices.value = await listMyDevices() } catch { devices.value = [] }
   // 从用例库「定位缺失 key」带 query 跳来：预填项目/页面/缺失 key + 语义上下文，并自动探测。
   const q = route.query

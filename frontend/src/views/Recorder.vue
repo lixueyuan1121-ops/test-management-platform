@@ -107,6 +107,7 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
+import { useAuthStore } from '@/store/auth'
 import { listMyDevices, listTasks, startRecord, getRecord, stopRecord, saveRecordAsCase } from '@/api'
 import { pickDefaultProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -116,6 +117,7 @@ const ACT_TYPE = { click: 'primary', fill: 'warning', assert: 'success' }
 const ACT_LABEL = { click: '点击', fill: '输入', assert: '断言', set_checked: '勾选状态', select_option: '选择选项', press: '按键' }
 
 const app = useAppStore()
+const auth = useAuthStore()
 const projects = ref([])
 const devices = ref([])
 const tasks = ref([])
@@ -164,7 +166,7 @@ function setAssertExpected(row, v) {
 }
 
 onMounted(async () => {
-  try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
+  try { projects.value = (await app.fetchProjects()).filter(p => ['admin', 'member'].includes(auth.roleIn(p.id))) } catch { projects.value = [] }
   try { devices.value = await listMyDevices() } catch { devices.value = [] }
   pid.value = pickDefaultProjectId(projects.value)
   if (devices.value.length) runner.value = devices.value[0].runner_id

@@ -34,15 +34,15 @@ export const navigationGroups = [
   ] },
   { id: 'settings', label: '系统管理', icon: 'Setting', items: [
     entry('/projects', '项目管理', 'Files', { admin: true }), entry('/users', '用户管理', 'User', { admin: true }),
-    entry('/selectors', '选择器管理', 'Aim', { admin: true }), entry('/api-env', 'API 环境', 'Connection', { admin: true }),
-    entry('/recorder', '录制脚本', 'VideoCamera', { admin: true }),
+    entry('/selectors', '选择器管理', 'Aim', { automationTools: true }), entry('/api-env', 'API 环境', 'Connection', { admin: true }),
+    entry('/recorder', '录制脚本', 'VideoCamera', { automationTools: true }),
     entry('/tool-admin', '工具配置', 'Grid', { admin: true }),
   ] },
 ]
 
-export function visibleNavigation({ admin = false, reports = false, search = '' } = {}) {
+export function visibleNavigation({ admin = false, reports = false, automationTools = false, search = '' } = {}) {
   const term = search.trim().toLocaleLowerCase()
   return navigationGroups.map(group => ({ ...group, items: group.items.filter(item =>
-    (!item.admin || admin) && (!item.reports || reports) &&
+    (!item.admin || admin) && (!item.automationTools || admin || automationTools) && (!item.reports || reports) &&
     (!term || `${group.label} ${item.label}`.toLocaleLowerCase().includes(term))) })).filter(group => group.items.length)
 }

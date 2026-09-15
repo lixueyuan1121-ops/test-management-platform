@@ -11,6 +11,8 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isPlatformAdmin: (s) => !!s.user?.is_platform_admin,
     isLoggedIn: (s) => !!s.token,
+    canUseAutomationTools: (s) => !!s.user && (s.user.is_platform_admin ||
+      s.memberships.some(m => ['admin', 'member'].includes(m.role))),
     // 当前选中项目的角色
     roleIn: (s) => (projectId) => {
       if (!s.user) return null

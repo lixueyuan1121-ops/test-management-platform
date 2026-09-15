@@ -1,4 +1,4 @@
-const { chromium } = require('../../tools/qalab-runner/eval/node_modules/playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '../../tools/qalab-runner/eval/node_modules/playwright');
 const assert = require('node:assert/strict');
 (async () => {
   const browser = await chromium.launch({ headless: true });
@@ -23,10 +23,10 @@ const assert = require('node:assert/strict');
       await route.fulfill({ json: { code: 0, data } });
     });
     const base = process.env.UI_BASE_URL || 'http://127.0.0.1:5189';
-    for (const path of ['projects', 'users', 'selectors', 'api-env', 'tool-admin', 'fail-clusters', 'rts']) {
+    for (const path of ['projects', 'users', 'api-env', 'tool-admin', 'fail-clusters', 'rts']) {
       await page.goto(`${base}/${path}`);
       await page.waitForURL('**/dashboard');
-      assert.equal(await page.getByRole('menuitem', { name: '系统管理', exact: true }).count(), 0);
+      assert.equal(await page.getByRole('menuitem', { name: '用户管理', exact: true }).count(), 0);
     }
     for (const memberRole of ['member', 'guest']) {
       role = memberRole;
@@ -92,6 +92,6 @@ const assert = require('node:assert/strict');
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(writes.at(-1).path, '/api/projects/1');
     assert.deepEqual(errors, []);
-    console.log('PASS seven admin route guards, member/guest read-only controls, project-admin role edit, failure retention, remove cancellation and admin user/project writes');
+    console.log('PASS six admin route guards, member/guest read-only controls, project-admin role edit, failure retention, remove cancellation and admin user/project writes');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exit(1); });
