@@ -75,13 +75,27 @@
             </el-tooltip>
             <el-tooltip v-if="row.selector_fix" :content="row.kind_reason" placement="top">
               <el-tag type="warning" size="small" effect="plain" class="sel-fix-tag">
-                补选择器可自动化<template v-if="row.selector_fix_keys && row.selector_fix_keys.length"><br>补: {{ row.selector_fix_keys.join(', ') }}</template>
+                补齐元素后可自动化
               </el-tag>
+            </el-tooltip>
+            <el-tooltip
+              v-if="row.selector_fix && row.selector_fix_keys && row.selector_fix_keys.length"
+              effect="light" placement="right" :show-after="150" :hide-after="100"
+              popper-class="missing-selector-tooltip" @before-show="loadMissingTargets(row)"
+            >
+              <template #content>
+                <div style="max-width:min(560px,75vw);max-height:55vh;overflow:auto">
+                  <div v-for="key in row.selector_fix_keys" :key="key" style="padding:6px 0">
+                    <SelectorTargetNotes :selector-key="key" :notes="row._targetNotes?.[key] || [{ title: row._targetError ? '说明加载失败，请移开后重新悬浮重试' : '正在读取对应的操作步骤…' }]" />
+                  </div>
+                </div>
+              </template>
+              <el-button link type="primary" size="small" style="max-width:100%;height:auto;white-space:normal;overflow-wrap:anywhere">{{ row.selector_fix_keys.join(', ') }}</el-button>
             </el-tooltip>
             <el-button
               v-if="row.selector_fix && row.selector_fix_keys && row.selector_fix_keys.length"
               link type="primary" size="small" class="locate-key-btn" @click="locateMissingKeys(row)"
-            >定位缺失 key</el-button>
+            >去补充元素</el-button>
           </template>
         </el-table-column>
         <el-table-column label="页面" width="120" align="center">
@@ -235,6 +249,8 @@ import { useAppStore } from '@/store/app'
 import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
+import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
+import { describeSelectorTarget } from '@/utils/selector-target-description'
 import TaskPicker from '@/components/TaskPicker.vue'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
@@ -377,6 +393,7 @@ async function reload() {
 }
 
 async function load() {
+  const version = ++listLoadVersion
   if (!pid.value) return
   loading.value = true
   try {
@@ -392,9 +409,25 @@ async function load() {
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
     })
+    if (version !== listLoadVersion) return
     rows.value = items || []
     total.value = t || 0
-  } finally { loading.value = false }
+  } finally { if (version === listLoadVersion) loading.value = false }
+}
+
+let listLoadVersion = 0
+async function loadMissingTargets(row) {
+  if (row._targetLoading || row._targetNotes) return
+  row._targetLoading = true
+  row._targetError = false
+  try {
+    const detail = await getTestcase(row.id)
+    row._targetNotes = Object.fromEntries((row.selector_fix_keys || []).map(key => {
+      const notes = describeSelectorTarget(key, detail.script)
+      return [key, notes.length ? notes : [{ title: '脚本未说明具体元素，请补充对应操作描述' }]]
+    }))
+  } catch { row._targetError = true }
+  finally { row._targetLoading = false }
 }
 
 function fmtTime(s) {

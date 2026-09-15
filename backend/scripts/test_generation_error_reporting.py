@@ -19,7 +19,7 @@ class GenerationErrorTests(unittest.TestCase):
         with patch.dict("os.environ", {"https_proxy": "socks5://user:secret@localhost:1080"}, clear=True), patch.object(settings, "CLAUDE_PROXY_URL", ""):
             with self.assertRaises(ValueError) as exc:
                 _claude_env()
-            self.assertIn("https_proxy", str(exc.exception))
+            self.assertIn("https_proxy", str(exc.exception).lower())
             self.assertNotIn("secret", str(exc.exception))
 
     def test_override_is_scoped_and_preserves_no_proxy(self):
@@ -55,7 +55,7 @@ class GenerationErrorTests(unittest.TestCase):
         engine.parse_testcases.assert_not_called()
         self.assertEqual(result["cases"], [])
         self.assertIn("upstream unavailable", result["errors"][0])
-        self.assertIn("upstream unavailable", result["raw"])
+        self.assertEqual(result["raw"], "")
 
     def test_single_generation_preserves_failure(self):
         engine = Mock()
@@ -63,7 +63,7 @@ class GenerationErrorTests(unittest.TestCase):
             {"type": "result", "is_error": True, "text": "denied"}])
         raw, meta, err = _gen_once(engine, "req", None, None)
         self.assertEqual(err, "denied")
-        self.assertEqual(raw, "denied")
+        self.assertEqual(raw, "")
 
     def test_parser_exception_is_contained_in_shard(self):
         engine = Mock()

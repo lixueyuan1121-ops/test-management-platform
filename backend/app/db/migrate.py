@@ -150,7 +150,7 @@ def ensure_testcase_columns() -> None:
 def migrate_task_status() -> None:
     """任务状态枚举改版：doing/done → testing/online 语义映射。
 
-    旧枚举 pending/doing/done → 新枚举 pending/testing/blocked/online/closed。
+    旧枚举 pending/doing/done → 新枚举 pending/testing/ready_online/blocked/online/closed。
     映射：doing→testing、done→online、pending 不变。
     注意：closed 现在是**独立状态**（已关闭：不再跟进/取消/合并），不再归并到 online。
     - MySQL：ENUM 列须先放宽定义（含新旧全部值）再 UPDATE，最后收紧为新定义。
@@ -165,7 +165,7 @@ def migrate_task_status() -> None:
             # 放宽为新旧并集，避免 UPDATE 时旧值/新值任一不在定义内而报错
             conn.execute(text(
                 "ALTER TABLE task MODIFY COLUMN `status` "
-                "ENUM('pending','doing','done','closed','testing','blocked','online') "
+                "ENUM('pending','doing','done','closed','testing','ready_online','blocked','online') "
                 "NOT NULL DEFAULT 'pending'"
             ))
         conn.execute(text("UPDATE task SET status='testing' WHERE status='doing'"))
@@ -174,7 +174,7 @@ def migrate_task_status() -> None:
             # 收紧为最终新定义（含 closed 独立态）
             conn.execute(text(
                 "ALTER TABLE task MODIFY COLUMN `status` "
-                "ENUM('pending','testing','blocked','online','closed') "
+                "ENUM('pending','testing','ready_online','blocked','online','closed') "
                 "NOT NULL DEFAULT 'pending'"
             ))
 

@@ -25,11 +25,13 @@ class GenerationTraceTests(unittest.TestCase):
     def test_sensitive_payloads_are_not_written(self):
         records=[]
         with patch.object(trace.logger, 'info', side_effect=records.append):
-            trace.emit('test',job_id=17,prompt='secret prompt',text='private model output',api_key='secret-key',url='https://secret',output_chars=42)
+            trace.emit('test',job_id=17,prompt='secret prompt',text='private model output',api_key='secret-key',url='https://secret',output_chars=42,effort='medium',structured_output=False)
         line=records[0]
         self.assertNotIn('secret',line)
         self.assertNotIn('private',line)
         self.assertEqual(json.loads(line)['output_chars'],42)
+        self.assertEqual(json.loads(line)['effort'],'medium')
+        self.assertFalse(json.loads(line)['structured_output'])
 
     def test_timeout_result_is_not_case_text(self):
         updates=[]

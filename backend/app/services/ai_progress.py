@@ -51,10 +51,16 @@ class JobProgress:
         with self.lock:
             self._save(force=True)
 
-    def unit(self, key, title=None, status=None, raw=None, note=None):
+    def unit(self, key, title=None, status=None, raw=None, note=None, attempt=None):
         with self.lock:
             unit = self.units.setdefault(str(key), {"id": str(key), "title": (title or str(key))[:120],
-                                                     "status": "pending", "text": "", "chars": 0})
+                                                     "status": "pending", "text": "", "chars": 0,
+                                                     "received_chars": 0, "attempt_chars": 0, "attempt": 1})
+            changed_attempt = attempt is not None and attempt > unit["attempt"]
+            if changed_attempt:
+                unit["attempt"] = attempt
+                unit["attempt_chars"] = 0
+                trace.emit("unit_retry", job_id=self.job_id, batch_id=str(key), attempt=attempt)
             changed_status = status and status != unit["status"]
             first_text = raw and not unit["chars"]
             if status:
@@ -62,13 +68,17 @@ class JobProgress:
             if note is not None:
                 unit["note"] = note[:500]
             if raw is not None:
+                # A final snapshot/normalization can replace text with a shorter version.
+                # Count each attempt's high-water mark separately from current preview length.
+                unit["received_chars"] += max(0, len(raw) - unit["attempt_chars"])
+                unit["attempt_chars"] = max(unit["attempt_chars"], len(raw))
                 unit["chars"] = len(raw)
                 unit["text"] = _tail(raw, 12000)
                 unit["truncated"] = len(unit["text"]) < len(raw)
                 self.last_output_at = int(time.time() * 1000)
             if changed_status or first_text:
                 trace.emit("unit_progress", job_id=self.job_id, batch_id=str(key), stage=self.stage, status=unit["status"], output_chars=unit["chars"], elapsed_ms=int(time.time()*1000)-self.started_at)
-            self._save(force=bool(changed_status or first_text))
+            self._save(force=bool(changed_status or first_text or changed_attempt))
 
     def callback(self, key):
         # raw=None is a worker heartbeat, not invented model output.
@@ -83,7 +93,8 @@ class JobProgress:
         snapshot = {"stage": self.stage, "started_at": self.started_at,
                     "updated_at": int(time.time() * 1000), "last_output_at": self.last_output_at,
                     "total": len(units), "completed": sum(u["status"] in ("done", "failed", "warning") for u in units),
-                    "chars": sum(u["chars"] for u in units)}
+                    "chars": sum(u["chars"] for u in units),
+                    "received_chars": sum(u["received_chars"] for u in units)}
         # Metadata + escaped text must fit MySQL 5.6 TEXT (65535 bytes).
         # Preserve all counts, and prefer active/recent output in the preview.
         ranked = sorted(enumerate(units), key=lambda pair: (pair[1]["status"] == "running", pair[0]), reverse=True)[:100]

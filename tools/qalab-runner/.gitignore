@@ -4,3 +4,4 @@ node_modules/
 evidence/
 *.log
 *.png
+.record-outbox/

@@ -1,0 +1,10 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><div id="app"></div><script type="module">
+import {createApp,h} from 'vue';import {createPinia} from 'pinia';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';
+import {createRouter,createMemoryHistory,RouterView} from 'vue-router';
+import {useAuthStore} from '/src/store/auth.js';
+import CaseLibrary from '/src/views/CaseLibrary.vue';import SelectorAdmin from '/src/views/SelectorAdmin.vue';
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CaseLibrary},{path:'/selectors',name:'selectors',component:SelectorAdmin}]});
+window.fixtureRouter=router;
+const pinia=createPinia();const auth=useAuthStore(pinia);auth.user={id:1};auth.memberships=[{project_id:2,role:'member'}];
+createApp({render:()=>h(RouterView)}).use(pinia).use(ElementPlus).use(router).mount('#app');
+</script></html>

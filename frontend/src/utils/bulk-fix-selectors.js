@@ -1,6 +1,7 @@
 // 批量补选择器纯逻辑(无 Vue/DOM 依赖,便于单测)。
 // 服务于用例库「批量补选择器」:汇总选中待补用例缺的 key、去重剔重复,
 // 以及探测后把探测元素按语义批量配对到各待补 key。候选来自真实探测,不臆造 CSS。
+import { describeSelectorTarget } from "./selector-target-description.js";
 import { scoreElement, tokenize, hasSpecificMatch } from "./selector-match.js";
 
 // 汇总选中用例里「选择器待补」的缺失 key。
@@ -28,7 +29,7 @@ export function collectMissingKeys(cases, registered) {
       const matchingSteps = (Array.isArray(script) ? script : []).filter(s => s?.target?.key === k);
       const expectedTexts = matchingSteps.filter(s => s.action === 'assert_text' && !s.args?.negate && typeof s.args?.expected === 'string')
         .map(s => s.args.expected.trim()).filter(Boolean);
-      hints[k] = { expectedTexts: [...new Set([...(hints[k]?.expectedTexts || []), ...expectedTexts])] };
+      hints[k] = { targets: [...(hints[k]?.targets || []), ...describeSelectorTarget(k, script)].filter((item, index, all) => all.findIndex(other => JSON.stringify(other) === JSON.stringify(item)) === index), expectedTexts: [...new Set([...(hints[k]?.expectedTexts || []), ...expectedTexts])] };
       const localContext = matchingSteps.length ? matchingSteps.map(s => `${s.desc || ''} ${s.args?.expected || ''}`).join(' ') : `${c.title || ''} ${c.steps || ''}`;
       contexts[k] = `${contexts[k] || ''} ${localContext}`.trim().slice(0, 1200);
       if (seen.has(k)) continue;

@@ -2,7 +2,7 @@
   <section class="ai-live-progress" aria-label="AI 实时生成进度">
     <div class="live-heading">
       <strong role="status">{{ heading }}</strong>
-      <span>{{ progress?.started_at ? '已执行' : '已等待' }} {{ elapsed }} · 已返回 {{ progress?.chars || 0 }} 字</span>
+      <span>{{ progress?.started_at ? '已执行' : '已等待' }} {{ elapsed }} · 累计接收 {{ progress?.received_chars ?? progress?.chars ?? 0 }} 字</span>
     </div>
     <p v-if="job?.id" class="live-note">任务编号：#{{ job.id }}（反馈问题时可提供此编号）</p>
     <p v-if="progress?.total" class="live-note">已处理 {{ progress.completed }} / {{ progress.total }} 项<span v-if="failedCount"> · {{ failedCount }} 项需要核对</span>。{{ active ? '完成校验后可查看正式结果。' : '' }}</p>
@@ -17,6 +17,7 @@
         <el-tag size="small" type="warning">生成中间内容 · 未确认</el-tag>
         <el-button v-if="manualSelection || !stickToBottom" size="small" text @click="followLatest">查看最新内容</el-button>
       </div>
+      <p v-if="selected" class="live-note">当前内容 {{ selected.chars || 0 }} 字<span v-if="selected.attempt > 1"> · 当前步骤第 {{ selected.attempt }} 次尝试，前一次返回已保存</span></p>
       <p v-if="selected?.truncated" class="live-note">预览仅保留最近一段返回内容；完整结果将在处理完成后展示。</p>
       <p v-if="selected?.note" class="live-note">{{ selected.note }}</p>
       <pre v-if="selected?.text" ref="output" class="live-output" tabindex="0" aria-label="实时返回正文" @scroll="onScroll">{{ preview }}</pre>

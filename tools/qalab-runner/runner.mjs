@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { randomUUID, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
+import { createRecordingClient } from "./recording-client.mjs";
 import { createRecordingPump } from "./recording-pump.mjs";
 import { loadRegistry, registrySnapshot } from "./selector-registry.mjs";
 // qalab 本地执行 runner —— 轮询平台待执行队列,调用 Claude Code(headless)执行,回写 pass/fail。
@@ -103,9 +104,7 @@ const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${enc
 const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
 const reportProbe  = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
 // 录制会话(与 exec/probe 队列并列):拉本机待录/录制中会话,增量上报捕获步骤。
-const RECORD_CONSUMER = randomUUID();
-const fetchRecords = () => api("GET", `/api/record/pending?runner=${encodeURIComponent(RUNNER_ID)}&consumer_id=${RECORD_CONSUMER}`);
-const reportRecordEvents = (id, body) => api("POST", `/api/record/${id}/events?runner=${encodeURIComponent(RUNNER_ID)}`, body);
+const { consumerId: RECORD_CONSUMER, fetchRecords, reportRecordEvents } = createRecordingClient(api, RUNNER_ID);
 // 上传探测整页截图(PNG 二进制)到独立端点:multipart/form-data(不用 api() 封装——那是 JSON)。
 // 只带 Authorization,不设 Content-Type——让 fetch 按 FormData 自动补 multipart boundary。
 // Node 18+ 内置 FormData/Blob/fetch。截图不塞 result TEXT(MySQL 5.6 TEXT 64KB 会截断 base64)。

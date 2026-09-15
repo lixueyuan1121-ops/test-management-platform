@@ -227,7 +227,8 @@ class ReviewAPITests(unittest.TestCase):
         self.assertEqual(analysis["visual_readings"][0]["status"], "failed")
         analysis["draft"]["rules"][0]["status"] = "confirmed"
         analysis = self.save(analysis)
-        self.assertEqual(self.confirm(analysis).status_code, 422)
+        # Unrelated failed images remain visible but do not block clear text rules.
+        self.assertEqual(self.confirm(analysis).status_code, 200)
         self.assertEqual(self.confirm(analysis, confirmation_note="图片范围待澄清，仅确认正文的删除规则").status_code, 200)
         source = self.client.post("/api/ai/extract-file", files={"file": ("long.txt", ("中" * 60001).encode(), "text/plain")}).json()["data"]
         self.assertTrue(source["truncated"])

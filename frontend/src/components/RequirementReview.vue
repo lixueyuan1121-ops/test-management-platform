@@ -98,7 +98,7 @@
           <el-input v-if="item.rule.source_type !== 'explicit' || visuals.some(v => item.rule.source_material_ids.includes(v.id) && v.status !== 'read')" v-model="item.rule.review_note" type="textarea" :disabled="disabled || working || saving" :aria-label="`${item.rule.id} 处理说明`" placeholder="请写清按什么理解测试，以及依据是什么。" />
           <el-button link type="primary" @click="editingRule = item.rule">补充或修改规则</el-button>
           <el-button v-if="item.issues.some(x => x.includes('场景') || x.includes('操作示例'))" link type="primary" @click="tab = 'scenarios'">补充操作示例</el-button>
-          <el-button link @click="editingRule = item.rule">本期不测并填写原因</el-button>
+          <el-button link @click="editingRule = item.rule">本期不测（原因选填）</el-button>
         </article>
       </el-tab-pane>
       <el-tab-pane :label="`图片与图表（${visuals.length}）`" name="images">
@@ -114,7 +114,7 @@
 
     <div v-if="draft" class="confirm-area">
       <el-checkbox v-model="scopeReviewed" :disabled="disabled || working || saving">我同意用已明确的规则生成用例，待确认的内容暂不生成</el-checkbox>
-      <el-input v-model="confirmationNote" type="textarea" :disabled="disabled || working || saving" :rows="2" placeholder="确认说明：资料缺失或图片识别不确定时，说明补充内容或本期排除范围" aria-label="验收确认说明" />
+      <el-input v-model="confirmationNote" type="textarea" :disabled="disabled || working || saving" :rows="2" placeholder="确认说明（选填）：可记录补充内容或本期不测的原因" aria-label="验收确认说明" />
       <ul v-if="blockers.length" class="blockers"><li v-for="message in blockers" :key="message">{{ message }}</li></ul>
       <div class="review-actions"><el-button :loading="saving" :disabled="disabled || working || !dirty" @click="save">保存评审草稿</el-button><el-button type="primary" :loading="saving" :disabled="disabled || working || !scopeReviewed || !!blockers.length || !!baselineId" @click="confirm">确认本次生成范围（{{ confirmedCount }} 条）</el-button><span class="hint">本次使用 {{ confirmedCount }} 条；另有 {{ pendingCount }} 条待确认、{{ excludedCount }} 条本期不测。</span></div>
     </div>
@@ -128,7 +128,7 @@
           <div class="criteria-edit"><div v-for="criterion in editingRule.criteria" :key="criterion.id"><span class="hint">{{ criterion.id }}</span><el-input v-model="criterion.text" type="textarea" :rows="2" @input="editingRule.status = 'pending'" /></div><el-button size="small" @click="addCriterion">增加验收条件</el-button></div>
         </el-form-item>
         <el-form-item label="处理说明 / 这次不测的原因"><el-input v-model="editingRule.review_note" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="这次要不要测"><el-button v-if="editingRule.status === 'excluded'" @click="includeRule(editingRule)">恢复到本次范围</el-button><el-button v-else @click="editingRule.status = 'excluded'">本期不测（请填写原因）</el-button><p>内容完整且没有疑问时自动纳入，无需另点确认。</p></el-form-item>
+        <el-form-item label="这次要不要测"><el-button v-if="editingRule.status === 'excluded'" @click="includeRule(editingRule)">恢复到本次范围</el-button><el-button v-else @click="editingRule.status = 'excluded'">本期不测（原因选填）</el-button><p>内容完整且没有疑问时自动纳入，无需另点确认。</p></el-form-item>
       </el-form>
       <template #footer><el-button @click="editingRule = null">完成编辑</el-button></template>
     </el-drawer>
@@ -184,8 +184,6 @@ const blockers = computed(() => {
   if (!draft.value) return []
   const messages = []
   if (!confirmedCount.value) messages.push('还没有可以生成用例的明确规则，请先处理一个问题。')
-  for (const r of draft.value.rules) if (r.status === 'excluded' && !r.review_note.trim()) messages.push(`${r.title}：请说明这次为什么不测。`)
-  if (warnings.value.length && !confirmationNote.value.trim()) messages.push('资料还有缺失，请在下方说明如何处理，或这次不测哪些内容。')
   return messages
 })
 function filterPending() { tab.value = 'rules'; ruleFilter.value = 'pending' }

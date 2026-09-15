@@ -211,10 +211,11 @@ import { listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterd
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 
-// 任务状态四态：待测 → 测试中 →(阻塞)→ 已上线；标签配色与首页 KPI 一致
+// 任务状态：待测 → 测试中 → 待上线 → 已上线；也可标记阻塞或关闭。
 const STATUS_META = {
   pending: { label: '待测', type: 'info' },
   testing: { label: '测试中', type: 'warning' },
+  ready_online: { label: '待上线', type: 'primary' },
   blocked: { label: '阻塞', type: 'danger' },
   online: { label: '已上线', type: 'success' },
   closed: { label: '已关闭', type: 'info' },

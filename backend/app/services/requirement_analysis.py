@@ -48,14 +48,18 @@ def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, outp
         kwargs["effort"] = effort
     for event in engine.stream_generate("", **kwargs):
         kind = event.get("type")
-        if kind == "delta":
-            raw = ("" if event.get("reset") else raw) + _event_text(event.get("text"), raw, kind)
-        elif kind == "error" or event.get("is_error"):
+        if kind == "error" or event.get("is_error"):
+            if raw.lstrip().startswith(('API Error:', 'API returned an empty or malformed')):
+                raw = ""
+                if on_progress:
+                    on_progress("")
             message = str(event.get("msg") or event.get("error") or "AI 分析失败")
             if any(marker in message.lower() for marker in ('empty or malformed response', 'streamnoeventserror', 'no_events')):
                 raise OutputError("gateway_error", "模型网关未返回有效响应（空响应或无流式事件），请检查模型服务后继续处理", raw)
             code = "provider_timeout" if any(marker in message.lower() for marker in ('超时', 'timed out', 'timeout')) else "provider_error"
             raise OutputError(code, message, raw)
+        elif kind == "delta":
+            raw = ("" if event.get("reset") else raw) + _event_text(event.get("text"), raw, kind)
         elif kind == "result":
             raw = _event_text(event.get("text"), raw, kind) or raw
             if event.get("finish_reason") == "length":
@@ -66,7 +70,10 @@ def collect(engine, prompt, *, images=None, timeout=None, on_progress=None, outp
         if len(raw) > 2_000_000:
             raise OutputError("too_large", "单阶段输出超过保存上限，需要拆分需求", raw[:2_000_000])
         if on_progress:
-            on_progress(raw if kind in ("delta", "result") and raw else None)
+            # Some older adapters lack the API-error flag; do not preview their
+            # diagnostic line while waiting for the terminal error event.
+            diagnostic = raw.lstrip().startswith(('API Error:', 'API returned an empty or malformed'))
+            on_progress(raw if kind in ("delta", "result") and raw and not diagnostic else None)
     if not completed:
         raise OutputError("interrupted", "模型连接中断，未收到完成标记", raw)
     if not raw.strip():
@@ -259,8 +266,6 @@ def confirmation_errors(draft, visuals):
     if not selected:
         errors.append("至少确认一条可生成用例的验收规则")
     for rule in draft.rules:
-        if rule.status == "excluded" and not rule.review_note:
-            errors.append(f"{rule.id}：请填写本期排除原因")
         if rule.status != "confirmed":
             continue
         if not rule.condition or not rule.action or not rule.expected or not rule.criteria:

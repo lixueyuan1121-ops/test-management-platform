@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     CLAUDE_BIN: str = ""            # 空则运行时 shutil.which("claude")
     CLAUDE_PROXY_URL: str = ""      # Optional HTTP(S) proxy for Claude subprocesses only
     AI_MODEL: str = ""             # 空则用 claude CLI 默认模型
+    AI_CLAUDE_TRANSPORT: Literal['cli', 'messages'] = 'cli'
+    CLAUDE_MESSAGES_BASE_URL: str = ''
+    CLAUDE_MESSAGES_API_KEY: str = ''
+    CLAUDE_MESSAGES_MODEL: str = ''
+    CLAUDE_MESSAGES_MAX_TOKENS: int = 16384
+    CLAUDE_MESSAGES_IDLE_SECONDS: int = 90
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
     # Only formatting existing criteria into scenes; full requirement analysis keeps the CLI default.
     # Empty string inherits the configured Claude effort. This never changes the model itself.

@@ -1,0 +1,7 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><div id="app"></div><script type="module">
+import {createApp,h,ref} from 'vue';import {createPinia} from 'pinia';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';
+import Review from '/src/components/RequirementReview.vue';import Progress from '/src/components/AiJobProgress.vue';
+const live=ref({id:425,status:'running',progress:{stage:'analyzing',started_at:Date.now(),chars:8224,received_chars:8224,total:1,completed:0,units:[{id:'analysis',title:'需求理解与验收规则',status:'running',chars:8224,text:'第一轮返回',attempt:1}]}});
+window.updateProgress=patch=>{live.value={...live.value,progress:{...live.value.progress,...patch}}};
+createApp({render:()=>h('main',{style:'max-width:1200px;margin:24px auto'},[h(Review,{projectId:1,taskId:2,analysisId:10,requirement:'保护目录删除必须确认',provider:'claude',available:true}),h(Progress,{job:live.value,active:true})])}).use(createPinia()).use(ElementPlus).mount('#app');
+</script></html>

@@ -22,7 +22,7 @@
               />
             </el-select>
             <el-input
-              v-model="probe.contains" placeholder="关键词过滤(可选，按文本 contains)" size="small"
+              v-model="probe.contains" :disabled="contextLocked" placeholder="关键词过滤(可选，按文本 contains)" size="small"
               clearable style="width:220px"
             />
             <el-select
@@ -33,18 +33,30 @@
             </el-select>
             <el-button
               type="primary" size="small" :loading="probe.running && probe.mode === 'discover'"
-              :disabled="!pid || !probe.runner || probe.running" @click="onDiscover"
+              :disabled="!pid || !probe.runner || contextLocked" @click="onDiscover"
             >探测(扫当前页)</el-button>
+            <el-select v-model="probeDelaySeconds" :disabled="contextLocked" size="small" style="width:100px" aria-label="延时探测等待时间">
+              <el-option v-for="seconds in [3, 5, 10]" :key="seconds" :label="`${seconds} 秒`" :value="seconds" />
+            </el-select>
+            <el-button type="primary" plain size="small" :disabled="!pid || !probe.runner || contextLocked" @click="scheduleProbe">
+              {{ probeDelaySeconds }} 秒后探测
+            </el-button>
             <el-button
               size="small" :type="boxMode ? 'warning' : 'default'"
-              :disabled="!pid || !probe.runner || probe.running" @click="toggleBoxMode"
+              :disabled="!pid || !probe.runner || contextLocked" @click="toggleBoxMode"
             >{{ boxMode ? '框选中…点击取消' : '框选探测' }}</el-button>
             <el-button
               size="small" :loading="probe.running && probe.mode === 'verify'"
-              :disabled="!pid || !probe.runner || probe.running" @click="onVerify"
+              :disabled="!pid || !probe.runner || contextLocked" @click="onVerify"
             >校验失效 key</el-button>
           </div>
         </div>
+
+      <el-alert v-if="probeCountdown > 0" type="info" :closable="false" class="probe-countdown" style="margin:12px 0">
+        <template #title>{{ probeCountdown }} 秒后发起探测，请切到客户端并保持悬浮</template>
+        <div>展开需要识别的菜单或提示，保持鼠标位置直到探测完成。倒计时结束后，设备接收任务可能稍有延迟。</div>
+        <el-button size="small" style="margin-top:8px" @click="cancelDelayedProbe">取消倒计时</el-button>
+      </el-alert>
 
       <!-- 目标提示：当前落库作用域 + 若处于「更新已有」预置目标 -->
       <div class="probe-scope">
@@ -60,7 +72,9 @@
         <div class="fix-bar-in">
           <span class="fix-bar-hint">批量补选择器：在客户端切到目标页/弹窗后「探测」，系统自动把探测元素匹配到下列待补 key，核对后一键批量建（分几次覆盖不同弹窗状态）：</span>
           <div class="fix-keys-chips">
-            <el-tag v-for="k in fixCtx.keys" :key="k" size="small"
+            <el-tooltip v-for="k in fixCtx.keys" :key="k" effect="light" placement="right" :show-after="150" :hide-after="100" popper-class="probe-key-tooltip">
+              <template #content><div style="max-width:min(560px,75vw);max-height:55vh;overflow:auto"><SelectorTargetNotes :selector-key="k" :notes="selectorTargetNotes(fixCtx.hints[k], fixCtx.contexts[k])" /></div></template>
+            <el-tag size="small"
                     :type="fixCtx.done.includes(k) ? 'success' : (bulkChipInfo.has(k) ? 'primary' : 'info')"
                     :effect="(fixCtx.done.includes(k) || (bulkChipInfo.get(k) && bulkChipInfo.get(k).uid === hoverKey)) ? 'dark' : 'plain'"
                     :class="{ 'chip-hover': bulkChipInfo.get(k) && bulkChipInfo.get(k).uid === hoverKey }"
@@ -71,6 +85,7 @@
               <template v-else-if="bulkChipInfo.has(k)">#{{ bulkChipInfo.get(k).no }} {{ k }}<span v-if="bulkChipInfo.get(k).label" class="chip-tid"> · {{ bulkChipInfo.get(k).label }}</span></template>
               <template v-else>{{ k }}</template>
             </el-tag>
+            </el-tooltip>
           </div>
           <div class="fix-bar-actions">
             <el-button type="primary" size="small" :loading="bulkAdding" :disabled="!bulkMatches.length" @click="batchAddMatched">
@@ -85,7 +100,10 @@
         <div class="fix-bar-in">
           <span class="fix-bar-hint">待补选择器 key（选一个 → 下方高亮页面上最可能的元素 → 点该元素「加为 key」新建）：</span>
           <el-radio-group v-model="fixCtx.activeKey" :disabled="contextLocked" size="small">
-            <el-radio-button v-for="k in fixCtx.keys" :key="k" :value="k">{{ k }}</el-radio-button>
+            <el-tooltip v-for="k in fixCtx.keys" :key="k" effect="light" placement="right" :show-after="150" :hide-after="100" popper-class="probe-key-tooltip">
+              <template #content><div style="max-width:min(560px,75vw);max-height:55vh;overflow:auto"><SelectorTargetNotes :selector-key="k" :notes="selectorTargetNotes(fixCtx.hints[k], fixCtx.contexts[k])" /></div></template>
+              <el-radio-button :value="k">{{ k }}</el-radio-button>
+            </el-tooltip>
           </el-radio-group>
           <el-button link type="info" size="small" :disabled="contextLocked" @click="fixCtx.keys = []; fixCtx.activeKey = ''">退出定位</el-button>
         </div>
@@ -154,7 +172,7 @@
               <el-table-column label="元素" min-width="180" show-overflow-tooltip>
                 <template #default="{ row }">
                   <el-tag size="small" type="info" effect="plain">{{ row.tag }}{{ row.type ? `[${row.type}]` : '' }}</el-tag>
-                  <span class="probe-el-text">{{ row.text || '（无文本）' }}</span>
+                  <span class="probe-el-text">{{ elementDisplayName(row) || '（无文本）' }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="best 候选" min-width="200" show-overflow-tooltip>
@@ -400,7 +418,7 @@
     <el-dialog v-model="add.visible" :show-close="!add.saving" :close-on-click-modal="!add.saving" :close-on-press-escape="!add.saving" title="加为 key" width="560px">
       <div class="add-preview">
         <div class="form-hint">来源元素（{{ add.frame }} frame）</div>
-        <div><el-tag size="small" type="info" effect="plain">{{ add.tag }}{{ add.type ? `[${add.type}]` : '' }}</el-tag> <span class="probe-el-text">{{ add.text || '（无文本）' }}</span></div>
+        <div><el-tag size="small" type="info" effect="plain">{{ add.tag }}{{ add.type ? `[${add.type}]` : '' }}</el-tag> <span class="probe-el-text">{{ add.name || add.text || '（无文本）' }}</span></div>
         <div class="add-cand">best 候选：<code>{{ add.cand ? candLabel(add.cand) : '—' }}</code></div>
         <div v-if="add.mode === 'create' && add.cands.length" class="add-cands">
           <span class="form-hint">新建将存 {{ add.cands.length }} 个候选（testid 优先 + css 兜底，执行期可回落）：</span>
@@ -578,6 +596,8 @@ import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { isActiveCandidate, isFragile, orderCandidates, normalizeCandidate, candidateIdentity, mergeCandidates } from '@/utils/selector-ranking'
 import { autoXPath, cssSelectorValue, countCssMatches } from '@/utils/xpath-locator'
 import { rankElements } from '@/utils/selector-match'
+import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
+import { selectorTargetNotes } from '@/utils/selector-target-description'
 import { matchElementsToKeys } from '@/utils/bulk-fix-selectors'
 import { keysOfModule, staleKeysFromVerify } from '@/utils/module-refresh'
 import { useRoute } from 'vue-router'
@@ -702,8 +722,8 @@ onMounted(async () => {
 
 let disposed = false, listVersion = 0, learnedVersion = 0, probeVersion = 0
 const loadError = ref(false), reviewing = ref(false), deleting = ref(false)
-const contextLocked = computed(() => dialog.visible || dialog.saving || add.visible || add.saving || probe.running || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
-onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll() })
+const contextLocked = computed(() => dialog.visible || dialog.saving || add.visible || add.saving || probe.running || probeCountdown.value > 0 || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
+onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll(); cancelDelayedProbe() })
 
 async function onProjectChange() {
   if (pid.value) setLastProjectId(pid.value)
@@ -1111,7 +1131,7 @@ function stopPoll() {
 
 // 发起一次探测并轮询到 done/failed；60s 超时。extraParams 合并进 params（如 { mode:'verify' }）。
 async function runProbe(mode, extraParams = {}) {
-  if (probe.running || disposed) return
+  if (probe.running || probeCountdown.value > 0 || disposed) return
   const version = ++probeVersion
   if (!pid.value || !probe.runner) { ElMessage.warning('请先选择项目和在线设备'); return }
   stopPoll()
@@ -1168,7 +1188,43 @@ async function runProbe(mode, extraParams = {}) {
   }, 1500)
 }
 
-function onDiscover() { probe.updateTarget = ''; runProbe('discover') }
+const probeDelaySeconds = ref(5)
+const probeCountdown = ref(0)
+let delayTimer = null
+let delayDeadline = 0
+let delayVersion = 0
+function cancelDelayedProbe() {
+  ++delayVersion
+  if (delayTimer !== null) clearTimeout(delayTimer)
+  delayTimer = null
+  delayDeadline = 0
+  probeCountdown.value = 0
+}
+function scheduleProbe() {
+  if (disposed || contextLocked.value || !pid.value || !probe.runner) return
+  cancelDelayedProbe()
+  const version = delayVersion
+  delayDeadline = Date.now() + probeDelaySeconds.value * 1000
+  const tick = () => {
+    if (disposed || version !== delayVersion) return
+    // Use elapsed time so background-tab timer throttling does not extend each tick.
+    probeCountdown.value = Math.max(0, Math.ceil((delayDeadline - Date.now()) / 1000))
+    if (probeCountdown.value === 0) {
+      delayTimer = null
+      delayDeadline = 0
+      onDiscover()
+      return
+    }
+    delayTimer = setTimeout(tick, Math.min(250, Math.max(1, delayDeadline - Date.now())))
+  }
+  tick()
+}
+watch([pid, subProduct, () => probe.runner], cancelDelayedProbe)
+function onDiscover() {
+  if (probeCountdown.value > 0 || probe.running || disposed) return
+  probe.updateTarget = ''
+  runProbe('discover')
+}
 function onVerify() { runProbe('verify', { mode: 'verify' }) }
 
 // ---- 框选探测:先「扫当前页」出截图,再在截图上拖框 → 对框内 DOM 放宽探测(穿 iframe/shadow)----
@@ -1238,6 +1294,11 @@ const candKey = candidateIdentity
 // 候选展示 label:by:'testid' 是我们候选结构里的内部简写,页面上开发写的实际属性是 data-testid;
 // 故展示成 data-testid=<值>(更贴合真实 DOM),其余 by 原样 <by>=<值>(css/placeholder/label/text/role)。
 const _BY_LABEL = { testid: 'data-testid' }
+function elementDisplayName(el) {
+  return el.accessibleName || el.tooltipText || el.text
+    || (el.candidates || []).find(c => c.by === 'label' || (c.by === 'role' && c.name))?.name
+    || (el.candidates || []).find(c => c.by === 'label')?.value || ''
+}
 function candLabel(c) {
   if (!c || !c.by) return '—'
   return `${_BY_LABEL[c.by] || c.by}=${c.value}${c.name ? ` · ${c.name}` : ""}${c.exact ? "（精确）" : ""}`
@@ -1335,7 +1396,7 @@ const shotBoxes = computed(() => {
         fixKey: fix ? fix.key : '', fixNo: fix ? fix.no : 0,
         label: fix
           ? `#${fix.no} ${fix.key}${el.best ? ` · ${candLabel(el.best)}` : ''}`
-          : `${el.text || el.tag}${el.best ? ` · ${candLabel(el.best)}` : ''}${el.absApprox ? '（位置近似）' : ''}`,
+          : `${elementDisplayName(el) || el.tag}${el.best ? ` · ${candLabel(el.best)}` : ''}${el.absApprox ? '（位置近似）' : ''}`,
         style: {
           left: `${(el.absRect.x / ps.w) * 100}%`, top: `${(el.absRect.y / ps.h) * 100}%`,
           width: `${(el.absRect.w / ps.w) * 100}%`, height: `${(el.absRect.h / ps.h) * 100}%`,
@@ -1343,7 +1404,9 @@ const shotBoxes = computed(() => {
       })
     }
   }
-  return boxes
+  // 大容器在底层；小控件始终可点，外层 hover 高亮也不能遮住内部按钮。
+  return boxes.sort((a, b) => b.el.absRect.w * b.el.absRect.h - a.el.absRect.w * a.el.absRect.h)
+    .map((box, index) => ({ ...box, style: { ...box.style, zIndex: index + 1 } }))
 })
 
 // 框选提交区的截图标注样式(整页绝对坐标 → 截图百分比,与 shotBoxes 同源 pageSize)。null=不画。
@@ -1386,7 +1449,7 @@ function reprobeForKey(key) {
 // cand=best 候选(展示/更新合并用);cands=全部候选(testid 优先 + css 兜底,新建时整串落库)。
 // segTab/segScene/segElem=四段式 desc 的第1/3/4段(第2段=页面 add.page);desc 保存时由它们拼成。
 const add = reactive({
-  visible: false, mode: 'create', tag: '', type: '', text: '', frame: 'auto',
+  visible: false, mode: 'create', tag: '', type: '', text: '', name: '', frame: 'auto',
   cand: null, cands: [], key: '', page: '', desc: '',
   segTab: '', segScene: '', segElem: '', targetId: null, saving: false, status: null,
   // XPath 手动纠正:cssCount=该元素 CSS 类在本次探测里命中几个(≥2=多命中,建议 XPath);
@@ -1466,7 +1529,7 @@ function openAddAsKey(el, frame) {
   const cand = toCand(el.best)
   const cands = toCands(el)
   const status = matchStatus({ ...el, _frameMatch: frame })   // #3 标识:exists/update/new
-  const scene = (el.text || '').trim().slice(0, 16)
+  const scene = elementDisplayName(el).trim().slice(0, 16)
   // XPath 纠正:统计该元素 CSS 类在本次探测里命中几个;≥2=CSS 多命中(如同 class 的按钮),自动备一条 XPath。
   const allEls = enrichedGroups.value.flatMap((g) => g.elements)
   const cssCount = countCssMatches(allEls, cssSelectorValue(el))
@@ -1480,7 +1543,7 @@ function openAddAsKey(el, frame) {
       || inferControlType({}, `${fixCtx.ctx || ''} ${fixCtx.activeKey || ''}`)
     Object.assign(add, {
       visible: true, saving: false, status,
-      tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', frame: frame || 'auto',
+      tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
       cand, cands, mode: status.key && fixCtx.caseIds.length ? 'reuse' : 'create', key: fixCtx.activeKey, page: probe.page || '',
       targetId: effectiveRows.value.find(r => r.key === status.key)?.id || null,
       segTab: '', segScene: scene, segElem, cssCount, xpathAuto, xpath,
@@ -1493,7 +1556,7 @@ function openAddAsKey(el, frame) {
   const preset = presetByVerify || presetByMatch
   Object.assign(add, {
     visible: true, saving: false, status,
-    tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', frame: frame || 'auto',
+    tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
     cand, cands,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',

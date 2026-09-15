@@ -11,7 +11,7 @@ import time
 
 _context = contextvars.ContextVar('generation_trace', default={})
 logger = logging.getLogger('test_platform.generation')
-_FIELDS = set('job_id kind provider project_id ref_id ref_kind analysis_id ai_task_id baseline_id batch_id call_id stage status attempt error_code error_type elapsed_ms wait_ms prompt_chars prompt_sha256 output_chars first_output_ms idle_ms transport_lines parsed_events heartbeats got_result exit_code process_id timeout_seconds via_stdin case_count criterion_count missing_count warning_count unit_count reused event_type value_type bytes_count commit_requested'.split())
+_FIELDS = set('job_id kind provider project_id ref_id ref_kind analysis_id ai_task_id baseline_id batch_id call_id stage status attempt error_code error_type elapsed_ms wait_ms prompt_chars prompt_sha256 output_chars first_output_ms idle_ms transport_lines parsed_events heartbeats got_result exit_code process_id timeout_seconds via_stdin case_count criterion_count missing_count warning_count unit_count reused event_type value_type bytes_count commit_requested effort structured_output transport http_status request_id model max_tokens'.split())
 
 
 def configure(directory):
@@ -23,7 +23,9 @@ def configure(directory):
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    emit("diagnostics_ready")
+    from app.core.config import settings
+    emit("diagnostics_ready", transport=settings.AI_CLAUDE_TRANSPORT,
+         model=settings.CLAUDE_MESSAGES_MODEL if settings.AI_CLAUDE_TRANSPORT == "messages" else settings.AI_MODEL or "inherited")
 
 
 def emit(event, **fields):
@@ -55,6 +57,7 @@ def bind(fn):
 def error_code(error):
     text = str(error).lower()
     if '无法识别的正文格式' in text or 'unsupported_text' in text: return 'unsupported_text'
+    if '重新开始响应' in text: return 'upstream_response_restarted'
     if 'stream idle timeout' in text: return 'upstream_stream_idle_timeout'
     if any(word in text for word in ('empty or malformed', 'no_events')): return 'upstream_empty_response'
     if any(word in text for word in ('timeout', 'timed out', '超时')): return 'timeout'

@@ -225,9 +225,8 @@ def confirm(aid: int, body: RequirementConfirmIn, db: Session = Depends(get_db),
     if not body.scope_reviewed:
         raise HTTPException(422, "请核对本期范围、资料完整性和规则后再确认")
     visuals = json.loads(row.visual_readings)
-    warnings = json.loads(row.source_info).get("warnings", [])
-    if (warnings or any(v["status"] != "read" for v in visuals)) and not body.confirmation_note:
-        raise HTTPException(422, "存在未读取或不确定的资料，请说明如何补充或排除其影响")
+    # Only selected rules can block generation. Uncertain evidence still makes
+    # affected rules pending below; unrelated material warnings stay advisory.
     draft = RequirementDraft.model_validate_json(row.draft)
     draft = apply_review_policy(validate_evidence(draft, row.source_text, visuals), visuals)
     errors = confirmation_errors(draft, visuals)

@@ -225,6 +225,9 @@ def _claude_bin() -> str | None:
 
 def is_available() -> bool:
     """AI 功能是否可用（开关打开且能找到 claude 可执行文件）。"""
+    if settings.AI_CLAUDE_TRANSPORT == 'messages':
+        from app.services import claude_messages
+        return claude_messages.is_available()
     return bool(settings.AI_ENABLED and _claude_bin())
 
 
@@ -637,36 +640,42 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
         return [], "仅 gui/e2e/api 用例支持生成 script"
     timeout = timeout or settings.AI_TIMEOUT_SECONDS
     prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id, sub_product)
-    cmd = [
-        _claude_bin(), "-p", prompt, "--output-format", "json",
-        "--append-system-prompt", _SYSTEM_PROMPT,
-        *_CONTEXT_ISOLATION_ARGS,
-        "--disallowedTools", *_DISALLOWED_TOOLS,
-        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-    ]
-    if settings.AI_MODEL:
-        cmd += ["--model", settings.AI_MODEL]
-    try:
-        child_env = _claude_env()
-    except ValueError as exc:
-        return [], str(exc)
-    if not _acquire_slot(_slots):
-        return [], "AI 生成繁忙(等待超时,并发持续打满),请稍后重试"
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=tempfile.gettempdir(), env=child_env)
-    except subprocess.TimeoutExpired:
-        return [], f"生成超时(>{timeout}s)"
-    except OSError as e:
-        return [], f"启动 claude 失败:{e}"
-    finally:
-        _slots.release()
-    # --output-format json:最终文本在信封的 result 字段
-    raw = proc.stdout or ""
-    try:
-        env = json.loads(raw)
-        text = env.get("result", "") if isinstance(env, dict) else raw
-    except (json.JSONDecodeError, ValueError):
-        text = raw
+    if settings.AI_CLAUDE_TRANSPORT == 'messages':
+        from app.services.generation_stream import consume
+        text, _, error = consume(stream_generate('', prompt_builder=lambda: prompt, timeout=timeout))
+        if error:
+            return [], error
+    else:
+        cmd = [
+            _claude_bin(), "-p", prompt, "--output-format", "json",
+            "--append-system-prompt", _SYSTEM_PROMPT,
+            *_CONTEXT_ISOLATION_ARGS,
+            "--disallowedTools", *_DISALLOWED_TOOLS,
+            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        ]
+        if settings.AI_MODEL:
+            cmd += ["--model", settings.AI_MODEL]
+        try:
+            child_env = _claude_env()
+        except ValueError as exc:
+            return [], str(exc)
+        if not _acquire_slot(_slots):
+            return [], "AI 生成繁忙(等待超时,并发持续打满),请稍后重试"
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=tempfile.gettempdir(), env=child_env)
+        except subprocess.TimeoutExpired:
+            return [], f"生成超时(>{timeout}s)"
+        except OSError as e:
+            return [], f"启动 claude 失败:{e}"
+        finally:
+            _slots.release()
+        # --output-format json:最终文本在信封的 result 字段
+        raw = proc.stdout or ""
+        try:
+            env = json.loads(raw)
+            text = env.get("result", "") if isinstance(env, dict) else raw
+        except (json.JSONDecodeError, ValueError):
+            text = raw
     # 抽取 JSON 数组(容错 fence / 裸[])并校验
     m = _FENCE_RE.search(text)
     blob = m.group(1) if m else None
@@ -777,6 +786,13 @@ def _parse_line(line: str, stream_state: dict | None = None) -> dict | None:
         return None
     if etype == "assistant":
         message = evt.get("message") or {}
+        # Claude emits API failures as synthetic assistant messages before the
+        # terminal error result. They must never become business text/progress.
+        if evt.get("isApiErrorMessage"):
+            blocks = message.get("content") or []
+            detail = "；".join(b.get("text", "") for b in blocks
+                              if isinstance(b, dict) and isinstance(b.get("text"), str))
+            return {"type": "error", "msg": detail or "模型服务请求失败"}
         # With partial messages enabled the assistant snapshot repeats those chunks.
         if stream_state and stream_state.get("has_text") and message.get("id") == stream_state.get("message_id"):
             return None
@@ -812,11 +828,11 @@ def _parse_line(line: str, stream_state: dict | None = None) -> dict | None:
 
 
 def supports_structured_output():
-    return True
+    return settings.AI_CLAUDE_TRANSPORT == "cli"
 
 
 def supports_effort():
-    return True
+    return settings.AI_CLAUDE_TRANSPORT == "cli"
 
 
 @trace.model_call
@@ -829,6 +845,12 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
     prompt_builder 非空则用它(无参调用)构造 prompt,否则默认生成测试点 prompt。
     system_prompt 非空则覆盖注入的 --append-system-prompt,否则回落 _SYSTEM_PROMPT(测试工程师人设)。
     """
+    if settings.AI_CLAUDE_TRANSPORT == 'messages':
+        from app.services import claude_messages
+        prompt = prompt_builder() if prompt_builder is not None else build_testcase_prompt(requirement, project_id, pages)
+        yield from claude_messages.stream_generate(prompt, system_prompt or _SYSTEM_PROMPT,
+            timeout=timeout or settings.AI_TIMEOUT_SECONDS, images=images, output_schema=output_schema)
+        return
     if not is_available():
         yield {"type": "error", "msg": "AI 功能未启用或未找到 claude 可执行文件"}
         return
@@ -857,7 +879,7 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
             ]}}, ensure_ascii=False) + "\n"
 
     slot_started = time.monotonic()
-    trace.emit("model_slot_wait", prompt_chars=len(prompt), prompt_sha256=trace.fingerprint(prompt), timeout_seconds=timeout, via_stdin=via_stdin)
+    trace.emit("model_slot_wait", prompt_chars=len(prompt), prompt_sha256=trace.fingerprint(prompt), timeout_seconds=timeout, via_stdin=via_stdin, effort=effort or "inherited", structured_output=bool(output_schema))
     if not _acquire_slot(_slots):
         yield {"type": "error", "msg": "AI 生成繁忙（等待超时，并发持续打满），请稍后重试"}
         return
@@ -956,6 +978,9 @@ def stream_generate(requirement: str, project_id: int | None = None, timeout: in
                     # Never echo them in the error returned after an interrupted stream.
                 continue
             parsed_events += 1
+            if evt["type"] == "error":
+                yield evt
+                return
             if evt["type"] == "result":
                 got_result = True
                 if evt.get("is_error"):

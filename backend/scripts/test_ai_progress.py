@@ -185,7 +185,7 @@ class ProgressTests(unittest.TestCase):
             self.assertEqual(job.status, 'done', job.error)
             self.assertEqual(json.loads(job.result), {'analysis_id': 1})
             saved = json.loads(db.get(RequirementAnalysis, 1).draft)
-            self.assertTrue(all(r['status'] == 'pending' for r in saved['rules']))
+            self.assertEqual([r['status'] for r in saved['rules']], ['confirmed', 'pending'])
             self.assertTrue(all(not s['reviewed'] for s in saved['scenarios']))
 
     def test_interrupted_output_retained_without_draft(self):

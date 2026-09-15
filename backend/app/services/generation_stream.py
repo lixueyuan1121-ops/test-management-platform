@@ -10,7 +10,7 @@ def consume(events, on_progress=None):
         for event in stream:
             kind = event.get('type')
             if kind == 'error' or event.get('is_error'):
-                error = str(event.get('msg') or event.get('error') or '模型服务返回错误')
+                error = str(event.get('msg') or event.get('error') or _event_text(event.get('text'), '', kind) or '模型服务返回错误')
                 if kind == 'result':
                     meta = event
                 if raw.lstrip().startswith(('API Error:', 'API returned an empty or malformed')):

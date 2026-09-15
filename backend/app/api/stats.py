@@ -40,7 +40,7 @@ def overview_stats(
     pids = _visible_project_ids(db, user)
 
     empty_today = {
-        "total": 0, "pending": 0, "testing": 0, "blocked": 0, "online": 0,
+        "total": 0, "pending": 0, "testing": 0, "ready_online": 0, "blocked": 0, "online": 0,
         "closed": 0, "done_cnt": 0, "done_rate": 0.0,
     }
     if not pids:
@@ -52,7 +52,7 @@ def overview_stats(
                    "today": empty_today, "open_issues": 0, "trend": trend})
 
     # ---- 今日 KPI：基于派单流转状态(Task.status)，不依赖日报 ----
-    # 口径：今日派发的全部任务 + 历史派发但仍处于 testing/blocked 的延期任务。
+    # 口径：今日派发的全部任务 + 历史派发但仍处于 testing/blocked/ready_online 的延期任务。
     status_rows = (
         db.query(Task.status, func.count(Task.id))
         .filter(
@@ -60,14 +60,14 @@ def overview_stats(
             or_(
                 Task.assigned_date == today,
                 and_(Task.assigned_date < today,
-                     Task.status.in_([TaskStatus.testing, TaskStatus.blocked])),
+                     Task.status.in_([TaskStatus.testing, TaskStatus.blocked, TaskStatus.ready_online])),
             ),
         )
         .group_by(Task.status)
         .all()
     )
     counts = {TaskStatus.pending: 0, TaskStatus.testing: 0,
-              TaskStatus.blocked: 0, TaskStatus.online: 0, TaskStatus.closed: 0}
+              TaskStatus.ready_online: 0, TaskStatus.blocked: 0, TaskStatus.online: 0, TaskStatus.closed: 0}
     for st, c in status_rows:
         counts[st] = c
     total = sum(counts.values())
@@ -127,6 +127,7 @@ def overview_stats(
             "total": total,
             "pending": counts[TaskStatus.pending],
             "testing": counts[TaskStatus.testing],
+            "ready_online": counts[TaskStatus.ready_online],
             "blocked": counts[TaskStatus.blocked],
             "online": counts[TaskStatus.online],
             "closed": counts[TaskStatus.closed],

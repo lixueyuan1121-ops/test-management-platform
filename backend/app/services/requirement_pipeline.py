@@ -74,11 +74,11 @@ class Parts:
                 return value
         return None
 
-    def run(self, key, title, engine, prompt, schema, validate, timeout=None, native_schema=True, effort=None):
-        return trace.run_stage(lambda: self._run(key, title, engine, prompt, schema, validate, timeout, native_schema, effort),
+    def run(self, key, title, engine, prompt, schema, validate, timeout=None, native_schema=True, effort=None, retry_validation=True):
+        return trace.run_stage(lambda: self._run(key, title, engine, prompt, schema, validate, timeout, native_schema, effort, retry_validation),
                                job_id=self.job_id, analysis_id=self.analysis_id, batch_id=key, stage='analysis_part')
 
-    def _run(self, key, title, engine, prompt, schema, validate, timeout=None, native_schema=True, effort=None):
+    def _run(self, key, title, engine, prompt, schema, validate, timeout=None, native_schema=True, effort=None, retry_validation=True):
         from app.services.requirement_analysis import collect
         fingerprint = self.fingerprint(prompt, schema)
         self.progress.unit(key, title, status='running')
@@ -89,11 +89,11 @@ class Parts:
             return value
         error = None
         use_schema = schema if native_schema else None
-        for attempt in range(2):
+        for attempt in range(2 if retry_validation else 1):
             trace.emit("analysis_attempt", attempt=attempt+1, prompt_chars=len(prompt), prompt_sha256=trace.fingerprint(prompt))
             request = prompt + '\n响应结构(JSON Schema)：\n' + encode(schema)
             if attempt:
-                self.progress.unit(key, note='正在自动重试此阶段（1/1），其他已完成结果保留')
+                self.progress.unit(key, attempt=attempt + 1, note='上一轮返回格式不完整，正在重试当前步骤（第 2 次）；已完成的步骤会保留。')
                 request += '\n上一轮输出未通过完整性校验：' + brief_error(error) + '\n重新依据本阶段原始资料输出完整 JSON。保留全部条件、例外和来源，不减少条目，不猜测缺失预期；只精简重复措辞。不要输出解释或代码围栏。'
             with self.factory() as db:
                 part = RequirementAnalysisPart(analysis_id=self.analysis_id, job_id=self.job_id,
@@ -134,7 +134,7 @@ class Parts:
                 unsupported = code == 'provider_error' and any(k in message for k in ('json-schema', 'json_schema', 'response_format')) and any(k in message for k in ('unsupported', 'not support', 'unknown', 'unrecognized', '不支持'))
                 if unsupported:
                     use_schema = None  # Old gateways still receive the schema in the prompt and strict local validation.
-                if attempt or (code not in _REPAIRABLE and not unsupported):
+                if attempt or not retry_validation or (code not in _REPAIRABLE and not unsupported):
                     self.progress.unit(key, status='failed', raw=latest, note=str(error))
                     raise OutputError(code, f'{title}未完成：{error}。已保存返回内容和已完成阶段，可继续处理失败部分', latest) from exc
             finally:
@@ -359,7 +359,11 @@ def build_draft(parts, engine, text, visuals, source_info, goal=None, previous_c
             raise OutputError('invalid_shape', '分析缺少完整字段：' + ', '.join(sorted(required - obj.keys())))
         return prepare_draft(obj, text, visuals).model_dump()
     parts.progress.phase('analyzing')
-    interpretation = parts.run('analysis', '需求理解与验收规则', engine, prompt, interpretation_schema(), validate_interpretation)
+    # Claude native schema may emit the whole answer twice (text then StructuredOutput).
+    # Validate plain JSON locally and preserve invalid output for an explicit resume;
+    # never silently restart the expensive full interpretation.
+    interpretation = parts.run('analysis', '需求理解与验收规则', engine, prompt, interpretation_schema(),
+        validate_interpretation, native_schema=parts.provider != 'claude', retry_validation=False)
     rules = interpretation['rules']
     required = {c['id'] for r in rules for c in r['criteria']}
     existing = {c for s in interpretation['scenarios'] for c in s['criterion_ids']}

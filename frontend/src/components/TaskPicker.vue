@@ -41,8 +41,9 @@ const ST = {
   testing: { label: '测试中', type: 'warning', order: 0 },
   blocked: { label: '阻塞', type: 'danger', order: 1 },
   pending: { label: '待办', type: 'info', order: 2 },
-  online: { label: '已上线', type: 'success', order: 3 },
-  closed: { label: '已关闭', type: 'info', order: 4 },
+  ready_online: { label: '待上线', type: 'primary', order: 3 },
+  online: { label: '已上线', type: 'success', order: 4 },
+  closed: { label: '已关闭', type: 'info', order: 5 },
 }
 const kw = ref('')
 function labelOf(t) { return t.description || t.title || `#${t.id}` }

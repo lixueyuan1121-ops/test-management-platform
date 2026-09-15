@@ -148,8 +148,8 @@ class LegacyCacheTests(unittest.TestCase):
                     obj = {'scenarios': [{'criterion_id': cid, 'actor': '文件所有者', 'given': '已有记录',
                         'when': '点击删除后取消', 'then': '记录保留', 'kind': 'boundary'} for cid in data['assigned_criteria']]}
                 else:
-                    if 'output_schema' not in kw or 'effort' in kw:
-                        raise AssertionError('full rule interpretation retains structured output')
+                    if 'output_schema' in kw or 'effort' in kw:
+                        raise AssertionError('full rule interpretation uses one plain JSON response with local validation')
                     obj = interpretation
                 yield {'type': 'result', 'text': json.dumps(obj)}
         for _ in range(2):
