@@ -54,6 +54,32 @@ test('latest turn never falls back to an earlier answer cost', async () => {
   assert.equal(stats.waits, 2);
 });
 
+test('continuation sums every completed round, excluding previous evaluation turns and tool-only groups', async () => {
+  const { r, stats } = fixture([
+    ['999 算力豆', null, '1 算力豆', null, 'tokens'],
+    ['999 算力豆', null, '1 算力豆', null, '23 算力豆'],
+  ], { baseGroups: 1 });
+  r._workContinuation = { costGroupIndexes: [2] };
+  assert.equal((await r.extractBeanCost()).value, '24');
+  assert.equal(stats.waits, 1);
+});
+
+test('continuation never reports a partial total when an earlier cost is missing or the next answer has not appeared', async () => {
+  for (const snapshot of [['tokens', '23 算力豆'], ['1 算力豆']]) {
+    const { r } = fixture([snapshot], { timeout: 0 });
+    r._workContinuation = { costGroupIndexes: [0] };
+    assert.equal((await r.extractBeanCost()).value, '');
+  }
+});
+
+test('continuation sums decimals and zero exactly, and a new explicit test turn resets the cost boundary', async () => {
+  const { r } = fixture([['9 算力豆', '0.1 算力豆', '0.2 算力豆', '0 算力豆']], { baseGroups: 1 });
+  r._workContinuation = { costGroupIndexes: [1, 2] };
+  assert.equal((await r.extractBeanCost()).value, '0.3');
+  r._beginTurn({ groupCount: 3, footerCount: 3 });
+  assert.equal((await r.extractBeanCost()).value, '0');
+});
+
 test('missing current footer times out empty instead of copying old cost or zero', async () => {
   const { r, stats } = fixture([['本次回答消耗：8K tokens（99 算力豆）', null]],
     { baseGroups: 1, timeout: 0 });

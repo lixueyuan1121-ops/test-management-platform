@@ -2,7 +2,7 @@ const { readSelection, verifySelection, configError } = require('./dialog-config
 const fs = require('fs');
 const path = require('path');
 const workFrame = require('./work-frame');
-const { ensureAllSelected } = require('./share-select');
+const { ensureAllSelected, shareSelectionState } = require('./share-select');
 const { pickShareUrl } = require('./share-url');
 
 // 分享链接经系统剪贴板传递，并发下多个标签会互相覆盖剪贴板，故这一步需串行化
@@ -127,6 +127,98 @@ class DialogRunner {
   _baseGroups() { return (this._turnBaseline && this._turnBaseline.groupCount) || 0; }
   _baseFooters() { return (this._turnBaseline && this._turnBaseline.footerCount) || 0; }
 
+  // 一条测评可以经「继续工作」追加多个产品轮次。原基线用于计费，阶段基线用于等待最终答案。
+  _beginTurn(baseline) {
+    this._turnBaseline = baseline;
+    this._workContinuation = { count: 0, pending: null, waitingSince: null,
+      completionBaseline: null, costGroupIndexes: [] };
+    this._beanCostExpectedTurn = '';
+  }
+
+  _completionBaseline() {
+    return this._workContinuation?.completionBaseline || this._turnBaseline || { groupCount: 0, footerCount: 0 };
+  }
+
+  // DesktopRunner 共用一个 DialogRunner；切换任务时必须同时切换基线和续作状态。
+  _captureTurnState() {
+    return { baseline: this._turnBaseline, continuation: this._workContinuation };
+  }
+
+  _restoreTurnState(state) {
+    if (!state) return;
+    this._turnBaseline = state.baseline;
+    this._workContinuation = state.continuation;
+    this._beanCostExpectedTurn = '';
+  }
+
+  async _handleWorkContinuation() {
+    const ctx = this._ctx();
+    const groups = ctx.locator(this.platform.answerGroupSelector || '.chat-group.assistant');
+    const n = await groups.count();
+    if (!this._workContinuation) this._beginTurn(this._turnBaseline || { groupCount: 0, footerCount: 0 });
+    const state = this._workContinuation;
+    const startTimeout = this.execution.workContinuationStartTimeoutMs ?? this.execution.generationStartTimeout ?? 120000;
+    // 只检查本条测评最新回答内的卡片；历史回答/分享面板中的卡片不能触发续作。
+    const card = n > this._baseGroups()
+      ? groups.last().locator('work-continuation-card').last() : null;
+    const visible = card && await card.isVisible().catch(() => false);
+    if (visible) {
+      const error = await card.locator('[role="alert"]').innerText({ timeout: 300 }).catch(() => '');
+      if (error.trim()) throw new Error(`[WORK_CONTINUATION_FAILED] ${error.trim()}`);
+    }
+    if (state.pending) {
+      if (n > state.pending.groupCount) {
+        state.pending = null; // 新回答已出现；仍需越过阶段基线，等待这一轮的完成信号。
+        state.waitingSince = null;
+      } else {
+        if (Date.now() - state.pending.clickedAt >= startTimeout) {
+          throw new Error('[WORK_CONTINUATION_TIMEOUT] 已点击继续工作，但未出现后续回答；保留当前会话，未重复点击');
+        }
+        return true; // 即使旧卡片消失/旧 footer 仍在，也不能提前结束。
+      }
+    }
+    if (!visible) { state.waitingSince = null; return false; }
+    if (await this._probeGenerating()) {
+      state.waitingSince = null; // 生成期间卡片按产品设计禁用，仍受整条任务的 responseTimeout 约束。
+      return true;
+    }
+    if (state.waitingSince === null) state.waitingSince = Date.now();
+    const button = card.getByRole('button', { name: /^(继续工作|繼續工作|Continue work)$/i });
+    if (!await button.isEnabled().catch(() => false)) {
+      if (Date.now() - state.waitingSince >= startTimeout) {
+        throw new Error('[WORK_CONTINUATION_UNAVAILABLE] 继续工作卡片持续不可操作，后续任务未完成');
+      }
+      return true;
+    }
+    const limit = this.execution.workContinuationMaxRounds ?? 3;
+    if (state.count >= limit) throw new Error(`[WORK_CONTINUATION_LIMIT] 继续工作已达 ${limit} 轮，仍有续作卡片，未标记完成`);
+    await this.beforeContinueWork?.(); // 纳米 trace 切换答案轮次，但保留已经采集的工具调用。
+    const baseline = await this._captureBaseline();
+    // 点击前占位：点击后异步启动期间不重发，不把同一轮重复计费。
+    state.pending = { ...baseline, clickedAt: Date.now() };
+    state.completionBaseline = baseline;
+    state.costGroupIndexes.push(baseline.groupCount - 1);
+    state.count++;
+    try { await button.click({ timeout: 5000 }); }
+    catch (e) { throw new Error(`[WORK_CONTINUATION_FAILED] 继续工作点击未确认：${e.message.split('\n')[0]}`); }
+    this.generating = true;
+    if (this.logger) this.logger.info(`       ↳ [${this.label}] 已点击继续工作（追加第 ${state.count} 轮），等待后续答案；本条测评算力豆将合计回填`);
+    return true;
+  }
+
+  async _hasCurrentCompletionFooter() {
+    if (!this.platform.costSelector) return false;
+    const groups = this._ctx().locator(this.platform.answerGroupSelector || '.chat-group.assistant');
+    if (await groups.count() <= this._completionBaseline().groupCount) return false;
+    // 首轮消费栏可能迟到，不能仅靠全页面 footer 数量判断续作完成。
+    return groups.last().locator(this.platform.costSelector).last().isVisible().catch(() => false);
+  }
+
+  async _settleCompletion() {
+    await this.page.waitForTimeout(this.execution.completionSettleMs ?? 1500);
+    return !await this._dismissConfirmDialogs() && !await this._probeGenerating();
+  }
+
   // 用于 evaluate 的活跃 VM frame（FrameLocator 没有 evaluate）
   _liveFrame() {
     return workFrame.liveFrame(this.page);
@@ -174,7 +266,7 @@ class DialogRunner {
         // 多轮基线：记录发送「本轮」前页面已有的 AI 回答组数 / 完成信号(footer)数。
         // 之后「启动确认 / 完成判定 / 正文抓取」只认「超出基线的新增」，
         // 避免 follow-up 轮把上一轮遗留的旧气泡/旧 footer 误判为本轮已启动或已完成（多轮核心正确性）。
-        this._turnBaseline = await this._captureBaseline();
+        this._beginTurn(await this._captureBaseline());
 
         if (attachmentPaths.length > 0 && this.platform.fileInputSelector) {
           const fileInput = ctx.locator(this.platform.fileInputSelector);
@@ -576,7 +668,12 @@ class DialogRunner {
     try { if (await this._handleAskForms()) return true; } catch (_) {}
     // 再处理「工作流/工具确认」卡片（tool-confirm-modal，复杂任务规划 Workflow 时弹出）
     try { if (await this._handleToolConfirm()) return true; } catch (_) {}
+    if (await this._dismissModalConfirmDialogs()) return true;
+    // 先解除工具/确认框遮挡，再处理纳米 Work 续作卡片；续作错误必须上抛。
+    return this._handleWorkContinuation();
+  }
 
+  async _dismissModalConfirmDialogs() {
     const dialogSel = this.platform.confirmDialogSelector;
     if (!dialogSel) return false;
     const ctx = this._ctx();
@@ -807,8 +904,6 @@ class DialogRunner {
     const groups = ctx.locator(this.platform.answerGroupSelector || '.chat-group.assistant');
     const bubbleSel = this.platform.answerSelector;
 
-    const baseGroups = this._baseGroups();   // 多轮：本轮回答是「第 baseGroups 组之后新增的组」
-    const baseFooters = this._baseFooters();  // 多轮：本轮完成信号是「footer 数超出基线」才算
     const deadline = Date.now() + timeout;
     const startDeadline = Date.now() + startTimeout;
     // 进入本方法前已由 waitForGenerationStart 确认任务已启动，故 sawGenerating 起始即为 true，
@@ -832,11 +927,11 @@ class DialogRunner {
       if (generating) { sawGenerating = true; stable = 0; lastText = null; lastProgressAt = Date.now(); await this.page.waitForTimeout(1500); continue; }
 
       // 完成强信号：消耗 footer 出现（“本次回答消耗…”仅在结束后才有）。
-      // 多轮：要求 footer 数超出基线，才是「本轮」新增的完成信号（否则命中的是上一轮旧 footer）。
-      if (footer) {
-        let footerN = 0;
-        try { footerN = await ctx.locator(this.platform.costSelector).count(); } catch {}
-        if (footerN > baseFooters) { await this.page.waitForTimeout(1000); return finish(true, 'footer'); }
+      // 多轮：只接受阶段基线之后最新回答的 footer，旧轮次迟到的消费栏不能作为完成信号。
+      if (footer && await this._hasCurrentCompletionFooter()) {
+        if (await this._settleCompletion() && await this._hasCurrentCompletionFooter()) return finish(true, 'footer');
+        stable = 0; lastText = null;
+        continue;
       }
 
       // 兜底：真实答案气泡出现且文本连续两次稳定（“思考中”不是答案气泡，不会误判）。
@@ -844,7 +939,7 @@ class DialogRunner {
       let txt = '', hasBubble = false;
       try {
         const n = await groups.count();
-        if (n > baseGroups) {
+        if (n > this._completionBaseline().groupCount) {
           const g = groups.nth(n - 1);
           if (bubbleSel) hasBubble = (await g.locator(bubbleSel).count()) > 0;
           txt = (await g.innerText().catch(() => '')).trim();
@@ -858,7 +953,10 @@ class DialogRunner {
         await this.page.waitForTimeout(1000);
         continue;
       }
-      if (hasBubble && txt && txt === lastText) { stable++; if (stable >= 2) return finish(true, 'stable'); }
+      if (hasBubble && txt && txt === lastText) {
+        stable++;
+        if (stable >= 2 && await this._settleCompletion()) return finish(true, 'stable');
+      }
       else stable = 0;
       lastText = txt;
 
@@ -1088,10 +1186,8 @@ class DialogRunner {
         await this.page.waitForTimeout(300);
 
         const boxSel = this.platform.shareCheckboxSelector || '.chat-share-panel__checkbox';
-        const allChecked = () => this._liveFrame().evaluate((s) => {
-          const boxes = [...document.querySelectorAll(s)];
-          return boxes.length > 0 && boxes.every(b => !!b.querySelector('path'));
-        }, boxSel);
+        const panel = ctx.locator(this.platform.sharePanelSelector || '.chat-share-panel').last();
+        const allChecked = async () => (await panel.locator(boxSel).evaluateAll(shareSelectionState)).allChecked;
 
         // 打开面板→确保全选→生成链接→读剪贴板；面板偶发打不开/不复制，失败就重开重试
         for (let round = 0; round < 3; round++) {
@@ -1119,14 +1215,14 @@ class DialogRunner {
               sleep: (ms) => this.page.waitForTimeout(ms),
             });
           }
-          // 兜底：全选后仍有未勾的（无全选按钮/选择器差异），逐个补勾（选中项含 <path> 勾）
+          // 只补勾列表项，不能把部分选中的「全部」当成普通项反复切换。
           if (!(await allChecked())) {
-            const boxes = ctx.locator(boxSel);
+            const boxes = panel.locator('.chat-share-panel__item').locator(boxSel);
             const nb = await boxes.count().catch(() => 0);
             for (let i = 0; i < nb; i++) {
               const box = boxes.nth(i);
               let checked = true;
-              try { checked = await box.evaluate(el => !!el.querySelector('path')); } catch {}
+              try { checked = (await box.evaluateAll(shareSelectionState)).checked[0]; } catch {}
               if (!checked) { await box.click({ timeout: 2000 }).catch(() => {}); await this.page.waitForTimeout(150); }
             }
           }
@@ -1403,7 +1499,7 @@ class DialogRunner {
     } catch { return ''; }
   }
 
-  // F 算力豆：只读当前回答底部「本次回答消耗：… tokens（23 算力豆）」；
+  // F 算力豆：普通用例只读当前回答；「继续工作」追加的各轮合计为同一条测评的消费。
   // tokens 可能先出现，算力豆稍后才渲染；等待后刷新一次，再核对会话并读取。
   async extractBeanCost({ reload = true } = {}) {
     if (reload) this._beanCostExpectedTurn = '';
@@ -1452,17 +1548,34 @@ class DialogRunner {
         if (expectedTurn && await this._beanCostTurnKey() !== expectedTurn) {
           raw = ''; // SPA 尚未恢复目标会话，继续等，绝不读取当前其他会话的消费。
         } else {
-          raw = await this._liveFrame().evaluate(({ groupSel, sel, baseGroups }) => {
+          const rows = await this._liveFrame().evaluate(({ groupSel, sel, baseGroups, completedGroups }) => {
             const groups = document.querySelectorAll(groupSel);
-            if (groups.length <= baseGroups) return '';
-            // 只在最新回答组找消费栏；本轮尚未渲染时绝不回退到上一轮的 footer。
-            const footers = groups[groups.length - 1].querySelectorAll(sel);
-            return footers.length ? (footers[footers.length - 1].textContent || '').trim() : '';
-          }, { groupSel, sel, baseGroups });
+            if (groups.length <= baseGroups) return [];
+            // 自动续作按每次点击前的末组 + 最终回答计费。中间工具组不另算一轮，历史用例不计入。
+            const indexes = [...completedGroups, groups.length - 1];
+            if (new Set(indexes).size !== indexes.length) return []; // 续作尚未产出新回答，不能返回首轮的部分消费。
+            return indexes.map(i => {
+              if (i < baseGroups || !groups[i]) return '';
+              const footers = groups[i].querySelectorAll(sel);
+              return footers.length ? (footers[footers.length - 1].textContent || '').trim() : '';
+            });
+          }, { groupSel, sel, baseGroups, completedGroups: this._workContinuation?.costGroupIndexes || [] });
+          raw = rows.join('\n');
           // 单位必须是「算力豆」，避免把前面的 279.9K tokens 当成豆数。
           // 支持小数、千分位和跨 DOM 节点的空白；显式 0 是有效消耗，缺失保持空。
-          const match = raw.replace(/\s+/g, ' ').match(/(?:^|[^\d.,+\-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*算力豆/);
-          if (match) return { value: match[1].replace(/,/g, ''), raw };
+          const values = rows.map(row => row.replace(/\s+/g, ' ').match(/(?:^|[^\d.,+\-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*算力豆/)?.[1].replace(/,/g, ''));
+          if (values.length && values.every(v => v !== undefined)) {
+            if (values.length === 1) return { value: values[0], raw };
+            // 十进制整数累加，避免 0.1 + 0.2 回填成 0.30000000000000004。
+            const scale = Math.max(...values.map(v => (v.split('.')[1] || '').length));
+            const total = values.reduce((sum, v) => {
+              const [whole, fraction = ''] = v.split('.');
+              return sum + BigInt(whole + fraction.padEnd(scale, '0'));
+            }, 0n).toString().padStart(scale + 1, '0');
+            const value = scale ? `${total.slice(0, -scale)}.${total.slice(-scale)}`.replace(/\.?0+$/, '') : total;
+            if (this.logger) this.logger.info(`       ↳ [${this.label}] 本条测评 ${values.length} 轮算力豆合计：${values.join(' + ')} = ${value}`);
+            return { value, raw };
+          }
         }
       } catch (_) { /* 页面/iframe 短暂重渲染，下轮重新定位。 */ }
       const remaining = deadline - Date.now();

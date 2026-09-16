@@ -161,6 +161,7 @@ function newState() {
     answerSegments: [], answerCur: '', thinkingStream: '',
     toolsById: new Map(), toolOrder: [], artifacts: [],
     sawAny: false, wsConnected: false,
+    seenRunIds: new Set(), previousTextRunIds: new Set(),
   };
 }
 
@@ -171,10 +172,15 @@ function newState() {
 function handleFrame(state, frame) {
   if (!frame || frame.type !== 'event') return;
   const event = frame.event;
+  const eventPayload = event === 'agent' ? _unwrapPanel(frame.payload || {}) : frame.payload || {};
+  if (eventPayload.runId) state.seenRunIds.add(eventPayload.runId);
+  // 显式点击「继续工作」之后，旧轮次迟到的 final/文本快照不能覆盖后续答案；工具记录仍完整保留。
+  const previousText = eventPayload.runId && state.previousTextRunIds.has(eventPayload.runId);
 
   // ── event:"chat":对话生命周期终态。state:"final" 的 message 携带完整答案正文+思考 ──
   // (见 openclaw360-web app-gateway.ts handleChatGatewayEvent:1073 / message-extract.ts extractRawText。)
   if (event === 'chat') {
+    if (previousText) return;
     const payload = frame.payload || {};
     if (payload.sessionId && !state.sessionId) state.sessionId = payload.sessionId;
     if (payload.runId && !state.runId) state.runId = payload.runId;
@@ -197,6 +203,7 @@ function handleFrame(state, frame) {
   state.sawAny = true;
   const stream = payload.stream;
   const data = payload.data || {};
+  if (previousText && ['thinking', 'assistant'].includes(stream)) return;
   if (stream === 'thinking') {
     // 【快照】非 delta:每帧是从头到当前的全量文本。longer-wins 覆盖,绝不累加(见 chat.ts:1230)。
     const t = _thinkingStreamText(data);
@@ -269,6 +276,11 @@ function createTraceCollector() {
     _state: state,
     ingest: onFrame,
     setConnected(connected) { state.wsConnected = !!connected; },
+    beginContinuation() {
+      for (const id of state.seenRunIds) state.previousTextRunIds.add(id);
+      state.finalAnswer = ''; state.finalThinking = '';
+      state.answerSegments = []; state.answerCur = ''; state.thinkingStream = '';
+    },
     reset() {
       const connected = state.wsConnected;
       Object.assign(state, newState());

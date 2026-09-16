@@ -210,6 +210,9 @@ module.exports = {
 
   // ========== 执行配置 ==========
   execution: {
+    // 纳米 Work「继续工作」自动追加轮次；同一测评累计算力豆，分享前必须确认全部勾选。
+    workContinuationMaxRounds: 3,
+    workContinuationStartTimeoutMs: 120000,
     // 【对话选项】发送前统一设置（本次运行所有用例通用）。留空 = 不设置、保持页面当前默认。
     // 可用命令行 --model / --chat-mode / --thinking-depth 覆盖。
     dialogOptions: {
@@ -394,6 +397,11 @@ module.exports = {
     workflowSelector: '.exit-plan-mode-floating, .conversation-exit-plan-panel, .pending-plan-panel',
     workflowOptionSelector: '.exit-plan-mode-floating__option, .conversation-exit-plan-panel__option, .pending-plan-panel__option',
     workflowResolvedSelector: '.exit-plan-mode-floating__decision--approved, .exit-plan-mode-floating__decision--keep-planning, .conversation-exit-plan-panel__decision--approved, .conversation-exit-plan-panel__decision--adjusted',
+    // 批量删除/受保护文件修改卡：核对类型后点单次允许，提交中等待，失败态有限重试。
+    interceptCardSelector: '[class*="_container_"]:has(> [class*="_optionList_"] > button[class*="_optionItem_"])',
+    interceptOptionSelector: '[class*="_optionList_"] > button[class*="_optionItem_"]',
+    interceptMaxAttempts: 3,
+    generatingSelector: 'button.cr-send-button--sending, button.cr-send-button--stop',
     // 完成/元信息
     footerSelector: '.conversation-finished-footer',
     // 附件粘贴就绪标志:粘贴后 Slate 编辑器把文件渲染成 file inline block(真机坐实 2026-09-08)。

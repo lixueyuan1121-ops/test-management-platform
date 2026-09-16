@@ -84,6 +84,26 @@ test('reconnect captures the first synchronous frame from the replacement socket
   assert.equal((await trace.buildTrace()).thinking, '重连首帧');
 });
 
+test('continuation keeps both rounds of tools while a shorter final answer replaces the initial response', async () => {
+  await fixture();
+  const final = (runId, text) => ({ type: 'event', event: 'chat', payload: {
+    runId, sessionId: 'synthetic-session', state: 'final', message: { content: [{ type: 'text', text }] },
+  } });
+  await emit([agent('tool', { toolCallId: 'before', name: 'search', phase: 'result', result: 'first' }),
+    final('model-run', '第一轮很长的说明，还没有完成文件交付。')]);
+  await trace.beginContinuation();
+  const tool = agent('tool', { toolCallId: 'after', name: 'write_file', phase: 'result', result: 'file.txt' });
+  tool.payload.runId = 'continued-run';
+  await emit([tool, final('continued-run', '已交付'), final('model-run', '第一轮迟到的更长文字，不应该覆盖继续工作后的最终结果。')]);
+  const result = await trace.buildTrace(9);
+  assert.equal(result.answer, '已交付');
+  assert.deepEqual(result.tool_calls.map(t => t.tool_call_id), ['before', 'after']);
+  assert.equal(result.capture_health.status, 'captured');
+  await trace.reset();
+  await emit([final('model-run', '新的测评')]);
+  assert.equal((await trace.buildTrace()).answer, '新的测评', 'next test must reset the continuation boundary');
+});
+
 test('reset discards queued old frames while keeping the live socket ready for the next turn', async () => {
   await fixture();
   await emit([agent('thinking', { text: '上一轮' })]);
@@ -141,7 +161,8 @@ test('desktop execution does not type or click send when trace preflight fails',
   runner._focus = async () => {};
   runner._fl = () => ({});
   runner.dr = {
-    execution: {}, _captureBaseline: async () => ({}), _applyDialogOptions: async () => {},
+    execution: {}, _captureBaseline: async () => ({}),
+    _beginTurn: require('../src/dialog-runner').prototype._beginTurn, _applyDialogOptions: async () => {},
     _ctx: () => ({ locator() { inputActions++; throw new Error('must not reach input'); } }),
   };
   runner.beforeSend = async () => { throw new Error('[TRACE_CAPTURE_UNAVAILABLE] test'); };

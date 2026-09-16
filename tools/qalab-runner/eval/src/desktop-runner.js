@@ -31,6 +31,7 @@ class DesktopRunner {
     const TaskWatcher = require('./task-watcher');
     // 工具箱：绑定主窗口，不 newPage/goto。sendMessage 里的 init 因 this.page 已存在而自动跳过。
     this.dr = new DialogRunner(context, platformConfig, executionConfig, logger).attachToPage(page);
+    this.dr.beforeContinueWork = () => this.beforeContinueWork?.();
     // 诊断器：绑定主窗口，复用串台检测算法。account 传空（桌面单账号=客户端登录账号）。
     this.watcher = new TaskWatcher(context, platformConfig, executionConfig, logger, '', diag);
     this.watcher.attach(page);
@@ -95,12 +96,13 @@ class DesktopRunner {
     const fl = this._fl();
     let generating = false, footerN = 0, hasBubble = false, txt = '';
     try { generating = await fl.locator(P.stopSignalSelector).first().isVisible(); } catch {}
-    if (P.costSelector) { try { footerN = await fl.locator(P.costSelector).count(); } catch {} }
+    const base = this.dr._completionBaseline();
     try {
       const groups = fl.locator(P.answerGroupSelector || '.chat-group.assistant');
       const n = await groups.count();
-      if (n > 0) {
+      if (n > base.groupCount) {
         const g = groups.nth(n - 1);
+        if (P.costSelector) footerN = await g.locator(P.costSelector).count();
         if (P.answerSelector) hasBubble = (await g.locator(P.answerSelector).count()) > 0;
         txt = (await g.innerText().catch(() => '')).trim();
       }
@@ -159,7 +161,7 @@ class DesktopRunner {
     dr.multiTurn = false;
     await this._focus(); // 前台化，确保输入/发送点击生效
     // 基线：干净对话里回答组/footer 均为 0；供 waitForGenerationStart 判定「本轮新增」。
-    dr._turnBaseline = await dr._captureBaseline();
+    dr._beginTurn(await dr._captureBaseline());
 
     const ctx = dr._ctx();
     // 附件（如有）：附件是测评题目的一部分，必须确认「附件卡片真的挂上」才继续；否则抛错让本条判失败，
@@ -264,7 +266,13 @@ class DesktopRunner {
       await items.nth(i).click({ timeout: 4000 }).catch(() => {});
       await this.watcher._waitSwitchSettled(prev);      // 等内容区切到位（复用观察器）
       const q = await this._readFirstQuery();
-      if (this._matchQuery(q, task.question)) { task.listIndex = i; return true; }
+      if (this._matchQuery(q, task.question)) {
+        task.listIndex = i;
+        this.dr._restoreTurnState(task.turnState);
+        this.dr.label = task.case.caseId;
+        this.dr.frame = this._fl();
+        return true;
+      }
       return false;
     };
     if (task.listIndex != null && await tryIndex(task.listIndex)) return true; // 缓存命中
@@ -474,6 +482,7 @@ class DesktopRunner {
         if (!clean) throw new Error('无法打开干净的新对话');
         t.startTime = Date.now();
         await this._sendOne(t.case);
+        t.turnState = this.dr._captureTurnState();
         t.listIndex = await this._currentSelectedIndex(); // 记录选中条目 index，供阶段2扫列表判完成（不切对话）
         t.status = 'running';
         this._log(`   [${i + 1}/${tasks.length}] 已发送并开始执行：${t.case.caseId}  「${t.question.slice(0, 24)}」`);
@@ -504,12 +513,22 @@ class DesktopRunner {
         if (flag === null) t.listIndex = null;
         const byFlag = (flag === false);
         const byFallback = Date.now() - (t.lastProbeAt || t.startTime) > fallbackMs;
-        if (!byFlag && !byFallback) continue; // 执行中且未到 fallback：不切，跳过（核心：不来回点）
+        const awaitingContinuation = t.turnState?.continuation?.pending || t.turnState?.continuation?.waitingSince != null;
+        if (!byFlag && !byFallback && !awaitingContinuation) continue;
         // 疑似完成 或 到 fallback：切过去 probeState 复查（顺带处理反问/确认弹窗让任务继续）
         const ok = await this._switchToTask(t);
         if (!ok) { this._log(`   ⏳ 暂未定位到任务 ${t.case.caseId}（列表未出齐/标题变动），下轮重试`); t.listIndex = null; continue; }
         t.lastProbeAt = Date.now();
-        try { await this.dr._dismissConfirmDialogs(); } catch {}
+        try {
+          if (await this.dr._dismissConfirmDialogs()) {
+            t.stable = 0; t.lastText = null;
+            continue; // 包括继续工作启动期间：旧回答、旧消费栏都不是完成信号。
+          }
+        } catch (e) {
+          t.errorMsg = e.message.split('\n')[0]; t.completeReason = 'interaction_failed';
+          await this._finishTask(t, onResult);
+          continue;
+        }
         const st = await this._probeState();
         let done = false;
         if (st.footerN > 0 && !st.generating) done = true;
@@ -520,7 +539,18 @@ class DesktopRunner {
         const mark = st.generating ? '执行中' : (done ? '完成' : '…');
         const why = byFlag ? 'flag' : 'fallback';
         this._log(`   🔎 复查 ${t.case.caseId}[${why}] → ${mark}${st.txt ? '：' + st.txt.slice(0, 30).replace(/\s+/g, ' ') : ''}`);
-        if (done) { t.completed = true; t.completeReason = st.footerN > 0 ? 'footer' : 'stable'; await this._finishTask(t, onResult); }
+        if (done) {
+          try {
+            // footer 与续作卡片可能分两次渲染；收尾前再探测一次，避免卡片刚出现就离开。
+            if (!await this.dr._settleCompletion()) { t.stable = 0; t.lastText = null; continue; }
+            const final = await this._probeState();
+            if (final.generating || !(final.footerN > 0 || final.hasBubble && final.txt === st.txt)) continue;
+            t.completed = true; t.completeReason = final.footerN > 0 ? 'footer' : 'stable';
+          } catch (e) {
+            t.errorMsg = e.message.split('\n')[0]; t.completeReason = 'interaction_failed';
+          }
+          await this._finishTask(t, onResult);
+        }
       }
       if (running().length > 0) await this._sleep(patrolInterval);
     }
@@ -537,6 +567,7 @@ class DesktopRunner {
   // 单任务收尾：（已切到该任务/或发送即失败）抓取字段 → 组装 result → 回调回填。
   async _finishTask(t, onResult) {
     if (t.status === 'done' && t.result) return; // 幂等
+    this.dr._restoreTurnState(t.turnState);
     t.endTime = t.endTime || Date.now();
     let out = { answer: '', shareLink: '', artifactShareLink: '', hasArtifact: false,
       reportedDuration: '', reportedDurationRaw: '', beanCost: '', cost: '', costRaw: '', reloadRecoveredFields: [] };

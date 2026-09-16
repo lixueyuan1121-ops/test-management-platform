@@ -143,6 +143,12 @@ async function attachNamiTrace(page) {
         dropped = 0; pollErrors = 0;
       });
     },
+    async beginContinuation() {
+      await enqueue(async () => {
+        await drain(); // 先收齐上一轮，旧文本边界包含缓冲中的 final。
+        gateway.beginContinuation(); browser.beginContinuation();
+      });
+    },
     async buildTrace(runId) {
       return enqueue(async () => {
         await drain(); // 收口前清空页面缓冲，包含最后一帧，不靠固定 sleep 猜测。

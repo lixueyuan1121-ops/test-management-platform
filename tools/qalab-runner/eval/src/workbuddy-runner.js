@@ -23,6 +23,22 @@ function looksIncomplete(answer) {
   return /思考中|生成中|Thinking/i.test(t.slice(-20));
 }
 
+// 按已适配的权限类型选单次授权；InterceptCard 的同名“允许”在不同权限中含义不同。
+const INTERCEPT_APPROVALS = [
+  {
+    name: '批量删除确认',
+    title: /^(检测到批量删除操作|檢測到批次刪除操作|Detected bulk delete operation)/i,
+    allow: /^(允许本次删除|允許本次刪除|Allow this delete)$/i,
+    deny: /^(取消删除|取消刪除|Cancel delete)$/i,
+  },
+  {
+    name: '受保护文件修改确认',
+    title: /^(检测到受保护文件修改|檢測到受保護檔案修改|Detected modification to a protected file)$/i,
+    allow: /^(允许|允許|Allow)$/i,
+    deny: /^(拒绝|拒絕|Deny, keep running in the sandbox)$/i,
+  },
+];
+
 class WorkbuddyRunner {
   constructor(page, workbuddyConfig = {}, executionConfig = {}, logger = null) {
     this.page = page; this.wb = workbuddyConfig; this.execution = executionConfig; this.logger = logger;
@@ -292,20 +308,87 @@ class WorkbuddyRunner {
     return false;
   }
 
-  // 持续处理反问及工作流确认；本轮 footer 稳定出现且没有待处理交互后才收口。
+  async _clearInterceptApproval() {
+    await this._interceptApproval?.element?.dispose().catch(() => {});
+    this._interceptApproval = null;
+  }
+
+  // WorkBuddy InterceptCard：批量删除、受保护文件修改。按卡片标题和明确的单次授权项匹配，
+  // 不复用反问的“默认第一项”规则；同组件也承载其他权限类型。
+  async _handleIntercept() {
+    const selector = this.wb.interceptCardSelector || '[class*="_container_"]:has(> [class*="_optionList_"] > button[class*="_optionItem_"])';
+    const card = this.page.locator(`:is(${selector}):visible`).first();
+    if (!await card.count()) { await this._clearInterceptApproval(); return false; }
+    // 固定当前节点并一次读取快照。提交后卡片可能随时卸载，不能让 locator 等旧节点重现或跳到下一张。
+    const element = await card.elementHandle({ timeout: 300 }).catch(() => null);
+    if (!element) return true;
+    let buttons = [];
+    try {
+      const optionSelector = this.wb.interceptOptionSelector || '[class*="_optionList_"] > button[class*="_optionItem_"]';
+      const snapshot = await element.evaluate((el, sel) => ({
+        connected: el.isConnected,
+        title: el.querySelector('[class*="_header_"] [class*="_title_"]')?.textContent.trim() || '',
+        command: el.querySelector('[class*="_commandInline_"]')?.textContent || '',
+        labels: [...el.querySelectorAll(sel)].map(button => button.getClientRects().length
+          ? button.querySelector('[class*="_optionLabel_"]')?.textContent.trim() || '' : ''),
+      }), optionSelector);
+      const approval = INTERCEPT_APPROVALS.find(rule => rule.title.test(snapshot.title));
+      if (!snapshot.connected || !approval) return true;
+      const allowIndex = snapshot.labels.findIndex(label => approval.allow.test(label));
+      if (allowIndex < 0 || !snapshot.labels.some(label => approval.deny.test(label))) return true;
+      const allowLabel = snapshot.labels[allowIndex];
+      const signature = JSON.stringify([snapshot.title, snapshot.command, snapshot.labels]);
+      const previous = this._interceptApproval;
+      const sameCard = previous && previous.signature === signature
+        && await element.evaluate((el, old) => el === old, previous.element);
+      if (!sameCard) {
+        await this._clearInterceptApproval();
+        this._interceptApproval = { element, signature, attempts: 0, clickedAt: 0 };
+      }
+      const state = this._interceptApproval;
+      buttons = await element.$$(optionSelector);
+      const allow = buttons[allowIndex];
+      if (!allow || !await allow.isVisible() || !await allow.isEnabled() || await allow.getAttribute('aria-busy') === 'true') return true;
+      // 客户端提交期间禁用按钮；提交失败时清掉 optionSelected。只有明确恢复失败态才有限重试。
+      if (state.attempts && /(?:^|\s)_optionSelected_/.test(await allow.getAttribute('class') || '')) return true;
+      if (state.attempts >= (this.wb.interceptMaxAttempts ?? 3)) {
+        throw new Error(`[WORKBUDDY_CONFIRM_FAILED] ${approval.name}提交多次失败，任务未继续`);
+      }
+      if (state.attempts && Date.now() - state.clickedAt < (this.wb.interceptRetryMs ?? 1000)) return true;
+      state.attempts++; state.clickedAt = Date.now();
+      try { await allow.click({ timeout: 2000 }); }
+      catch (e) {
+        if (!await element.evaluate(el => el.isConnected)) return true; // 已被父组件移除，下轮检查任务状态。
+        throw new Error(`[WORKBUDDY_CONFIRM_FAILED] ${allowLabel}点击未确认：${e.message.split('\n')[0]}`);
+      }
+      this._log(`   WorkBuddy ${approval.name}：已点击“${allowLabel}”（第 ${state.attempts} 次提交），等待任务继续`);
+      return true;
+    } finally {
+      for (const button of buttons) await button.dispose().catch(() => {});
+      if (this._interceptApproval?.element !== element) await element.dispose().catch(() => {});
+    }
+  }
+
+  // 持续处理反问、工作流与权限确认；无待处理交互且生成结束后才收口。
   async _waitComplete(baselineFooterCount) {
     const timeout = this.execution.responseTimeout || 180000;
     const deadline = Date.now() + timeout;
     let stableSince = 0;
-    while (Date.now() < deadline) {
-      if (await this._handleQuestion() || await this._handleWorkflow()) stableSince = 0;
-      else if (await this.page.locator(this.wb.footerSelector).nth(baselineFooterCount).isVisible()) {
-        if (!stableSince) stableSince = Date.now();
-        if (Date.now() - stableSince >= 1500) return { completed: true, reason: 'footer' };
-      } else stableSince = 0;
-      await this.page.waitForTimeout(Math.min(500, Math.max(0, deadline - Date.now())));
+    await this._clearInterceptApproval();
+    try {
+      while (Date.now() < deadline) {
+        if (await this._handleIntercept() || await this._handleQuestion() || await this._handleWorkflow()) stableSince = 0;
+        else if (await this.page.locator(`:is(${this.wb.generatingSelector || 'button.cr-send-button--sending, button.cr-send-button--stop'}):visible`).count()) stableSince = 0;
+        else if (await this.page.locator(this.wb.footerSelector).nth(baselineFooterCount).isVisible()) {
+          if (!stableSince) stableSince = Date.now();
+          if (Date.now() - stableSince >= 1500) return { completed: true, reason: 'footer' };
+        } else stableSince = 0;
+        await this.page.waitForTimeout(Math.min(500, Math.max(0, deadline - Date.now())));
+      }
+      return { completed: false, reason: 'timeout' };
+    } finally {
+      await this._clearInterceptApproval();
     }
-    return { completed: false, reason: 'timeout' };
   }
 
   async _dismissShareUi() {

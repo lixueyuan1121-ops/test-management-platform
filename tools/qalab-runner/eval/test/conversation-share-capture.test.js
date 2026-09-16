@@ -9,8 +9,9 @@ function runner({ delayedButton = false, clipboard = true, selected = true, dire
   r._warnShare = msg => stats.warnings.push(msg);
   const button = { first() { return this; }, async waitFor() { if (++stats.buttonWaits === 1 && delayedButton) throw Error('not ready'); }, async click() {} };
   const gen = { first() { return this; }, async waitFor() {}, async click() { stats.generations++; } };
-  r._ctx = () => ({ locator: sel => sel === '#share' ? button : sel === '#generate' ? gen : { count: async () => 0 } });
-  r._liveFrame = () => ({ evaluate: async () => selected });
+  const boxes = { last() { return this; }, locator() { return this; }, count: async () => 0,
+    evaluateAll: async () => ({ allChecked: selected }) };
+  r._ctx = () => ({ locator: sel => sel === '#share' ? button : sel === '#generate' ? gen : boxes });
   r.page = { keyboard: { press: async () => {} }, waitForTimeout: async () => {},
     evaluate: async fn => {
       if (fn.toString().includes('writeText')) { if (!clipboard) throw Error('denied'); return true; }

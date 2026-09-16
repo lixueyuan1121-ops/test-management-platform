@@ -14,4 +14,21 @@ async function ensureAllSelected({ isAllChecked, clickSelectAll, sleep, maxClick
   return clicks;
 }
 
-module.exports = { ensureAllSelected };
+// 在浏览器中执行；Playwright evaluateAll 会穿透开放的 Shadow DOM。
+// 「全部」的横线是部分选中，不能按 SVG 存在或背景为黑色推断全选。
+function shareSelectionState(boxes) {
+  const checked = boxes.map(box => {
+    const native = box.matches('input[type="checkbox"]') ? box : box.querySelector('input[type="checkbox"]');
+    if (native) return native.checked && !native.indeterminate;
+    const aria = box.getAttribute('aria-checked');
+    if (aria !== null) return aria === 'true';
+    if (box.querySelector('line')) return false;
+    return [...box.querySelectorAll('path')].some(path =>
+      /^M4\.5[ ,]+8\.5\s*L6\.5[ ,]+10\.5\s*L11\.5[ ,]+5\.5$/i.test((path.getAttribute('d') || '').trim()));
+  });
+  const toolbar = boxes.findIndex(box => box.closest('.chat-share-panel__toolbar'));
+  const items = boxes.filter(box => box.closest('.chat-share-panel__item'));
+  return { checked, allChecked: toolbar >= 0 && items.length > 0 && checked.every(Boolean) };
+}
+
+module.exports = { ensureAllSelected, shareSelectionState };

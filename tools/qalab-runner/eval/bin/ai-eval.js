@@ -924,6 +924,10 @@ program
       let curRunner = runner;
       let curWsTrace = wsTrace;
       runner.beforeSend = () => curWsTrace.ensureReady();
+      runner.beforeContinueWork = async () => {
+        await curWsTrace.ensureReady();
+        await curWsTrace.beginContinuation();
+      };
       // 按「会话」分组:同一 conversation_group 的多条=同一多轮会话的各轮,归一组、按 turn_index 升序;
       // 单轮(无 group)各自成组。多轮同组各轮将在【同一对话】里顺序连发(轮次0新建、后续轮复用),
       // 而非各自 runOne 新建对话——修正「轮次1 另起新对话、接不上轮次0 上下文」的问题。
@@ -1007,6 +1011,10 @@ program
           curRunner = new DesktopRunner(pool.getContext(), pool.getMainPage(), config.platform, config.execution, logger);
           curWsTrace = pool.getWsTrace();
           curRunner.beforeSend = () => curWsTrace.ensureReady();
+          curRunner.beforeContinueWork = async () => {
+            await curWsTrace.ensureReady();
+            await curWsTrace.beginContinuation();
+          };
         }
         // 附件:平台附件为公开 CDN url,执行前逐轮下到本地、挂到 it._attachmentPaths 供桌面执行器上传。
         // 任一附件下载失败→整组 fail-closed 标记 failed,绝不「缺附件裸跑」污染判定(多轮里缺一轮附件更会连累整段上下文)。
