@@ -170,6 +170,9 @@ export const retryFailedEvalRuns = (payload) => http.post('/eval-queue/retry-fai
 export const listEvalTaskRuns = (id, batchId) => http.get(`/eval-tasks/${id}/runs`, { params: batchId ? { batch_id: batchId } : {} })
 // 任务的执行批次历史(每次执行=一个批次:时间/条数/完成/通过率/均分,倒序);前端下拉切换查看某批
 export const listEvalTaskBatches = (id) => http.get(`/eval-tasks/${id}/batches`)
+export const requestEvalTaskSummary = (id, payload) => http.post(`/eval-tasks/${id}/summarize`, payload, { silent: true })
+export const getEvalTaskSummaryStatus = (id, batchId, signal) => http.get(`/eval-tasks/${id}/summary-status`,
+  { params: batchId ? { batch_id: batchId } : {}, silent: true, signal })
 
 export async function streamEvalTaskSummary(taskId, payload, { onDone, onError, signal, onTick } = {}) {
   try {

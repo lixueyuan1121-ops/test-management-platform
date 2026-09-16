@@ -1734,12 +1734,8 @@ def _render_process(process) -> str:
     return "".join(parts)
 
 
-def build_eval_task_summary_prompt(task_name: str, description: str, items: list[dict]) -> str:
-    """构造「测评任务综合评价」prompt:逐条结果 → 一份 HTML 整理评价。
-
-    items 每条:{title, dimension, prompt, expected, status, verdict, verdict_reason, answer, reason}。
-    答案等长文本走头尾保留截断(与判定同一策略),条目多时单条限额再收紧。
-    """
+def render_eval_summary_items(items: list[dict]) -> str:
+    """共用的逐条证据格式；输入预算由综合评价规划器负责。"""
     per_max = 2400 if len(items) <= 10 else (1200 if len(items) <= 25 else 600)
     lines = []
     for i, it in enumerate(items, 1):
@@ -1763,12 +1759,18 @@ def build_eval_task_summary_prompt(task_name: str, description: str, items: list
                + _clip_keep_ends(json.dumps(it["attachments"], ensure_ascii=False), 1200)
                if it.get("attachments") else "")
         )
-    items_block = "\n\n".join(lines)
+    return "\n\n".join(lines)
+
+
+def build_eval_task_summary_prompt(task_name: str, description: str, items: list[dict], *,
+                                 materials: str | None = None, total_items: int | None = None) -> str:
+    """逐条结果或分段证据摘要 → HTML；两条路径使用相同的报告质量要求。"""
+    items_block = render_eval_summary_items(items) if materials is None else materials
     return f"""针对下面这个对话测评任务的一批执行结果,写一份**综合整理评价**。
 
 任务名:{task_name}
 任务说明:{description or "(无)"}
-用例数:{len(items)}
+用例数:{len(items) if total_items is None else total_items}
 
 各用例执行与判定结果:
 {items_block}

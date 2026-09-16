@@ -189,10 +189,24 @@ class EvalBatchSummary(Base):
     summary_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     detail_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary_progress: Mapped[str | None] = mapped_column(Text, nullable=True)  # 阶段、重试、耗时及错误，JSON
     summary_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
     summary_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     summary_share_code: Mapped[str | None] = mapped_column(String(16), unique=True, nullable=True)
     __table_args__ = (UniqueConstraint("eval_task_id", "batch_id", name="uk_eval_summary_batch"),)
+
+
+class EvalSummaryCheckpoint(Base):
+    """有界分段摘要；相同批次/输入/模型可在失败后续跑，不出现在轻量状态响应中。"""
+    __tablename__ = "eval_summary_checkpoint"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    eval_task_id: Mapped[int] = mapped_column(ForeignKey("eval_task.id", ondelete="CASCADE"))
+    batch_id: Mapped[str] = mapped_column(String(64))
+    source_key: Mapped[str] = mapped_column(String(64))
+    node_key: Mapped[str] = mapped_column(String(64))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    __table_args__ = (UniqueConstraint("eval_task_id", "batch_id", "node_key", name="uk_eval_summary_checkpoint"),)
 
 
 class EvalClientDevice(Base):

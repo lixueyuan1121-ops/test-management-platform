@@ -5,7 +5,9 @@
 """
 import json
 import logging
+import random
 import re
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -168,6 +170,7 @@ def _to_out(task: EvalTask, db: Session, batch_id: str | None = None) -> dict:
         "last_batch_id": task.last_batch_id,
         "summary_html": summary.summary_html,
         "summary_status": summary.summary_status,
+        "summary_progress": summary.summary_progress,
         "summary_provider": summary.summary_provider,
         "summary_at": summary.summary_at.isoformat() if summary.summary_at else None,
         "summary_share_code": summary.summary_share_code,
@@ -774,6 +777,7 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
         q = qmap.get(r.eval_query_id)
         cg = payload.get("compare_group")
         items.append({
+            "run_id": r.id,
             "trial_index": payload.get("trial_index", 1),
             "trial_count": payload.get("trial_count", 1),
             "case_key": payload.get("source_conversation_group") or payload.get("eval_query_id") or r.eval_query_id,
@@ -796,7 +800,8 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
 
 
 def _set_summary_status(session_factory, task_id: int, status: str,
-                        batch_id: str | None = None, generation_token: str | None = None) -> None:
+                        batch_id: str | None = None, generation_token: str | None = None,
+                        **progress) -> None:
     """用【全新 session】把某任务的 summary_status 落终态(running/failed/done)。吞一切异常。
 
     关键:无头综合评价要跑一次长达 AI_TIMEOUT_SECONDS(默认 15min)的 LLM 流,期间若一直
@@ -818,11 +823,15 @@ def _set_summary_status(session_factory, task_id: int, status: str,
             if batch_id is None:  # 兼容任务级状态修复调用
                 t.summary_status = status
             else:
-                from app.services.eval_summary_store import batch_summary, sync_current_summary
+                from app.services.eval_summary_store import batch_summary, sync_current_summary, update_progress
                 row = batch_summary(s, t, batch_id)
                 if row is None or row.generation_token != generation_token:
                     return
                 row.summary_status = status
+                if status in ("failed", "done"):
+                    from datetime import datetime
+                    progress.update(stage=status, finished_at=datetime.now().isoformat())
+                update_progress(row, **progress)
                 sync_current_summary(t, row)
             s.commit()
     except Exception:  # noqa: BLE001
@@ -836,7 +845,8 @@ def _set_summary_status(session_factory, task_id: int, status: str,
 
 
 def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
-                                   provider: str | None = None, session_factory=None) -> dict:
+                                   provider: str | None = None, session_factory=None,
+                                   queued_token: str | None = None) -> dict:
     """无头生成综合评价(供一条龙后台编排调用,无 SSE、无前端连接)。
 
     与 summarize_task 端点同一套素材/prompt/消毒/落库逻辑,只是不流式:累积全文后落
@@ -875,21 +885,62 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
     all_samples, manifest = samples_with_missing(db, batch_id, task.project_id)
     aggregate = {"metrics": outcome_metrics(all_samples), "trial_metrics": trial_metrics(all_samples),
                  "dataset_hash": (manifest or {}).get("dataset_hash")}
-    prompt = claude_runner.build_eval_task_summary_prompt(task_name, task_desc, items)
-    prompt += "\n以下为平台按完整计划分母计算的权威统计；不得用已判样本通过率代替整体成功率。重复执行先题内再题间等权聚合，重试不是新增题目。\n" + json.dumps(aggregate, ensure_ascii=False)
+    from collections import defaultdict
+    from app.services.eval_snapshot import payload_of
+    reported_durations = {item["run_id"]: (item.get("duration_s") or 0) * 1000 for item in items if item.get("run_id")}
+    item_dimensions = {item["run_id"]: item.get("dimension") for item in items if item.get("run_id")}
+
+    def group_metrics(group):
+        durations = [getattr(r, "duration_ms", None) or reported_durations.get(r.id, 0) for r in group]
+        known = [duration for duration in durations if duration > 0]
+        return {**outcome_metrics(group), "duration_samples": len(known),
+                "total_duration_ms": sum(known) if known else None,
+                "avg_duration_ms": round(sum(known) / len(known)) if known else None}
+
+    for field, get_key in (("by_product", lambda r: r.target_engine or "unknown"),
+                           ("by_dimension", lambda r: payload_of(r).get("dimension") or item_dimensions.get(r.id) or "未标注")):
+        groups = defaultdict(list)
+        for sample in all_samples:
+            groups[str(get_key(sample))].append(sample)
+        aggregate[field] = [{"group": key, **group_metrics(group)}
+                            for key, group in sorted(groups.items())]
     try:
         db.rollback()
     except Exception:  # noqa: BLE001
         pass
-    logger.info("无头综合评价开始 task=%s batch=%s provider=%s runs=%d prompt_len=%d",
-                task_id, batch_id, provider_id, len(runs), len(prompt))
+    logger.info("无头综合评价开始 task=%s batch=%s provider=%s runs=%d",
+                task_id, batch_id, provider_id, len(runs))
     # 每批次有独立生成令牌；并发重生成或重试使旧请求无法覆盖新结果。
     import secrets
-    from app.services.eval_summary_store import batch_summary, sync_current_summary, summary_view
+    from app.services.eval_summary_store import batch_summary, sync_current_summary, summary_view, read_progress, update_progress
     from app.api.eval_report import _detail_table_html
-    generation_token = secrets.token_hex(16)
+    generation_token = queued_token or secrets.token_hex(16)
     raw = ""
+    class Superseded(Exception):
+        pass
+
+    class ResultsChanged(Exception):
+        pass
+
+    class ModelFailure(Exception):
+        def __init__(self, message, api_error=False):
+            super().__init__(message)
+            self.api_error = api_error
+
     try:
+        from app.core.config import settings
+        from app.services.eval_summary_plan import SummaryPlan, InputBudget, Digest, DIGEST_SYSTEM, checkpoint_key
+        from app.models.ai_eval import EvalSummaryCheckpoint
+        import hashlib
+        budget = InputBudget(max(12000, min(96000, settings.EVAL_SUMMARY_MAX_INPUT_CHARS)),
+                             max(2, min(40, settings.EVAL_SUMMARY_CHUNK_MAX_ITEMS)))
+        # 模型配置、任务元数据或来源版本变化后，不能继续使用上次的分段摘要。
+        model_config = [provider_id, settings.AI_MODEL, settings.AI_CLAUDE_TRANSPORT,
+                        settings.CLAUDE_MESSAGES_MODEL, settings.CLAUDE_MESSAGES_BASE_URL,
+                        settings.DEEPSEEK_MODEL, settings.DEEPSEEK_BASE_URL]
+        source_key = hashlib.sha256(json.dumps([source_revision, task_name, task_desc, model_config,
+                                               budget.chars, budget.max_items],
+                                              ensure_ascii=False).encode()).hexdigest()
         with sf() as start:
             current = start.query(EvalTask).filter_by(id=task_id).with_for_update().populate_existing().first()
             if current is None:
@@ -897,28 +948,150 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
             if batch_revision(start, task_id, batch_id) != source_revision:
                 return {"skipped": True, "reason": "批次结果已变化，请重新生成评价"}
             row = batch_summary(start, current, batch_id, create=True)
+            if queued_token and row.generation_token != queued_token:
+                return {"skipped": True, "reason": "该批次已重试或重新生成，请查看最新评价"}
+            start.query(EvalSummaryCheckpoint).filter_by(eval_task_id=task_id, batch_id=batch_id).filter(
+                EvalSummaryCheckpoint.source_key != source_key).delete(synchronize_session=False)
+            queued = read_progress(row) if queued_token else {}
             row.generation_token = generation_token
             row.summary_status = "running"
             row.summary_html = None
+            row.summary_at = None
+            row.summary_provider = provider_id
+            update_progress(row, reset=True, stage="waiting_model", started_at=datetime.now().isoformat(),
+                            queued_at=queued.get("queued_at"), job_id=queued.get("job_id"),
+                            attempt=1, retry_count=0, output_chars=0)
             row.detail_html = _detail_table_html(start, summary_view(start, current, batch_id))
             sync_current_summary(current, row)
             start.commit()
-        for evt in engine.stream_generate(
-            task_name,
-            prompt_builder=lambda _p=prompt: _p,
-            system_prompt=claude_runner.EVAL_TASK_SUMMARY_SYSTEM_PROMPT,
-        ):
-            etype = evt.get("type")
-            if etype == "delta":
-                raw += evt["text"]
-            elif etype == "result" and evt.get("text"):
-                raw = evt["text"]
-            elif etype == "error":
-                _set_summary_status(sf, task_id, "failed", batch_id, generation_token)
-                return {"error": evt.get("msg") or "引擎报错"}
+        plan = SummaryPlan(task_name, task_desc, items, aggregate, budget)
+        step = {"phase": "direct" if plan.direct else "analyzing", "chunk_total": len(plan.chunks),
+                "chunk_completed": 0, "reused_chunks": 0, "input_limit_chars": budget.chars,
+                "input_limit_bytes": budget.bytes}
+        _set_summary_status(sf, task_id, "running", batch_id, generation_token, **step)
+        retries = max(0, min(2, settings.EVAL_SUMMARY_API_RETRIES))
+        had_api_error = False
+        retry_count = 0
+
+        def check_current(session, *, verify_revision=False):
+            current = session.query(EvalBatchSummary.generation_token).filter_by(eval_task_id=task_id, batch_id=batch_id).first()
+            if current is None or current.generation_token != generation_token:
+                raise Superseded("该批次已重试或重新生成，请查看最新评价")
+            # 正常重判/删除会作废 generation_token。仅退避后及最终落库重新核对全量内容，
+            # 避免每一小段反复读取整批长 trace，形成 O(分段数 × 整批资料大小) 的数据库负载。
+            if verify_revision and batch_revision(session, task_id, batch_id) != source_revision:
+                raise ResultsChanged("批次结果已变化，请重新生成评价")
+
+        def call_model(prompt, system, label, *, intermediate=False):
+            nonlocal had_api_error, retry_count
+            budget.require(prompt, system)  # 包括中间合并与最终报告，重试也不绕过大小限制。
+            key = checkpoint_key(prompt, system)
+            with sf() as check:
+                check_current(check)
+                cached = check.query(EvalSummaryCheckpoint).filter_by(
+                    eval_task_id=task_id, batch_id=batch_id, source_key=source_key, node_key=key).first() if intermediate else None
+                if cached and cached.content:
+                    step["reused_chunks"] += 1
+                    return budget.digest(cached.content)
+            for attempt in range(retries + 1):
+                with sf() as check:
+                    check_current(check, verify_revision=bool(attempt))
+                _set_summary_status(sf, task_id, "running", batch_id, generation_token,
+                                    stage="waiting_model", attempt=attempt + 1, retry_count=retry_count,
+                                    output_chars=0, step_label=label, input_chars=len(prompt) + len(system) + 1,
+                                    input_bytes=len((system + "\n" + prompt).encode()), **step)
+                logger.info("综合评价模型请求 task=%s batch=%s step=%s attempt=%s prompt_len=%s prompt_bytes=%s",
+                            task_id, batch_id, label, attempt + 1, len(prompt), len(prompt.encode()))
+                output, error, stream, last_progress = "", None, None, 0
+                try:
+                    stream = engine.stream_generate(task_name, prompt_builder=lambda _p=prompt: _p, system_prompt=system)
+                    for evt in stream:
+                        etype = evt.get("type")
+                        if etype == "delta":
+                            output += evt.get("text") or ""
+                        elif etype == "result":
+                            if evt.get("is_error"):
+                                error = evt.get("error") or evt.get("text") or "模型服务返回错误"
+                                break
+                            if evt.get("text"):
+                                output = evt["text"]
+                        elif etype == "error":
+                            error = evt.get("msg") or "引擎报错"
+                            break
+                        if output and time.monotonic() - last_progress >= 2:
+                            _set_summary_status(sf, task_id, "running", batch_id, generation_token,
+                                                stage="generating", output_chars=len(output))
+                            last_progress = time.monotonic()
+                except Exception as exc:  # 模型层 API Error；不重试后处理/数据库异常。
+                    error = f"生成中断:{exc}"
+                finally:
+                    close = getattr(stream, "close", None)
+                    if close:
+                        close()
+                if not error:
+                    break
+                api_error = bool(re.search(r"\bapi\s*error\b", error, re.I))
+                had_api_error = had_api_error or api_error
+                if not api_error or attempt == retries:
+                    raise ModelFailure(f"{label}失败：{error}" if plan.direct is None else error, had_api_error)
+                retry_count += 1
+                delay = 5 * (2 ** attempt) + random.uniform(0, 1)
+                _set_summary_status(sf, task_id, "running", batch_id, generation_token,
+                                    stage="retry_wait", retry_count=retry_count, retry_delay_seconds=round(delay, 1),
+                                    last_error=error, output_chars=0)
+                logger.warning("综合评价 API Error，%.1fs 后重试 %d/%d task=%s batch=%s step=%s: %s",
+                               delay, attempt + 1, retries, task_id, batch_id, label, error[:500])
+                time.sleep(delay)
+            with sf() as check:
+                check_current(check)
+            if intermediate:
+                if not output.strip():
+                    raise ModelFailure(f"{label}未返回有效证据摘要", had_api_error)
+                output = budget.digest(output)
+                with sf() as save:
+                    # 与重新生成/重判的任务级锁保持同一锁顺序。
+                    save.query(EvalTask).filter_by(id=task_id).with_for_update().first()
+                    check_current(save)
+                    row = save.query(EvalSummaryCheckpoint).filter_by(
+                        eval_task_id=task_id, batch_id=batch_id, node_key=key).first()
+                    if row is None:
+                        save.add(EvalSummaryCheckpoint(eval_task_id=task_id, batch_id=batch_id,
+                            source_key=source_key, node_key=key, content=output))
+                    else:
+                        row.source_key, row.content = source_key, output
+                    save.commit()
+            return output
+
+        if plan.direct is not None:
+            raw = call_model(plan.direct, plan.final_system, "综合评价")
+        else:
+            nodes = []
+            for index, group in enumerate(plan.chunks, 1):
+                step["current_chunk"] = index
+                output = call_model(plan.digest_prompt("\n\n".join(group)), DIGEST_SYSTEM,
+                                    f"分段分析 {index}/{len(plan.chunks)}", intermediate=True)
+                nodes.append(Digest(output, len(group)))
+                step["chunk_completed"] = index
+                _set_summary_status(sf, task_id, "running", batch_id, generation_token, **step)
+            level = 0
+            while not budget.fits(plan.final_prompt(nodes), plan.final_system):
+                level += 1
+                groups = plan.merge_groups(nodes)
+                if len(groups) >= len(nodes):
+                    raise ValueError("分段摘要无法在当前预算内继续合并")
+                merged = []
+                for index, group in enumerate(groups, 1):
+                    step.update(phase="merging", merge_level=level, merge_current=index, merge_total=len(groups))
+                    output = call_model(plan.digest_prompt(plan.render_digests(group), merge=True), DIGEST_SYSTEM,
+                                        f"第 {level} 层摘要合并 {index}/{len(groups)}", intermediate=True)
+                    merged.append(Digest(output, sum(node.count for node in group)))
+                nodes = merged
+            step["phase"] = "final"
+            raw = call_model(plan.final_prompt(nodes), plan.final_system, "生成最终综合评价")
         html = claude_runner.extract_html_fragment(raw)
         if not html:
-            _set_summary_status(sf, task_id, "failed", batch_id, generation_token)
+            _set_summary_status(sf, task_id, "failed", batch_id, generation_token,
+                                error="引擎没有产出有效 HTML 评价")
             return {"error": "引擎没有产出有效 HTML 评价"}
         # 终态成功:全新 session 落 summary_html/done/provider/at + 分配短链码。
         from app.api.eval_report import ensure_share_code
@@ -933,11 +1106,14 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
                 return {"skipped": True, "reason": "该批次已重试或重新生成，请查看最新评价"}
             if batch_revision(s2, task_id, batch_id) != source_revision:
                 row.summary_status = "failed"
+                update_progress(row, stage="failed", error="批次结果已变化，请重新生成评价",
+                                finished_at=datetime.now().isoformat())
                 sync_current_summary(t2, row)
                 s2.commit()
                 return {"skipped": True, "reason": "批次结果已变化，请重新生成评价"}
             row.summary_html = _sanitize_html(html)
             row.summary_status = "done"
+            update_progress(row, stage="done", error=None, output_chars=len(raw), finished_at=datetime.now().isoformat())
             row.summary_provider = provider_id
             row.summary_at = datetime.now()
             share_code = ensure_share_code(s2, row)
@@ -948,21 +1124,25 @@ def generate_task_summary_headless(db: Session, task: EvalTask, batch_id: str,
             s2.close()
         logger.info("无头综合评价完成 task=%s batch=%s html_len=%d", task_id, batch_id, html_len)
         return {"ok": True, "share_code": share_code}
+    except Superseded as e:
+        return {"skipped": True, "reason": str(e)}
+    except ResultsChanged as e:
+        _set_summary_status(sf, task_id, "failed", batch_id, generation_token, error=str(e))
+        return {"skipped": True, "reason": str(e)}
+    except ModelFailure as e:
+        _set_summary_status(sf, task_id, "failed", batch_id, generation_token, error=str(e))
+        return {"error": str(e), "api_error": e.api_error}
     except Exception as e:  # noqa: BLE001
         logger.exception("无头综合评价生成失败 task=%s batch=%s", task_id, batch_id)
-        _set_summary_status(sf, task_id, "failed", batch_id, generation_token)
+        _set_summary_status(sf, task_id, "failed", batch_id, generation_token, error=f"生成中断:{e}")
         return {"error": f"生成中断:{e}"}
 
 
 @router.post("/{task_id}/summarize")
 def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
                    db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """SSE 流式生成任务综合评价:汇总该批次逐条结果喂给引擎,产出 HTML 片段落库。
-
-    事件:delta / error / done(含 summary_html)。与 ai_eval.gen_eval_queries 同款 SSE 骨架:
-    生成器在 get_db 关闭后才迭代,故先在函数体内取齐数据,生成器内另开 SessionLocal 落库。
-    """
-    task = db.get(EvalTask, task_id)
+    """按批次入队，原子保存排队状态，重复点击复用尚未完成的任务。"""
+    task = db.query(EvalTask).filter_by(id=task_id).with_for_update().populate_existing().first()
     if not task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
     assert_project_role(db, user, task.project_id, _WRITE_ROLES)
@@ -974,6 +1154,12 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
     bid = body.batch_id or task.last_batch_id
     if not bid:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="任务还没有执行批次,先执行再生成综合评价")
+    from app.services.eval_summary_store import batch_summary, summary_view, sync_current_summary, update_progress
+    current = summary_view(db, task, bid)
+    if current.summary_status in ("queued", "running"):
+        if current.summary_progress.get("job_id"):
+            return ok({"job_id": current.summary_progress["job_id"], "reused": True})
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="该批次正在生成综合评价，请稍后查看结果")
     runs = (db.query(EvalRun)
             .filter(EvalRun.eval_task_id == task.id, EvalRun.batch_id == bid)
             .order_by(EvalRun.id).all())
@@ -989,12 +1175,41 @@ def summarize_task(task_id: int, body: EvalTaskSummarizeIn,
     # 方案2 P3b:改入队。校验通过即建 eval_summary job,返回 {job_id};worker 调无头生成器
     # (generate_task_summary_headless,自管短命 session 抗长跑连接失效),前端轮询 /api/ai-jobs/{id}。
     from app.services import ai_jobs
+    import secrets
+    from datetime import datetime
+    token = secrets.token_hex(16)
     job = ai_jobs.enqueue(
         db, "eval_summary", provider=provider_id, project_id=task.project_id, user_id=user.id,
-        input={"task_id": task.id, "batch_id": bid, "provider": provider_id},
-        ref_kind="eval_task", ref_id=task.id,
+        input={"task_id": task.id, "batch_id": bid, "provider": provider_id, "generation_token": token},
+        ref_kind="eval_task", ref_id=task.id, commit=False,
     )
+    row = batch_summary(db, task, bid, create=True)
+    row.generation_token = token
+    row.summary_status, row.summary_html, row.summary_at = "queued", None, None
+    row.summary_provider = provider_id
+    update_progress(row, reset=True, stage="queued", job_id=job.id,
+                    queued_at=datetime.now().isoformat(), retry_count=0, output_chars=0)
+    sync_current_summary(task, row)
+    db.commit()
+    ai_jobs.notify_new_job()
     return ok({"job_id": job.id})
+
+
+@router.get("/{task_id}/summary-status")
+def get_summary_status(task_id: int, batch_id: str | None = None,
+                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """轻量轮询：不重复读取整批执行结果、trace 或报告正文。"""
+    task = db.get(EvalTask, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
+    assert_project_role(db, user, task.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    from app.services.eval_summary_store import summary_view
+    summary = summary_view(db, task, batch_id)
+    return ok({"task_id": task_id, "status": getattr(task.status, "value", task.status),
+               "pipeline_status": task.pipeline_status, "summary_batch_id": summary.last_batch_id,
+               "summary_status": summary.summary_status, "summary_progress": summary.summary_progress,
+               "summary_at": summary.summary_at.isoformat() if summary.summary_at else None,
+               "summary_provider": summary.summary_provider, "summary_share_code": summary.summary_share_code})
 
 
 def run_eval_summary_job(db: Session, job) -> dict:
@@ -1011,7 +1226,7 @@ def run_eval_summary_job(db: Session, job) -> dict:
         raise ValueError("测评任务不存在")
     sf = sessionmaker(bind=db.get_bind())
     res = generate_task_summary_headless(db, task, inp["batch_id"], provider=inp.get("provider"),
-                                         session_factory=sf)
+                                         session_factory=sf, queued_token=inp.get("generation_token"))
     if res.get("error"):
         raise ValueError(res["error"])
     # 手动生成综合评价完成 → 推推通知(带在线报告链接)。仅手动路径经此 handler;一条龙走

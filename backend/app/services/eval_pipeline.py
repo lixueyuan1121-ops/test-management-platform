@@ -11,6 +11,7 @@
 """
 import logging
 import threading
+from datetime import datetime
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -128,6 +129,8 @@ def _reconcile_stuck_status(session_factory, task_id: int, batch_id: str | None 
         if row and row.summary_status == "running":
             row.summary_status = "failed"
             row.generation_token = None
+            from app.services.eval_summary_store import update_progress
+            update_progress(row, stage="failed", error="生成流程已中断，请重新生成", finished_at=datetime.now().isoformat())
             changed = True
         if changed:
             db.commit()
@@ -156,6 +159,9 @@ def reap_stale_running_on_startup(db: Session) -> dict:
     r2 = db.execute(update(EvalTask).where(EvalTask.pipeline_status == "running")
                     .values(pipeline_status="failed"))
     from app.models.ai_eval import EvalBatchSummary
+    from app.services.eval_summary_store import update_progress
+    for row in db.query(EvalBatchSummary).filter_by(summary_status="running").all():
+        update_progress(row, stage="failed", error="服务重启中断了生成，请重新生成", finished_at=datetime.now().isoformat())
     r3 = db.execute(update(EvalBatchSummary).where(EvalBatchSummary.summary_status == "running")
                     .values(summary_status="failed", generation_token=None))
     n_sum, n_pipe = r1.rowcount or 0, r2.rowcount or 0
@@ -289,14 +295,14 @@ def auto_issue_for_eval_failures(db: Session, task_id: int, project_id: int, bat
 
 
 def _is_busy_error(err) -> bool:
-    """错误是否为「并发槽繁忙」——唯一值得退避重试的临时错误(引擎繁忙消息含「繁忙/并发上限」)。"""
+    """错误是否为「并发槽繁忙」(引擎繁忙消息含「繁忙/并发上限」)。"""
     return bool(err) and ("繁忙" in err or "并发上限" in err)
 
 
 def _summary_with_retry(session_factory, task_id, batch_id):
-    """综合评价生成;**仅**并发繁忙才退避重试。每次用一条短命 session(见 headless 卡死根治)。
+    """综合评价生成；本层仅重试并发繁忙。API Error 由手动/自动共用的 headless 层重试。
 
-    超时/引擎报错/无有效输出等不重试:每次重试都会重新跑一个 AI_TIMEOUT_SECONDS(默认 15min)
+    普通超时/其他引擎报错/无有效输出等不重试:每次重试都会重新跑一个 AI_TIMEOUT_SECONDS(默认 15min)
     硬超时,4 次叠加能把前端「生成中」拖到最长 ~60min(线上实测卡 >15min 即此叠加),且毫无收益。
     provider 固定为 None(= 平台默认引擎 claude),与手动生成综合评价完全一致。
     """
@@ -316,7 +322,7 @@ def _summary_with_retry(session_factory, task_id, batch_id):
                 pass
         if res.get("ok") or res.get("skipped") or "error" not in res:
             break
-        if not _is_busy_error(res.get("error")):
+        if res.get("api_error") or not _is_busy_error(res.get("error")):
             break   # 非繁忙(超时/报错/无输出):重试徒增一个 15min 超时,立即收口
         if _i < _SUMMARY_RETRY - 1:
             _t.sleep(_SUMMARY_RETRY_SLEEP)

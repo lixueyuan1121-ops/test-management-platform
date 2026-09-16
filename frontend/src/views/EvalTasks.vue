@@ -69,9 +69,7 @@
         </el-table-column>
         <el-table-column label="综合评价" width="100" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.summary_status==='done'" type="success" size="small">已生成</el-tag>
-            <el-tag v-else-if="row.summary_status==='running'" type="warning" size="small">生成中</el-tag>
-            <el-tag v-else-if="row.summary_status==='failed'" type="danger" size="small">失败</el-tag>
+            <el-tag v-if="row.summary_status" :type="evalSummaryState(row).type" size="small">{{ evalSummaryState(row).label }}</el-tag>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
@@ -322,14 +320,14 @@
                 <el-button size="small" type="success">重跑失败（{{ failedRunIds.length }}）</el-button>
               </template>
             </el-popconfirm>
-            <el-button v-show="detailTab === 'summary'" size="small" type="primary" :loading="summarizing" :disabled="!canSummarize" @click="genSummary">
-              {{ detail.task.summary_status === 'done' ? '重新生成综合评价' : '生成综合评价' }}
+            <el-button v-show="detailTab === 'summary'" size="small" type="primary" :loading="summaryState.busy" :disabled="!canSummarize || summaryConnectionError" @click="genSummary">
+              {{ summaryState.busy ? summaryState.label : ['done', 'failed'].includes(detail.task.summary_status) ? '重新生成综合评价' : '生成综合评价' }}
             </el-button>
             <el-button v-show="detailTab === 'summary'" size="small" :icon="Download" :disabled="!canExport" @click="exportReport">导出 HTML</el-button>
           </div>
         </div>
 
-        <el-tabs v-model="detailTab" class="detail-tabs"><el-tab-pane label="执行结果" name="results" /><el-tab-pane label="综合评价" name="summary" /></el-tabs>
+        <el-tabs v-model="detailTab" class="detail-tabs"><el-tab-pane label="执行结果" name="results" /><el-tab-pane name="summary"><template #label>综合评价 <el-tag v-if="detail.task.summary_status" :type="summaryState.type" size="small" class="summary-tab-tag">{{ summaryState.label }}</el-tag></template></el-tab-pane></el-tabs>
         </div>
         <section v-show="detailTab === 'results'">
         <!-- A/B 对比批次:按题配对的胜率统计(pass/fail 对比;任一侧未判定/error 计未决) -->
@@ -452,9 +450,8 @@
               <el-button size="small" text @click="copyShareLink">复制链接</el-button>
             </template>
           </div>
-          <pre v-if="summarizing && summaryStream" class="summary-stream">{{ summaryStream }}</pre>
-          <div v-else-if="detail.task.summary_html" class="summary-html" v-html="detail.task.summary_html"></div>
-          <el-empty v-else description="尚未生成综合评价。执行 + 判定完成后点上方「生成综合评价」" :image-size="60" />
+          <EvalSummaryStatus :task="detail.task" :submitting="summarizing" :connection-error="summaryConnectionError" :request-error="summaryRequestError" />
+          <div v-if="!summaryState.busy && detail.task.summary_html" class="summary-html" v-html="detail.task.summary_html"></div>
         </div>
       </div>
     </el-drawer>
@@ -463,12 +460,14 @@
 
 <script setup>
 import EvalArtifactRules from '@/components/EvalArtifactRules.vue'
-import { ref, computed, nextTick, onMounted } from 'vue'
+import EvalSummaryStatus from '@/components/EvalSummaryStatus.vue'
+import { evalSummaryState } from '@/utils/evalSummaryState'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Tickets, Plus, Refresh, InfoFilled, Download, MoreFilled } from '@element-plus/icons-vue'
 import {
   listEvalTasks, createEvalTask, updateEvalTask, deleteEvalTask, runEvalTask, stopEvalTask, listEvalTaskRuns, listEvalTaskBatches,
-  streamEvalTaskSummary, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
+  requestEvalTaskSummary, getEvalTaskSummaryStatus, listEvalQueries, createEvalQueryManual, listMyDevices, listEvalDevices,
   listEvalDimensions, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, markEvalRunFailed, setEvalTaskSchedule, retryEvalRun, retryFailedEvalRuns,
   listEvalEngines,
 } from '@/api'
@@ -562,7 +561,11 @@ const batchJudging = ref(false)
 const batchProgress = ref('')   // 批量判定进度「判定中 done/total」
 const robustJudge = ref(false)
 const summarizing = ref(false)
-const summaryStream = ref('')
+const summaryConnectionError = ref(false)
+const summaryRequestError = ref('')
+const summaryState = computed(() => evalSummaryState(detail.value?.task, summarizing.value))
+let detailRequestId = 0
+let summaryPollRevision = 0
 
 const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : null
 // 详情表:多轮会话聚合成组行树形展开(公共逻辑见 utils/evalRunGroups),单轮原样
@@ -598,7 +601,7 @@ const failedRunIds = computed(() =>
   (detail.value?.runs || []).filter((r) => r.status === 'failed').map((r) => r.run_id))
 const canSummarize = computed(() => {
   const t = detail.value?.task
-  if (!t || !t.last_batch_id || summarizing.value) return false
+  if (!t || !t.last_batch_id || summaryState.value.busy) return false
   const runs = detail.value?.runs || []
   // 至少有一条非 failed 的 run 才开放综合评价
   return runs.some((r) => r.status !== 'failed' && r.status !== 'pending' && r.status !== 'running')
@@ -824,14 +827,16 @@ async function doRun() {
 
 // ── 详情/判定/综合评价 ──
 async function openDetail(row) {
+  const requestId = ++detailRequestId
   detailTab.value = 'results'
   detailVisible.value = true
   detail.value = null
-  summaryStream.value = ''
   selectedBatchId.value = null   // 默认看最新批次
   taskBatches.value = []
   try {
-    detail.value = await listEvalTaskRuns(row.id)
+    const result = await listEvalTaskRuns(row.id)
+    if (requestId !== detailRequestId || !detailVisible.value) return
+    detail.value = result
     await loadBatches(row.id)
   } catch { /* 拦截器已提示 */ }
 }
@@ -839,8 +844,11 @@ async function openDetail(row) {
 async function refreshDetail() {
   if (!detail.value?.task) return
   const tid = detail.value.task.id
+  const requestId = ++detailRequestId
   try {
-    detail.value = await listEvalTaskRuns(tid, selectedBatchId.value || undefined)  // 保持当前查看的批次
+    const result = await listEvalTaskRuns(tid, selectedBatchId.value || undefined)
+    if (requestId !== detailRequestId || !detailVisible.value) return
+    detail.value = result
     await loadBatches(tid)
   } catch { /* 拦截器已提示 */ }
 }
@@ -850,13 +858,16 @@ const selectedBatchId = ref(null)   // null=最新批次
 const taskBatches = ref([])
 
 async function loadBatches(taskId) {
-  try { taskBatches.value = (await listEvalTaskBatches(taskId)).batches || [] } catch { /* 忽略 */ }
+  try {
+    const result = await listEvalTaskBatches(taskId)
+    if (detailVisible.value && detail.value?.task?.id === taskId) taskBatches.value = result.batches || []
+  } catch { /* 忽略 */ }
 }
 
 async function switchBatch(batchId) {
   if (!detail.value?.task) return
   selectedBatchId.value = batchId
-  try { detail.value = await listEvalTaskRuns(detail.value.task.id, batchId) } catch { /* 拦截器已提示 */ }
+  await refreshDetail()
 }
 
 function fmtBatchOption(b) {
@@ -921,21 +932,86 @@ async function retryAllFailed() {
   } catch { /* 拦截器已提示 */ }
 }
 
-function genSummary() {
+async function genSummary() {
   detailTab.value = 'summary'
-  if (!detail.value?.task) return
+  if (!canSummarize.value || summaryConnectionError.value) return
+  const taskId = detail.value.task.id
+  const batchId = detail.value.task.summary_batch_id || selectedBatchId.value || detail.value.task.last_batch_id
+  const viewKey = summaryViewKey.value
   summarizing.value = true
-  summaryStream.value = ''
-  streamEvalTaskSummary(detail.value.task.id, {}, {
-    onDelta: (t) => { summaryStream.value += t },
-    onDone: async (evt) => {
-      summarizing.value = false
-      if (evt.status === 'done') { ElMessage.success('综合评价已生成'); await refreshDetail(); await load() }
-      else ElMessage.error(evt.msg || '生成失败')
-    },
-    onError: (msg) => { summarizing.value = false; ElMessage.error(msg || '生成失败') },
-  })
+  summaryPollRevision++
+  summaryRequestError.value = ''
+  try {
+    await requestEvalTaskSummary(taskId, { batch_id: batchId })
+    // 即使提交期间已关闭详情，列表也会继续跟踪刚入队的任务。
+    applySummaryStatusToList(taskId, { summary_batch_id: batchId, summary_status: 'queued', summary_progress: { stage: 'queued' } })
+    if (summaryViewKey.value !== viewKey) return
+    await refreshDetail()
+  } catch (e) {
+    if (summaryViewKey.value !== viewKey) return
+    summaryRequestError.value = e?.message || '提交失败，请稍后重试'
+    await refreshDetail()
+  } finally {
+    if (summaryViewKey.value === viewKey) { summarizing.value = false; summaryPollRevision++ }
+  }
 }
+
+// 状态来自后端批次记录；刷新或重新打开无需依赖本地 job_id。
+const summaryViewKey = computed(() => detailVisible.value && detail.value?.task
+  ? `${detail.value.task.id}:${selectedBatchId.value || 'latest'}` : '')
+function applySummaryStatusToList(taskId, status) {
+  const row = tasks.value.find(row => row.id === taskId && row.last_batch_id === status.summary_batch_id)
+  if (row) Object.assign(row, status)
+}
+watch(summaryViewKey, (key, _, onCleanup) => {
+  summarizing.value = false
+  summaryRequestError.value = ''
+  summaryConnectionError.value = false
+  if (!key) return
+  const taskId = detail.value.task.id, batchId = selectedBatchId.value || undefined
+  const controller = new AbortController()
+  let stopped = false, timer
+  const poll = async () => {
+    const revision = summaryPollRevision
+    try {
+      const status = await getEvalTaskSummaryStatus(taskId, batchId, controller.signal)
+      if (stopped || revision !== summaryPollRevision) return
+      summaryConnectionError.value = false
+      const task = detail.value.task
+      const reload = status.summary_batch_id !== task.summary_batch_id || (status.summary_status === 'done'
+        && (task.summary_status !== 'done' || task.summary_at !== status.summary_at || !task.summary_html))
+      Object.assign(task, status)
+      if (['queued', 'running', 'failed'].includes(status.summary_status)) task.summary_html = null
+      if (['queued', 'running', 'done'].includes(status.summary_status)) summaryRequestError.value = ''
+      applySummaryStatusToList(taskId, status)
+      if (reload) await refreshDetail()
+    } catch {
+      if (!stopped) summaryConnectionError.value = true
+    } finally {
+      if (!stopped) timer = setTimeout(poll, 3000)
+    }
+  }
+  poll()
+  onCleanup(() => { stopped = true; clearTimeout(timer); controller.abort() })
+})
+
+const activeSummaryList = computed(() => detailVisible.value ? [] : tasks.value.filter(task =>
+  task.last_batch_id && (['queued', 'running'].includes(task.summary_status) || task.pipeline_status === 'running' || task.status === 'running')))
+watch(() => activeSummaryList.value.map(task => `${task.id}:${task.last_batch_id}`).join(','), (key, _, onCleanup) => {
+  if (!key) return
+  const targets = activeSummaryList.value.map(task => ({ id: task.id, batch: task.last_batch_id }))
+  const controller = new AbortController()
+  let stopped = false, timer
+  const poll = async () => {
+    await Promise.allSettled(targets.map(async task => {
+      const status = await getEvalTaskSummaryStatus(task.id, task.batch, controller.signal)
+      if (!stopped) applySummaryStatusToList(task.id, status)
+    }))
+    if (!stopped) timer = setTimeout(poll, 8000)
+  }
+  poll()
+  onCleanup(() => { stopped = true; clearTimeout(timer); controller.abort() })
+})
 
 // 综合评价在线短链:后端 /r/<code> 与本页同源(uvicorn 同源托管),故用当前 origin 拼。
 // 仅 summary_status=done 且有短链码时可用。推推通知里的链接走后端 PLATFORM_BASE_URL(可能是外网基址)。
@@ -1070,11 +1146,7 @@ function exportReport() {
 .summary-sec { border: 1px solid #e4e7ed; border-radius: 8px; padding: 14px 18px; background: #fbfdfe; }
 .summary-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .summary-title { font-weight: 700; color: #1f2d3d; }
-.summary-stream {
-  max-height: 320px; overflow: auto; background: #0f1c2e; color: #7fe7c4;
-  border-radius: 6px; padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-all;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-}
+.summary-tab-tag { margin-left: 6px; }
 /* AI 产出的 HTML 评价:限定样式作用域,基础排版 */
 .summary-html { line-height: 1.7; color: #34495e; font-size: 13px; }
 .summary-html :deep(h2) { font-size: 16px; margin: 14px 0 8px; color: #1f2d3d; border-left: 3px solid #00b386; padding-left: 8px; }

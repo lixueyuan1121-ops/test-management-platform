@@ -708,8 +708,13 @@ def ensure_eval_task_tables() -> None:
     新库 create_all 自带;老库这里显式补表/补列(与 ensure_selector_tables 同款套路)。
     eval_task_id 不加 FK(老库 ALTER 加 FK 在 MySQL 上易因既有数据/引擎设置失败,查询按 id 关联即可)。
     """
-    from app.models.ai_eval import EvalTask
+    from app.models.ai_eval import EvalTask, EvalBatchSummary, EvalSummaryCheckpoint
     EvalTask.__table__.create(bind=engine, checkfirst=True)
+    EvalBatchSummary.__table__.create(bind=engine, checkfirst=True)
+    EvalSummaryCheckpoint.__table__.create(bind=engine, checkfirst=True)
+    if "summary_progress" not in _columns("eval_batch_summary"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE eval_batch_summary ADD COLUMN summary_progress TEXT NULL"))
     cols = _columns("eval_run")
     if cols and "eval_task_id" not in cols:
         with engine.begin() as conn:

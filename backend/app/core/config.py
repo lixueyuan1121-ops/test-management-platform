@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # 模型调用仍受 AI_MAX_CONCURRENCY / DEEPSEEK_MAX_CONCURRENCY 限制（均为每进程）。
     EVAL_JUDGE_CONCURRENCY: int = 4
     EVAL_JUDGE_TRANSIENT_RETRIES: int = 1  # API Error 或无输出的限流/临时错误：最多额外重试次数
+    EVAL_SUMMARY_API_RETRIES: int = 1  # 综合评价遇到 API Error：最多额外重试次数（上限 2）
+    EVAL_SUMMARY_MAX_INPUT_CHARS: int = 48000  # 每次调用含系统提示词；同时限制 UTF-8 字节为字符上限的 2 倍
+    EVAL_SUMMARY_CHUNK_MAX_ITEMS: int = 20  # 达到大小或条数上限即分段，最终汇总也受大小限制
     # gui/e2e 用例生成时注入的语义选择器注册表路径（runner 侧 gui-mcp/selectors.json）。
     # 空则用默认：相对本仓库 tools/qalab-runner/gui-mcp/selectors.json。让 AI 只用库内 key 写 script。
     SELECTORS_PATH: str = ""
