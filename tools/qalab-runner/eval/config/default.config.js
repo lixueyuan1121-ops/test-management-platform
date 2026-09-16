@@ -352,7 +352,10 @@ module.exports = {
   // 全部选择器经 2026-09-07 真机侦察坐实（见 docs/superpowers/specs/2026-09-07-eval-multi-product-workbuddy-design.md §5.3）。
   workbuddy: {
     expectedAgentName: 'WorkBuddy',
-    newTaskSelector: 'text=新建任务',                              // 开新对话
+    // 同一标识覆盖侧栏文字、Mac 收起后的图标、Windows 标题栏图标。
+    newTaskSelector: 'button[data-track-id="agent_new_task_button_clicked"]',
+    newTaskReadySelector: '.wb-home-page',                       // 必须回到空白首页，不能仅以输入框可见判定
+    newTaskTimeout: 5000,
     inputSelector: '[contenteditable="true"][role="textbox"]',    // 输入框
     sendBtnSelector: 'button.cr-send-button',                     // 发送键（也可输入框内 Enter）
     // 模型下拉（挨着语音输入 cr-voice-trigger）
@@ -368,7 +371,7 @@ module.exports = {
     thinkingHeaderSelector: '.cr-collapse__header',
     thinkingTitleSelector: '.cr-collapse__title',                 // 「已完成 Ns」耗时来源
     thinkingContentSelector: '.cr-collapse__content-inner',
-    // 工具证据 = "来源"面板（WorkBuddy 无结构化工具卡）
+    // DOM 来源面板补充引用；真实工具参数/返回从“复制 message”结构化数据采集。
     sourcesTriggerSelector: '.artifact-slot-panel__sources',
     sourcesCountSelector: '.artifact-slot-panel__source-count',
     sourcesPanelTitleSelector: '.sources-panel__title',          // 「引用来源 (N)」

@@ -218,7 +218,8 @@ async function mountShare({ failFirst = false, neverCopy = false, autoClose = fa
   await page.setContent(`
     <div class="assistantFeedback"><button aria-label="分享" onclick="openShare()">分享</button></div>
     <button class="wb-share-channel-btn" style="display:none" onclick="window.wrong=true">复制链接</button>
-    <button id="new-task" onclick="window.newTasks++;">新建任务</button>
+    <button id="new-task" data-track-id="agent_new_task_button_clicked" onclick="window.newTasks++;">新建任务</button>
+    <div class="wb-home-page">新建任务首页</div>
     <div contenteditable="true" role="textbox" onkeydown="if(event.key==='Enter')window.sent++"></div>
     <script>
       window.opens=0; window.closes=0; window.copies=0; window.sent=0; window.newTasks=0;
@@ -341,13 +342,8 @@ test('分享底栏遗留时，新任务和同会话下一轮都先关闭再发�
 test('无法点击新建任务时明确失败，不默默复用旧会话', async () => {
   await mountShare();
   runner.wb.newTaskSelector = '#missing-task';
-  // 只替换该 locator 的点击超时，仍在真实 DOM 上验证丢失入口。
-  const locate = page.locator.bind(page);
-  page.locator = (sel, ...args) => {
-    const loc = locate(sel, ...args);
-    if (sel === '#missing-task') loc.first = () => ({ click: () => locate(sel).click({ timeout: 100 }) });
-    return loc;
-  };
+  runner.wb.newTaskTimeout = 100;
+  await page.locator('#new-task').evaluate(el => el.remove());
   await assert.rejects(runner._openCleanConversation(), /Timeout/);
   assert.equal(await page.evaluate(() => sent), 0);
 });

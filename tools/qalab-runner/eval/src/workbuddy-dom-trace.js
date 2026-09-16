@@ -1,6 +1,6 @@
 // src/workbuddy-dom-trace.js
 // WorkBuddy DOM 轨迹抓取器：WorkBuddy 对话走主进程 HTTP（渲染进程 CDP 截不到流），
-// 故从 DOM 抓 thinking/tool_calls/artifacts/answer + footer 元信息，规整成与 ws-trace.js::buildTrace 同结构，
+// 故从 DOM 抓回答、思考、耗时，结合“复制 message”的真实工具记录，规整成后端 trace 结构，
 // 让后端判定层零改动复用。对外接口（buildTrace/reset）与 ws-trace 的 collector 对齐，供 reportRun 无缝调用。
 //
 // 2026-09-07 真机侦察坐实（Task 1）：
@@ -8,10 +8,11 @@
 //   - 思考区是 cr-collapse 折叠组件（header .cr-collapse__title「已完成 Ns」，内容 .cr-collapse__content-inner，
 //     默认折叠、内容懒渲染 → 抓前需点开 header）
 //   - 耗时在思考折叠头「已完成 Ns」（不在 footer）
-//   - 工具调用无结构化卡片，呈现为"来源"面板：触发 .artifact-slot-panel__sources，
+//   - DOM 引用来源面板：触发 .artifact-slot-panel__sources，
 //     展开后 .sources-panel（标题 .sources-panel__title「引用来源 (N)」，条目 .sources-panel__list）
 //   - 消耗+模型在 .conversation-finished-footer
-const { _isMcp, _mcpServer, sanitizeDialogText } = require('./ws-trace');
+const { sanitizeDialogText } = require('./ws-trace');
+const { parseWorkbuddyMessage } = require('./workbuddy-message');
 
 // 折叠头「已完成 …」完成标记:「已完成」后跟数字(可隔空格/冒号),兼容「已完成 42s」「已完成 2分43秒」
 // 「已完成 1小时2分3秒」等所有时长形态。检测(轮询/选耗时 title)与解析(parseDuration)统一用它,
@@ -104,37 +105,60 @@ const SEL = {
 };
 
 class WorkbuddyDomTrace {
-  constructor(sel = {}) { this.sel = { ...SEL, ...sel }; this._data = this._empty(); }
+  constructor(sel = {}) { this.sel = { ...SEL, ...Object.fromEntries(Object.entries(sel).filter(([, value]) => value)) }; this._data = this._empty(); }
   _empty() { return { session_id: null, thinking: '', tool_calls: [], artifacts: [], answer: '', beanCost: '', model: '', reportedDuration: '', reportedDurationRaw: '', shareLink: '' }; }
   reset() { this._data = this._empty(); }
   // 对话分享链接由 runner 抓取(点分享→复制链接→读剪贴板)后塞入,buildTrace 一并回写。
   setShareLink(url) { this._data.shareLink = url || ''; }
+  setExecutionError(error) { this._data.executionError = error; }
+  mergeRawMessage(raw) {
+    const parsed = parseWorkbuddyMessage(raw);
+    this._data.rawMessageCaptured = !!parsed;
+    if (!parsed) return false;
+    this._data.session_id = parsed.session_id;
+    this._data.requestId = parsed.request_id;
+    if (parsed.thinking) this._data.thinking = parsed.thinking;
+    if (!this._data.answer) this._data.answer = parsed.answer;
+    this._data.tool_calls = parsed.tool_calls;
+    return true;
+  }
 
   // 抓「本轮」DOM。先尝试点开思考折叠、点开来源面板（懒渲染），再读。
   async captureTurn(page) {
     const sel = this.sel;
+    const turnSelector = '.cr-agent[data-message-id], [data-message-request-id]';
+    const current = page.locator(`:is(${turnSelector}):visible`).last();
+    const scope = await current.count() ? current : page; // 新 UI 按轮容器隔离；旧 UI 保留选择器兼容。
     // 0) 等"已完成 Ns"折叠头出现(耗时来源):footer 出现后该折叠头仍可能延迟渲染/定值,
     //    短轮询最多 5s,避免抓耗时过早拿到空(真机坐实:会话静止后才稳定出 "已完成 Ns")。
     //    ⚠️ 本轮可能有多个 cr-collapse(如「已完成 15s」+「深度思考」),耗时不一定在最后一个,
     //    故遍历所有 title、任一匹配即收(不能只看 .last())。
     try {
       for (let i = 0; i < 10; i++) {
-        const titles = await page.locator(sel.thinkingTitle).allInnerTexts().catch(() => []);
+        const titles = await scope.locator(sel.thinkingTitle).allInnerTexts().catch(() => []);
+        if (!titles.length) break;
         if (titles.some(t => DONE_MARKER_RE.test(t || ''))) break;
         await page.waitForTimeout(500);
       }
     } catch (_) {}
     // 1) 展开思考折叠（若存在且折叠）——内容懒渲染，不展开读不到。多个折叠全部展开,确保思考正文渲染。
     try {
-      const headers = page.locator(sel.thinkingHeader);
+      const headers = scope.locator(sel.thinkingHeader);
       const n = await headers.count();
-      for (let i = 0; i < n; i++) { await headers.nth(i).click({ timeout: 1500 }).catch(() => {}); }
+      for (let i = 0; i < n; i++) {
+        const header = headers.nth(i);
+        const expanded = await header.evaluate((el, s) => {
+          const body = el.closest(s.thinkingCollapse)?.querySelector(s.thinkingContent);
+          return body && body.getClientRects().length && getComputedStyle(body).visibility !== 'hidden';
+        }, sel);
+        if (!expanded) await header.click({ timeout: 1500 }).catch(() => {});
+      }
       if (n) await page.waitForTimeout(500);
     } catch (_) {}
     // 2) 展开"来源"面板（若存在）——抓引用来源作工具证据
     let sourcesText = '';
     try {
-      const trig = page.locator(sel.sourcesTrigger).last();
+      const trig = scope.locator(sel.sourcesTrigger).last();
       if (await trig.count()) {
         await trig.click({ timeout: 2000 }).catch(() => {});
         await page.waitForTimeout(600);
@@ -143,18 +167,25 @@ class WorkbuddyDomTrace {
         // 读来源计数标题「引用来源 (N)」
         const titleEl = page.locator(sel.sourcesPanelTitle).last();
         if (await titleEl.count()) { const t = await titleEl.innerText().catch(() => ''); if (t) sourcesText = `${t}\n${sourcesText}`.trim(); }
-        await page.keyboard.press('Escape').catch(() => {});  // 关面板
       }
     } catch (_) {}
+    finally {
+      // 来源面板不一定响应 Escape；限定关闭来源面板，不能误点其他确认窗口。
+      const close = page.locator('.sources-panel__close:visible').first();
+      if (await close.count()) await close.click({ timeout: 1500 }).catch(() => {});
+      await page.keyboard.press('Escape').catch(() => {});
+    }
 
-    const d = await page.evaluate(({ sel, doneMarkerSrc }) => {
+    const d = await page.evaluate(({ sel, doneMarkerSrc, turnSelector }) => {
       const doneRe = new RegExp(doneMarkerSrc);
       const txt = (el) => el ? (el.innerText || '').trim() : '';
-      const answers = Array.from(document.querySelectorAll(sel.answer));
+      const turns = [...document.querySelectorAll(turnSelector)].filter(el => el.getClientRects().length);
+      const root = turns.at(-1) || document;
+      const answers = Array.from(root.querySelectorAll(sel.answer)).filter(el => !el.closest(sel.thinkingCollapse));
       const answer = answers.length ? txt(answers[answers.length - 1]) : '';       // 最后一条 assistant 正文 = 本轮
       // 思考：本轮可能有多个折叠(如「已完成 15s」+「深度思考」)。耗时 title 在其中一个、
       // 不一定是最后一个 → 遍历所有折叠:耗时取首个匹配「已完成 …」的 title;思考正文合并所有折叠内容。
-      const collapses = Array.from(document.querySelectorAll(sel.thinkingCollapse));
+      const collapses = Array.from(root.querySelectorAll(sel.thinkingCollapse));
       const collapseTitles = [];
       let collapseTitle = '';
       const thinkParts = [];
@@ -169,15 +200,15 @@ class WorkbuddyDomTrace {
       if (!collapseTitle && collapses.length) collapseTitle = txt(collapses[collapses.length - 1].querySelector(sel.thinkingTitle));
       const thinking = thinkParts.join('\n');
       // 本轮整条消息文本:耗时若不在 cr-collapse(真机待确认场景)时的兜底候选来源。
-      const msgEls = sel.messageContent ? Array.from(document.querySelectorAll(sel.messageContent)) : [];
+      const msgEls = sel.messageContent ? Array.from(root.querySelectorAll(sel.messageContent)) : [];
       const messageText = msgEls.length ? txt(msgEls[msgEls.length - 1]) : '';
       // 来源计数（用于判断是否用了检索工具）
-      const cntEl = document.querySelector(sel.sourcesCount);
+      const cntEl = root.querySelector(sel.sourcesCount);
       const sourcesCountText = txt(cntEl);
       const footers = Array.from(document.querySelectorAll(sel.footer));
       const footerText = footers.length ? txt(footers[footers.length - 1]) : '';
       return { answer, thinking, collapseTitle, collapseTitles, messageText, sourcesCountText, footerText };
-    }, { sel, doneMarkerSrc: DONE_MARKER_RE.source });
+    }, { sel, doneMarkerSrc: DONE_MARKER_RE.source, turnSelector });
 
     const footer = parseFooter(d.footerText);
     this._data.answer = sanitizeDialogText(d.answer || '');
@@ -188,19 +219,11 @@ class WorkbuddyDomTrace {
     const dur = pickDurationSeconds({ titles: d.collapseTitles || [d.collapseTitle], messageText: d.messageText });
     this._data.reportedDuration = dur.seconds;
     this._data.reportedDurationRaw = dur.raw;
-    // 工具证据：WorkBuddy 无结构化工具卡，把"来源"面板规整成一条 web_search 工具调用（决策：抓来源作工具证据）。
-    // name=web_search，result_text=来源列表/计数；original_tool_name/args 留空（拿不到 MCP 工具名/参数，属产品形态固有差异）。
+    // 来源只证明存在引用，不能伪装成一次已成功的 web_search 调用。
+    // 真正的调用、参数和结果由 mergeRawMessage 补齐。
     this._data.tool_calls = [];
-    const hasSources = /来源|引用来源|搜索技术支持/.test(d.footerText || '') || (sourcesText && sourcesText.trim());
-    if (hasSources) {
-      this._data.tool_calls.push({
-        tool_call_id: '_dom_sources', name: 'web_search', original_tool_name: '',
-        is_mcp: false, mcp_server: null, args: undefined,
-        result_text: (sourcesText || d.sourcesCountText || '（有来源但未展开到条目）').trim(),
-        reached_result: true,
-      });
-    }
-    // artifacts：本轮暂不抓产物卡（Task 1 该场景无产物；产物选择器待后续触发型场景补，此处留空数组占位）。
+    this._data.sourcesText = sourcesText || d.sourcesCountText || '';
+    // 工具返回中的文件路径保留在 result_text 中；没有实际读取产物时不宣称已验证文件。
     this._data.artifacts = [];
   }
 
@@ -213,6 +236,10 @@ class WorkbuddyDomTrace {
       reported_duration: this._data.reportedDuration, reported_duration_raw: this._data.reportedDurationRaw,
       bean_cost: this._data.beanCost, model: this._data.model,
       share_link: this._data.shareLink || null,
+      request_id: this._data.requestId || null,
+      raw_message_captured: !!this._data.rawMessageCaptured,
+      sources_text: this._data.sourcesText || '',
+      execution_error: this._data.executionError || null,
     };
   }
 }

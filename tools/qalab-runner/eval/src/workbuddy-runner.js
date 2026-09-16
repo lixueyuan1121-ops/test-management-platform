@@ -5,6 +5,7 @@ const { readSelection, verifySelection, configError, normalize } = require('./di
 const { WorkbuddyDomTrace } = require('./workbuddy-dom-trace');
 const { setClipboardFiles } = require('./clipboard-file');
 const { randomUUID } = require('crypto');
+const { parseWorkbuddyMessage } = require('./workbuddy-message');
 
 function workbuddyShareUrl(text) {
   for (const candidate of String(text || '').match(/https?:\/\/[^\s"'<>]+/g) || []) {
@@ -43,12 +44,40 @@ class WorkbuddyRunner {
   getDomTrace() { return this.trace; }
 
   async _openCleanConversation() {
-    if (!(await this._dismissShareUi())) throw new Error('分享底栏未关闭，无法新建任务');
-    const nt = this.page.locator(this.wb.newTaskSelector).first();
-    await nt.click({ timeout: 10000 });  // 点击失败必须报错，不能把下一题发进上一会话
-    await this.page.waitForTimeout(1200);
-    await this.page.locator(this.wb.inputSelector).first().waitFor({ state: 'visible', timeout: 15000 });
-    return true;
+    const timeout = this.wb.newTaskTimeout || 5000;
+    let failure;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (!(await this._dismissShareUi())) throw new Error('分享底栏未关闭');
+        await this.page.keyboard.press('Escape'); // 收起上轮复制菜单，不点击授权/确认弹窗。
+        const stable = this.page.locator('button[data-track-id="agent_new_task_button_clicked"]:visible');
+        let button = stable.first();
+        // 保留旧客户端/自定义选择器兼容，但绝不选择隐藏的第一个匹配项。
+        if (!(await stable.count()) && this.wb.newTaskSelector) {
+          const candidates = this.page.locator(this.wb.newTaskSelector);
+          for (let i = 0; i < await candidates.count(); i++) {
+            if (await candidates.nth(i).isVisible()) { button = candidates.nth(i); break; }
+          }
+        }
+        await button.click({ timeout });
+        await this.page.waitForFunction(({ input, home, footer, messages }) => {
+          const visible = el => el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+          const editor = [...document.querySelectorAll(input)].find(visible);
+          if (!editor || ![...document.querySelectorAll(home)].some(visible)) return false;
+          if ([...document.querySelectorAll(`${footer}, ${messages}`)].some(visible)) return false;
+          const copy = editor.cloneNode(true);
+          copy.querySelectorAll('[data-slate-placeholder]').forEach(el => el.remove());
+          return !copy.textContent.replace(/[\s\u200b\ufeff]/g, '') && !copy.querySelector('[data-content-block-meta-type="file"]');
+        }, { input: this.wb.inputSelector, home: this.wb.newTaskReadySelector || '.wb-home-page',
+          footer: this.wb.footerSelector, messages: '[data-message-request-id], [id^="user-message-"]' }, { timeout });
+        return true;
+      } catch (error) {
+        failure = error;
+        this._warn(`   WorkBuddy 新建任务第 ${attempt + 1} 次失败：${error.message}`);
+      }
+    }
+    // 只在发送前重试导航；失败不能继续输入，更不能把题目发进上一条任务。
+    throw new Error(`[WORKBUDDY_NEW_TASK] 无法确认空白会话：${failure.message}`);
   }
 
   // WorkBuddy 5.5.6 的整行文本还含优惠标签和积分倍率，只比较名称节点。
@@ -368,26 +397,25 @@ class WorkbuddyRunner {
     if (!moreSel || !itemSel) return '';
     try {
       try { await this.page.context().grantPermissions(['clipboard-read', 'clipboard-write']); } catch (_) {}
-      const more = this.page.locator(moreSel).last();   // 最后一条消息的更多操作
+      const more = this.page.locator(`:is(${moreSel}):visible`).last();
       if (!(await more.count())) return '';
-      await this.page.evaluate(() => navigator.clipboard.writeText('__WB_MSG_SENTINEL__')).catch(() => {});
-      await more.hover().catch(() => {});                // 先 hover(级联菜单靠真实指针)
-      await this.page.waitForTimeout(300);
-      await more.click({ timeout: 5000 }).catch(() => {});
-      await this.page.waitForTimeout(800);
-      const item = this.page.locator(itemSel, { hasText: itemText }).first();
-      if (!(await item.count())) { await this.page.keyboard.press('Escape').catch(() => {}); return ''; }
-      await item.click({ timeout: 5000 }).catch(() => {});
-      let clip = '__WB_MSG_SENTINEL__';
-      for (let i = 0; i < 16; i++) {
-        await this.page.waitForTimeout(500);
-        try { clip = await this.page.evaluate(() => navigator.clipboard.readText()); } catch (_) {}
-        if (clip && clip !== '__WB_MSG_SENTINEL__') break;
+      const sentinel = `__WB_MSG_${randomUUID()}__`;
+      await this.page.evaluate(value => navigator.clipboard.writeText(value), sentinel);
+      const timeout = this.wb.messageClickTimeout || 3000;
+      await more.hover({ timeout });
+      await more.click({ timeout });
+      const item = this.page.locator(`:is(${itemSel}):visible`).filter({ hasText: itemText }).first();
+      await item.click({ timeout });
+      const deadline = Date.now() + (this.wb.messageCopyTimeout || 5000);
+      while (Date.now() < deadline) {
+        const clip = await this.page.evaluate(() => navigator.clipboard.readText());
+        if (clip !== sentinel && parseWorkbuddyMessage(clip)) return String(clip);
+        await this.page.waitForTimeout(100);
       }
-      await this.page.keyboard.press('Escape').catch(() => {});
-      if (!clip || clip === '__WB_MSG_SENTINEL__') { this._warn('   复制 message:点后剪贴板未更新'); return ''; }
-      return String(clip);
+      this._warn('   复制 message：未获得本轮有效结构化消息');
+      return '';
     } catch (e) { this._warn(`   抓复制 message 失败: ${(e.message || '').split('\n')[0]}`); return ''; }
+    finally { await this.page.keyboard.press('Escape').catch(() => {}); }
   }
 
   _buildResult(testCase, trace, meta) {
@@ -404,7 +432,7 @@ class WorkbuddyRunner {
       answer: meta.errorMsg ? `[执行失败] ${meta.errorMsg}` : success ? answerText : `[未完成:${meta.completeReason}]`,
       rawMessage: meta.rawMessage || null,
       executionConfig: testCase.executionConfig || null,
-      errorCode: meta.errorMsg?.startsWith('[CONFIG_ERROR]') ? 'CONFIG_ERROR' : null,
+      errorCode: meta.errorMsg?.match(/^\[([A-Z_]+)\]/)?.[1] || null,
       errorMessage: meta.errorMsg || null,
       shareLink: trace.share_link || null, artifactShareLink: (trace.artifacts[0] && trace.artifacts[0].share_link) || null,
       hasArtifact: trace.artifacts.length > 0,
@@ -420,18 +448,23 @@ class WorkbuddyRunner {
   async runOne(testCase) {
     const startTime = Date.now();
     this.trace.reset();
+    let stage = '新建任务';
     try {
       await this._openCleanConversation();
       const baseline = await this._footerCount();
+      stage = '配置模型与发送';
       await this._sendOne(testCase);
+      stage = '等待回答';
       const done = await this._waitComplete(baseline);
+      stage = '采集结果';
       await this.trace.captureTurn(this.page);
       const rawMessage = done.completed ? await this._captureRawMessage() : '';
+      this.trace.mergeRawMessage(rawMessage);
       if (done.completed) this.trace.setShareLink(await this._captureShareLink());
       const trace = this.trace.buildTrace(testCase.run_id);
       return this._buildResult(testCase, trace, { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now(), rawMessage });
     } catch (e) {
-      const msg = (e.message || '').split('\n')[0];
+      const msg = this._executionError(e, stage);
       return this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: false, completeReason: 'exception', errorMsg: msg, startTime, endTime: Date.now() });
     }
   }
@@ -443,29 +476,44 @@ class WorkbuddyRunner {
     for (let i = 0; i < sorted.length; i++) {
       const testCase = sorted[i]; const startTime = Date.now();
       if (aborted) {
+        this.trace.reset(); // 跳过的轮次不能回传上一轮的工具、回答和分享链接。
         const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: false, completeReason: 'skipped', errorMsg: abortMsg, startTime, endTime: Date.now() });
         results.push(r); if (onTurnDone) await onTurnDone(r, testCase).catch(() => {}); continue;
       }
+      let stage = '新建任务';
       try {
         this.trace.reset();
         if (i === 0) { await this._openCleanConversation(); }
         const baseline = await this._footerCount();
+        stage = '配置模型与发送';
         await this._sendOne(testCase);                 // 后续轮不新建对话，在同一对话追加
+        stage = '等待回答';
         const done = await this._waitComplete(baseline);
+        stage = '采集结果';
         await this.trace.captureTurn(this.page);
         const rawMessage = done.completed ? await this._captureRawMessage() : '';
+        this.trace.mergeRawMessage(rawMessage);
         if (done.completed) this.trace.setShareLink(await this._captureShareLink());
         const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: done.completed, completeReason: done.reason, errorMsg: null, startTime, endTime: Date.now(), rawMessage });
         results.push(r); if (onTurnDone) await onTurnDone(r, testCase).catch(() => {});
         if (!done.completed) { aborted = true; abortMsg = '上一轮未完成，后续轮跳过，避免在反问或生成中追加任务'; }
       } catch (e) {
-        const msg = (e.message || '').split('\n')[0];
+        const msg = this._executionError(e, stage);
         const r = this._buildResult(testCase, this.trace.buildTrace(testCase.run_id), { completed: false, completeReason: 'exception', errorMsg: msg, startTime, endTime: Date.now() });
         results.push(r); if (onTurnDone) await onTurnDone(r, testCase).catch(() => {});
-        if (i === 0) { aborted = true; abortMsg = '首轮失败,多轮上下文未建立,后续轮跳过'; }
+        aborted = true; abortMsg = `上一轮执行失败（${stage}），后续轮跳过，避免上下文错位`;
       }
     }
     return results;
+  }
+
+  _executionError(error, stage) {
+    // 保留 Playwright actionability 的 Call log，否则“10 秒超时”无法区分缺按钮、遮挡和禁用。
+    const detail = String(error.message || error).replace(/\u001b\[[0-9;]*m/g, '').slice(0, 6000);
+    this._warn(`   WorkBuddy ${stage}失败：${detail}`);
+    this.trace.setExecutionError({ stage, detail });
+    const code = detail.match(/^\[([A-Z_]+)\]/)?.[1];
+    return `${code ? `[${code}] ` : ''}${stage}失败：${detail.replace(/^\[[A-Z_]+\]\s*/, '')}`;
   }
 }
 module.exports = { WorkbuddyRunner };
