@@ -380,6 +380,7 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
     判定/综合评价均用平台默认引擎(provider=None,即 claude),与手动判定/手动综合评价完全一致。
     """
     from app.api.eval_judge import _run_batch_judge
+    from app.services.eval_judge_queue import BatchSuperseded
     from app.services import notify
     from datetime import datetime
 
@@ -408,13 +409,17 @@ def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str,
     # 步骤 2:批量判定(复用 eval_judge 内部逻辑;provider=None 与手动批量判定同引擎)
     db = session_factory()
     try:
-        judged = _run_batch_judge(db, project_id, batch_id, provider=None)
+        judged = _run_batch_judge(db, project_id, batch_id, provider=None, task_id=task_id)
         notify.notify_eval_pipeline(task_name, project_id, "✅ 已完成批量判定",
                                     [f"已判定 {judged} 条,开始生成综合评价…"], COLOR_BLUE)
+    except BatchSuperseded:
+        return
     except Exception as e:  # noqa: BLE001
         logger.exception("一条龙批量判定失败 task=%s", task_id)
         notify.notify_eval_pipeline(task_name, project_id, "⚠️ 批量判定出错",
-                                    [f"原因:{e}", "跳过判定,继续综合评价…"], "orange")
+                                    [f"原因:{e}", "已完成判定已保存；本次不生成综合评价，请完成剩余判定后重试。"], "orange")
+        _reconcile_stuck_status(session_factory, task_id, batch_id)
+        return
     finally:
         db.close()
 

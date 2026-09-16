@@ -44,7 +44,7 @@ class _FakeEngine:
         yield {"type": "delta", "text": "<h2>总体结论</h2><p>整体表现良好</p>"}
 
 
-def _fake_run_batch_judge(db, project_id, batch_id, provider=None):
+def _fake_run_batch_judge(db, project_id, batch_id, provider=None, *, task_id=None):
     rows = db.query(EvalRun).filter(EvalRun.batch_id == batch_id,
                                     EvalRun.status == EvalRunStatus.done).all()
     for i, r in enumerate(rows):

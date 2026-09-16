@@ -179,9 +179,18 @@ def test_drain_once_consumes():
 
 
 def test_pool_start_stop_smoke():
-    # 空队列起停:worker 起来等事件、stop 后退出,不抛、不挂
-    ai_jobs.start_pool(2, factory=_Session)
-    ai_jobs.stop_pool()
+    # 真实多线程不能共用 StaticPool 的同一条 SQLite 连接，使用独立文件库。
+    import tempfile
+    with tempfile.TemporaryDirectory() as folder:
+        engine = create_engine(f"sqlite:///{folder}/pool.db", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        try:
+            ai_jobs.start_pool(2, factory=sessionmaker(bind=engine), judge_size=4)
+            assert len(ai_jobs._threads) == 6
+        finally:
+            ai_jobs.stop_pool()
+            engine.dispose()
+        assert not ai_jobs._threads
     print("OK pool start/stop smoke")
 
 

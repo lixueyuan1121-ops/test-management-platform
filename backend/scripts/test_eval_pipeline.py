@@ -42,7 +42,7 @@ _judge_calls = []            # 记录批量判定调用
 _summary_result = {"ok": True}   # 可切换成 error 测「不阻断」
 
 
-def _fake_run_batch_judge(db, project_id, batch_id, provider=None):
+def _fake_run_batch_judge(db, project_id, batch_id, provider=None, *, task_id=None):
     _judge_calls.append(batch_id)
     # 模拟判定:把该批 done → judged 并给 verdict/score
     rows = db.query(EvalRun).filter(EvalRun.batch_id == batch_id,

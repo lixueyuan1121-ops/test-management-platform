@@ -62,8 +62,12 @@ class Settings(BaseSettings):
     AI_SHARD_CONCURRENCY: int = 5
     # 超限时最多排队等待多久拿槽(秒);超时才报「繁忙」。0=不等(旧「立即拒绝」行为)。
     AI_ACQUIRE_TIMEOUT_SECONDS: int = 600
-    # AI 任务队列(方案2)worker 池线程数=并发上限。多余任务排队而非拒绝。claude 每任务 fork 子进程,勿过大。
+    # 除测评判定之外的 AI job 工作线程数。判定使用下面的独立线程池。
     AI_WORKER_CONCURRENCY: int = 2
+    # 判定独立消费队列；手动/自动批次共享此上限，不占用其他 AI job 的工作线程。
+    # 模型调用仍受 AI_MAX_CONCURRENCY / DEEPSEEK_MAX_CONCURRENCY 限制（均为每进程）。
+    EVAL_JUDGE_CONCURRENCY: int = 4
+    EVAL_JUDGE_TRANSIENT_RETRIES: int = 1  # API Error 或无输出的限流/临时错误：最多额外重试次数
     # gui/e2e 用例生成时注入的语义选择器注册表路径（runner 侧 gui-mcp/selectors.json）。
     # 空则用默认：相对本仓库 tools/qalab-runner/gui-mcp/selectors.json。让 AI 只用库内 key 写 script。
     SELECTORS_PATH: str = ""

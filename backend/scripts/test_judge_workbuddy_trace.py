@@ -4,6 +4,8 @@
 走 judge_run 不会因产品不同报错,返回合法 verdict(pass/fail/error 均可;无引擎配置时 error 也算链路通)。
 内存库 + rollback,不落库、不调真 LLM(无引擎时走 error 分支)。
 """
+import json
+from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -12,6 +14,7 @@ from app.db.session import Base
 from app.models import EvalRun, EvalQuery, Project, User
 from app.core.enums import EvalRunStatus
 from app.services.eval_judge import judge_run
+from app.services import claude_runner
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 Base.metadata.create_all(_engine)
@@ -29,10 +32,23 @@ run = EvalRun(id=1, project_id=1, eval_query_id=1, target_engine="workbuddy",
               runner="wb-mac")
 s.add(run); s.commit()
 
-res = judge_run(s, run, provider=None, votes=1)
+class FakeEngine:
+    def is_available(self):
+        return True
+
+    def stream_generate(self, *_args, **_kwargs):
+        yield {"type": "result", "text": json.dumps({
+            **{key: {"pass": True, "note": "ok"} for key in claude_runner._JUDGE_DIM_KEYS},
+            "score": 5, "summary": "天气回答完整",
+        })}
+
+
+with patch("app.services.generators.get_provider", return_value=FakeEngine()):
+    res = judge_run(s, run, provider=None, votes=1)
 # 关键:不因 engine=workbuddy 抛异常;verdict 是三种合法值之一
 assert res.get("verdict") in ("pass", "fail", "error"), f"verdict 非法: {res}"
 # run 上也应落了 verdict(判定链路确实跑到)
 assert run.verdict in ("pass", "fail", "error"), f"run.verdict 未落: {run.verdict}"
+assert run.verdict == "pass" and run.score == 5
 print(f"PASS: 判定层对 WorkBuddy run 零改动可用(verdict={res.get('verdict')})")
 s.close()

@@ -7,6 +7,8 @@ import json
 import copy
 import logging
 import os
+import random
+import re
 import time
 
 from sqlalchemy.orm import Session
@@ -73,6 +75,10 @@ def _judge_once(engine, trace: dict, expected: str, dimension: str | None) -> tu
             if et == "delta":
                 raw += evt["text"]
             elif et == "result":
+                if evt.get("is_error"):
+                    # CLI 的错误 result.text 是报错文案，不是模型生成的判定正文。
+                    err = evt.get("error") or evt.get("text") or "模型服务返回错误"
+                    continue
                 if evt.get("text"):
                     raw = evt["text"]
             elif et == "error":
@@ -112,6 +118,28 @@ def _guard_missing_evidence(dims: dict, trace: dict) -> None:
             changed = True
     if changed:
         dims["summary"] = "部分维度证据不足，不能将未捕获思考、工具或产物记录认定为任务未执行；请结合已有回答补充核验。"
+
+
+def _judge_with_retry(engine, trace, expected, dimension):
+    """API Error 按预算重试当前票；其他临时失败仅在无输出时重试。"""
+    from app.core.config import settings
+    failures = []
+    retries = max(0, min(2, settings.EVAL_JUDGE_TRANSIENT_RETRIES))
+    for attempt in range(retries + 1):
+        dims, error = _judge_once(engine, trace, expected, dimension)
+        dims = dims or {}
+        api_error = error and re.search(r"\bapi\s*error\b", error, re.I)
+        transient = error and re.search(r"\b(?:429|502|503|529)\b|rate.?limit|overloaded|限流", error, re.I)
+        retryable = api_error or (transient and not dims.get("_raw_output")
+            and "已重试多次" not in error and "超时" not in error and "timeout" not in error.lower())
+        if attempt == retries or not retryable:
+            if failures:
+                dims["_transient_failures"] = failures
+            return dims, error
+        failures.append(error)
+        delay = 5 * (2 ** attempt) + random.uniform(0, 1)
+        logger.warning("判定模型调用失败，%.1fs 后重试当前票 (%d/%d): %s", delay, attempt + 1, retries, error)
+        time.sleep(delay)
 
 
 def _verdict_of(dims: dict) -> str:
@@ -245,7 +273,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     audit_ballots = []
     fail_reasons: list[str] = []
     for _ in range(votes):
-        dims_i, err_i = _judge_once(engine, trace, expected, dimension)
+        dims_i, err_i = _judge_with_retry(engine, trace, expected, dimension)
         if not err_i and verification and verification["status"] != "pass":
             failed = verification["status"] == "fail"
             evidence = next(c for c in verification["checks"] if c["status"] == ("fail" if failed else "unknown"))
@@ -258,7 +286,9 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         elif not err_i and verification:
             dims_i["artifact_verification"] = verification
         raw_i = dims_i.pop("_raw_output", None) if isinstance(dims_i, dict) else None
-        audit_ballots.append({"dims": copy.deepcopy(dims_i), "error": err_i, "raw_output": raw_i})
+        transient_failures = dims_i.pop("_transient_failures", [])
+        audit_ballots.append({"dims": copy.deepcopy(dims_i), "error": err_i, "raw_output": raw_i,
+                              "transient_failures": transient_failures})
         if err_i:
             ballots.append((EvalVerdict.error.value, None))
             fail_reasons.append(err_i)
@@ -327,7 +357,15 @@ def run_judge_job(db: Session, job) -> dict:
     run = db.get(EvalRun, run_id)
     if run is None:
         raise ValueError(f"执行项不存在:{run_id}")
-    judge_run(db, run, provider=inp.get("provider"), votes=inp.get("votes") or 1)
+    if inp.get("pipeline_task_id") is not None:
+        from app.models import EvalTask
+        task = db.get(EvalTask, inp["pipeline_task_id"])
+        if not task or task.last_batch_id != inp.get("pipeline_batch_id"):
+            return {"run_id": run_id, "skipped": True, "reason": "测评任务已切换批次",
+                    "error": "测评任务已切换批次，跳过旧批判定"}
+    result = judge_run(db, run, provider=inp.get("provider"), votes=inp.get("votes") or 1)
+    if result.get("skipped"):
+        return {"run_id": run_id, **result, "error": result.get("reason") or "判定已跳过"}
     db.refresh(run)
     return {
         "run_id": run.id,

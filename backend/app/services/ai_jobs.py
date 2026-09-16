@@ -59,28 +59,34 @@ def enqueue(db: Session, kind: str, *, provider: str | None = None,
 
 # ── 抢占 / 排队 ───────────────────────────────────────────────────────────────────
 
-def claim_next(db: Session, worker: str | None = None) -> AiJob | None:
+def _queue_filter(judge_only: bool):
+    return AiJob.kind == "eval_judge" if judge_only else AiJob.kind != "eval_judge"
+
+
+def claim_next(db: Session, worker: str | None = None, *, judge_only: bool | None = None) -> AiJob | None:
     """原子抢占最早的一条 pending → running。返回抢到的 job,无则 None。
 
     条件 UPDATE(WHERE id=? AND status='pending')+rowcount 判定,防多 worker 双跑。
     """
-    row = (db.query(AiJob.id)
-           .filter(AiJob.status == "pending")
-           .order_by(AiJob.created_at.asc(), AiJob.id.asc())
-           .first())
-    if not row:
-        return None
-    job_id = row[0]
-    res = db.execute(
-        update(AiJob)
-        .where(AiJob.id == job_id, AiJob.status == "pending")
-        .values(status="running", worker=(worker or threading.current_thread().name),
-                claimed_at=datetime.now())
-    )
-    db.commit()
-    if res.rowcount != 1:
-        return None  # 被其他 worker 抢先
-    return db.get(AiJob, job_id)
+    for _ in range(16):
+        q = db.query(AiJob.id).filter(AiJob.status == "pending")
+        if judge_only is not None:
+            q = q.filter(_queue_filter(judge_only))
+        row = q.order_by(AiJob.created_at.asc(), AiJob.id.asc()).first()
+        if not row:
+            return None
+        job_id = row[0]
+        res = db.execute(
+            update(AiJob)
+            .where(AiJob.id == job_id, AiJob.status == "pending")
+            .values(status="running", worker=(worker or threading.current_thread().name),
+                    claimed_at=datetime.now())
+        )
+        db.commit()
+        if res.rowcount == 1:
+            return db.get(AiJob, job_id)
+        # 竞争队首失败时立即取下一条，不能让其他空闲线程等完 2 秒才开始工作。
+    return None
 
 
 def queue_position(db: Session, job: AiJob) -> int:
@@ -91,7 +97,8 @@ def queue_position(db: Session, job: AiJob) -> int:
     if getattr(job, "status", None) != "pending":
         return 0
     return (db.query(AiJob)
-            .filter(AiJob.status == "pending", AiJob.id < job.id)
+            .filter(AiJob.status == "pending", AiJob.id < job.id,
+                    _queue_filter(job.kind == "eval_judge"))
             .count())
 
 
@@ -269,11 +276,11 @@ def reap_stale_ai_jobs_on_startup(db: Session) -> int:
     return res.rowcount or 0
 
 
-def _drain_once(session_factory) -> bool:
+def _drain_once(session_factory, *, judge_only: bool | None = None) -> bool:
     """抢占并执行一条 pending(有则跑、返回 True;空队列返回 False)。worker 循环与测试共用。"""
     s = session_factory()
     try:
-        job = claim_next(s)
+        job = claim_next(s, judge_only=judge_only)
     finally:
         s.close()
     if job is None:
@@ -282,11 +289,11 @@ def _drain_once(session_factory) -> bool:
     return True
 
 
-def _worker_loop(session_factory) -> None:
+def _worker_loop(session_factory, judge_only: bool) -> None:
     """worker 线程主体:连续抢占执行,空转时等唤醒(带兜底超时),收到停止即退出。"""
     while not _stop.is_set():
         try:
-            worked = _drain_once(session_factory)
+            worked = _drain_once(session_factory, judge_only=judge_only)
         except Exception:  # noqa: BLE001
             logger.exception("AI worker 循环异常(继续)")
             worked = False
@@ -296,20 +303,25 @@ def _worker_loop(session_factory) -> None:
         _wake.clear()
 
 
-def start_pool(size: int | None = None, factory=None) -> None:
-    """启动 worker 线程池(daemon)。size 缺省取 AI_WORKER_CONCURRENCY;factory 供测试注入。"""
+def start_pool(size: int | None = None, factory=None, *, judge_size: int | None = None) -> None:
+    """通用与判定工作线程分开消费；所有批次共用判定池，避免每批另起池放大并发。"""
     from app.core.config import settings
     from app.db.session import SessionLocal
 
     _ensure_handlers()
+    if any(t.is_alive() for t in _threads):
+        raise RuntimeError("AI worker 池仍在运行，不能重复启动")
+    _threads.clear()
     sf = factory or SessionLocal
     n = size if size is not None else max(1, getattr(settings, "AI_WORKER_CONCURRENCY", 2))
+    judges = max(1, judge_size if judge_size is not None else settings.EVAL_JUDGE_CONCURRENCY)
     _stop.clear()
-    for i in range(n):
-        t = threading.Thread(target=_worker_loop, args=(sf,), name=f"ai-worker-{i}", daemon=True)
-        t.start()
-        _threads.append(t)
-    logger.info("AI worker 池已启动:%d 线程", n)
+    for judge_only, count, name in ((False, n, "ai-worker"), (True, judges, "eval-judge")):
+        for i in range(count):
+            t = threading.Thread(target=_worker_loop, args=(sf, judge_only), name=f"{name}-{i}", daemon=True)
+            t.start()
+            _threads.append(t)
+    logger.info("AI worker 池已启动:通用 %d，判定 %d 线程", n, judges)
 
 
 def stop_pool(timeout: float = 2.0) -> None:
@@ -318,4 +330,4 @@ def stop_pool(timeout: float = 2.0) -> None:
     _wake.set()
     for t in _threads:
         t.join(timeout=timeout)
-    _threads.clear()
+    _threads[:] = [t for t in _threads if t.is_alive()]
