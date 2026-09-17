@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Iterator
@@ -85,14 +86,21 @@ def _headers() -> dict:
 
 
 def _model() -> str:
-    # 与 _base_url()/_auth_token() 同构的分层回落：
-    # .env 显式配置 > 进程环境变量 ANTHROPIC_MODEL > cc-switch settings.json 的
-    # ANTHROPIC_DEFAULT_OPUS_MODEL（网关严格区分大小写，claude CLI 用的正是这个名字，
-    # 如 "claude-opus-4-8[1M]"）。全取不到才回落裸名兜底。
-    return (settings.ANTHROPIC_HTTP_MODEL
-            or os.environ.get("ANTHROPIC_MODEL")
-            or _cc_switch_env().get("ANTHROPIC_DEFAULT_OPUS_MODEL")
-            or "claude-opus-4-8")
+    # 与 _base_url()/_auth_token() 同构的分层回落，取网关认的“干净真名”：
+    # .env 显式 > 环境变量 ANTHROPIC_MODEL > cc-switch 的 *_MODEL_NAME（干净名，
+    # 如 "anthropic/claude-opus-4.8"）> *_MODEL（可能带 [1M] 标记）> 裸名兜底。
+    #
+    # 关键：cc-switch 的 *_MODEL 值常带 "[1M]" 之类内部标记（供本地代理翻译用），
+    # 后端直连原始网关（如 https://api.360.cn）不认这些标记且严格区分大小写，
+    # 故统一剥掉尾部 "[...]" 后缀。curl 实测：anthropic/claude-opus-4.8 → 200，
+    # anthropic/claude-opus-4.8[1M] → 400 code 1001。
+    env = _cc_switch_env()
+    raw = (settings.ANTHROPIC_HTTP_MODEL
+           or os.environ.get("ANTHROPIC_MODEL")
+           or env.get("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")
+           or env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+           or "claude-opus-4-8")
+    return re.sub(r"\[[^\]]*\]\s*$", "", raw).strip()
 
 
 def stream_generate(
