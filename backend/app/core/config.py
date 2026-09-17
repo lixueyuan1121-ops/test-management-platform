@@ -53,7 +53,9 @@ class Settings(BaseSettings):
     # 三者留空则 is_available() 返回 False，DEFAULT_PROVIDER 自动退回 claude（不改变现有默认链路）。
     ANTHROPIC_HTTP_BASE_URL: str = ""
     ANTHROPIC_HTTP_TOKEN: str = ""
-    ANTHROPIC_HTTP_MODEL: str = "claude-opus-4-8"
+    # 留空则回落进程环境变量 ANTHROPIC_MODEL，再回落 cc-switch settings.json 的
+    # ANTHROPIC_DEFAULT_OPUS_MODEL（网关严格区分大小写；与 claude CLI 用同一模型名）。
+    ANTHROPIC_HTTP_MODEL: str = ""
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
     # Only formatting existing criteria into scenes; full requirement analysis keeps the CLI default.
     # Empty string inherits the configured Claude effort. This never changes the model itself.

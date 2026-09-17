@@ -85,7 +85,14 @@ def _headers() -> dict:
 
 
 def _model() -> str:
-    return settings.ANTHROPIC_HTTP_MODEL or "claude-opus-4-8"
+    # 与 _base_url()/_auth_token() 同构的分层回落：
+    # .env 显式配置 > 进程环境变量 ANTHROPIC_MODEL > cc-switch settings.json 的
+    # ANTHROPIC_DEFAULT_OPUS_MODEL（网关严格区分大小写，claude CLI 用的正是这个名字，
+    # 如 "claude-opus-4-8[1M]"）。全取不到才回落裸名兜底。
+    return (settings.ANTHROPIC_HTTP_MODEL
+            or os.environ.get("ANTHROPIC_MODEL")
+            or _cc_switch_env().get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+            or "claude-opus-4-8")
 
 
 def stream_generate(
