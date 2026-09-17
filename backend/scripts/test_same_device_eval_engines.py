@@ -1,6 +1,11 @@
 """默认纳米Work、额外开启 WorkBuddy：实际轮询→双引擎下发→认领，内存库隔离。"""
+import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -116,6 +121,48 @@ class SameDeviceEnginesTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "QWork.*无在线执行机"):
                 dispatch_task_runs(db, db.get(EvalTask, 1), "auto", ["qwork"], None, {}, None, 1)
             self.assertEqual(db.query(EvalRun).count(), 0)
+
+    def test_qwork_real_runner_report_passes_http_validation_and_persists(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("跨语言回写契约验证需要 Node.js")
+        self.poll("qwork")
+        with self.sessions() as db:
+            ids, _ = dispatch_task_runs(db, db.get(EvalTask, 1), "auto", ["qwork"], None, {}, None, 1)
+            db.commit()
+        # 直接执行生产 runner 的回写函数，不能用手工构造的字符串 fixture 掩盖 JS/Python 契约差异。
+        script = """
+const { reportQworkRun } = require('./src/qwork-batch');
+reportQworkRun({ uploadTrace: async () => {}, report: async (_id, body) => {
+  process.stdout.write(JSON.stringify(body));
+}}, 1, { success: true, answer: 'contract-test-answer', reportedDuration: 141.682,
+  beanCost: 0.0262, cost: 451619, durationMs: 143170 },
+  { product: 'qwork', session_id: 'contract-test-session', request_id: 'contract-test-turn' },
+  { outputDir: process.argv[1] }).catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as output_dir:
+            result = subprocess.run([node, "-e", script, output_dir],
+                                    cwd=root / "tools/qalab-runner/eval", capture_output=True,
+                                    text=True, check=True, timeout=30)
+        body = json.loads(result.stdout)
+        for field in ["reported_duration", "bean_cost", "tokens"]:
+            self.assertIsInstance(body[field], str, field)
+        legacy_body = {**body, "reported_duration": 141.682, "bean_cost": 0.0262, "tokens": 451619}
+        for rid, payload in zip(ids, [body, legacy_body]):
+            with self.subTest(old_runner=payload is legacy_body):
+                token = self.claim(rid, "qwork").json()["data"]["claim_token"]
+                response = self.client.patch(f"/api/eval-queue/{rid}",
+                                             params={"runner": "dual", "claim_token": token}, json=payload)
+                self.assertEqual(response.status_code, 200, response.text)
+                with self.sessions() as db:
+                    run = db.get(EvalRun, rid)
+                    self.assertEqual(run.status.value, "done")
+                    self.assertEqual(run.answer, "contract-test-answer")
+                    self.assertEqual(run.reported_duration, "141.682")
+                    self.assertEqual(run.bean_cost, "0.0262")
+                    self.assertEqual(run.tokens, "451619")
+                    self.assertEqual(run.duration_ms, 143170)
 
     def test_workbuddy_capability_expires_when_only_default_runner_remains(self):
         self.poll("workbuddy")

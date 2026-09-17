@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class EvalEnqueueIn(BaseModel):
@@ -31,3 +33,14 @@ class EvalReportIn(BaseModel):
     session_id: str | None = None
     reason: str | None = None
     duration_ms: int | None = None
+
+    @field_validator("reported_duration", "bean_cost", "tokens", mode="before")
+    @classmethod
+    def normalize_numeric_metrics(cls, value):
+        # 兼容已分发的 QWork runner 数值上报；不影响纳米/WorkBuddy 原有字符串格式。
+        # 不使用全局 coerce_numbers_to_str，其他文本字段仍需通过原有类型校验。
+        if type(value) in (int, float):
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("指标必须是有限数值")
+            return str(value)
+        return value

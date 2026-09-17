@@ -9,6 +9,9 @@ const { groupIntoConversations } = require('./conversation-group');
 const { downloadAttachments } = require('./attachment-downloader');
 const { runnerMetadata } = require('./artifact-collector');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+// 平台这三个指标沿用字符串字段；原生 QWork 数值只在回写边界转换，trace/result 保留原始类型。
+const reportMetric = value => typeof value === 'string' ? value
+  : typeof value === 'number' && Number.isFinite(value) ? String(value) : null;
 
 // 保存完整证据后再报告终态，综合判定因此能立即读到 trace。
 async function reportQworkRun(client, runId, result, trace, { outputDir = './output/qwork', retryMs = 1000 } = {}) {
@@ -25,8 +28,8 @@ async function reportQworkRun(client, runId, result, trace, { outputDir = './out
   const body = {
     status: result.success && !uploadError ? 'done' : 'failed',
     answer: result.answer || null, raw_message: qworkRawIndex(trace),
-    bean_cost: result.beanCost ?? null, tokens: result.cost ?? null,
-    reported_duration: result.reportedDuration ?? null, duration_ms: result.durationMs ?? null,
+    bean_cost: reportMetric(result.beanCost), tokens: reportMetric(result.cost),
+    reported_duration: reportMetric(result.reportedDuration), duration_ms: result.durationMs ?? null,
     session_id: trace.session_id || null,
     reason: uploadError ? `QWork 轨迹上传失败：${uploadError.message}；完整记录已保存 ${dir}`
       : result.success ? null : result.errorMessage || result.completeReason || 'QWork 本轮未完成',

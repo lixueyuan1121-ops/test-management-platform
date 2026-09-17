@@ -165,9 +165,28 @@ test('轨迹上传重试在报告终态之前；彻底失败仍有本地完整�
         report: async (_id, body) => calls.push(body.status) };
       const body = await reportQworkRun(client, 1, { success: true, answer: '答案', beanCost: 0 }, traceFor(), { outputDir, retryMs: 1 });
       assert.deepEqual(calls, fail ? ['upload', 'upload', 'upload', 'failed'] : ['upload', 'upload', 'done']);
-      assert.equal(body.bean_cost, 0);
+      assert.equal(body.bean_cost, '0');
       assert.equal(JSON.parse(await fs.readFile(path.join(outputDir, '1/trace.json'), 'utf8')).answer, '首轮完成');
       if (fail) assert.match(body.reason, /完整记录已保存/);
+    }
+  } finally { await fs.rm(outputDir, { recursive: true, force: true }); }
+});
+
+test('QWork 回写指标遵守平台字符串契约，保留小数、零值和缺失值', async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'qwork-metrics-'));
+  const trace = traceFor();
+  try {
+    for (const [value, expected] of [[141.682, '141.682'], [0.0262, '0.0262'], [451619, '451619'],
+      [0, '0'], ['3.00', '3.00'], [null, null], [undefined, null], [NaN, null], [Infinity, null]]) {
+      let sent;
+      const client = { uploadTrace: async () => {}, report: async (_id, body) => { sent = body; } };
+      await reportQworkRun(client, 1, { success: true, reportedDuration: value, beanCost: value, cost: value,
+        durationMs: 143170 }, trace, { outputDir });
+      for (const field of ['reported_duration', 'bean_cost', 'tokens']) assert.equal(sent[field], expected, field);
+      assert.equal(sent.duration_ms, 143170);
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(outputDir, '1/report.json'), 'utf8')), sent);
+      const raw = JSON.parse(await fs.readFile(path.join(outputDir, '1/trace.json'), 'utf8'));
+      assert.equal(raw.reported_duration, 3, '原始 trace 数值不受接口格式转换影响');
     }
   } finally { await fs.rm(outputDir, { recursive: true, force: true }); }
 });
