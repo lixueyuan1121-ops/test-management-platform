@@ -173,11 +173,11 @@
     </el-dialog>
 
     <!-- 执行 -->
-    <el-dialog v-model="runVisible" title="执行测评任务" width="480px">
+    <el-dialog v-model="runVisible" title="执行测评任务" width="min(640px, 95vw)">
       <el-form label-width="90px">
         <el-form-item label="独立执行">
           <el-input-number v-model="runForm.trial_count" :min="1" :max="5" :precision="0" aria-label="每题独立执行次数" />
-          <span class="cmp-hint">每题执行 {{ runForm.trial_count }} 次；多轮题每次新建完整会话。次数增加会增加耗时和算力消耗。</span>
+          <span class="cmp-hint">每题每种配置执行 {{ runForm.trial_count }} 次；多轮题每次新建完整会话。次数增加会增加耗时和算力消耗。</span>
         </el-form-item>
         <el-form-item label="执行机" required>
           <el-select v-model="runForm.runners" multiple collapse-tags collapse-tags-tooltip
@@ -196,7 +196,37 @@
             <el-option v-for="dev in clientDevices" :key="dev.vm_id" :label="`${dev.name || dev.vm_id}${(dev.status==='online'||dev.status==='active')?' 🟢':' ⚪'}`" :value="dev.vm_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="对话模式">
+        <el-form-item label="A/B 对比">
+          <el-switch v-model="runForm.compare" aria-label="A/B 对比" @change="onCompareChange" />
+          <span class="cmp-hint">开启后切换为 A/B 两套单一配置；关闭时纳米Work支持多配置组合执行。</span>
+        </el-form-item>
+        <template v-if="runHasNami && !runForm.compare">
+          <el-divider content-position="left">纳米Work · 组合执行</el-divider>
+          <el-form-item label="对话模式">
+            <el-select v-model="runForm.chat_modes" multiple clearable collapse-tags collapse-tags-tooltip :max-collapse-tags="2"
+              style="width:100%" aria-label="纳米Work对话模式" placeholder="可多选；留空沿用配置">
+              <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="模型">
+            <el-input v-model="runForm.models_text" type="textarea" :rows="3" aria-label="纳米Work模型"
+              placeholder="每行填写一个模型，也可用逗号分隔，例如：&#10;GLM-5.3&#10;豆包（seed-2.1）" />
+            <span class="cmp-hint">已识别 {{ runMatrix.model.length }} 个模型，自动去重（忽略英文大小写）；留空沿用配置。</span>
+          </el-form-item>
+          <el-form-item label="思考深度">
+            <el-select v-model="runForm.thinking_depths" multiple clearable collapse-tags collapse-tags-tooltip :max-collapse-tags="3"
+              style="width:100%" aria-label="纳米Work思考深度" placeholder="可多选；留空沿用配置">
+              <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
+            </el-select>
+          </el-form-item>
+          <p class="cmp-hint matrix-count">{{ Math.max(1, runMatrix.chatMode.length) }} 种模式 × {{ Math.max(1, runMatrix.model.length) }} 个模型 × {{ Math.max(1, runMatrix.thinkingDepth.length) }} 档深度 = <b>{{ runCombinationCount }} 种组合</b>。留空的项按 1 种计算；每种组合单独新建会话。</p>
+          <el-form-item v-if="runHasWorkBuddy" label="WorkBuddy">
+            <el-input v-model="runForm.workbuddy_model" clearable maxlength="64" aria-label="WorkBuddy模型" placeholder="WorkBuddy模型（单个，留空沿用配置）" />
+            <span class="cmp-hint">WorkBuddy按此模型执行，不参与上方的纳米Work组合。</span>
+          </el-form-item>
+        </template>
+        <template v-else>
+        <el-form-item v-if="runHasNami" label="对话模式">
           <el-select v-model="runForm.chat_mode" :disabled="runTask?.target_engines?.includes('workbuddy')" clearable style="width:100%" placeholder="留空=沿用执行时配置">
             <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
           </el-select>
@@ -204,15 +234,12 @@
         <el-form-item label="模型">
           <el-input v-model="runForm.model" clearable :placeholder="MODEL_PLACEHOLDER" />
         </el-form-item>
-        <el-form-item label="思考深度">
+        <el-form-item v-if="runHasNami" label="思考深度">
           <el-select v-model="runForm.thinking_depth" :disabled="runTask?.target_engines?.includes('workbuddy')" clearable style="width:100%" placeholder="留空=沿用执行时配置">
             <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
           </el-select>
         </el-form-item>
-        <el-form-item label="A/B 对比">
-          <el-switch v-model="runForm.compare" />
-          <span class="cmp-hint">开启后每道题按 A/B 两套选项各执行 {{ runForm.trial_count }} 次；未指定的选项沿用执行时客户端配置，对比时请明确填写。</span>
-        </el-form-item>
+        </template>
         <template v-if="runForm.compare">
           <el-divider content-position="left"><span class="cmp-b-title">B 组选项（上方为 A 组）</span></el-divider>
           <el-form-item label="对话模式">
@@ -233,12 +260,13 @@
           <el-switch v-model="runForm.auto_pipeline" />
           <span class="cmp-hint">⚡ 全部执行完自动「批量判定 → 综合评价」，并推推分步通知</span>
         </el-form-item>
-        <el-alert type="info" :closable="false" show-icon
-          :title="`将下发 ${(runTask?.query_ids?.length || 0) * (runTask?.target_engines?.length || 1) * (runForm.compare ? 2 : 1) * runForm.trial_count} 条执行${runForm.auto ? '(自动铺到在线执行机并行)' : (runForm.runners.length > 1 ? `(分片到 ${runForm.runners.length} 台并行)` : '')}；本次每题每产品每组独立执行 ${runForm.trial_count} 次，生成新批次，综合评价需重新生成`" />
+        <el-alert v-if="runValidationError" type="error" :closable="false" show-icon :title="runValidationError" />
+        <el-alert v-else type="info" :closable="false" show-icon
+          :title="`将下发 ${runTotal} 条执行${runForm.auto ? '(自动铺到在线执行机并行)' : (runForm.runners.length > 1 ? `(分片到 ${runForm.runners.length} 台并行)` : '')}；每题每种配置独立执行 ${runForm.trial_count} 次，生成新批次，综合评价需重新生成`" />
       </el-form>
       <template #footer>
         <el-button @click="runVisible = false">取消</el-button>
-        <el-button type="success" :loading="running" :disabled="!runForm.auto && !runForm.runners.length" @click="doRun">下发执行</el-button>
+        <el-button type="success" :loading="running" :disabled="!!runValidationError || (!runForm.auto && !runForm.runners.length)" @click="doRun">下发执行</el-button>
       </template>
     </el-dialog>
 
@@ -259,7 +287,7 @@
           </el-form-item>
         </template>
         <el-alert type="info" :closable="false" show-icon
-          title="到点自动下发整任务，沿用最近一次执行的对话选项（含 A/B 对比）；上一批还没跑完会自动跳过本次，防止堆积" />
+          title="到点自动下发整任务，沿用最近一次执行的对话选项（含组合配置或 A/B 对比）；上一批还没跑完会自动跳过本次，防止堆积" />
       </el-form>
       <template #footer>
         <el-button @click="schedVisible = false">取消</el-button>
@@ -277,8 +305,9 @@
           <p class="muted">当前结果算力豆 {{ detail.task.total_bean_cost ?? '—' }} · 重试算力豆 {{ detail.task.retry_bean_cost ?? '—' }} · 含重试合计 {{ detail.task.total_actual_bean_cost ?? '—' }} · 成本采集覆盖率 {{ detail.task.actual_bean_coverage_rate ?? '—' }}%</p>
           <el-alert v-if="detail.experiment.metrics.coverage_rate < 100" type="info" :closable="false" title="判定覆盖不完整，请结合缺失或错误原因解读成绩，不宜直接据此判断产品优劣。" />
           <details v-if="detail.experiment.manifest"><summary>实验配置 · 每题 {{ detail.experiment.manifest.trial_count }} 次独立执行</summary><p class="mono">题库版本 {{ detail.experiment.manifest.dataset_hash }}</p><pre class="experiment-json">{{ JSON.stringify(detail.experiment.manifest, null, 2) }}</pre></details>
-          <el-table v-if="detail.experiment.manifest?.trial_count > 1" :data="detail.experiment.trial_metrics.by_engine_variant" size="small">
+          <el-table v-if="detail.experiment.manifest?.trial_count > 1 || detail.runs.some(r => r.payload?.configuration_id)" :data="detail.experiment.trial_metrics.by_engine_variant" size="small">
             <el-table-column prop="engine" label="产品" /><el-table-column prop="variant" label="A/B组" />
+            <el-table-column prop="configuration_label" label="配置组合" min-width="240" show-overflow-tooltip />
             <el-table-column prop="task_count" label="独立题目数" />
             <el-table-column label="稳定成功率"><template #default="{ row }">{{ row.success_rate }}%</template></el-table-column>
             <el-table-column label="判定覆盖"><template #default="{ row }">{{ row.coverage_rate }}%</template></el-table-column>
@@ -287,6 +316,7 @@
           <details v-if="detail.experiment.manifest?.trial_count > 1"><summary>逐题重复执行与得分波动</summary>
             <el-table :data="detail.experiment.trial_metrics.tasks" size="small">
               <el-table-column prop="engine" label="产品" /><el-table-column prop="case" label="题目/会话" show-overflow-tooltip /><el-table-column prop="variant" label="组" width="55" />
+              <el-table-column prop="configuration_label" label="配置组合" min-width="200" show-overflow-tooltip />
               <el-table-column label="成功频率"><template #default="{ row }">{{ row.success_rate }}%</template></el-table-column>
               <el-table-column label="分数范围"><template #default="{ row }">{{ row.score_min ?? '—' }}～{{ row.score_max ?? '—' }}</template></el-table-column>
               <el-table-column label="各次结果"><template #default="{ row }">{{ row.attempts.map(a => `${a.trial_index}: ${a.verdict === 'pass' ? '通过' : a.verdict === 'fail' ? '未通过' : '未定论'}`).join('；') }}</template></el-table-column>
@@ -362,6 +392,7 @@
               <el-tag v-if="row.isGroup" size="small" type="warning" effect="plain" class="turn-tag">多轮 ×{{ row.children.length }}</el-tag>
               <el-tag v-else-if="row._inGroup" size="small" effect="plain" class="turn-tag">第{{ (row.payload?.turn_index ?? 0) + 1 }}轮</el-tag>
               {{ row.payload?.title || row.payload?.prompt || `query#${row.eval_query_id}` }}
+              <div v-if="row.payload?.configuration_label" class="muted">组合 {{ row.payload.configuration_index }} · {{ row.payload.configuration_label }}</div>
               <el-tooltip v-if="!row.isGroup && hasPayloadOpts(row)" effect="dark" placement="top" :show-after="300">
                 <template #content>
                   <div class="payload-tip">
@@ -473,7 +504,8 @@ import {
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions } from '@/utils/dialogOptions'
+import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions,
+  parseModelNames, dialogCombinationCount, MAX_DIALOG_COMBINATIONS, MAX_MATRIX_RUNS } from '@/utils/dialogOptions'
 import { groupEvalRuns, compareEvalRuns } from '@/utils/evalRunGroups'
 import { buildEvalReportHtml } from '@/utils/evalReportHtml'
 
@@ -548,7 +580,33 @@ const customSaving = ref(false)
 const runVisible = ref(false)
 const runTask = ref(null)
 const runForm = ref({ trial_count: 1, runners: [], auto: false, auto_pipeline: false, target_device: '', chat_mode: '', model: '', thinking_depth: '',
+  chat_modes: [], models_text: '', thinking_depths: [], workbuddy_model: '',
   compare: false, b_chat_mode: '', b_model: '', b_thinking_depth: '' })
+const runEngines = computed(() => [...new Set(runTask.value?.target_engines?.length ? runTask.value.target_engines : ['namiwork'])])
+const runHasNami = computed(() => runEngines.value.includes('namiwork'))
+const runHasWorkBuddy = computed(() => runEngines.value.includes('workbuddy'))
+const runMatrix = computed(() => ({ chatMode: runForm.value.chat_modes, model: parseModelNames(runForm.value.models_text), thinkingDepth: runForm.value.thinking_depths }))
+const runCombinationCount = computed(() => dialogCombinationCount(runMatrix.value))
+const runUsesMatrix = computed(() => runHasNami.value && !runForm.value.compare)
+const runTotal = computed(() => {
+  const configs = runForm.value.compare ? runEngines.value.length * 2
+    : runEngines.value.length + (runHasNami.value ? runCombinationCount.value - 1 : 0)
+  return new Set(runTask.value?.query_ids || []).size * configs * runForm.value.trial_count
+})
+const runValidationError = computed(() => {
+  if (!runUsesMatrix.value) return ''
+  if (runMatrix.value.model.some(model => model.length > 64)) return '每个模型名最多64个字符，请检查分隔符。'
+  if (runCombinationCount.value > MAX_DIALOG_COMBINATIONS) return `单批最多 ${MAX_DIALOG_COMBINATIONS} 种组合，请减少选项。`
+  if (runTotal.value > MAX_MATRIX_RUNS) return `本次共 ${runTotal.value} 条执行，单批最多 ${MAX_MATRIX_RUNS} 条，请减少用例、组合或独立执行次数。`
+  return ''
+})
+
+function onCompareChange(enabled) {
+  if (!enabled || !runHasNami.value) return
+  runForm.value.chat_mode = runHasWorkBuddy.value ? '' : (runMatrix.value.chatMode[0] || '')
+  runForm.value.model = runMatrix.value.model[0] || ''
+  runForm.value.thinking_depth = runHasWorkBuddy.value ? '' : (runMatrix.value.thinkingDepth[0] || '')
+}
 const devices = ref([])
 const clientDevices = ref([])
 const running = ref(false)
@@ -737,7 +795,11 @@ async function openRun(row) {
   runForm.value.trial_count = d.trial_count || 1
   runForm.value.chat_mode = d.chatMode || ''
   runForm.value.model = d.model || ''
+  runForm.value.workbuddy_model = d.model || ''
   runForm.value.thinking_depth = d.thinkingDepth || ''
+  runForm.value.chat_modes = [...(d.matrix?.chatMode || (d.chatMode ? [d.chatMode] : []))]
+  runForm.value.models_text = (d.matrix?.model || (d.model ? [d.model] : [])).join('\n')
+  runForm.value.thinking_depths = [...(d.matrix?.thinkingDepth || (d.thinkingDepth ? [d.thinkingDepth] : []))]
   const b = d.compareB
   runForm.value.compare = b !== undefined
   runForm.value.b_chat_mode = b?.chatMode || ''
@@ -794,6 +856,7 @@ function fmtReported(val) {
 }
 
 async function doRun() {
+  if (runValidationError.value) { ElMessage.warning(runValidationError.value); return }
   running.value = true
   try {
     // auto=后端自动铺到在线执行机;否则传手选的多台(单台=数组含一项,后端一视同仁分片)
@@ -805,9 +868,10 @@ async function doRun() {
       // 仅单台时目标设备生效;多台/auto 每机用各自当前设备
       target_device: (!runForm.value.auto && runForm.value.runners.length === 1)
         ? (runForm.value.target_device || null) : null,
-      dialog_options: buildDialogOptions({
-        chatMode: runForm.value.chat_mode, model: runForm.value.model, thinkingDepth: runForm.value.thinking_depth,
-      }),
+      dialog_options: runUsesMatrix.value
+        ? (runHasWorkBuddy.value ? buildDialogOptions({ model: runForm.value.workbuddy_model }) : null)
+        : buildDialogOptions({ chatMode: runForm.value.chat_mode, model: runForm.value.model, thinkingDepth: runForm.value.thinking_depth }),
+      dialog_options_matrix: runUsesMatrix.value ? runMatrix.value : null,
       // 对比开关开启才传 B 组(传了即启用对比,B 三项全空 = B 沿用执行时客户端配置);关闭传 null=单套执行
       dialog_options_b: runForm.value.compare ? (buildDialogOptions({
         chatMode: runForm.value.b_chat_mode, model: runForm.value.b_model, thinkingDepth: runForm.value.b_thinking_depth,
@@ -1110,6 +1174,7 @@ function exportReport() {
 .turn-tag { margin-right: 6px; }
 /* A/B 对比 */
 .cmp-hint { margin-left: 10px; font-size: 12px; color: #8a94a6; }
+.matrix-count { margin: 0 0 18px 90px; line-height: 1.7; }
 .pipe-tip { margin-top: 3px; font-size: 11px; color: #e6a23c; }
 .pipe-tip.done { color: #67c23a; }
 .pipe-tip.muted { color: #a8abb2; }

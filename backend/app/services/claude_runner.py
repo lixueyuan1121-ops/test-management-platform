@@ -1747,6 +1747,8 @@ def render_eval_summary_items(items: list[dict]) -> str:
             f"### 用例{i}:{it.get('title') or ''}\n"
             f"- 维度:{dim}"
             + (f" | 产品:{it.get('engine')}" if it.get('engine') else "")
+            + (f" | 配置组合:{it['configuration_label']}" if it.get('configuration_label') else "")
+            + (f" | 下发选项:{json.dumps(it['dialog_options'], ensure_ascii=False)}" if it.get('dialog_options') else "")
             + f" | 执行:{it.get('status') or ''} | 判定:{verdict}"
             + (f" | 评分:{sc}/5" if sc else "")
             + (f" | 耗时:{dur}秒" if dur else "") + "\n"

@@ -55,7 +55,8 @@ function rowTr(row, { compare, dimLabel, statusLabel, verdictLabel, reviewLabel,
   if (row.isGroup) prefix += `<span class="turn">多轮 ×${esc(row.children?.length ?? 0)}</span> `
   else if (isChild) prefix += `<span class="turn">第 ${esc((row.payload?.turn_index ?? 0) + 1)} 轮</span> `
   const title = row.payload?.title || row.payload?.prompt || `query#${row.eval_query_id ?? ''}`
-  cells.push(`<td class="c-title${isChild ? ' child' : ''}">${prefix}${esc(title)}</td>`)
+  const config = row.payload?.configuration_label
+  cells.push(`<td class="c-title${isChild ? ' child' : ''}">${prefix}${esc(title)}${config ? `<br><small>组合 ${esc(row.payload.configuration_index)} · ${esc(config)}</small>` : ''}</td>`)
   cells.push(`<td class="c-dim">${row.dimension ? esc(dimLabel(row.dimension)) : '—'}</td>`)
   cells.push(`<td class="c-st"><span class="st st-${esc(row.status)}">${esc(statusLabel[row.status] || row.status || '—')}</span></td>`)
   // 判定 + 人工复核标记(只读)
@@ -141,7 +142,7 @@ export function buildEvalReportHtml({
   if (dialogOptionsText) metaBits.push(`<span class="opts">${esc(dialogOptionsText)}</span>`)
   if (exportedAt) metaBits.push(`<span class="muted">导出于 ${esc(exportedAt)}</span>`)
   const metrics = experiment?.metrics
-  const overview = metrics ? `<section><h2>覆盖率与稳定性</h2><p>有效样本通过率 ${esc(metrics.pass_rate ?? '—')}% · 判定覆盖率 ${esc(metrics.coverage_rate ?? '—')}% · 已确认成功占比 ${esc(metrics.confirmed_success_rate ?? '—')}%</p><p>计划 ${esc(metrics.total)} 条 · 配置错误 ${esc(metrics.config_errors)} · 执行错误 ${esc(metrics.execution_errors)} · 判定错误或证据不足 ${esc(metrics.judge_errors)}</p>${experiment.manifest ? `<p>每题独立执行 ${esc(experiment.manifest.trial_count)} 次 · 题库版本 ${esc(experiment.manifest.dataset_hash)}</p>` : ''}${experiment?.trial_metrics?.by_engine_variant?.map(m => `<p>${esc(m.engine)} / ${esc(m.variant)}：题目等权成功率 ${esc(m.success_rate)}%，判定覆盖率 ${esc(m.coverage_rate)}%，均分 ${esc(m.mean_score ?? '—')}</p>`).join('') || ''}</section>` : ''
+  const overview = metrics ? `<section><h2>覆盖率与稳定性</h2><p>有效样本通过率 ${esc(metrics.pass_rate ?? '—')}% · 判定覆盖率 ${esc(metrics.coverage_rate ?? '—')}% · 已确认成功占比 ${esc(metrics.confirmed_success_rate ?? '—')}%</p><p>计划 ${esc(metrics.total)} 条 · 配置错误 ${esc(metrics.config_errors)} · 执行错误 ${esc(metrics.execution_errors)} · 判定错误或证据不足 ${esc(metrics.judge_errors)}</p>${experiment.manifest ? `<p>每题独立执行 ${esc(experiment.manifest.trial_count)} 次 · 题库版本 ${esc(experiment.manifest.dataset_hash)}</p>` : ''}${experiment?.trial_metrics?.by_engine_variant?.map(m => `<p>${esc(m.engine)} / ${esc(m.configuration_label || m.variant)}：题目等权成功率 ${esc(m.success_rate)}%，判定覆盖率 ${esc(m.coverage_rate)}%，均分 ${esc(m.mean_score ?? '—')}</p>`).join('') || ''}</section>` : ''
   const desc = task.description ? `<p class="desc">${esc(task.description)}</p>` : ''
 
   return `<!DOCTYPE html>

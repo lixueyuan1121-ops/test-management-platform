@@ -234,6 +234,7 @@
               <el-tag v-if="row.pushed_multica" size="small" type="success" effect="plain">Multica 已推送</el-tag>
               <div class="reason-preview">{{ row.verdict_reason || row.reason || '暂无判定理由' }}</div>
             </template>
+            <div v-if="row.payload?.configuration_label" class="reason-preview">组合 {{ row.payload.configuration_index }} · {{ row.payload.configuration_label }}</div>
           </template>
         </el-table-column>
         <el-table-column label="维度" width="110" align="center">
@@ -383,6 +384,7 @@
           <div class="ab-hd">
             <span class="ab-tag ab-tag-a">{{ ENGINE_LABEL[r.target_engine] || r.target_engine }}</span>
             <span class="ab-opts">{{ engineModel(r) }}</span>
+            <span v-if="r.payload?.configuration_label" class="ab-opts">{{ r.payload.configuration_label }}</span>
             <span class="ab-verdict">{{ r.verdict ? VERDICT_LABEL[r.verdict] : '未判定' }}</span>
           </div>
           <div class="ab-body">
@@ -580,15 +582,17 @@ const enginePairList = ref([])
 const engineOptions = computed(() => [...new Set(rows.value.map(r => r.target_engine).filter(Boolean))])
 // 同题在本批有 ≥2 个不同产品的 run → 可产品对比
 function _enginePeers(row) {
-  return rows.value.filter(r => !r.isGroup && r.batch_id === row.batch_id && r.eval_query_id === row.eval_query_id && r.target_engine)
+  return rows.value.filter(r => !r.isGroup && r.batch_id === row.batch_id && r.eval_query_id === row.eval_query_id && r.target_engine
+    && (r.payload?.trial_index || 1) === (row.payload?.trial_index || 1)
+    && r.payload?.compare_group === row.payload?.compare_group)
 }
 function hasEngineCompare(row) {
   if (!row.target_engine || !row.eval_query_id) return false
   return new Set(_enginePeers(row).map(r => r.target_engine)).size >= 2
 }
 function openEngineCompare(row) {
-  // 按 target_engine 去重取每产品一条(同产品多条取首条),稳定按产品名排序
-  const seen = new Map()
+  // 当前点击的配置优先；其他产品取首条，并在卡片中展示其配置。
+  const seen = new Map([[row.target_engine, row]])
   for (const r of _enginePeers(row)) {
     if (!seen.has(r.target_engine)) seen.set(r.target_engine, r)
   }

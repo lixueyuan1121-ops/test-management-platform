@@ -284,6 +284,8 @@ class EvalTaskRunIn(BaseModel):
     # A/B 对比执行:非空时每道题下发两条 run(A=dialog_options,B=本组),结果页配对出胜率。
     # 对齐主流测评平台的双配置对战(如 LMArena 双模型盲比),用于回答「哪套配置/模型更强」。
     dialog_options_b: dict | None = None
+    # 仅纳米Work展开，WorkBuddy继续使用 dialog_options 的单套配置。
+    dialog_options_matrix: dict | None = None
     # 一条龙开关:传入即写回任务级 auto_pipeline(执行对话框勾选,下次默认沿用);None=不改动。
     auto_pipeline: bool | None = None
 
@@ -361,10 +363,12 @@ def assign_groups_balanced(group_weights: list[tuple[str, int]], runners: list[s
 
 def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list[str],
                        target_device: str | None, opts: dict, opts_b: dict | None,
-                       user_id: int | None, trial_count: int = 1) -> tuple[list[int], str]:
+                       user_id: int | None, trial_count: int = 1,
+                       dialog_options_matrix: dict | None = None) -> tuple[list[int], str]:
     """下发任务内全部用例(手动执行端点与定时 job 共用;opts_b is not None 即 A/B 对比)。
 
-    target_engines:被测产品集合(多产品横评)。对每题按 engine × A/B variant 各 fan-out 一条 run。
+    target_engines:被测产品集合(多产品横评)。纳米Work可按 dialog_options_matrix 展开配置，
+    或沿用 engine × A/B variant；两种方式均再乘独立执行次数。
     runner 参数兼容三态:单个 runner_id 字符串(旧调用)、"auto"、或 runner_id 列表(多台分片)。
     - runner=="auto":按能力心跳挑在线机，启用 WorkBuddy 的 runner 可同时入选两种引擎。
     - 显式指定 runner/runners:该列表对所有 engine 共用(调用方保证机器能跑对应产品)。
@@ -377,11 +381,17 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
     from app.core.enums import EvalDeviceKind
     from app.services.eval_engines import EVAL_ENGINES, normalize_engines
     from app.services.dispatcher import online_eval_runners
+    from itertools import product
 
     task = db.query(EvalTask).filter_by(id=task.id).with_for_update().populate_existing().first()
     if task is None:
         raise ValueError("测评任务不存在")
     engines = normalize_engines(target_engines)
+    from app.services.eval_dialog_matrix import clean_matrix, expand_matrix, configuration_meta, MAX_RUNS
+    matrix = clean_matrix(dialog_options_matrix)
+    combinations = expand_matrix(matrix) if matrix is not None else None
+    if matrix is not None and (opts_b is not None or "namiwork" not in engines):
+        raise ValueError("组合配置仅用于纳米Work普通执行，不能同时启用 A/B 对比")
     if type(trial_count) is not int or not 1 <= trial_count <= 5:
         raise ValueError("独立执行次数须为1～5")
 
@@ -396,6 +406,10 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
     missing = [qid for qid in qids if qid not in found]
     if missing:
         raise ValueError(f"用例 {missing} 已不存在,请编辑任务移除")
+    if combinations is not None:
+        total = len(qids) * trial_count * (len(combinations) + len(engines) - 1)
+        if total > MAX_RUNS:
+            raise ValueError(f"组合执行共 {total} 条，单批最多 {MAX_RUNS} 条，请减少用例、组合或独立执行次数")
 
     # 每 engine 的候选执行机:显式指定→共用该列表(每台校验 eval 能力);auto→按 engine 挑在线机。
     explicit = runner if isinstance(runner, list) else (None if runner == AUTO_RUNNER else _resolve_runners(db, runner, None))
@@ -427,22 +441,29 @@ def dispatch_task_runs(db: Session, task: EvalTask, runner, target_engines: list
     conversation_groups = _dispatch_conversation_groups(list(found.values()))
     for engine in engines:
         group_weight.setdefault(engine, {}); group_order.setdefault(engine, [])
+        engine_variants = ([(None, opt, i) for i, opt in enumerate(combinations, 1)]
+                           if engine == "namiwork" and combinations is not None
+                           else [(tag, opt, None) for tag, opt in variants])
         for qid in qids:
             q = found[qid]
-            for tag, vopts, trial in [(tag, opt, trial) for tag, opt in variants for trial in range(1, trial_count + 1)]:
+            for (tag, vopts, config_index), trial in product(engine_variants, range(1, trial_count + 1)):
                 payload = _payload_of(q, vopts if tag == "B" else (vopts or None))
                 from app.services.eval_engines import validate_dialog_options
                 validate_dialog_options(engine, payload.get("dialog_options") or {})
                 payload["conversation_group"] = conversation_groups[qid]
                 payload["source_conversation_group"] = conversation_groups[qid]
                 payload["trial_index"], payload["trial_count"] = trial, trial_count
+                if config_index is not None:
+                    payload.update(configuration_meta(vopts, config_index, len(combinations)))
+                    if payload["conversation_group"]:
+                        payload["conversation_group"] = json.dumps(["configuration", payload["configuration_id"], payload["conversation_group"]], ensure_ascii=False)
                 if trial_count > 1 and payload["conversation_group"]:
                     payload["conversation_group"] = json.dumps(["trial", trial, payload["conversation_group"]], ensure_ascii=False)
                 if tag:
                     payload["compare_group"] = tag
                     if payload.get("conversation_group"):
                         payload["conversation_group"] = f"{payload['conversation_group']}#{tag}"
-                base_group = payload.get("conversation_group") or f"q{qid}#{tag or ''}#trial{trial}"
+                base_group = payload.get("conversation_group") or f"q{qid}#{tag or ''}#trial{trial}#config{payload.get('configuration_id', '')}"
                 group_key = f"{engine}::{base_group}"     # engine 前缀:跨产品同名组隔离(仅分机用)
                 planned.append((engine, group_key, payload, q))
                 if group_key not in group_weight[engine]:
@@ -514,6 +535,8 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
     else:
         engines = normalize_engines([body.target_engine])
     try:
+        from app.services.eval_dialog_matrix import clean_matrix
+        matrix = clean_matrix(body.dialog_options_matrix)
         # auto 且未显式给 runners:透传 "auto" 给 dispatch,由它按每个 engine 各自挑在线机(分机跑)。
         # 否则(显式单台/多台)先 resolve 成列表,对所有 engine 共用。
         if not body.runners and (body.runner or "").strip() == AUTO_RUNNER:
@@ -522,13 +545,16 @@ def run_task(task_id: int, body: EvalTaskRunIn, db: Session = Depends(get_db), u
         else:
             runner_arg = runner_list = _resolve_runners(db, body.runner, body.runners)
         created, batch_id = dispatch_task_runs(
-            db, task, runner_arg, engines, body.target_device, opts, opts_b, user.id, trial_count=body.trial_count)
+            db, task, runner_arg, engines, body.target_device, opts, opts_b, user.id,
+            trial_count=body.trial_count, dialog_options_matrix=matrix)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     # 记录本次执行的对话选项(列表展示+下次执行回填);对比模式把 B 组挂在 compareB 键下。
     # 没指定则清空=默认,始终反映最近一次执行
     stored = dict(opts)
     stored["trial_count"] = body.trial_count
+    if matrix is not None:
+        stored["matrix"] = matrix
     if body.dialog_options_b is not None:
         stored["compareB"] = opts_b
     task.dialog_options = json.dumps(stored, ensure_ascii=False) if stored else None
@@ -778,6 +804,9 @@ def _summary_items(db: Session, runs: list) -> list[dict]:
         cg = payload.get("compare_group")
         items.append({
             "run_id": r.id,
+            "configuration_id": payload.get("configuration_id"),
+            "configuration_label": payload.get("configuration_label"),
+            "dialog_options": payload.get("dialog_options") or {},
             "trial_index": payload.get("trial_index", 1),
             "trial_count": payload.get("trial_count", 1),
             "case_key": payload.get("source_conversation_group") or payload.get("eval_query_id") or r.eval_query_id,

@@ -13,7 +13,7 @@
 export function groupEvalRuns(rows, matchFilter = () => true) {
   const keyOf = (r) => {
     const g = r.payload?.conversation_group
-    return g ? JSON.stringify([r.batch_id || '', r.target_engine || '', r.payload?.compare_group || '', r.payload?.trial_index || 1, g]) : null
+    return g ? JSON.stringify([r.batch_id || '', r.target_engine || '', r.payload?.compare_group || '', r.payload?.configuration_id || '', r.payload?.trial_index || 1, g]) : null
   }
   const byGroup = new Map()
   for (const r of rows) {
@@ -52,6 +52,7 @@ function makeGroupRow(key, turns) {
     isGroup: true,
     conversation_group: turns[0].payload?.conversation_group,
     batch_id: turns[0].batch_id,
+    target_engine: turns[0].target_engine,
     // _inGroup 标记「确实处于多轮组内」的轮:子行据此显示「第X轮」;
     // 单独一条带组 ID 的 run 没有该标记,不会被误展示成多轮(浅拷贝避免污染原始行)
     children: turns.map((t) => ({ ...t, _inGroup: true })),

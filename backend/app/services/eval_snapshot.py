@@ -34,6 +34,7 @@ def context_of(db, run):
         p = payload_of(prior)
         if (p.get("conversation_group") != group
                 or p.get("compare_group") != payload.get("compare_group")
+                or p.get("configuration_id") != payload.get("configuration_id")
                 or p.get("trial_index", 1) != payload.get("trial_index", 1)):
             continue
         index = p.get("turn_index", 0)

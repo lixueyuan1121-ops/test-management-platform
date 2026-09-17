@@ -62,13 +62,16 @@ def samples_with_missing(db, batch_id, project_id):
 def trial_metrics(rows):
     """One sample is an entire conversation trial; average trials within each task first."""
     tasks = defaultdict(lambda: defaultdict(list))
+    configurations = {}
     for run in rows:
         p = payload_of(run)
         case = p.get('source_conversation_group') or p.get('conversation_group') or f"q:{p.get('eval_query_id') or run.eval_query_id or run.id}"
-        key = (run.target_engine or 'unknown', p.get('compare_group') or '', case)
+        config = p.get('configuration_id') or ''
+        configurations[config] = p.get('configuration_label') or ''
+        key = (run.target_engine or 'unknown', p.get('compare_group') or '', config, case)
         tasks[key][p.get('trial_index', 1)].append(run)
     result = []
-    for (engine, variant, case), trials in tasks.items():
+    for (engine, variant, config, case), trials in tasks.items():
         attempts = []
         for index, turns in sorted(trials.items()):
             m = outcome_metrics(turns)
@@ -81,18 +84,20 @@ def trial_metrics(rows):
         judged = sum(a['verdict'] != 'unknown' for a in attempts)
         scores = [a['score'] for a in attempts if a['score'] is not None]
         result.append({'engine': engine, 'variant': variant, 'case': case, 'attempts': attempts,
+            'configuration_id': config, 'configuration_label': configurations[config],
             'trial_count': n, 'success_rate': round(passed / n * 100, 1),
             'coverage_rate': round(judged / n * 100, 1),
             'mean_score': round(sum(scores) / len(scores), 2) if scores else None,
             'score_min': min(scores) if scores else None, 'score_max': max(scores) if scores else None})
     groups = defaultdict(list)
     for item in result:
-        groups[(item['engine'], item['variant'])].append(item)
+        groups[(item['engine'], item['variant'], item['configuration_id'])].append(item)
     return {'tasks': result, 'by_engine_variant': [
         {'engine': eng, 'variant': var, 'task_count': len(items),
+         'configuration_id': config, 'configuration_label': configurations[config],
          'success_rate': round(sum(i['success_rate'] for i in items) / len(items), 1),
          'coverage_rate': round(sum(i['coverage_rate'] for i in items) / len(items), 1),
          'mean_score': round(sum(i['mean_score'] for i in items if i['mean_score'] is not None) /
                              sum(i['mean_score'] is not None for i in items), 2)
                        if any(i['mean_score'] is not None for i in items) else None}
-        for (eng, var), items in sorted(groups.items())]}
+        for (eng, var, config), items in sorted(groups.items())]}

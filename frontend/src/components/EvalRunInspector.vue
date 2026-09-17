@@ -10,6 +10,7 @@
       <div class="run-meta">
         <el-tag :type="verdictType">{{ verdictLabel }}</el-tag>
         <span>{{ engineLabel }}</span><span v-if="row.score != null">{{ row.score }} / 5 分</span>
+        <span v-if="row.payload?.configuration_label">组合 {{ row.payload.configuration_index }} · {{ row.payload.configuration_label }}</span>
         <span v-if="row.reported_duration != null">上报耗时 {{ row.reported_duration }}{{ /^\d+(\.\d+)?$/.test(String(row.reported_duration)) ? ' 秒' : '' }}</span>
         <el-link v-if="shareUrl" :href="shareUrl" target="_blank" rel="noopener noreferrer" :icon="Link" type="primary">会话原文</el-link>
       </div>
