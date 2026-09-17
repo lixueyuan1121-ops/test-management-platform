@@ -3,7 +3,7 @@ const { chromium } = require('../../tools/qalab-runner/eval/node_modules/playwri
 const assert = require('node:assert/strict');
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_TEST_EXECUTABLE || undefined });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
     const errors = [], submissions = [];
@@ -12,6 +12,8 @@ const assert = require('node:assert/strict');
       { id: 18, name: '纳米组合执行', target_engines: ['namiwork'], dialog_options: { chatMode: '边想边做', model: 'GLM-5.3', thinkingDepth: '标准', trial_count: 2 } },
       { id: 19, name: 'WorkBuddy原流程', target_engines: ['workbuddy'], dialog_options: { model: 'WB单模型' } },
       { id: 20, name: '两个产品独立配置', target_engines: ['namiwork', 'workbuddy'], dialog_options: { matrix, model: 'WB专用模型' } },
+      { id: 21, name: 'QWork单产品', target_engines: ['qwork'], dialog_options: { model: 'Deepseek-V4-Flash' } },
+      { id: 22, name: '三产品组合', target_engines: ['namiwork', 'workbuddy', 'qwork'], dialog_options: { matrix } },
     ].map(t => ({ ...t, project_id: 1, query_ids: [1, 2, 3], status: 'done', last_batch_id: 'b' }));
     const runs = ['c1', 'c2'].flatMap((cfg, c) => [0, 1].map(turn => ({
       run_id: c * 2 + turn + 1, batch_id: 'b', target_engine: 'namiwork', eval_query_id: turn + 1,
@@ -114,6 +116,24 @@ const assert = require('node:assert/strict');
     await dialog.waitFor({ state: 'hidden' });
     assert.deepEqual(submissions.at(-1).body.dialog_options_matrix, matrix);
     assert.deepEqual(submissions.at(-1).body.dialog_options, { model: 'WB专用模型' });
+
+    await open('QWork单产品');
+    await dialog.getByText(/将下发 3 条执行/).waitFor();
+    assert.equal(await dialog.getByRole('textbox', { name: '纳米Work模型' }).count(), 0);
+    await dialog.getByRole('button', { name: '下发执行' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.deepEqual(submissions.at(-1).body.target_engines, ['qwork']);
+    assert.deepEqual(submissions.at(-1).body.dialog_options, { model: 'Deepseek-V4-Flash' });
+    assert.equal(submissions.at(-1).body.dialog_options_matrix, null);
+
+    await open('三产品组合');
+    await dialog.getByText(/将下发 30 条执行/).waitFor();
+    assert.equal(await dialog.getByRole('textbox', { name: 'WorkBuddy / QWork模型' }).inputValue(), '');
+    await dialog.getByRole('button', { name: '下发执行' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.deepEqual(submissions.at(-1).body.target_engines, ['namiwork', 'workbuddy', 'qwork']);
+    assert.deepEqual(submissions.at(-1).body.dialog_options_matrix, matrix);
+    assert.equal(submissions.at(-1).body.dialog_options, null);
 
     await page.getByRole('button', { name: '纳米组合执行', exact: true }).click();
     await page.getByText('配置组合', { exact: true }).waitFor();

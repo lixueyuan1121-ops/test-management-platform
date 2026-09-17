@@ -104,7 +104,9 @@ class RunnerDistributionTests(unittest.TestCase):
             self.assertEqual(len(names), len(set(names)))
             for rel in ('runner.mjs', 'step-executor.mjs', 'self-update.mjs',
                         'gui-mcp/runtime-loader.mjs', 'gui-mcp/selectors.json',
-                        'eval/src/workbuddy-runner.js', 'eval/src/desktop-runner.js'):
+                        'eval/src/workbuddy-runner.js', 'eval/src/desktop-runner.js',
+                        'eval/src/qwork-runner.js', 'eval/src/qwork-pool.js', 'eval/src/qwork-batch.js',
+                        'eval/src/qwork-native-files.js', 'eval/src/qwork-trace.js', 'eval/src/product-routing.js'):
                 self.assertIn(rel, names)
             for rel in names:
                 parts = Path(rel).parts

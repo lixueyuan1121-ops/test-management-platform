@@ -364,7 +364,7 @@ def heartbeat(run_id: int, runner: str = Query(...), claim_token: str = Query(..
     devices = [ctx.device] if ctx.device is not None else db.query(RunnerDevice).filter_by(runner_id=runner).all()
     now = datetime.utcnow()
     for device in devices:
-        declaration = engine or ("workbuddy" if run.target_engine == "workbuddy" else device.eval_engine) or "namiwork"
+        declaration = engine or (run.target_engine if run.target_engine in ("workbuddy", "qwork") else device.eval_engine) or "namiwork"
         device.last_seen_at = device.last_eval_at = now
         touch_eval_engine(db, device, declaration, now)
     db.commit()

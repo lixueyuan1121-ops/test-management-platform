@@ -575,7 +575,7 @@ function abWin(side) {
 }
 
 // ── 跨产品对比(target_engine 轴,正交于 A/B) ──
-const ENGINE_LABEL = { namiwork: '纳米Work', workbuddy: 'WorkBuddy' }
+const ENGINE_LABEL = { namiwork: '纳米Work', workbuddy: 'WorkBuddy', qwork: 'QWork' }
 const engineCompareVisible = ref(false)
 const enginePairList = ref([])
 // 本次结果里出现过的产品(供筛选下拉;>1 才显示筛选/对比入口)

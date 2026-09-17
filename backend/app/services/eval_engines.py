@@ -7,14 +7,15 @@ CLI 侧加执行器 + 一台声明该引擎的执行机即可,判定/统计/对�
 EVAL_ENGINES: dict[str, dict] = {
     "namiwork":  {"label": "纳米Work",  "needs_device": True,  "device_kind": "desktop"},
     "workbuddy": {"label": "WorkBuddy", "needs_device": False, "device_kind": "desktop"},
+    "qwork": {"label": "QWork", "needs_device": False, "device_kind": "desktop"},
 }
 
 DEFAULT_ENGINE = "namiwork"
 
 
 def validate_dialog_options(engine: str, options: dict) -> None:
-    if engine == "workbuddy" and any(options.get(k) for k in ("chatMode", "thinkingDepth")):
-        raise ValueError("WorkBuddy 暂不支持指定对话模式或思考深度，请清空这两项后执行")
+    if engine in ("workbuddy", "qwork") and any(options.get(k) for k in ("chatMode", "thinkingDepth")):
+        raise ValueError(f"{EVAL_ENGINES[engine]['label']} 暂不支持指定对话模式或思考深度，请清空这两项后执行")
 
 
 def is_valid_engine(engine: str) -> bool:
@@ -22,15 +23,15 @@ def is_valid_engine(engine: str) -> bool:
 
 
 def runner_supported_engines(declaration: str | None) -> tuple[str, ...]:
-    """runner 默认具备纳米Work能力；workbuddy 声明只增添能力，不替换默认能力。
+    """runner 默认具备纳米Work能力；逗号分隔声明增加其他产品能力。
 
     保留现有 EVAL_ENGINE/engine 参数，已部署执行器无需修改配置或另启进程。
     非法声明不授予任何执行能力。
     """
-    declaration = declaration or DEFAULT_ENGINE
-    if not is_valid_engine(declaration):
+    declarations = [e.strip() for e in (declaration or DEFAULT_ENGINE).split(",")]
+    if not all(is_valid_engine(e) for e in declarations):
         return ()
-    return tuple(dict.fromkeys((DEFAULT_ENGINE, declaration)))
+    return tuple(dict.fromkeys((DEFAULT_ENGINE, *declarations)))
 
 
 def normalize_engines(engines: list[str] | None) -> list[str]:

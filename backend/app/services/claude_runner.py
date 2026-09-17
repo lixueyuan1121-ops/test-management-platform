@@ -1452,6 +1452,12 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         art_block += "\n实际文件核验（含文件哈希与解析内容，规则检查仅覆盖指定硬约束）：\n" + _clip_keep_ends(json.dumps(t["artifact_verification"], ensure_ascii=False), 48000)
     dim_lines = "\n".join(f"- {k}: {v}" for k, v in EVAL_JUDGE_DIMS.items())
     ws_note = "" if ws_captured else "\n注意:本会话轨迹未完整捕获(ws_captured=false),思考/工具信息可能缺失,对应维度请据可得信息判定并在 note 说明。"
+    process_block = ""
+    if t.get("product") == "qwork":
+        capture = t.get("capture_diagnostics") or {}
+        ws_note = "\nQWork 使用客户端原生会话记录，ws_captured=false 仅表示未使用 WS 抓取；完整性以以下采集诊断为准：\n" + _clip_keep_ends(json.dumps(capture, ensure_ascii=False), 2500)
+        process_block = "\n【各阶段助手正文（按本轮顺序）】\n" + _clip_keep_ends(
+            "\n\n".join(str(s) for s in (t.get("assistant_segments") or [])), 12000)
 
     # 主考维度第四维:有 dimension 才注入(老数据/未标注题保持三维,输出解析兼容两种形态)
     dim_key = dimension if dimension in EVAL_DIMENSIONS else None
@@ -1514,6 +1520,7 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
 
 【工具/MCP 调用】
 {tools_block}
+{process_block}
 
 【产物】
 {art_block}
@@ -1646,6 +1653,13 @@ def _extract_process_signals(raw_message, trace) -> dict:
 
     # 来源1: raw_message
     s = "" if raw_message is None else str(raw_message).strip()
+    # QWork 的数据库字段是索引，完整内容在 trace；不能把索引误解析成零工具调用。
+    try:
+        index = json.loads(s)
+        if isinstance(index, dict) and index.get("schema") == "qwork-trace-index-v1":
+            s = ""
+    except (ValueError, TypeError):
+        pass
     if s:
         try:
             obj = json.loads(s)

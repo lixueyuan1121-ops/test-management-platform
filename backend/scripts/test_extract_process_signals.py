@@ -84,6 +84,17 @@ def test_dirty_data_tolerant():
 
 
 def main():
+    from app.services.claude_runner import build_eval_judge_prompt
+    prompt = build_eval_judge_prompt({'product': 'qwork', 'ws_captured': False,
+        'assistant_segments': ['中间解释', '最终回答'], 'capture_diagnostics': {'status': 'complete'}}, '完成任务')
+    assert '本会话轨迹未完整捕获' not in prompt
+    assert '中间解释' in prompt and '客户端原生会话记录' in prompt
+    qwork = _extract_process_signals('{"schema":"qwork-trace-index-v1"}', {
+        'product': 'qwork', 'thinking': '本轮可见思考',
+        'tool_calls': [{'name': 'read_file', 'args': {'path': 'a.txt'}, 'result_text': 'hello', 'reached_result': True}],
+    })
+    assert qwork['source'] == 'trace' and qwork['tool_call_count'] == 1, qwork
+    assert qwork['thinking_summary'] == '本轮可见思考', qwork
     test_raw_message_reasoning_and_tools()
     test_raw_message_non_json_degrades()
     test_trace_tool_calls_aggregated()

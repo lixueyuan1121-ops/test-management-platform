@@ -220,14 +220,14 @@
             </el-select>
           </el-form-item>
           <p class="cmp-hint matrix-count">{{ Math.max(1, runMatrix.chatMode.length) }} 种模式 × {{ Math.max(1, runMatrix.model.length) }} 个模型 × {{ Math.max(1, runMatrix.thinkingDepth.length) }} 档深度 = <b>{{ runCombinationCount }} 种组合</b>。留空的项按 1 种计算；每种组合单独新建会话。</p>
-          <el-form-item v-if="runHasWorkBuddy" label="WorkBuddy">
-            <el-input v-model="runForm.workbuddy_model" clearable maxlength="64" aria-label="WorkBuddy模型" placeholder="WorkBuddy模型（单个，留空沿用配置）" />
-            <span class="cmp-hint">WorkBuddy按此模型执行，不参与上方的纳米Work组合。</span>
+          <el-form-item v-if="runHasOtherDesktop" :label="otherDesktopLabel">
+            <el-input v-model="runForm.workbuddy_model" clearable maxlength="64" :aria-label="`${otherDesktopLabel}模型`" placeholder="单个模型，留空沿用各产品配置" />
+            <span class="cmp-hint">{{ otherDesktopLabel }}按此模型执行，不参与上方的纳米Work组合。</span>
           </el-form-item>
         </template>
         <template v-else>
         <el-form-item v-if="runHasNami" label="对话模式">
-          <el-select v-model="runForm.chat_mode" :disabled="runTask?.target_engines?.includes('workbuddy')" clearable style="width:100%" placeholder="留空=沿用执行时配置">
+          <el-select v-model="runForm.chat_mode" :disabled="runHasOtherDesktop" clearable style="width:100%" placeholder="留空=沿用执行时配置">
             <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
           </el-select>
         </el-form-item>
@@ -235,7 +235,7 @@
           <el-input v-model="runForm.model" clearable :placeholder="MODEL_PLACEHOLDER" />
         </el-form-item>
         <el-form-item v-if="runHasNami" label="思考深度">
-          <el-select v-model="runForm.thinking_depth" :disabled="runTask?.target_engines?.includes('workbuddy')" clearable style="width:100%" placeholder="留空=沿用执行时配置">
+          <el-select v-model="runForm.thinking_depth" :disabled="runHasOtherDesktop" clearable style="width:100%" placeholder="留空=沿用执行时配置">
             <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
           </el-select>
         </el-form-item>
@@ -243,7 +243,7 @@
         <template v-if="runForm.compare">
           <el-divider content-position="left"><span class="cmp-b-title">B 组选项（上方为 A 组）</span></el-divider>
           <el-form-item label="对话模式">
-            <el-select v-model="runForm.b_chat_mode" :disabled="runTask?.target_engines?.includes('workbuddy')" clearable style="width:100%" placeholder="留空=沿用执行时配置">
+            <el-select v-model="runForm.b_chat_mode" :disabled="runHasOtherDesktop" clearable style="width:100%" placeholder="留空=沿用执行时配置">
               <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
@@ -251,7 +251,7 @@
             <el-input v-model="runForm.b_model" clearable :placeholder="MODEL_PLACEHOLDER" />
           </el-form-item>
           <el-form-item label="思考深度">
-            <el-select v-model="runForm.b_thinking_depth" :disabled="runTask?.target_engines?.includes('workbuddy')" clearable style="width:100%" placeholder="留空=沿用执行时配置">
+            <el-select v-model="runForm.b_thinking_depth" :disabled="runHasOtherDesktop" clearable style="width:100%" placeholder="留空=沿用执行时配置">
               <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
             </el-select>
           </el-form-item>
@@ -584,7 +584,8 @@ const runForm = ref({ trial_count: 1, runners: [], auto: false, auto_pipeline: f
   compare: false, b_chat_mode: '', b_model: '', b_thinking_depth: '' })
 const runEngines = computed(() => [...new Set(runTask.value?.target_engines?.length ? runTask.value.target_engines : ['namiwork'])])
 const runHasNami = computed(() => runEngines.value.includes('namiwork'))
-const runHasWorkBuddy = computed(() => runEngines.value.includes('workbuddy'))
+const otherDesktopLabel = computed(() => runEngines.value.filter(e => ['workbuddy', 'qwork'].includes(e)).map(e => e === 'qwork' ? 'QWork' : 'WorkBuddy').join(' / '))
+const runHasOtherDesktop = computed(() => !!otherDesktopLabel.value)
 const runMatrix = computed(() => ({ chatMode: runForm.value.chat_modes, model: parseModelNames(runForm.value.models_text), thinkingDepth: runForm.value.thinking_depths }))
 const runCombinationCount = computed(() => dialogCombinationCount(runMatrix.value))
 const runUsesMatrix = computed(() => runHasNami.value && !runForm.value.compare)
@@ -603,9 +604,9 @@ const runValidationError = computed(() => {
 
 function onCompareChange(enabled) {
   if (!enabled || !runHasNami.value) return
-  runForm.value.chat_mode = runHasWorkBuddy.value ? '' : (runMatrix.value.chatMode[0] || '')
+  runForm.value.chat_mode = runHasOtherDesktop.value ? '' : (runMatrix.value.chatMode[0] || '')
   runForm.value.model = runMatrix.value.model[0] || ''
-  runForm.value.thinking_depth = runHasWorkBuddy.value ? '' : (runMatrix.value.thinkingDepth[0] || '')
+  runForm.value.thinking_depth = runHasOtherDesktop.value ? '' : (runMatrix.value.thinkingDepth[0] || '')
 }
 const devices = ref([])
 const clientDevices = ref([])
@@ -805,7 +806,7 @@ async function openRun(row) {
   runForm.value.b_chat_mode = b?.chatMode || ''
   runForm.value.b_model = b?.model || ''
   runForm.value.b_thinking_depth = b?.thinkingDepth || ''
-  if (row.target_engines?.includes('workbuddy')) {
+  if (row.target_engines?.some(e => ['workbuddy', 'qwork'].includes(e))) {
     runForm.value.chat_mode = runForm.value.thinking_depth = ''
     runForm.value.b_chat_mode = runForm.value.b_thinking_depth = ''
   }
@@ -869,7 +870,7 @@ async function doRun() {
       target_device: (!runForm.value.auto && runForm.value.runners.length === 1)
         ? (runForm.value.target_device || null) : null,
       dialog_options: runUsesMatrix.value
-        ? (runHasWorkBuddy.value ? buildDialogOptions({ model: runForm.value.workbuddy_model }) : null)
+        ? (runHasOtherDesktop.value ? buildDialogOptions({ model: runForm.value.workbuddy_model }) : null)
         : buildDialogOptions({ chatMode: runForm.value.chat_mode, model: runForm.value.model, thinkingDepth: runForm.value.thinking_depth }),
       dialog_options_matrix: runUsesMatrix.value ? runMatrix.value : null,
       // 对比开关开启才传 B 组(传了即启用对比,B 三项全空 = B 沿用执行时客户端配置);关闭传 null=单套执行

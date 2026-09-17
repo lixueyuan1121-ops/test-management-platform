@@ -93,7 +93,8 @@ async function collectArtifacts({ page, trace, rules, client, runId, selectors, 
 
 function runnerMetadata() {
   const hash = crypto.createHash('sha256');
-  for (const name of ['dialog-runner.js', 'desktop-runner.js', 'workbuddy-runner.js', 'dialog-config.js', 'artifact-collector.js']) hash.update(fs.readFileSync(path.join(__dirname, name)));
+  for (const name of ['dialog-runner.js', 'desktop-runner.js', 'workbuddy-runner.js', 'dialog-config.js', 'artifact-collector.js',
+    'qwork-runner.js', 'qwork-trace.js', 'qwork-pool.js', 'qwork-native-files.js', 'qwork-batch.js', 'product-routing.js']) hash.update(fs.readFileSync(path.join(__dirname, name)));
   return { runner_hash: hash.digest('hex'), node_version: process.version, platform: process.platform };
 }
 

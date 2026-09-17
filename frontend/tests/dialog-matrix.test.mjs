@@ -13,7 +13,7 @@ test('计数与回填摘要保留含逗号的模式；空维度仍执行一次',
   const matrix = { chatMode: ['边想边做', '先规划，再执行'], model: ['M1', 'M2', 'M3'], thinkingDepth: ['高', '标准'] }
   assert.equal(dialogCombinationCount(matrix), 12)
   assert.equal(dialogCombinationCount({}), 1)
-  assert.match(fmtDialogOptions({ matrix, model: 'WB' }), /12 种组合.*先规划，再执行.*WorkBuddy：WB/)
+  assert.match(fmtDialogOptions({ matrix, model: 'WB' }), /12 种组合.*先规划，再执行.*其他产品模型：WB/)
   assert.equal(fmtDialogOptions({ model: 'M1', compareB: { model: 'M2' } }), 'M1 vs M2')
 })
 

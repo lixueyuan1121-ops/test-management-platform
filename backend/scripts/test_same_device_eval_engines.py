@@ -92,6 +92,31 @@ class SameDeviceEnginesTest(unittest.TestCase):
         for run in wb:
             self.assertEqual(self.claim(run["run_id"], "workbuddy").status_code, 200)
 
+    def test_three_products_heartbeat_dispatch_claim_are_isolated(self):
+        self.poll("workbuddy,qwork")
+        for engine in ["namiwork", "workbuddy", "qwork"]:
+            self.assertEqual(self.online(engine), ["dual"])
+        with self.sessions() as db:
+            ids, _ = dispatch_task_runs(db, db.get(EvalTask, 1), "auto",
+                                       ["namiwork", "workbuddy", "qwork"], None, {}, None, 1)
+            db.commit()
+            self.assertEqual(len(ids), 6)
+        qwork = self.poll("qwork")
+        self.assertEqual({r["target_engine"] for r in qwork}, {"namiwork", "qwork"})
+        all_runs = self.poll("workbuddy,qwork")
+        self.assertEqual(len(all_runs), 6)
+        run = next(r for r in all_runs if r["target_engine"] == "qwork")
+        self.assertEqual(self.claim(run["run_id"], "workbuddy").status_code, 409)
+        for row in all_runs:
+            self.assertEqual(self.claim(row["run_id"], "workbuddy,qwork").status_code, 200)
+
+    def test_old_runner_cannot_pick_qwork(self):
+        self.poll("workbuddy")
+        with self.sessions() as db:
+            with self.assertRaisesRegex(ValueError, "QWork.*无在线执行机"):
+                dispatch_task_runs(db, db.get(EvalTask, 1), "auto", ["qwork"], None, {}, None, 1)
+            self.assertEqual(db.query(EvalRun).count(), 0)
+
     def test_workbuddy_capability_expires_when_only_default_runner_remains(self):
         self.poll("workbuddy")
         with self.sessions() as db:

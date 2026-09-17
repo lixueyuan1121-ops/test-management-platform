@@ -9,7 +9,8 @@ class PlatformClient {
     this.token = config.token || process.env.RUNNER_TOKEN || '';
     this.runnerId = config.runnerId || process.env.RUNNER_ID || 'mac-01';
     // 纳米Work 是默认能力；EVAL_ENGINE=workbuddy 额外开启 WorkBuddy，不替换纳米Work。
-    this.engine = config.engine || process.env.EVAL_ENGINE || 'namiwork';
+    this.engine = config.engines || config.engine || process.env.EVAL_ENGINES || process.env.EVAL_ENGINE || 'namiwork';
+    if (Array.isArray(this.engine)) this.engine = this.engine.join(',');
     this.claims = new Map();
     this.heartbeatTimer = null;
     if (!this.baseUrl) throw new Error('平台模式需配置 BASE_URL(平台地址)');

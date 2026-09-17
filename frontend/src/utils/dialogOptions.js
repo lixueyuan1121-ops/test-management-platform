@@ -58,7 +58,7 @@ export function fmtDialogOptions(opts) {
   if (opts.matrix) {
     const m = opts.matrix
     const parts = [m.chatMode?.join(' / '), m.model?.join(' / '), m.thinkingDepth?.length && `深思:${m.thinkingDepth.join(' / ')}`].filter(Boolean)
-    return `纳米Work ${dialogCombinationCount(m)} 种组合：${parts.join(' · ') || '沿用配置'}${opts.model ? `；WorkBuddy：${opts.model}` : ''}`
+    return `纳米Work ${dialogCombinationCount(m)} 种组合：${parts.join(' · ') || '沿用配置'}${opts.model ? `；其他产品模型：${opts.model}` : ''}`
   }
   return one(opts)
 }

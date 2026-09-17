@@ -14,5 +14,6 @@ body = r.json()
 assert body["code"] == 0, f"code 非 0: {body}"
 engines = [e["engine"] for e in body["data"]]
 assert "workbuddy" in engines and "namiwork" in engines, f"缺引擎: {engines}"
+assert "qwork" in engines, f"缺 QWork: {engines}"
 assert all("label" in e and "device_kind" in e for e in body["data"]), "字段不全"
 print("PASS: eval-engines endpoint")

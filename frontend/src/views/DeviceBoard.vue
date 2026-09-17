@@ -50,7 +50,8 @@
             <span v-for="k in runKinds(d)" :key="k" class="kind-tag" :class="'k-' + k">{{ KIND_LABEL[k] || k }}</span>
             <div class="runner-id">{{ d.runner_id }}</div>
             <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain" class="plat-tag">{{ d.platform.toUpperCase() }}</el-tag>
-            <el-tag v-if="d.eval_engine === 'workbuddy'" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
+            <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('workbuddy')" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
+            <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('qwork')" size="small" effect="light" title="该执行机支持 QWork 对话测评">QWork</el-tag>
           </div>
 
           <div class="meta">

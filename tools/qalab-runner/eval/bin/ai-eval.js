@@ -11,6 +11,8 @@ const DesktopPool = require('../src/desktop-pool');
 const DesktopRunner = require('../src/desktop-runner');
 const { WorkbuddyPool } = require('../src/workbuddy-pool');
 const { WorkbuddyRunner } = require('../src/workbuddy-runner');
+const { runQworkBatch } = require('../src/qwork-batch');
+const { partitionProducts } = require('../src/product-routing');
 const { formatFailureReason } = require('../src/execution-result');
 const { groupIntoConversations, convHasAttachments } = require('../src/conversation-group');
 const { downloadAttachments } = require('../src/attachment-downloader');
@@ -883,15 +885,16 @@ program
       const pending = await client.fetchPending(parseInt(opts.limit, 10) || 1);
       if (!pending || !pending.length) { logger.info('平台无待执行任务'); return 0; }
       logger.info(`拉到 ${pending.length} 条待执行`);
-      // 按被测引擎拆分：workbuddy 走独立执行器(CDP 驱动 WorkBuddy 客户端)，其余(namiwork/空)走原纳米路径。
+      // 按被测产品严格拆分：QWork、WorkBuddy各用独立执行器，namiwork/空走原纳米路径。
       // 同一 conversation_group 必然同引擎(后端整组同 target_engine)，故按 run 顶层字段直接分。
-      const wbPending = pending.filter(it => (it.target_engine || '').toLowerCase() === 'workbuddy');
-      const namiPending = pending.filter(it => (it.target_engine || '').toLowerCase() !== 'workbuddy');
+      const { workbuddy: wbPending, namiwork: namiPending, qwork: qworkPending, unsupported } = partitionProducts(pending);
+      if (unsupported.length) logger.error(`跳过 ${unsupported.length} 条不支持的产品任务，请升级执行器`);
       if (wbPending.length) {
         await runWorkbuddyBatch(wbPending, client, config, logger);
       }
+      if (qworkPending.length) await runQworkBatch(qworkPending, client, config, logger);
       // 无纳米任务则直接返回，避免白建纳米 DesktopPool。
-      if (!namiPending.length) { logger.info('本轮仅 workbuddy 任务，已处理'); return 0; }
+      if (!namiPending.length) { logger.info('本轮无纳米Work任务'); return 0; }
       // DesktopPool 构造签名：(desktopConfig, platformConfig=选择器段, logger)。init 后主 page 已挂纳米 gateway 采集器。
       const pool = new DesktopPool(config.desktop, config.platform, logger);
       await pool.init();

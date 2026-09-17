@@ -110,9 +110,22 @@ class DialogMatrixTests(unittest.TestCase):
         rows, _ = self.dispatch(dialog_options_matrix=None, opts={'model': 'A'}, opts_b={})
         self.assertEqual([json.loads(r.payload)['dialog_options'] for r in rows], [{'model': 'A'}, {}])
         self.assertEqual([json.loads(r.payload)['compare_group'] for r in rows], ['A', 'B'])
+
         rows, _ = self.dispatch(dialog_options_matrix=None, target_engines=['workbuddy'], opts={'model': 'WB'})
         self.assertEqual(len(rows), 1)
         self.assertNotIn('configuration_id', json.loads(rows[0].payload))
+
+    def test_qwork_combination_isolation_and_unsupported_options(self):
+        rows, _ = self.dispatch(target_engines=['namiwork', 'workbuddy', 'qwork'], opts={'model': 'DesktopModel'})
+        self.assertEqual(Counter(r.target_engine for r in rows), {'namiwork': 36, 'workbuddy': 3, 'qwork': 3})
+        for row in rows:
+            if row.target_engine == 'qwork':
+                payload = json.loads(row.payload)
+                self.assertEqual(payload['dialog_options'], {'model': 'DesktopModel'})
+                self.assertNotIn('configuration_id', payload)
+        from app.services.eval_engines import validate_dialog_options
+        with self.assertRaisesRegex(ValueError, 'QWork'):
+            validate_dialog_options('qwork', {'thinkingDepth': '高'})
 
     def test_claim_and_retry_only_operate_on_one_configuration_conversation(self):
         from app.core.deps import RunnerCtx, require_runner_ctx

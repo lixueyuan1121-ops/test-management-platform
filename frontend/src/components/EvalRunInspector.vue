@@ -64,7 +64,7 @@
           <div v-else-if="!history.length" class="trace-state">暂无重试前的执行记录</div>
           <el-collapse v-else>
             <el-collapse-item v-for="attempt in history" :key="attempt.id" :name="attempt.id" :title="`第 ${attempt.attempt} 次执行 · ${attempt.archived_at?.replace('T', ' ') || ''}`">
-              <div class="run-meta"><span>{{ attempt.verdict || attempt.status }}</span><span v-if="attempt.score != null">{{ attempt.score }} / 5 分</span><span v-if="attempt.bean_cost != null">算力豆 {{ attempt.bean_cost }}</span></div>
+              <div class="run-meta"><span>{{ attempt.verdict || attempt.status }}</span><span v-if="attempt.score != null">{{ attempt.score }} / 5 分</span><span v-if="attempt.bean_cost != null">{{ row.target_engine === 'qwork' ? 'QWork积分' : '算力豆' }} {{ attempt.bean_cost }}</span></div>
               <h4>判定与复核</h4><div class="prose" v-html="renderMd([attempt.verdict_reason || attempt.reason, attempt.review_note].filter(Boolean).join('\n\n'))"></div>
               <h4>回答</h4><div class="prose" v-html="renderMd(attempt.answer)"></div>
               <el-link v-if="historyTraceUrl(attempt.trace)" :href="historyTraceUrl(attempt.trace)" target="_blank" rel="noopener noreferrer" type="primary">查看当次采集记录</el-link>
@@ -78,6 +78,23 @@
           <template v-else>
             <div v-if="!trace" class="trace-state">暂无 trace 记录</div>
             <template v-else>
+              <section v-if="trace.product === 'qwork'" class="evidence-section">
+                <h3>QWork 原生会话记录</h3>
+                <p>采集状态：{{ trace.capture_diagnostics?.status === 'complete' ? '完整' : '存在缺失，请查看采集诊断' }} · {{ trace.capture_diagnostics?.message_count || 0 }} 条消息 · {{ trace.capture_diagnostics?.event_count || 0 }} 条实时事件</p>
+                <p>会话 {{ trace.session_id }} · 回合 {{ trace.request_id || '未确认' }}</p>
+                <p>积分：{{ trace.bean_cost ?? '尚未结算或未取得' }} · 执行状态：{{ qworkStatusLabel }}</p>
+                <el-button @click="downloadTrace">下载完整记录 JSON</el-button>
+                <el-collapse>
+                  <el-collapse-item title="各阶段对话正文" name="messages">
+                    <section v-for="(message, i) in trace.raw_history?.messages || []" :key="i">
+                      <h4>{{ i + 1 }}. {{ { user: '用户', assistant: '助手', tool: '工具' }[message.role] || message.role }}</h4><pre>{{ message.text || pretty(message.blocks) }}</pre>
+                    </section>
+                  </el-collapse-item>
+                  <el-collapse-item title="模型用量、文件变更与交付物（会话快照）" name="metadata">
+                    <pre>{{ pretty({ usage: trace.usage, files: trace.raw_history?.files, deliveries: trace.raw_history?.deliveries, credits: trace.raw_history?.credits }) }}</pre>
+                  </el-collapse-item>
+                </el-collapse>
+              </section>
               <section class="evidence-section"><h3>思考记录</h3><div class="prose" v-html="renderMd(trace.thinking || '未取得思考记录')"></div></section>
               <section class="evidence-section"><h3>工具 / MCP <span class="count">{{ trace.tool_calls?.length || 0 }}</span></h3>
                 <div v-if="!trace.tool_calls?.length" class="trace-state">未取得工具调用记录</div>
@@ -92,7 +109,7 @@
               <section v-if="trace.execution_config" class="evidence-section"><h3>实际执行配置</h3><pre>{{ pretty(trace.execution_config) }}</pre></section>
             </template>
           </template>
-          <section v-if="row.raw_message" class="evidence-section"><h3>原始 message</h3><pre>{{ pretty(row.raw_message) }}</pre></section>
+          <section v-if="row.raw_message" class="evidence-section"><h3>{{ row.target_engine === 'qwork' ? '原始记录索引（完整内容见上方下载）' : '原始 message' }}</h3><pre>{{ pretty(row.raw_message) }}</pre></section>
         </el-tab-pane>
       </el-tabs>
     </template>
@@ -119,6 +136,15 @@ const historyLoading = ref(false)
 const historyError = ref('')
 let historyRequest = 0
 const downloadingArtifact = ref(null)
+function downloadTrace() {
+  if (!trace.value) return
+  const url = URL.createObjectURL(new Blob([JSON.stringify(trace.value, null, 2)], { type: 'application/json' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `qwork-${props.row.run_id}-trace.json`
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 async function downloadArtifact(file) {
   downloadingArtifact.value = file.artifact_id
   try {
@@ -174,7 +200,8 @@ const pretty = value => {
   if (typeof value === 'string') { try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value } }
   return JSON.stringify(value ?? null, null, 2)
 }
-const engineLabel = computed(() => ({ namiwork: '纳米Work', workbuddy: 'WorkBuddy' }[props.row?.target_engine] || props.row?.target_engine || '未标注产品'))
+const engineLabel = computed(() => ({ namiwork: '纳米Work', workbuddy: 'WorkBuddy', qwork: 'QWork' }[props.row?.target_engine] || props.row?.target_engine || '未标注产品'))
+const qworkStatusLabel = computed(() => ({ completed: '已完成', failed: '失败', interrupted: '已中断', pending: '等待执行', running: '执行中' }[trace.value?.turn_status] || '未完成'))
 const verdictLabel = computed(() => ({ pass: '通过', fail: '不通过', error: '待复核' }[props.row?.verdict] || (props.row?.status === 'failed' ? '执行失败' : '未判定')))
 const verdictType = computed(() => ({ pass: 'success', fail: 'danger', error: 'info' }[props.row?.verdict] || 'info'))
 const shareUrl = computed(() => /^https?:\/\//i.test(props.row?.share_link || '') ? props.row.share_link : null)

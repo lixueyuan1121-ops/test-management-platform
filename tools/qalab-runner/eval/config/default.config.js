@@ -337,6 +337,18 @@ module.exports = {
     readyTimeout: 60000        // 等主窗口对话界面就绪超时
   },
 
+  // QWork 使用独立的渲染器 / 主进程端口。主进程端口仅用于本次附件选择。
+  qworkDesktop: {
+    executablePath: process.env.QWORK_EXE || (process.platform === 'darwin' ? '/Applications/QWork.app' : ''),
+    cdpHost: '127.0.0.1',
+    cdpPort: parseInt(process.env.QWORK_CDP_PORT, 10) || 9336,
+    inspectHost: '127.0.0.1',
+    inspectPort: parseInt(process.env.QWORK_INSPECT_PORT, 10) || 9337,
+    launchTimeout: 60000,
+    readyTimeout: 30000,
+  },
+  qwork: { model: process.env.QWORK_MODEL || '', pollMs: 1000, eventMaxBytes: 5 * 1024 * 1024 },
+
   // ========== WorkBuddy 桌面客户端 CDP 连接（独立于纳米 desktop 段；被测引擎 target_engine=workbuddy） ==========
   // WorkBuddy = 腾讯 Electron 客户端（com.tencent.workbuddy.mac）。与纳米不同：靠环境变量
   // WORKBUDDY_REMOTE_DEBUGGING_PORT=<port> 开调试端口（非 --remote-debugging-port 命令行参数）。

@@ -6,6 +6,11 @@ assert runner_supported_engines(None) == ("namiwork",)
 assert runner_supported_engines("namiwork") == ("namiwork",)
 assert runner_supported_engines("workbuddy") == ("namiwork", "workbuddy")
 assert runner_supported_engines("gpt") == ()
+assert is_valid_engine("qwork")
+assert runner_supported_engines("qwork") == ("namiwork", "qwork")
+assert runner_supported_engines("workbuddy, qwork,workbuddy") == ("namiwork", "workbuddy", "qwork")
+assert runner_supported_engines("workbuddy,unknown") == ()
+assert runner_supported_engines("workbuddy,") == ()
 assert normalize_engines(None) == ["namiwork"]
 assert normalize_engines([]) == ["namiwork"]
 assert normalize_engines(["workbuddy", "namiwork", "workbuddy"]) == ["workbuddy", "namiwork"]  # 去重保序
