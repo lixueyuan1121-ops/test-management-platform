@@ -16,8 +16,6 @@
 
 import { responseArgsBeforeAction, createTextCaptures } from "./gui-mcp/runtime-loader.mjs";
 
-import { mayPrepareOnFailure, preparationReport } from "./runtime-preparation.mjs";
-
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press", "set_checked", "select_option",
   "wait_for", "wait_response", "get_text", "screenshot", "goto",
@@ -26,7 +24,7 @@ const DETERMINISTIC = new Set([
 ]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
-export async function runScript(gui, script, log = () => {}, judgeFn = null, options = {}) {
+export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   if (!Array.isArray(script) || script.length === 0) {
     return { needClaude: true, reason: "用例无结构化 script,退回 claude 执行" };
   }
@@ -49,7 +47,6 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null, opt
   const evidence = [];   // 证据链:每步一条(兼容旧 evidence_url:取最后一条)
   const steps = [];      // 结构化步骤结果
   const report = [];     // 执行报告:每步 { no, action, desc, ok, error?, shotBuf? }
-  const prepared = new Set();
   const captured = [];   // judge 步的上下文素材(前面 get_text 文本 / screenshot 路径)
   // 本条用例注册过的网络拦截:pattern -> { pattern, status, hits }。按**整条用例**累计,
   // 而非收尾时问一次 gui —— 脚本尾部跑过 unmock_route 的拦截器那时已不在 gui 里,统计会凭空丢掉。
@@ -208,18 +205,6 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null, opt
         }
       }
     } catch (e) {
-      if (typeof options.prepare === 'function' && prepared.size < 2 && !prepared.has(i)
-          && mayPrepareOnFailure(st, e, steps)) {
-        prepared.add(i);
-        log(`  step${i + 1} 缺少执行条件，检查并自动补齐后重试当前步骤`);
-        let preparation;
-        try { preparation = await options.prepare({ step: st, index: i, error: String(e.message), completed: steps }); }
-        catch (error) { preparation = { ok: false, reason: String(error.message) }; }
-        const entry = preparationReport(preparation, i + 1);
-        report.push(entry); await capShot(entry);
-        if (preparation.ok) { i -= 1; continue; }
-        return await failAt(i, action, desc, `条件准备失败：${preparation.reason}`);
-      }
       // 定位/操作抛错(元素找不到、超时等)→ 整条 fail,带诊断 + 失败现场截图
       return await failAt(i, action, desc, `step${i + 1}「${action}」执行出错:${e.message}`);
     }

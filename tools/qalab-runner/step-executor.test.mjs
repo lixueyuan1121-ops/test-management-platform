@@ -2,6 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runScript } from "./step-executor.mjs";
 
+test('restored execution keeps captured text comparisons and real failure evidence', async () => {
+  for (const actual of ['订单 42', '错误订单']) {
+    const gui = fakeGui();
+    gui.getText = async () => ({ text: ' 订单 42 ' });
+    gui.assertText = async ({ expected }) => ({ pass: actual === expected, actual, expected, mode: 'equals' });
+    const result = await runScript(gui, [
+      { action: 'get_text', target: { key: 'source' }, args: { save_as: 'order' } },
+      { action: 'assert_text', target: { key: 'destination' }, args: { expected_from: 'order' } },
+    ]);
+    assert.equal(result.verdict, actual === '订单 42' ? 'pass' : 'fail');
+    assert.equal(result.report[1].check.expected, '订单 42');
+    assert.equal(result.report[1].check.actual, actual);
+  }
+});
+
 // 假 gui:记录 shotBuffer 调用次数;可控 assertVisible 成败。返回 Buffer 模拟截图。
 // visibleOk=false 时按 visibleLocatable 区分:true=元素定位到但不可见(business);false=定位不到(selector)。
 // mockHits:mockRoute 注册后该拦截器的"命中请求数",0 模拟"URL 模式没匹配上、mock 全程没拦到"。

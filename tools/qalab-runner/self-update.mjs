@@ -5,7 +5,7 @@
 //   不在代码里硬编码版本常量——覆盖解压后新代码即新版本，指纹落盘即可。
 // - 解压：零依赖方针下不手写 zip 解析——用系统命令(Mac/Linux unzip -o / Windows Expand-Archive)。
 // - 安全：只覆盖包内文件；本机 .env / node_modules / evidence 不在包内，天然不被触碰。
-// - 失败安全：任何一步失败 → 返回 "failed"，不中断后续正常启动（外层脚本忽略非 75 退出码）。
+// - 失败安全：网络更新失败 → 返回 "failed"，入口以 0 退出，继续使用当前版本。
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, createWriteStream, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,8 +40,9 @@ function execP(cmd, args) {
 // 解压 zip 到 dir(覆盖同名文件)。Mac/Linux 用 unzip -o;Windows 用 PowerShell Expand-Archive -Force。
 async function extract(zipPath, dir) {
   if (process.platform === "win32") {
+    const psLiteral = (value) => "'" + value.replace(/'/g, "''") + "'";
     await execP("powershell.exe", ["-NoProfile", "-Command",
-      `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${dir}' -Force`]);
+      `$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath ${psLiteral(zipPath)} -DestinationPath ${psLiteral(dir)} -Force`]);
   } else {
     await execP("unzip", ["-o", zipPath, "-d", dir]);
   }

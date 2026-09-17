@@ -1,9 +1,5 @@
 #!/usr/bin/env node
-import { prepareExecution } from './execution-setup.mjs';
 import { createHash } from "node:crypto";
-import { PREPARATION_PROMPT, parsePreparation, verifyPreparation, preparationReport } from "./runtime-preparation.mjs";
-import { scriptCoversBasicPrecondition } from "./precondition-policy.mjs";
-import { acquireRunnerLock } from "./runner-instance-lock.mjs";
 import { createRecordingClient } from "./recording-client.mjs";
 import { createRecordingPump } from "./recording-pump.mjs";
 import { loadRegistry, registrySnapshot } from "./selector-registry.mjs";
@@ -13,8 +9,8 @@ import { loadRegistry, registrySnapshot } from "./selector-registry.mjs";
 // 用法:
 //   BASE_URL=https://qalab.claw.qihoo.net RUNNER_TOKEN=xxx RUNNER_ID=win-01 node runner.mjs
 //   加 --dry 只跑握手(拉取 + 回写假结果),不真正调 Claude,用于先验证与平台连通。
+//   加 --check 只检查模块加载，不访问平台、不认领任务、不连接客户端。
 
-import { spawnClaude } from "./claude-command.mjs";
 import { spawn, execFile } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -308,7 +304,7 @@ function runClaudeRaw(stdinData, opts = {}) {
       "--strict-mcp-config",
       "--permission-mode", "acceptEdits",         // 无人值守:预授权,避免卡权限确认
     ];
-    const child = spawnClaude(CLAUDE_BIN, args);
+    const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
     let err = "", buf = "", finalText = "", lastText = "", settled = false;
     // 单次结算:error / close / 超时 三条路径只认第一个,并清理定时器(避免重复 resolve)。
     const done = (extra) => {
@@ -386,37 +382,6 @@ async function runClaudePrecondition(payload, log) {
   const nav = parseNavOk(raw.text || raw.lastText);
   if (!nav) return { ok: false, reason: "claude 未返回可解析的到位结论", duration_ms };
   return { ...nav, duration_ms };
-}
-
-async function prepareDuringExecution(payload, runId, blocked = null) {
-  const started = Date.now();
-  const events = [];
-  const raw = await runClaudeRaw(JSON.stringify({
-    title: payload.title, precondition: payload.precondition || '', script: payload.script || [],
-    data_prefix: `QALAB-${runId}`, blocked_step: blocked?.step,
-    error: blocked?.error, completed_steps: blocked?.completed,
-    next_step: blocked ? null : payload.script?.find(s => s.action !== 'connect'),
-  }), {
-    systemPrompt: PREPARATION_PROMPT,
-    allowedTools: 'mcp__gui__gui_connect mcp__gui__gui_list_keys mcp__gui__gui_probe mcp__gui__gui_click mcp__gui__gui_hover mcp__gui__gui_fill mcp__gui__gui_get_text mcp__gui__gui_wait_for mcp__gui__gui_assert_visible mcp__gui__gui_assert_absent mcp__gui__gui_assert_text mcp__gui__gui_type mcp__gui__gui_press mcp__gui__gui_capture_response mcp__gui__gui_wait_response mcp__gui__gui_screenshot',
-    disallowedTools: ['Bash','BashOutput','KillShell','Read','Glob','Grep','LS','Edit','MultiEdit','Write','NotebookEdit','WebFetch','WebSearch','Task','TodoWrite','mcp__gui__gui_mock_route','mcp__gui__gui_unmock_route','mcp__gui__gui_goto'],
-    timeoutMs: Math.min(CLAUDE_TIMEOUT_MS, 150000),
-    onEvent(ev) {
-      if (ev.type === 'assistant') for (const block of ev.message?.content || []) {
-        if (block.type === 'tool_use') {
-          events.push({ tool: block.name, input: block.input });
-          log(`  [自动补齐] ${block.name} ${JSON.stringify(block.input || {}).slice(0,160)}`);
-        }
-      }
-    },
-  });
-  const value = raw.timedOut ? {ok:false,reason:'自动准备超时，保留当前用例阻塞结果'}
-    : raw.spawnError ? {ok:false,reason:raw.spawnError} : parsePreparation(raw.text || raw.lastText);
-  const result = await verifyPreparation(guiCore, value);
-  result.duration_ms = Date.now() - started;
-  result.operations = events;
-  log(`  [自动补齐] ${result.ok ? '条件已核验' : '条件准备失败'}：${result.reason}`);
-  return result;
 }
 
 async function runClaude(payload, kind) {
@@ -505,7 +470,7 @@ function judgeWithClaude(question, context) {
     const args = ["-p", "--output-format", "json", "--append-system-prompt", sys,
       "--disallowedTools", ...DENY, "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
       "--permission-mode", "acceptEdits"];
-    const child = spawnClaude(CLAUDE_BIN, args);
+    const child = spawn(CLAUDE_BIN, args, { shell: process.platform === "win32" });
     let out = "", settled = false;
     const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); resolve(r); };
     const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} done({ pass: false, reason: "judge 超时" }); }, 90000);
@@ -684,30 +649,18 @@ async function tick() {
             const script = item.payload?.script;
             const hasPrecond = !!(item.payload?.precondition && String(item.payload.precondition).trim());
             const hasScript = Array.isArray(script) && script.length;
-            const automatic = item.payload?.auto_prepare === true;
-            let prepared = null;
-            if (automatic && hasScript && hasPrecond && !scriptCoversBasicPrecondition(item.payload, guiCore.registry)) {
-              prepared = await prepareExecution(guiCore, item.payload, {
-                prepare: () => prepareDuringExecution(item.payload, item.run_id), dataPrefix: `QALAB-${item.run_id}`,
-                restore: () => resetOrBlock(guiCore, log, { restartClientFn }), log,
-              });
-            } else if (!automatic && hasPrecond && hasScript && !scriptCoversBasicPrecondition(item.payload, guiCore.registry)) {
+            // 保留前置导航：先导航到起始位置，再由共享执行器执行结构化步骤。
+            // 导航未返回到位结论时沿用远端的尽力执行策略，由步骤断言决定结果。
+            if (hasPrecond && hasScript) {
               const nav = await runClaudePrecondition(item.payload, log);
               log(`  ⇢ 前置导航${nav.ok ? "到位" : "未确认到位(仍尝试执行 script)"}:${nav.reason || ""}`);
             }
-            if (prepared && !prepared.ok) {
-              result = {verdict:'fail',fail_kind:'selector',reason:`${prepared.phase === 'navigation' ? '页面进入失败' : prepared.phase === 'restore' ? '起点恢复失败' : '条件准备失败'}：${prepared.reason}`,duration_ms:prepared.duration_ms,report:[]};
-            } else if (hasScript) {
-              const options = automatic ? {prepare: blocked => prepareDuringExecution(item.payload, item.run_id, blocked)} : {};
-              const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude, options);
+            if (hasScript) {
+              const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
               if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
               else result = r;
             } else {
               result = await runClaude(item.payload, item.kind);
-            }
-            if (prepared) {
-              result.report = [preparationReport(prepared), ...(result.report || [])];
-              if (prepared.ok) result.duration_ms = (result.duration_ms || 0) + prepared.duration_ms;
             }
           }
           return result;
@@ -783,8 +736,6 @@ async function tick() {
 }
 
 async function main() {
-  try { await acquireRunnerLock(BASE_URL, RUNNER_ID); }
-  catch (e) { log(e.message); process.exitCode = 1; return; }
   log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY}`);
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
@@ -808,7 +759,9 @@ process.on("unhandledRejection", (e) => log("未处理拒绝(已忽略,继续轮
 // 入口:--update 自升级(run.sh/run.cmd 启动前调;updated → exit 75 通知外层重启);
 // upload 子命令直传本地 session;否则常驻三队列轮询。
 const _argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-if (process.argv.includes("--update")) {
+if (process.argv.includes("--check")) {
+  log("runner 启动检查通过：模块加载正常，未连接平台、未执行任务");
+} else if (process.argv.includes("--update")) {
   const dir = dirname(fileURLToPath(import.meta.url));
   selfUpdate({ baseUrl: BASE_URL, token: RUNNER_TOKEN, dir, log })
     .then((r) => process.exit(r === "updated" ? 75 : 0))
