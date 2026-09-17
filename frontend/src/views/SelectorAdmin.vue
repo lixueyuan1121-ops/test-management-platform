@@ -144,11 +144,11 @@
                   <div v-if="probe.mode === 'box' && selectedRegionStyle" class="box-selected-region" :style="selectedRegionStyle"></div>
                   <div
                     v-for="box in shotBoxes" :key="box.uid"
-                    class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx, 'box-fix': box.fixKey }]"
+                    class="el-box" :class="['box-' + box.type, { active: hoverKey === box.uid, approx: box.approx, 'box-fix': box.fixKey, 'box-picked': batchPicked.includes(box.uid) }]"
                     :style="box.style" :title="box.label"
                     @mouseenter="hoverKey = box.uid" @mouseleave="hoverKey = ''"
-                    @click="openAddAsKey(box.el, box.frameMatch)"
-                  ><span v-if="box.fixNo" class="box-fix-no">{{ box.fixNo }}</span></div>
+                    @click="selectProbeBox(box)"
+                  ><span class="box-state">{{ box.type === 'exists' ? '已添加' : batchPicked.includes(box.uid) ? '已选' : '未添加' }}</span><span v-if="box.fixNo" class="box-fix-no">{{ box.fixNo }}</span></div>
                   <!-- 框选中的矩形(拖拽实时) -->
                   <div v-if="boxRect" class="box-select-rect" :style="boxRect"></div>
                 </div>
@@ -156,6 +156,10 @@
             </div>
           </div>
           <div class="probe-toolbar">
+            <el-checkbox v-model="batchMode" :disabled="batchSaving">批量选择未添加元素</el-checkbox>
+            <el-button size="small" :disabled="batchSaving" @click="selectAllUnadded">全选未添加（最多100个）</el-button>
+            <el-button size="small" type="primary" :disabled="!batchPicked.length || batchSaving" @click="previewBatch">预览 key 并批量添加（{{ batchPicked.length }}）</el-button>
+            <span class="form-hint">绿色：已添加；蓝色：未添加；橙色：已选。没有 testid 也可添加。</span>
             <el-checkbox v-model="probe.hideExists" size="small">隐藏「已存在」（{{ totalCounts.exists }}）</el-checkbox>
             <span class="form-hint">新增 {{ totalCounts.new }} · 可更新 {{ totalCounts.update }} · 已存在 {{ totalCounts.exists }}</span>
           </div>
@@ -169,6 +173,7 @@
               :data="g.elements" size="small" border empty-text="该 frame 无待显示元素（或已隐藏「已存在」）"
               :row-class-name="rowClass" @cell-mouse-enter="onCellEnter" @cell-mouse-leave="() => hoverKey = ''"
             >
+              <el-table-column v-if="batchMode" label="选择" width="60"><template #default="{row}"><el-checkbox :model-value="batchPicked.includes(row._uid)" :disabled="!canBatchPick(row) || batchSaving" @change="toggleBatch(row)" /></template></el-table-column>
               <el-table-column label="元素" min-width="180" show-overflow-tooltip>
                 <template #default="{ row }">
                   <el-tag size="small" type="info" effect="plain">{{ row.tag }}{{ row.type ? `[${row.type}]` : '' }}</el-tag>
@@ -574,9 +579,20 @@
     </div>
     <el-empty v-if="!historyDialog.rows.length" description="暂无历史修改" />
   </el-dialog>
+  <el-dialog v-model="batchVisible" title="批量添加选择器" width="850px" :close-on-click-modal="!batchSaving" :show-close="!batchSaving">
+    <p>自动生成的 key 已避开已有名称，可修改。保存前会在设备上确认定位到本次选中的元素；校验不通过的保留原因，不会强行入库。</p>
+    <el-table :data="batchDraft" max-height="460" border>
+      <el-table-column label="元素" min-width="140"><template #default="{row}">{{ elementDisplayName(row.el) || row.el.tag }}</template></el-table-column>
+      <el-table-column label="key（唯一）" min-width="260"><template #default="{row}"><el-input v-model="row.key" maxlength="64" :disabled="batchSaving || row.saved" /></template></el-table-column>
+      <el-table-column label="定位" min-width="180"><template #default="{row}">{{ candLabel(row.el.best) }}</template></el-table-column>
+      <el-table-column label="结果" min-width="180" prop="error" />
+    </el-table>
+    <template #footer><el-button :disabled="batchSaving" @click="batchVisible=false">关闭</el-button><el-button type="primary" :loading="batchSaving" @click="saveProbeBatch">校验并保存</el-button></template>
+  </el-dialog>
 </template>
 
 <script setup>
+import { elementStatus, suggestKey } from '@/utils/probe-batch'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 const activeView = ref('registry')
@@ -722,7 +738,7 @@ onMounted(async () => {
 
 let disposed = false, listVersion = 0, learnedVersion = 0, probeVersion = 0
 const loadError = ref(false), reviewing = ref(false), deleting = ref(false)
-const contextLocked = computed(() => dialog.visible || dialog.saving || add.visible || add.saving || probe.running || probeCountdown.value > 0 || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
+const contextLocked = computed(() => batchSaving.value || batchVisible.value || dialog.visible || dialog.saving || add.visible || add.saving || probe.running || probeCountdown.value > 0 || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
 onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll(); cancelDelayedProbe() })
 
 async function onProjectChange() {
@@ -1305,32 +1321,13 @@ function candLabel(c) {
 }
 
 // 当前作用域 rows 的候选反查索引:candKey → key 名(取第一个命中的 key)。
-const reusableCandidate = c => c?.by === 'testid' || (c?.by === 'role' && c.name && c.exact)
-  || (c?.by === 'css' && (/^#/.test(c.value) || /^\[data-test/.test(c.value)))
-const scopedIdentity = (c, frame) => `${frame === 'content' ? 'vm' : frame || 'auto'}|${candKey(c)}`
-const candIndex = computed(() => {
-  const idx = new Map()
-  for (const row of effectiveRows.value) for (const c of (row.candidates || []).filter(c => isActiveCandidate(c) && reusableCandidate(c))) {
-    const identity = scopedIdentity(c, row.frame)
-    if (!idx.has(identity)) idx.set(identity, row.key)
-    else if (idx.get(identity) !== row.key) idx.set(identity, null)
-  }
-  return idx
-})
-function matchStatus(el) {
-  const frame = el._frameMatch || el._frame || 'auto'
-  const candidates = (el.candidates || []).filter(c => isActiveCandidate(c) && reusableCandidate(c))
-  const hits = new Set(candidates.map(c => candIndex.value.get(scopedIdentity(c, frame))).filter(Boolean))
-  if (hits.size !== 1) return { type: 'new' }
-  const key = [...hits][0]
-  const exists = el.best && candIndex.value.get(scopedIdentity(el.best, frame)) === key
-  return { type: exists ? 'exists' : 'update', key }
-}
+const allProbeElements = computed(() => (probe.result?.groups || []).flatMap((g, gi) => (g.elements || []).map((el, ei) => ({...el, _uid:`${gi}-${ei}`, _frameMatch:g.frameMatch || g.frame || 'auto'}))))
+function matchStatus(el) { return elementStatus(el, effectiveRows.value, allProbeElements.value, probe.result?.frameAliases || {}) }
 
 const STATUS_META = {
-  exists: { label: '已存在', tag: 'success' },
+  exists: { label: '已添加', tag: 'success' },
   update: { label: '更新', tag: 'warning' },
-  new: { label: '新增', tag: 'primary' },
+  new: { label: '未添加', tag: 'primary' },
 }
 
 // key 名 → 当前作用域该 key 的 row（供标识 popover 展示命中 key 的现有候选/frame）。
@@ -1583,7 +1580,7 @@ function updateMergedCandidates(existing) {
 }
 
 // 保存前重新在当前设备验证，避免截图过期后把另一元素回填进 key。
-async function validateSelectedItems(items) {
+async function validateSelectedItems(items, partial = false) {
   if (!probe.runner) throw new Error('请选择在线设备')
   if (items.some(item => !item.element_ref)) throw new Error('缺少本次探测的元素标识，请更新 Runner 后重新探测')
   if (items.length > 100) throw new Error('单次最多校验 100 个元素，请按页面分批处理')
@@ -1600,7 +1597,7 @@ async function validateSelectedItems(items) {
       const checked = result.result?.validation || []
       if (checked.length !== items.length) throw new Error('设备版本不支持完整定位校验，请更新 Runner')
       const failures = checked.filter(item => !item.ok || !item.identity_verified)
-      if (failures.length) throw new Error(failures.map(item => `${item.key}: ${item.error || '无法确认原始元素，请更新 Runner 并重新探测'}`).join('；'))
+      if (failures.length && !partial) throw new Error(failures.map(item => `${item.key}: ${item.error || '无法确认原始元素，请更新 Runner 并重新探测'}`).join('；'))
       return checked
     }
   }
@@ -1718,9 +1715,68 @@ async function batchAddMatched() {
     await autoBackfill()
   } catch (error) { ElMessage.error(error.message || '批量校验失败') } finally { bulkAdding.value = false }
 }
+
+// Batch selection is tied to one probe snapshot and cleared when scope/result changes.
+const batchMode = ref(false), batchPicked = ref([]), batchVisible = ref(false), batchSaving = ref(false), batchDraft = ref([])
+const canBatchPick = el => !!el.element_ref && !!el.best && !!el.candidates?.length && matchStatus(el).type === 'new'
+watch([() => probe.result, pid, subProduct], () => { batchPicked.value=[]; batchDraft.value=[]; batchVisible.value=false })
+function toggleBatch(el) {
+  if (!canBatchPick(el) || batchSaving.value) return
+  const at=batchPicked.value.indexOf(el._uid)
+  if(at>=0) batchPicked.value.splice(at,1)
+  else if(batchPicked.value.length<100) batchPicked.value.push(el._uid)
+  else ElMessage.warning('单次最多100个，请分批添加')
+}
+function selectProbeBox(box) {
+  if(batchMode.value) toggleBatch(box.el)
+  else openAddAsKey(box.el,box.frameMatch)
+}
+function selectAllUnadded() { batchMode.value=true; batchPicked.value=allProbeElements.value.filter(canBatchPick).slice(0,100).map(e=>e._uid) }
+function previewBatch() {
+  const reserved=new Set(effectiveRows.value.map(r=>r.key))
+  batchDraft.value=allProbeElements.value.filter(el=>batchPicked.value.includes(el._uid) && canBatchPick(el))
+    .map(el=>({el,key:suggestKey(el,probe.page,reserved),error:'',saved:false}))
+  batchVisible.value=true
+}
+async function saveProbeBatch() {
+  if(batchSaving.value) return
+  const pending=batchDraft.value.filter(r=>!r.saved), used=new Set(effectiveRows.value.map(r=>r.key))
+  if(!pending.length) return
+  for(const row of pending) {
+    row.key=row.key.trim()
+    if(!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(row.key) || used.has(row.key)) { row.error='key 需以字母开头且唯一（字母、数字、下划线）'; ElMessage.warning(row.error); return }
+    used.add(row.key);row.error=''
+  }
+  batchSaving.value=true
+  try {
+    const checked=await validateSelectedItems(pending.map(r=>({key:r.key,frame:r.el._frameMatch,candidates:toCands(r.el),element_ref:r.el.element_ref,expected:{tag:r.el.tag,text:r.el.text}})),true)
+    for(const row of pending) {
+      const result=checked.find(x=>x.key===row.key)
+      if(!result?.ok || !result.identity_verified) {row.error=result?.error || '当前页面无法唯一定位，请重新探测';continue}
+      try {
+        // Keep only the candidate proven to locate this exact element. Broad fallbacks can match a different element later.
+        const hit=normalizeCandidate(result.hit?.candidate || result.hit)
+        if(!hit) {row.error='设备未返回已验证定位，请更新 Runner';continue}
+        const created=await createSelector({project_id:pid.value,sub_product:subProduct.value,platform:'web',key:row.key,frame:row.el._frameMatch,page:probe.page || '',desc:`[${probe.page || '当前页'}]-[${elementDisplayName(row.el) || row.el.tag}]`,candidates:[hit]})
+        markSelectorNew(created);row.saved=true;row.error='已添加'
+        batchPicked.value=batchPicked.value.filter(uid=>uid!==row.el._uid)
+      } catch(e) {row.error=e.message || '保存失败（未覆盖已有 key）'}
+    }
+    await reload(); await autoBackfill()
+    const count=pending.filter(r=>r.saved).length
+    ElMessage[count === pending.length ? 'success':'warning'](`本次已添加 ${count} 个；${pending.length-count} 个未添加，详情见结果`)
+  } catch(e) {ElMessage.error(e.message || '校验失败')} finally {batchSaving.value=false}
+}
+
 </script>
 
 <style scoped>
+.box-state { position:absolute; top:0; left:0; font-size:10px; line-height:12px; padding:0 2px; color:white; background:#1677ff; white-space:nowrap; pointer-events:none; }
+.box-exists .box-state { background:#278342; }
+.el-box.box-picked { border:2px solid #e68600; background:#e6860033; }
+.box-picked .box-state { background:#c97500; }
+.probe-toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+
 .registry-key { display: inline-flex; align-items: center; gap: 6px; }
 .new-selector-dot { flex: 0 0 8px; width: 8px; height: 8px; padding: 0; border: 0; border-radius: 50%; background: var(--el-color-danger, #f56c6c); cursor: pointer; }
 .new-selector-dot:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; }

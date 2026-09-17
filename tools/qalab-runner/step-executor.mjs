@@ -14,7 +14,9 @@
 //   截图策略「关键步 + 失败必截」:显式 screenshot 步、assert_* 通过后、以及任一步失败时,截当前视口为
 //   PNG Buffer 挂在该步 shotBuf。runner 负责把 shotBuf 逐张上传换成 URL(step-executor 不碰网络)。
 
-import { responseArgsBeforeAction } from "./gui-mcp/runtime-loader.mjs";
+import { responseArgsBeforeAction, createTextCaptures } from "./gui-mcp/runtime-loader.mjs";
+
+import { mayPrepareOnFailure, preparationReport } from "./runtime-preparation.mjs";
 
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press", "set_checked", "select_option",
@@ -24,7 +26,7 @@ const DETERMINISTIC = new Set([
 ]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
-export async function runScript(gui, script, log = () => {}, judgeFn = null) {
+export async function runScript(gui, script, log = () => {}, judgeFn = null, options = {}) {
   if (!Array.isArray(script) || script.length === 0) {
     return { needClaude: true, reason: "用例无结构化 script,退回 claude 执行" };
   }
@@ -38,11 +40,16 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     return { verdict: "fail", fail_kind: "selector", reason: "用例缺少断言，未执行操作", report: [], steps: [] };
   }
 
+  let textCaptures;
+  try { textCaptures = createTextCaptures(script); }
+  catch (e) { return { verdict: "fail", fail_kind: "selector", reason: `脚本文本比较无效，未执行操作：${e.message}`, report: [], steps: [] }; }
+
   const started = Date.now();
   const sec = () => ((Date.now() - started) / 1000).toFixed(1);
   const evidence = [];   // 证据链:每步一条(兼容旧 evidence_url:取最后一条)
   const steps = [];      // 结构化步骤结果
   const report = [];     // 执行报告:每步 { no, action, desc, ok, error?, shotBuf? }
+  const prepared = new Set();
   const captured = [];   // judge 步的上下文素材(前面 get_text 文本 / screenshot 路径)
   // 本条用例注册过的网络拦截:pattern -> { pattern, status, hits }。按**整条用例**累计,
   // 而非收尾时问一次 gui —— 脚本尾部跑过 unmock_route 的拦截器那时已不在 gui 里,统计会凭空丢掉。
@@ -108,10 +115,11 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   for (let i = 0; i < script.length; i++) {
     const st = script[i];
     const { action, target = {}, args = {}, desc = "" } = st;
-    const operationArgs = { ...target, ...args };
+    let operationArgs;
     const tag = `step${i + 1}/${script.length} ${action}${desc ? "(" + desc + ")" : ""}`;
     log(`  [+${sec()}s] ▶ ${tag}`);
     try {
+      operationArgs = { ...target, ...textCaptures.argsFor(args) };
       const responseArgs = responseArgsBeforeAction(script, i);
       if (responseArgs !== null) await gui.captureResponse(responseArgs);
       switch (action) {
@@ -141,7 +149,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
           rec(i, action, desc, true);
           break;
         }
-        case "get_text": { const r = await gui.getText(operationArgs); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "get_text": { const r = await gui.getText(operationArgs); textCaptures.record(args, r); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "screenshot": {
           // 显式截图步:既落本地文件(兼容旧证据),又挂 Buffer 进报告。
           const r = await gui.screenshot(args.path || `evidence/step${i + 1}.png`);
@@ -188,18 +196,30 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
           steps.push({ action, ...r, desc });
           if (!r.pass) {
             const rel = `${r.negate ? "不" : ""}${r.mode === "contains" ? "包含" : "等于"}`;
-            const rep = rec(i, action, desc, false, `step${i + 1} 断言文本失败:期望${rel}「${args.expected}」,实际「${r.actual}」`);
-            rep.check = { actual: r.actual, expected: args.expected, mode: r.mode, negate: !!r.negate };  // 结构化证据,供纠偏一眼分辨真假 fail
+            const rep = rec(i, action, desc, false, `step${i + 1} 断言文本失败:期望${rel}「${operationArgs.expected}」,实际「${r.actual}」`);
+            rep.check = { actual: r.actual, expected: operationArgs.expected, mode: r.mode, negate: !!r.negate };  // 结构化证据,供纠偏一眼分辨真假 fail
             await capShot(rep);
             return finish({ verdict: "fail", fail_kind: "business", reason: rep.error, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps, report });
           }
           const rep = rec(i, action, desc, true);
-          rep.check = { actual: r.actual, expected: args.expected, mode: r.mode, negate: !!r.negate, target };
+          rep.check = { actual: r.actual, expected: operationArgs.expected, mode: r.mode, negate: !!r.negate, target };
           await capShot(rep);   // 关键步通过后存证
           break;
         }
       }
     } catch (e) {
+      if (typeof options.prepare === 'function' && prepared.size < 2 && !prepared.has(i)
+          && mayPrepareOnFailure(st, e, steps)) {
+        prepared.add(i);
+        log(`  step${i + 1} 缺少执行条件，检查并自动补齐后重试当前步骤`);
+        let preparation;
+        try { preparation = await options.prepare({ step: st, index: i, error: String(e.message), completed: steps }); }
+        catch (error) { preparation = { ok: false, reason: String(error.message) }; }
+        const entry = preparationReport(preparation, i + 1);
+        report.push(entry); await capShot(entry);
+        if (preparation.ok) { i -= 1; continue; }
+        return await failAt(i, action, desc, `条件准备失败：${preparation.reason}`);
+      }
       // 定位/操作抛错(元素找不到、超时等)→ 整条 fail,带诊断 + 失败现场截图
       return await failAt(i, action, desc, `step${i + 1}「${action}」执行出错:${e.message}`);
     }

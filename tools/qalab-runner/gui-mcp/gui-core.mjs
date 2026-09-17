@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { rectInsideRatio } from "./probe-collect.mjs";
-import { createAutomationRuntime } from "./runtime-loader.mjs";
+import { createAutomationRuntime, isDirectBusinessPage } from "./runtime-loader.mjs";
 import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
 import { pickCoreKeys, failedCoreKeys } from "../core-keys.mjs";
 import { pressOsEscape } from "../os-key.mjs";
@@ -158,7 +158,7 @@ export function createGuiCore(opts = {}) {
     const start = Date.now();
     for (;;) {
       const f = await contentFrame();
-      if (f !== page.mainFrame()) return f;
+      if (f !== page.mainFrame() || isDirectBusinessPage(page.url(), VM_IFRAME)) return f;
       if (Date.now() - start > timeoutMs) return f;
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -412,7 +412,7 @@ export function createGuiCore(opts = {}) {
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
         if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, cap) });
       }
-      return { groups, pageSize, screenshotBuffer };
+      return { groups, pageSize, screenshotBuffer, frameAliases: vm === main && isDirectBusinessPage(page.url()) ? {vm:"shell", content:"shell", ...(page.frames().length === 1 ? {auto:"shell"} : {})} : {} };
     },
     // 校验一批语义 key 是否在当前页命中(逐个 isKeyVisible,复用同一定位引擎)。
     // 供 runner 的 probe verify 模式用:回归确认某作用域已登记的 key 仍能在页面上定位到。
@@ -446,10 +446,22 @@ export function createGuiCore(opts = {}) {
     // 导航回首页**——reload 只重载当前 SPA 路由(客户端常驻),上一条用例可能把路由停在任务详情/其它 Tab,
     // 故 reload 后探首页锚点、不在首页就点『首页』导航回去(见 ensureOnHome)。串行执行每条 gui/e2e 前调,
     // 让进入段自导航从首页开始。首页锚点尽力等,探不到不抛(交上层就绪门禁/自愈裁决)。
-    async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000 } = {}) {
+    async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000, hard = false } = {}) {
       await ensureConnected();
       await runtime.unmockAll();   // 清上一条遗留拦截，失败时阻塞复位
       runtime.resetResponse();
+      // Prefer the same navigation a user performs. Reload is recovery, not a prerequisite
+      // of every case: reloading reinitializes cloud capability flags and websocket state.
+      if (!hard && REGISTRY.navHome) {
+        try {
+          await page.keyboard.press("Escape");
+          await runtime.click({ key: "navHome", timeout_ms: 4000 });
+          await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);
+          for (const key of [readyKey, "homeGreetingTitle"].filter(k => REGISTRY[k])) {
+            if (await isKeyVisible(key)) return { reset: true, mode: "navigation", url: page.url() };
+          }
+        } catch { /* blocked navigation: fall back to the existing hard reset */ }
+      }
       await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       await waitForContentFrame();
       await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);

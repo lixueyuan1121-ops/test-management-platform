@@ -43,6 +43,9 @@ export function rankElements(key, ctx, elements) {
 
 // 自动配对必须有目标本身的依据；页面词或整段祖先 CSS 只能用于排序，不能代表控件。
 export function hasSpecificMatch(key, el, hint = {}) {
+  // State keys need a state-specific locator; ordinary element identity is insufficient.
+  // Never auto-remap a selected-state assertion to the ordinary clickable key.
+  if (tokenize(key).includes('selected')) return false
   const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
   const cands = el.candidates?.length ? el.candidates : (el.best ? [el.best] : [])
   const labels = [el.text, ...cands.flatMap(c => c.by === 'text' ? [c.value] : c.by === 'role' ? [c.name] : [])]

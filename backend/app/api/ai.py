@@ -552,6 +552,8 @@ def review_testcase(
     # 不在此自动重生成(避免隐式改动);如需按新 steps 重建 script,走单独入口。
     if body.title is not None:
         tc.title = body.title.strip()[:512]
+    if body.precondition is not None:
+        tc.precondition = body.precondition.strip() or None
     if body.steps is not None:
         tc.steps = body.steps.strip() or None
     if body.expected is not None:
@@ -664,6 +666,8 @@ def gen_script(
     # ---- 提取 AI 生成所需字段后，关闭原 DB session，避免长阻塞期间连接被断 ----
     tc_title = tc.title
     tc_steps = tc.steps or ""
+    if tc.precondition:
+        tc_steps = f"当前前置条件（以此字段为准，步骤内旧的前置描述不再适用）：{tc.precondition}\n\n{tc_steps}"
     tc_expected = tc.expected or ""
     tc_project_id = tc.project_id
     tc_old_script = _load_script_list(getattr(tc, "script", None))   # 待补用例保留的原始 script(供确定性回填)

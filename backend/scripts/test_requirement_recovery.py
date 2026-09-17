@@ -21,6 +21,39 @@ from scripts import test_requirement_analysis as fixtures
 
 
 class FormatTests(unittest.TestCase):
+    def test_list_text_events_are_normalized_without_private_blocks(self):
+        value = ['hello', {'type': 'text', 'text': ' world'}, {'type': 'thinking', 'thinking': 'private'}]
+        delta = claude_runner._parse_line(json.dumps({'type': 'stream_event', 'event': {
+            'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': value}}}))
+        self.assertEqual(delta['text'], 'hello world')
+        result = claude_runner._parse_line(json.dumps({'type': 'result', 'result': value}))
+        self.assertEqual(result['text'], 'hello world')
+        assistant = claude_runner._parse_line(json.dumps({'type': 'assistant', 'message': {
+            'content': [{'type': 'text', 'text': value}]}}))
+        self.assertEqual(assistant['text'], 'hello world')
+        with self.assertRaises(ValueError):
+            claude_runner._protocol_text([{'unknown': 'must not stringify'}])
+
+    def test_diagnostics_capture_gateway_marker_without_payload(self):
+        secret = 'PRIVATE_REQUIREMENT_AND_TOKEN'
+        class Engine:
+            def stream_generate(self, *args, **kwargs):
+                yield {'type': 'heartbeat'}
+                yield {'type': 'delta', 'text': secret}
+                yield {'type': 'error', 'msg': 'StreamNoEventsError ' + secret}
+        with self.assertLogs('test_platform', level='INFO') as logs:
+            with self.assertRaises(OutputError):
+                review.collect(Engine(), secret, diagnostic_context={'job_id': 123, 'part_id': 456})
+        text = '\n'.join(logs.output)
+        self.assertNotIn(secret, text)
+        data = json.loads(text.split('ai_diagnostic ', 1)[1])
+        self.assertEqual(data['job_id'], 123)
+        self.assertEqual(data['part_id'], 456)
+        self.assertEqual(data['heartbeats'], 1)
+        self.assertEqual(data['deltas'], 1)
+        self.assertEqual(data['error_marker'], 'streamnoeventserror')
+        self.assertEqual(data['status'], 'gateway_error')
+
     def test_batch_capacity_cannot_overflow_final_draft_or_drop_criteria(self):
         for count in (100, 499, 500):
             with self.subTest(criteria=count):
@@ -135,6 +168,43 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rows[0].raw,'{"ok":tru}')
         self.assertEqual(self.parts.run('probe','合成阶段',engine,'synthetic',{'type':'object'},lambda x:x),result)
         self.assertEqual(engine.calls,2)
+
+    def test_mid_response_retry_is_bounded_and_never_accepts_failed_output(self):
+        class Engine:
+            calls = 0
+            def stream_generate(self, *a, **kw):
+                self.calls += 1
+                yield {'type': 'delta', 'text': '{"ok":true}'}
+                yield {'type': 'error', 'msg': 'API Error: Server error mid-response. The response above may be incomplete.'}
+        engine = Engine()
+        with self.assertRaises(OutputError) as caught:
+            self.parts.run('probe', 'stage', engine, 'same', {}, lambda x: x)
+        self.assertEqual(caught.exception.code, 'provider_interrupted')
+        self.assertEqual(engine.calls, 2)
+        with self.factory() as db:
+            rows = db.query(RequirementAnalysisPart).all()
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r.status == 'failed' and r.value is None for r in rows))
+            self.assertTrue(all(r.raw == '{"ok":true}' for r in rows))
+        self.assertIsNone(self.parts.read_checkpoint('probe', 'same', {}, lambda x: x))
+
+    def test_mid_response_retry_recovers_and_auth_error_does_not_retry(self):
+        class Engine:
+            calls = 0
+            def stream_generate(self, *a, **kw):
+                self.calls += 1
+                if self.calls == 1:
+                    yield {'type': 'error', 'msg': 'Server error mid-response'}
+                else:
+                    yield {'type': 'result', 'text': '{"ok":true}'}
+        engine = Engine()
+        self.assertEqual(self.parts.run('probe', 'stage', engine, 'same', {}, lambda x: x), {'ok': True})
+        self.assertEqual(engine.calls, 2)
+        auth = Mock()
+        auth.stream_generate.return_value = iter([{'type': 'error', 'msg': '401 Unauthorized'}])
+        with self.assertRaises(OutputError):
+            self.parts.run('auth', 'stage', auth, 'other', {}, lambda x: x)
+        self.assertEqual(auth.stream_generate.call_count, 1)
 
     def test_complete_saved_output_recovers_without_model_call(self):
         class Engine:

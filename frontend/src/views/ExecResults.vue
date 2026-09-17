@@ -123,6 +123,13 @@
               <span class="step-desc">{{ s.desc || '' }}</span>
             </div>
             <div v-if="s.error" class="step-err">{{ s.error }}</div>
+            <div v-if="s.preparation" class="step-check">
+              <div>{{ s.preparation.reason }}</div>
+              <div v-for="(data, n) in (s.preparation.created || [])" :key="n">已创建：{{ data.type }} · {{ data.name }}</div>
+              <details v-if="s.preparation.operations?.length"><summary>查看条件补齐过程</summary>
+                <div v-for="(op, n) in s.preparation.operations" :key="n">{{ op.tool }} · {{ JSON.stringify(op.input) }}</div>
+              </details>
+            </div>
             <el-link v-if="s.trace_url" type="primary" @click="downloadTrace(rep.row.run_id)">下载执行追踪</el-link>
             <div v-if="s.trace_error" class="step-err">执行追踪未保存：{{ s.trace_error }}</div>
             <div v-if="s.check" class="step-check">

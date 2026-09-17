@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from app.services.script_text_captures import validate_text_captures
 
 _RUNTIME = Path(__file__).with_name("playwright_runtime.mjs")
 _ACTIONS = {"connect", "goto", "click", "hover", "fill", "type", "set_checked", "select_option", "press", "wait_for",
@@ -35,6 +36,9 @@ def export_case_to_playwright(case: dict, registry: dict, vm_iframe: str) -> str
     script = case.get("script")
     if not isinstance(script, list) or not script:
         raise ValueError("用例没有结构化 script")
+    capture_error = validate_text_captures(script)
+    if capture_error:
+        raise ValueError(capture_error)
     budget = 30000
     for i, step in enumerate(script):
         if not isinstance(step, dict) or step.get("action") not in _ACTIONS:
@@ -45,8 +49,6 @@ def export_case_to_playwright(case: dict, registry: dict, vm_iframe: str) -> str
             raise ValueError(f"第 {i + 1} 步 args/target 必须是对象")
         if action in _TARGET_ACTIONS or (action == "press" and target):
             _validate_target(target, registry)
-        if action == "assert_text" and not isinstance(args.get("expected"), str):
-            raise ValueError("assert_text 缺少字符串 expected")
         if action == "press" and not args.get("key_name"):
             raise ValueError("press 缺少 key_name")
         if action in ("mock_route", "unmock_route") and not args.get("url"):
@@ -75,6 +77,7 @@ test(config.title, async ({}, testInfo) => {
   const browser = await chromium.connectOverCDP(process.env.CDP_URL || 'http://127.0.0.1:9222');
   let runtime, context, tracing = false, passed = false;
   const mocksSeen = new Map();
+  const textCaptures = createTextCaptures(config.script);
   try {
     context = browser.contexts()[0];
     if (!context) throw new Error('CDP 未提供可用 context');
@@ -94,7 +97,7 @@ test(config.title, async ({}, testInfo) => {
       await test.step(desc || `${i + 1}. ${action}`, async () => {
         const responseArgs = responseArgsBeforeAction(config.script, i);
         if (responseArgs !== null) await runtime.captureResponse(responseArgs);
-        const a = { ...target, ...args };
+        const a = { ...target, ...textCaptures.argsFor(args) };
         let result;
         switch (action) {
           case 'connect': break;
@@ -107,7 +110,7 @@ test(config.title, async ({}, testInfo) => {
           case 'type': await runtime.type(a); break;
           case 'press': await runtime.pressKey(a); break;
           case 'wait_for': await runtime.waitFor(a); break;
-          case 'get_text': await runtime.getText(a); break;
+          case 'get_text': textCaptures.record(args, await runtime.getText(a)); break;
           case 'wait_response':
             result = await runtime.waitResponse(args);
             if (!result.done) throw new Error(result.reason);

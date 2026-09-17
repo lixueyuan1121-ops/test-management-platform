@@ -57,6 +57,7 @@ class TestCaseReviewIn(BaseModel):
     review_status: ReviewStatus | None = None
     exec_kind: ExecKind | None = None
     title: str | None = Field(None, min_length=1, max_length=512)
+    precondition: str | None = Field(None, max_length=4000)
     steps: str | None = None
     expected: str | None = None
     category: str | None = Field(None, max_length=32)
@@ -68,7 +69,7 @@ class TestCaseReviewIn(BaseModel):
     @model_validator(mode="after")
     def _at_least_one(self):
         if all(getattr(self, f) is None for f in
-               ("review_status", "exec_kind", "title", "steps", "expected", "category", "priority", "page", "is_regression", "script")):
+               ("review_status", "exec_kind", "title", "precondition", "steps", "expected", "category", "priority", "page", "is_regression", "script")):
             raise ValueError("至少提供一个要修改的字段")
         return self
 

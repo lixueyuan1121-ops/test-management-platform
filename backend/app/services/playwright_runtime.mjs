@@ -62,6 +62,19 @@ export function responseArgsBeforeAction(script, index) {
 
 // Shared by the GUI runner and standalone exports. No Node or browser globals:
 // the caller supplies a Playwright Page. Keep execution semantics in this file.
+// Only the known Work iframe-to-top-level transition may use this fallback.
+// This identifies the business document; home/login readiness is checked separately.
+export function isDirectBusinessPage(url, iframeSelector) {
+  if (!/^iframe\[src\s*\*=\s*(["'])\.work\.n\.cn\1\]$/.test(String(iframeSelector || "").trim())) return false;
+  try {
+    const parsed = new URL(url);
+    return ["http:", "https:"].includes(parsed.protocol)
+      && /^[a-z0-9-]+\.work\.n\.cn$/i.test(parsed.hostname)
+      && !/^(www|login|auth|passport|sso)\./i.test(parsed.hostname)
+      && !/(?:^|\/)(?:login|signin|sign-in|auth)(?:\/|$)/i.test(parsed.pathname);
+  } catch { return false; }
+}
+
 export function createAutomationRuntime({ page: getPage, registry: getRegistry, vmIframe: getVmIframe = "", timeout = 10000, pollMs = 100 } = {}) {
   const page = () => typeof getPage === "function" ? getPage() : getPage;
   const registry = () => typeof getRegistry === "function" ? getRegistry() : getRegistry;
@@ -109,7 +122,8 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     }
     // A product may flatten the business page into the main renderer.
     if (frame === "vm" || frame === "content") {
-      if (vmIframe() && !vm) throw error('INVALID_FRAME', '已配置的业务 iframe 尚未出现');
+      if (vmIframe() && !vm && !isDirectBusinessPage(page().url(), vmIframe()))
+        throw error('INVALID_FRAME', '已配置的业务 iframe 尚未出现，且当前顶层不是匹配的业务页面');
       return [vm || shell];
     }
     return vm ? [shell, vm] : [shell];
@@ -117,6 +131,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
   function validateTarget(target, depth = 0) {
     if (!target || typeof target !== "object" || !(target.key || target.selector)) throw error("INVALID_TARGET", "需要 key 或 selector");
     if (depth > 3) throw error("INVALID_TARGET", "within 最多嵌套三层");
+    if ("state" in target || "selectedState" in target) throw error("INVALID_TARGET", "状态断言需要单独的状态选择器 key；不能忽略 state/selectedState");
     if (target.nth !== undefined && (!Number.isInteger(target.nth) || target.nth < 0)) throw error("INVALID_TARGET", "nth 必须是非负整数");
     if (target.has_text !== undefined && typeof target.has_text !== "string") throw error("INVALID_TARGET", "has_text 必须是字符串");
     if (target.key && !registry()?.[target.key]) throw error("UNKNOWN_KEY", `未定义语义 key "${target.key}"`);
@@ -417,4 +432,46 @@ export function buildMockResponse(args = {}, requestHeaders = {}) {
   if (origin) headers["access-control-allow-credentials"] = "true";
   for (const [k, v] of Object.entries(args.headers || {})) headers[String(k).toLowerCase()] = String(v);
   return { status, body, headers };
+}
+
+
+// A fresh store is created for every case. Validate all references before side effects.
+export function createTextCaptures(script) {
+  const defined = new Set();
+  const namePattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+  for (const [i, step] of script.entries()) {
+    const { action, args = {} } = step;
+    if (Object.hasOwn(args, 'save_as')) {
+      if (action !== 'get_text' || typeof args.save_as !== 'string' || !namePattern.test(args.save_as))
+        throw new Error(`第 ${i + 1} 步 save_as 只能用于 get_text，且须为有效标识符`);
+      if (defined.has(args.save_as)) throw new Error(`重复保存文本：${args.save_as}`);
+      defined.add(args.save_as);
+    }
+    if (Object.hasOwn(args, 'expected_from')) {
+      if (action !== 'assert_text' || typeof args.expected_from !== 'string' || !defined.has(args.expected_from))
+        throw new Error(`第 ${i + 1} 步 expected_from 必须引用之前 get_text 保存的文本`);
+      if (Object.hasOwn(args, 'expected')) throw new Error('expected 和 expected_from 不能同时提供');
+    } else if (action === 'assert_text' && typeof args.expected !== 'string') {
+      throw new Error('assert_text 缺少字符串 expected 或 expected_from');
+    }
+  }
+  const values = new Map();
+  return {
+    argsFor(args = {}) {
+      const resolved = { ...args };
+      if (Object.hasOwn(args, 'expected_from')) {
+        if (!values.has(args.expected_from)) throw new Error(`尚未读取文本：${args.expected_from}`);
+        resolved.expected = values.get(args.expected_from);
+      }
+      delete resolved.expected_from;
+      delete resolved.save_as;
+      return resolved;
+    },
+    record(args, result) {
+      if (!Object.hasOwn(args, 'save_as')) return;
+      if (typeof result?.text !== 'string') throw new Error(`读取文本未返回字符串：${args.save_as}`);
+      // Text assertions trim the actual DOM text; captures use the same boundary normalization.
+      values.set(args.save_as, result.text.trim());
+    },
+  };
 }

@@ -16,15 +16,16 @@ project_id 决定 prompt 注入哪个项目的共享 key 清单、script.target.
 新增 provider 时:实现上述接口 → 在 PROVIDERS 注册 → 前端 /ai/status 自动可见。
 """
 from app.services import claude_runner
-from app.services.generators import deepseek_runner
+from app.services.generators import deepseek_runner, anthropic_http_runner
 
 # provider id → 实现模块。id 会落库到 ai_task.provider / test_case.provider,勿随意改名。
 PROVIDERS = {
     "claude": claude_runner,
     "deepseek": deepseek_runner,
+    "anthropic_http": anthropic_http_runner,
 }
 
-DEFAULT_PROVIDER = "claude"
+DEFAULT_PROVIDER = "anthropic_http" if anthropic_http_runner.is_available() else "claude"
 
 
 def get_provider(name: str | None):

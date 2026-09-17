@@ -90,6 +90,7 @@ class RequirementDraft(ReviewModel):
 
 
 class RequirementAnalyzeIn(ReviewModel):
+    force_reanalysis: bool = False
     project_id: int
     task_id: int
     provider: str = "claude"

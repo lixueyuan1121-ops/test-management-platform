@@ -419,6 +419,21 @@ def _effective_kind(tc: TestCase | None) -> ExecKind:
     return kind
 
 
+def _dispatch_kind(tc: TestCase, auto_prepare: bool) -> ExecKind:
+    if not auto_prepare:
+        return _kind_of(tc)
+    kind = _effective_kind(tc)
+    return ExecKind.e2e if kind == ExecKind.manual else kind
+
+
+def _dispatch_payload(tc: TestCase, db: Session, auto_prepare: bool) -> dict:
+    payload = _payload_of(tc, db)
+    if auto_prepare:
+        payload['auto_prepare'] = True
+        payload['original_exec_kind'] = _kind_of(tc).value
+    return payload
+
+
 def _payload_of(tc: TestCase | None, db: Session) -> dict:
     """把用例快照成 runner/Claude 要用的 payload（steps/expected/title/params + 结构化 script）。
 
@@ -628,7 +643,7 @@ def enqueue_case_runs(db, user, body, commit=True):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {cid} 不存在")
         if tc.project_id != body.project_id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {cid} 不属于该项目")
-        if _kind_of(tc) == ExecKind.manual:
+        if _dispatch_kind(tc, body.auto_prepare) == ExecKind.manual:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
@@ -653,9 +668,9 @@ def enqueue_case_runs(db, user, body, commit=True):
             runner=resolved[cid],
             runner_device_id=_dispatch_device_id(db, resolved[cid], user.id),
             auto_reassign=body.runner == "auto",
-            kind=_kind_of(tc),
+            kind=_dispatch_kind(tc, body.auto_prepare),
             status=ExecStatus.pending,
-            payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
+            payload=json.dumps(_dispatch_payload(tc, db, body.auto_prepare), ensure_ascii=False),
             enqueued_by=user.id,
         )
         db.add(row)

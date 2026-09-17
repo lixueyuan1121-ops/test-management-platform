@@ -42,6 +42,8 @@
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
         <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
+        <el-checkbox v-model="autoPrepare">自动补齐条件并执行全部所选用例</el-checkbox>
+        <span v-if="autoPrepare" class="text-secondary">缺少对话、任务时创建测试数据；无法准备的用例也会给出阻塞报告</span>
         <el-divider direction="vertical" />
         <el-button size="small" @click="bulkSetRegressionFlag(true)">标记回归</el-button>
         <el-button size="small" plain @click="bulkSetRegressionFlag(false)">取消回归</el-button>
@@ -167,6 +169,7 @@
             <el-option v-for="p in ['P0','P1','P2','P3']" :key="p" :label="p" :value="p" />
           </el-select>
         </el-form-item>
+        <el-form-item label="前置条件"><el-input v-model="edit.precondition" type="textarea" :rows="2" maxlength="4000" placeholder="执行前需要的页面、登录状态和测试数据；请与步骤保持一致" /></el-form-item>
         <el-form-item label="步骤"><el-input v-model="edit.steps" type="textarea" :rows="4" placeholder="可多步,换行分隔" /></el-form-item>
         <el-form-item label="预期"><el-input v-model="edit.expected" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="页面">
@@ -246,7 +249,7 @@ import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter, useRoute } from 'vue-router'
 import { useAppStore } from '@/store/app'
-import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
+import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, enqueueCases, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
@@ -305,6 +308,7 @@ const myDevices = ref([])
 const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
+const autoPrepare = ref(true)
 const fixing = ref(false)
 const selectedFixCount = computed(() => selected.value.filter((r) => r.selector_fix).length)
 
@@ -320,6 +324,16 @@ function canDispatch(row) {
 async function dispatchSelected() {
   if (!selected.value.length) return
   if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
+  if (autoPrepare.value) {
+    dispatching.value = true
+    try {
+      const res = await enqueueCases(pid.value, runner.value, selected.value.map(r => r.id), null, true)
+      ElMessage.success(`全部 ${res.run_ids.length} 条已下发，执行时自动检查并补齐条件；每条都会保留结果`)
+      router.push({ path: '/exec-results', query: { project_id: pid.value, batch_id: res.batch_id } })
+    } catch { /* http 拦截器已提示；后端整批校验，不静默跳过 */ }
+    finally { dispatching.value = false }
+    return
+  }
   // selection 已放开(为支持批量采纳/删除),这里只取可下发的选中项
   const items = selected.value.filter(canDispatch)
   if (!items.length) { ElMessage.warning('选中项里没有可下发的用例(需:已采纳 + 有关联任务 + 非人工)'); return }
@@ -531,13 +545,14 @@ async function bulkFixSelectors() {
 }
 
 // ---- 编辑 ----
-const edit = reactive({ visible: false, id: null, title: '', steps: '', expected: '', category: null, priority: null, pages: [], is_regression: false, saving: false, regen: false, error: '', progress: '' })
+const edit = reactive({ visible: false, id: null, title: '', precondition: '', steps: '', expected: '', category: null, priority: null, pages: [], is_regression: false, saving: false, regen: false, error: '', progress: '' })
 function openEdit(row) {
   edit.error = ''
   edit.progress = ''
   edit.id = row.id
   edit.title = row.title || ''
   edit.steps = row.steps || ''
+  edit.precondition = row.precondition || ''
   edit.expected = row.expected || ''
   edit.category = row.category || null
   edit.priority = (row.priority || '').toUpperCase() || null
@@ -550,7 +565,7 @@ async function doEdit() {
   edit.saving = true
   try {
     await updateTestcase(edit.id, {
-      title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
+      title: edit.title.trim(), precondition: edit.precondition, steps: edit.steps, expected: edit.expected,
       category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
       is_regression: edit.is_regression,
     })
@@ -571,7 +586,7 @@ async function doEditAndRegen() {
   let saved = false
   try {
     await updateTestcase(edit.id, {
-      title: edit.title.trim(), steps: edit.steps, expected: edit.expected,
+      title: edit.title.trim(), precondition: edit.precondition, steps: edit.steps, expected: edit.expected,
       category: edit.category || '', priority: edit.priority || '', page: edit.pages.join(','),
       is_regression: edit.is_regression,
     })
