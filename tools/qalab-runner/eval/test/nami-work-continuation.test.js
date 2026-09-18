@@ -4,6 +4,7 @@ const { chromium } = require('playwright');
 const DialogRunner = require('../src/dialog-runner');
 const DesktopRunner = require('../src/desktop-runner');
 const { shareSelectionState, ensureAllSelected } = require('../src/share-select');
+const defaultPlatform = require('../config/default.config').platform;
 
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
@@ -11,16 +12,32 @@ after(async () => { await browser?.close(); });
 const platform = { answerGroupSelector: '.chat-group.assistant', answerSelector: '.chat-bubble.has-copy',
   costSelector: '.chat-token-cost', stopSignalSelector: '#stop', taskListItemSelector: '.task' };
 
-async function fixture(t, { card = true, disabled = false, error = '', delay = null } = {}) {
+async function fixture(t, { card = true, disabled = false, error = '', delay = null, surface = 'page' } = {}) {
   const page = await browser.newPage();
   t.after(() => page.close());
-  await page.setContent('<main></main><button id="stop" style="display:none">停止</button>');
-  await page.evaluate(({ card, disabled, error, delay }) => {
+  let ctx = page;
+  if (surface === 'iframe') {
+    await page.setContent('<iframe name="nami-work" style="width:100%;height:800px" srcdoc="<body></body>"></iframe>');
+    ctx = page.frame('nami-work');
+  }
+  await ctx.evaluate(({ card, disabled, error, delay, surface }) => {
+    window.fixtureRoot = document.body;
+    if (surface !== 'page') {
+      const app = document.createElement('openclaw-app');
+      document.body.append(app);
+      window.fixtureRoot = app.attachShadow({ mode: 'open' });
+    }
+    window.fixtureRoot.innerHTML = '<main></main><button id="stop" style="display:none">停止</button>';
     window.clicks = 0;
+    customElements.define('ui-tooltip', class extends HTMLElement {
+      connectedCallback() { this.attachShadow({ mode: 'open' }).innerHTML = '<slot></slot>'; }
+    });
     customElements.define('work-continuation-card', class extends HTMLElement {
       connectedCallback() {
         if (this.shadowRoot) return;
-        this.attachShadow({ mode: 'open' }).innerHTML = `<section><div role="alert">${error}</div><button aria-label="继续工作" ${disabled ? 'disabled' : ''}>继续工作</button></section>`;
+        this.attachShadow({ mode: 'open' }).innerHTML = `<style>:host { display:block } ui-tooltip { display:inline-flex }</style>
+          <section class="card" aria-label="需要更深入的结果？继续使用「工作」"><div class="title">需要更深入的结果？继续使用「工作」</div>
+          <div role="alert">${error}</div><ui-tooltip><span class="action"><button type="button" aria-label="继续工作" ${disabled ? 'disabled' : ''}>继续工作</button></span></ui-tooltip></section>`;
         this.shadowRoot.querySelector('button').onclick = () => {
           window.clicks++;
           this.shadowRoot.querySelector('button').disabled = true;
@@ -29,19 +46,93 @@ async function fixture(t, { card = true, disabled = false, error = '', delay = n
       }
     });
     window.appendAnswer = (answer, cost, withCard = false) => {
-      document.querySelector('main').insertAdjacentHTML('beforeend', `<div class="chat-group user">追加提问</div>
+      window.fixtureRoot.querySelector('main').insertAdjacentHTML('beforeend', `<div class="chat-group user">追加提问</div>
         <div class="chat-group assistant"><div class="chat-bubble has-copy">${answer}</div>
         ${withCard ? '<work-continuation-card></work-continuation-card>' : ''}
         ${cost == null ? '' : `<div class="chat-token-cost">${cost}</div>`}</div>`);
     };
     window.appendAnswer('历史测评', '999 算力豆');
     window.appendAnswer('首轮文字答案', '1 算力豆', card);
-  }, { card, disabled, error, delay });
+  }, { card, disabled, error, delay, surface });
   const r = new DialogRunner(null, platform, { beanCostTimeoutMs: 0, beanCostReloadOnce: false,
     completionSettleMs: 150, responseTimeout: 8000 });
   r.attachToPage(page);
+  r.frame = ctx;
   r._beginTurn({ groupCount: 1, footerCount: 1 });
-  return { page, r };
+  return { page, r, ctx };
+}
+
+async function useRealCompose(page, r, state = 'send') {
+  r.platform = { ...r.platform, stopSignalSelector: defaultPlatform.stopSignalSelector };
+  await page.locator('#stop').evaluate((el, state) => {
+    el.className = 'btn send-btn';
+    el.style.display = 'block';
+    // 真实客户端的暂停按钮目前也可能被标成 send-button，不能仅依赖 testid。
+    el.setAttribute('data-testid', 'send-button');
+    el.innerHTML = `<img class="send-btn__icon" src="/icon_${state}.svg" aria-hidden="true">`;
+  }, state);
+}
+
+test('enabled send arrow must not prevent clicking Continue work or completing its final answer', async t => {
+  const { page, r } = await fixture(t, { delay: 100 });
+  await useRealCompose(page, r);
+  assert.equal(await r._probeGenerating(), false, 'an enabled Send arrow is not a Stop signal');
+  assert.deepEqual(await r.waitForResponseComplete(), { completed: true, reason: 'footer' });
+  assert.equal(await page.evaluate(() => window.clicks), 1);
+  assert.equal((await r.extractLastAnswer()).text, '最终产物');
+  assert.equal((await r.extractBeanCost()).value, '24');
+});
+
+test('an actionable continuation card takes precedence over a stale Stop signal', async t => {
+  const { page, r } = await fixture(t);
+  await useRealCompose(page, r, 'pause');
+  assert.equal(await r._probeGenerating(), true);
+  assert.equal(await r._dismissConfirmDialogs(), true);
+  assert.equal(await page.evaluate(() => window.clicks), 1);
+  assert.equal(await r._dismissConfirmDialogs(), true);
+  assert.equal(await page.evaluate(() => window.clicks), 1, 'pending continuation is never sent twice');
+});
+
+test('desktop probe distinguishes Send from Pause using actual icon even with incorrect testid', async t => {
+  const { page, r } = await fixture(t, { card: false });
+  const desktop = Object.create(DesktopRunner.prototype);
+  desktop.dr = r; desktop._fl = () => page;
+  await useRealCompose(page, r);
+  desktop.platform = r.platform;
+  assert.equal((await desktop._probeState()).generating, false);
+  await useRealCompose(page, r, 'pause');
+  assert.equal((await desktop._probeState()).generating, true);
+});
+
+test('legacy broad selectors still distinguish send arrows, old stop SVGs and disabled stopping spinners', async t => {
+  const { page, r } = await fixture(t, { card: false });
+  await useRealCompose(page, r);
+  r.platform.stopSignalSelector = 'button.send-btn:not(.send-btn--noop):not([disabled])';
+  assert.equal(await r._probeGenerating(), false);
+  await page.locator('#stop').evaluate(el => el.innerHTML = '<svg><rect rx="4" width="16" height="16"></rect></svg>');
+  assert.equal(await r._probeGenerating(), true);
+  r.platform.stopSignalSelector = defaultPlatform.stopSignalSelector;
+  await page.locator('#stop').evaluate(el => {
+    el.disabled = true;
+    el.innerHTML = '<svg class="send-btn-spinner"><circle cx="12" cy="12" r="9"></circle></svg>';
+  });
+  assert.equal(await r._probeGenerating(), true);
+  await page.locator('#stop').evaluate(el => el.innerHTML = '<img src="/icon_send.svg">');
+  assert.equal(await r._probeGenerating(), false);
+});
+
+for (const surface of ['shadow', 'iframe']) {
+  test(`continuation crosses nested shadows in ${surface} and preserves trace boundary and costs`, async t => {
+    const { r, ctx } = await fixture(t, { delay: 100, surface });
+    await useRealCompose(ctx, r);
+    let boundaries = 0;
+    r.beforeContinueWork = async () => boundaries++;
+    assert.equal((await r.waitForResponseComplete()).completed, true);
+    assert.equal(await ctx.evaluate(() => window.clicks), 1);
+    assert.equal(boundaries, 1);
+    assert.equal((await r.extractLastAnswer()).text, '最终产物');
+    assert.equal((await r.extractBeanCost()).value, '24');
+  });
 }
 
 test('open-shadow continuation is clicked once; old footer cannot complete the automatic follow-up', async t => {

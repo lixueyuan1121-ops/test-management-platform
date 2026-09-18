@@ -178,13 +178,18 @@ class DialogRunner {
       }
     }
     if (!visible) { state.waitingSince = null; return false; }
-    if (await this._probeGenerating()) {
-      state.waitingSince = null; // 生成期间卡片按产品设计禁用，仍受整条任务的 responseTimeout 约束。
-      return true;
-    }
-    if (state.waitingSince === null) state.waitingSince = Date.now();
     const button = card.getByRole('button', { name: /^(继续工作|繼續工作|Continue work)$/i });
     if (!await button.isEnabled().catch(() => false)) {
+      // 产品在生成/请求中禁用续作按钮；已可点击时以卡片自身状态为准，
+      // 不能让输入区尚未刷新的停止态（或旧配置误匹配发送箭头）阻塞续作。
+      if (await this._probeGenerating()) {
+        state.waitingSince = null;
+        return true;
+      }
+      if (state.waitingSince === null) {
+        state.waitingSince = Date.now();
+        this.logger?.info(`       ↳ [${this.label}] 检测到继续工作卡片，等待按钮可操作`);
+      }
       if (Date.now() - state.waitingSince >= startTimeout) {
         throw new Error('[WORK_CONTINUATION_UNAVAILABLE] 继续工作卡片持续不可操作，后续任务未完成');
       }
@@ -192,6 +197,7 @@ class DialogRunner {
     }
     const limit = this.execution.workContinuationMaxRounds ?? 3;
     if (state.count >= limit) throw new Error(`[WORK_CONTINUATION_LIMIT] 继续工作已达 ${limit} 轮，仍有续作卡片，未标记完成`);
+    this.logger?.info(`       ↳ [${this.label}] 检测到可操作的继续工作卡片，准备追加工作轮次`);
     await this.beforeContinueWork?.(); // 纳米 trace 切换答案轮次，但保留已经采集的工具调用。
     const baseline = await this._captureBaseline();
     // 点击前占位：点击后异步启动期间不重发，不把同一轮重复计费。
@@ -620,12 +626,26 @@ class DialogRunner {
     return this.generating;
   }
 
-  // 实时探测“生成中”信号（停止/生成按钮可见 = 正在生成）。供巡检与启动确认共用。
+  // 纳米 Work 的发送/停止共用 .send-btn，按钮可用并不等于生成中。
+  // 新版使用 icon_pause.svg，旧版为方形 SVG；testid 在新版暂停态也可能仍为 send-button。
+  // Web 等待、桌面巡检及续作共用此判定，兼容旧配置的宽泛候选选择器。
   async _probeGenerating() {
     try {
-      const stop = this._ctx().locator(this.platform.stopSignalSelector).first();
-      return await stop.isVisible();
+      const candidates = this._ctx().locator(this.platform.stopSignalSelector);
+      for (const candidate of await candidates.all()) {
+        if (!await candidate.isVisible()) continue;
+        const generating = await candidate.evaluate(el => {
+          if (!el.matches('button.send-btn')) return true; // 显式配置的其他停止控件
+          if (el.querySelector('img[src*="icon_pause.svg"], svg rect[rx="4"], .send-btn-spinner, animateTransform')) return true;
+          if (el.querySelector('img[src*="icon_send.svg"]') || el.classList.contains('send-btn--noop')) return false;
+          const label = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
+          return /^(停止|暂停|暫停|Stop|Pause)(生成|回答| generating| generation| response)?$/i.test(label)
+            || el.getAttribute('data-testid') === 'abort-button';
+        });
+        if (generating) return true;
+      }
     } catch { return false; }
+    return false;
   }
 
   // 抓取临界区包装：进入期间置占用标记，让并发观察器暂停切换（避免打断剪贴板/明细弹窗/tooltip）。
@@ -904,7 +924,6 @@ class DialogRunner {
     const startTimeout = this.execution.generationStartTimeout || 120000;
     const stallTimeout = this.execution.stallTimeout || 0;
     const ctx = this._ctx();
-    const stop = ctx.locator(this.platform.stopSignalSelector).first();
     const footer = this.platform.costSelector ? ctx.locator(this.platform.costSelector).last() : null;
     const groups = ctx.locator(this.platform.answerGroupSelector || '.chat-group.assistant');
     const bubbleSel = this.platform.answerSelector;
@@ -926,8 +945,7 @@ class DialogRunner {
         continue;
       }
 
-      let generating = false;
-      try { generating = await stop.isVisible(); } catch {}
+      const generating = await this._probeGenerating();
       this.generating = generating; // 维护巡检可见的“正在执行”标记
       if (generating) { sawGenerating = true; stable = 0; lastText = null; lastProgressAt = Date.now(); await this.page.waitForTimeout(1500); continue; }
 

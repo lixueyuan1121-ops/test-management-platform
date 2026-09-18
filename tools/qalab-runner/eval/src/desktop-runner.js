@@ -95,7 +95,7 @@ class DesktopRunner {
     const P = this.platform;
     const fl = this._fl();
     let generating = false, footerN = 0, hasBubble = false, txt = '';
-    try { generating = await fl.locator(P.stopSignalSelector).first().isVisible(); } catch {}
+    generating = await this.dr._probeGenerating();
     const base = this.dr._completionBaseline();
     try {
       const groups = fl.locator(P.answerGroupSelector || '.chat-group.assistant');

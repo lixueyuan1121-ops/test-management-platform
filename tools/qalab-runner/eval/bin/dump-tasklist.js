@@ -9,6 +9,8 @@
 //   node bin/dump-tasklist.js 9223 --running   # 指定端口
 
 const { chromium } = require('playwright');
+const DialogRunner = require('../src/dialog-runner');
+const { platform } = require('../config/default.config');
 
 const args = process.argv.slice(2);
 const wantRunning = args.includes('--running');
@@ -17,7 +19,6 @@ const ITEM_SEL = '.aside-panel-task-list__item';
 const INPUT_SEL = '.chat-compose-rich__content';
 const SEND_SEL = 'button.send-btn';
 const NEW_TASK_SEL = '.aside-panel-chat-button, .aside-panel__chat-button';
-const STOP_SEL = 'button.send-btn:not(.send-btn--noop):not([disabled])';
 const FOOTER_SEL = '.chat-token-cost__text';
 // 配置里现有的「执行中」猜测选择器
 const RUNNING_SEL = '[class*="loading"], [class*="running"], [class*="spin"], svg.animate-spin';
@@ -35,6 +36,8 @@ function classNames(el) { return (el && el.className && el.className.toString) ?
   }
   console.log('主窗口:', page.url());
   const fl = page.frameLocator('iframe[src*=".work.n.cn"]').first();
+  const runner = new DialogRunner(ctx, platform, {}).attachToPage(page);
+  runner.frame = fl;
   try { await fl.locator(INPUT_SEL).first().waitFor({ state: 'visible', timeout: 10000 }); }
   catch { console.error('对话 iframe 未就绪（可能未登录或不在主对话界面）'); process.exit(1); }
   await inspectAndCloseModal(page, fl, 'iframe就绪');
@@ -63,7 +66,7 @@ function classNames(el) { return (el && el.className && el.className.toString) ?
   // 等生成开始：停止按钮可见
   let started = false;
   for (let i = 0; i < 60; i++) {
-    if (await fl.locator(STOP_SEL).first().isVisible().catch(() => false)) { started = true; break; }
+    if (await runner._probeGenerating()) { started = true; break; }
     await page.waitForTimeout(1000);
   }
   console.log(started ? '✓ 已进入生成中' : '✗ 生成未开始（发送可能失败/弹了确认框）');
@@ -76,7 +79,7 @@ function classNames(el) { return (el && el.className && el.className.toString) ?
   console.log('\n--- 等生成完成 ---');
   for (let i = 0; i < 300; i++) {
     const foot = await fl.locator(FOOTER_SEL).first().count();
-    const stop = await fl.locator(STOP_SEL).first().isVisible().catch(() => false);
+    const stop = await runner._probeGenerating();
     if (foot > 0 && !stop) { console.log(`✓ 完成（约 ${i}s）`); break; }
     await page.waitForTimeout(1000);
   }

@@ -60,8 +60,9 @@ module.exports = {
     taskListTitleSelector: '.aside-panel-task-list__title-text', // 条目标题文本
     inputSelector: '.chat-compose-rich__content',          // 输入框 (ProseMirror contenteditable)
     sendBtnSelector: 'button.send-btn',                    // 发送按钮
-    // 生成中（停止态）：该元素出现=正在生成，消失=生成结束
-    stopSignalSelector: 'button.send-btn:not(.send-btn--noop):not([disabled])',
+    // 生成状态候选控件：发送/暂停复用同一按钮，DialogRunner 按暂停图标/停止语义区分。
+    // 不排除 disabled：停止请求中的 spinner、断线禁用的暂停按钮也仍处于执行阶段。
+    stopSignalSelector: 'button.send-btn',
     fileInputSelector: 'input[type="file"]',               // 文件上传
     // 附件上传成功信号：输入区「草稿附件卡片」（每个附件一项）。在 open shadow DOM 内，
     // Playwright locator 会自动穿透。发送前据此确认「附件真的挂上了」再输入 query。
