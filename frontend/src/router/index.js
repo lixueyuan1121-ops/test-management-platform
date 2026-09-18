@@ -30,6 +30,7 @@ const routes = [
       { path: 'war-room', name: 'war-room', component: () => import('@/views/WarRoom.vue'), meta: { title: '作战大屏' } },
       { path: 'exec-results', name: 'exec-results', component: () => import('@/views/ExecResults.vue') },
       { path: 'eval-results', name: 'eval-results', component: () => import('@/views/EvalResults.vue'), meta: { title: '对话测评结果' } },
+      { path: 'eval-multica', name: 'eval-multica', component: () => import('@/views/EvalMultica.vue'), meta: { title: 'Multica 复测' } },
       { path: 'feedback-imports', name: 'feedback-imports', component: () => import('@/views/FeedbackImports.vue'), meta: { title: '反馈导入记录' } },
       { path: 'feedback-cases', name: 'feedback-cases', component: () => import('@/views/FeedbackCases.vue'), meta: { title: '反馈用例库' } },
       { path: 'feedback-regression', name: 'feedback-regression', component: () => import('@/views/FeedbackRegression.vue'), meta: { title: '回归用例集' } },

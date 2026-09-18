@@ -80,6 +80,8 @@ def init_db() -> None:
     ensure_eval_run_payload()
     ensure_eval_run_target_device()
     ensure_eval_run_raw_message_column()
+    from app.db.migrate import ensure_eval_multica_columns
+    ensure_eval_multica_columns()
     from app.db.migrate import ensure_eval_run_scheduling_columns
     ensure_eval_run_scheduling_columns()
     from app.db.migrate import ensure_run_tracking_columns

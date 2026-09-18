@@ -15,6 +15,20 @@ def _columns(table: str) -> set[str]:
     return {c["name"] for c in insp.get_columns(table)}
 
 
+def ensure_eval_multica_columns() -> None:
+    columns = _columns("eval_run")
+    if not columns:
+        return
+    with engine.begin() as conn:
+        if "multica_pushed_at" not in columns:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN multica_pushed_at DATETIME NULL"))
+        if "multica_retest_source_id" not in columns:
+            conn.execute(text("ALTER TABLE eval_run ADD COLUMN multica_retest_source_id INTEGER NULL"))
+        indexes = {i["name"] for i in inspect(conn).get_indexes("eval_run")}
+        if "ix_eval_run_multica_retest_source_id" not in indexes:
+            conn.execute(text("CREATE INDEX ix_eval_run_multica_retest_source_id ON eval_run (multica_retest_source_id)"))
+
+
 def ensure_selector_reliability_columns() -> None:
     """保留存量记录；老的无设备绑定会话不交给任意同名设备。"""
     additions = {

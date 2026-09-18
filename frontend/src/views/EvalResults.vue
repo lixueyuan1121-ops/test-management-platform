@@ -144,6 +144,7 @@
         <span>已选 {{ selectedRunIds.length }} 条对话</span>
         <el-button v-if="selectedRunIds.length" text size="small" :disabled="pushingMultica" @click="selectedRunIds = []">清空选择</el-button>
         <el-button class="push-action" size="small" :icon="Promotion" :loading="pushingMultica" :disabled="!pid || !selectedRunIds.length" @click="doPushMultica">推送到 Multica（{{ selectedRunIds.length }}）</el-button>
+        <router-link class="multica-collection-link" :to="{ path: '/eval-multica', query: { project_id: pid } }">查看已推送 / 复测</router-link>
       </div>
       </div>
 
@@ -944,6 +945,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.multica-collection-link { color:var(--el-color-primary); font-size:13px; text-decoration:none; white-space:nowrap; }
 .eval-results { min-width: 0; color: #27333e; font-variant-numeric: tabular-nums; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .page-heading h1 { margin: 0; font-size: 24px; font-weight: 650; line-height: 1.4; }

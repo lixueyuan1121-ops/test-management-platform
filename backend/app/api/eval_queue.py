@@ -196,6 +196,8 @@ def _to_out(r: EvalRun) -> dict:
         "is_abnormal": bool(r.is_abnormal),
         "pushed_multica": bool(r.pushed_multica),
         "multica_ref": r.multica_ref,
+        "multica_pushed_at": r.multica_pushed_at.isoformat() if r.multica_pushed_at else None,
+        "multica_retest_source_id": r.multica_retest_source_id,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }

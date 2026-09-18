@@ -8,6 +8,7 @@ export const navigationGroups = [
   { id: 'eval', label: '对话测评', icon: 'ChatDotRound', items: [
     entry('/eval-tasks', '测评任务', 'Tickets'), entry('/eval-library', '测评用例库', 'Collection'),
     entry('/ai-eval-gen', '测评生成', 'MagicStick'), entry('/eval-results', '测评结果', 'Finished'),
+    entry('/eval-multica', 'Multica 复测', 'RefreshRight'),
   ] },
   { id: 'func', label: '功能测试', icon: 'MagicStick', items: [
     entry('/test-plans', '测试计划', 'Calendar'), entry('/tasks', '任务分配', 'List'),

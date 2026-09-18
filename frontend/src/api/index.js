@@ -231,6 +231,9 @@ export const exportEvalFeishu = (payload) => http.post('/eval-export/feishu', pa
 export const pushEvalMultica = (payload) => http.post('/eval-export/multica', payload, { timeout: 300000 })
 // 待推 multica 的异常数（is_abnormal 且未 pushed）→ { pending }
 export const evalMulticaPending = (projectId) => http.get('/eval-export/multica-pending', { params: { project_id: projectId } })
+export const listMulticaResults = (params) => http.get('/eval-export/multica-results', { params })
+export const listMulticaRetests = (runId) => http.get(`/eval-export/multica-results/${runId}/retests`)
+export const createMulticaRetest = (payload) => http.post('/eval-export/multica-retest', payload)
 
 // ===== 导出 Playwright 脚本（回归用例库 → 开发本地自测）=====
 // 下载类接口用 responseType:'blob' + returnResponse:true —— 拿到完整响应（含头），

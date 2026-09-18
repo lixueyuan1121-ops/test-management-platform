@@ -114,6 +114,9 @@ class EvalRun(Base):
     is_abnormal: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", index=True)
     pushed_multica: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     multica_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)  # multica 侧任务 id/链接
+    multica_pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 每次复测新建 run，通过原反馈关联；不覆盖原结果，兼容历史记录。
+    multica_retest_source_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # —— 通用 ——
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 执行失败/未完成原因
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 墙钟耗时

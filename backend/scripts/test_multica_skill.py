@@ -1,6 +1,7 @@
 """验证 multica-add-task CLI 参数与模板,不实际创建任务。"""
 import json
 from types import SimpleNamespace
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from app.services import multica
 
@@ -10,7 +11,8 @@ def main():
         artifact_share_link=None, session_id='s', verdict='pass', verdict_reason='结果正确，文件路径需重试',
         payload=json.dumps({'prompt': '读取 C:\\new\\报告.csv\n保留原文'}))
     query = SimpleNamespace(prompt='旧提问', expected='输出完整报表')
-    with patch.object(multica.settings, 'MULTICA_MODE', 'skill'), \
+    with patch.object(multica, 'push_time', return_value=datetime(2026, 9, 18, 0, 1)), \
+         patch.object(multica.settings, 'MULTICA_MODE', 'skill'), \
          patch.object(multica.shutil, 'which', return_value='C:/tools/multica.exe'), \
          patch.object(multica.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='{"id":"issue-123","identifier":"QA-1"}', stderr='')) as call:
         multica.check_skill_ready()
@@ -19,7 +21,7 @@ def main():
         assert call.call_args_list[1].args[0][1:] == ['workspace', 'list']
         command = call.call_args.args[0]
         assert command == ['C:/tools/multica.exe', 'issue', 'create', '--title',
-            '【测评反馈】结果正确，文件路径需重试', '--project',
+            '2026-09-18 【测评反馈】结果正确，文件路径需重试', '--project',
             'fe648247-d5b5-43bb-876e-e31afa63d2a6', '--assignee-id',
             '79bfeb61-df55-40fe-acd4-36408563eeae', '--description-stdin', '--output', 'json']
         assert call.call_args.kwargs['input'] == (
@@ -54,6 +56,26 @@ def main():
             pass
         else:
             raise AssertionError('未登录应阻断推送')
+    with patch.object(multica, 'datetime') as clock:
+        clock.now.return_value = datetime(2026, 9, 18, 0, 1)
+        assert multica.push_time() == datetime(2026, 9, 18, 0, 1)
+        assert clock.now.call_args.args[0].utcoffset(None) == timedelta(hours=8)
+    with patch.object(multica, 'push_time', return_value=datetime(2026, 9, 18, 0, 1)), \
+         patch.object(multica.settings, 'MULTICA_MODE', 'http'), \
+         patch.object(multica.settings, 'MULTICA_URL', 'https://example.invalid/multica'), \
+         patch.object(multica.requests, 'post') as post:
+        post.return_value.json.return_value = {'id': 'http-task'}
+        assert multica.push_abnormal_run(run, query) == 'http-task'
+        assert post.call_args.kwargs['json']['title'].startswith('2026-09-18 【测评反馈】')
+    with patch.object(multica, 'push_time', return_value=datetime(2026, 9, 18, 0, 1)), \
+         patch.object(multica.settings, 'MULTICA_MODE', 'cli'), \
+         patch.object(multica.settings, 'MULTICA_CLI_TEMPLATE', 'multica issue create --title {title}'), \
+         patch.object(multica.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='cli-task')) as call:
+        run.verdict_reason = "test 'quoted' --flag `literal` $(literal)"
+        assert multica.push_abnormal_run(run, query) == 'cli-task'
+        assert call.call_args.args[0] == ['multica', 'issue', 'create', '--title',
+            "2026-09-18 【测评反馈】test 'quoted' --flag `literal` $(literal)"]
+        assert not call.call_args.kwargs.get('shell', False)
     print('PASS skill前置检查、固定项目与负责人agent、精确模板、原文stdin、expected回退及错误处理')
 
 

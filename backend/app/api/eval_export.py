@@ -6,7 +6,8 @@ multica:按 run_ids 推送正常或异常结果;旧调用仍只推异常。回�
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy import case, func, or_
+from sqlalchemy.orm import Session, load_only
 
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole
@@ -14,7 +15,7 @@ from app.db.session import get_db
 from app.models import EvalRun, EvalQuery, User
 from app.core.config import settings
 from app.schemas.common import ok
-from app.schemas.eval_export import EvalExportFeishuIn, EvalPushMulticaIn
+from app.schemas.eval_export import EvalExportFeishuIn, EvalPushMulticaIn, EvalMulticaRetestIn
 from app.services import feishu, multica
 
 router = APIRouter(prefix="/api/eval-export", tags=["eval-export"])
@@ -97,6 +98,7 @@ def push_multica(body: EvalPushMulticaIn, db: Session = Depends(get_db), user: U
                 continue
             r.pushed_multica = True
             r.multica_ref = str(ref)[:512]
+            r.multica_pushed_at = multica.push_time()
             db.commit()
             pushed += 1
             results.append({"run_id": r.id, "ref": ref})
@@ -113,3 +115,68 @@ def multica_pending(project_id: int = Query(...), db: Session = Depends(get_db),
                                  EvalRun.is_abnormal == True,  # noqa: E712
                                  EvalRun.pushed_multica == False).count()  # noqa: E712
     return ok({"pending": n})
+
+
+_MULTICA_FIELDS = ("id", "eval_query_id", "eval_task_id", "batch_id", "target_engine", "status", "payload",
+    "verdict", "score", "verdict_reason", "reason", "multica_ref", "multica_pushed_at", "created_at",
+    "multica_retest_source_id", "share_link", "reported_duration", "bean_cost")
+
+
+def _multica_item(run):
+    from app.services.eval_snapshot import payload_of
+    return {"run_id": run.id, **{k: getattr(run, k) for k in _MULTICA_FIELDS if k not in ("id", "status", "payload")},
+            "status": getattr(run.status, "value", run.status), "payload": payload_of(run)}
+
+
+@router.get("/multica-results")
+def multica_results(project_id: int, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                    search: str = Query("", max_length=200), target_engine: str | None = None,
+                    db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    q = db.query(EvalRun).filter(EvalRun.project_id == project_id, EvalRun.pushed_multica.is_(True))
+    if search.strip():
+        term = search.strip()
+        q = q.filter(or_(EvalRun.payload.contains(term, autoescape=True),
+                         EvalRun.multica_ref.contains(term, autoescape=True),
+                         EvalRun.id == (int(term) if term.isdecimal() and len(term) < 12 else -1)))
+    if target_engine:
+        q = q.filter(EvalRun.target_engine == target_engine if target_engine != "namiwork" else
+                     or_(EvalRun.target_engine == "namiwork", EvalRun.target_engine.is_(None)))
+    total = q.count()
+    rows = q.options(load_only(*(getattr(EvalRun, f) for f in _MULTICA_FIELDS))).order_by(
+        EvalRun.multica_pushed_at.desc(), EvalRun.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    ids = [r.id for r in rows]
+    stats = db.query(EvalRun.multica_retest_source_id, func.max(EvalRun.id), func.count(EvalRun.id),
+        func.sum(case((EvalRun.status.in_(['pending', 'running', 'judging']), 1), else_=0))).filter(
+        EvalRun.project_id == project_id, EvalRun.multica_retest_source_id.in_(ids)).group_by(EvalRun.multica_retest_source_id).all() if ids else []
+    latest = {r.id: r for r in db.query(EvalRun).options(load_only(*(getattr(EvalRun, f) for f in _MULTICA_FIELDS))).filter(
+        EvalRun.id.in_([x[1] for x in stats]), EvalRun.project_id == project_id).all()} if stats else {}
+    by_source = {sid: {"latest_retest": _multica_item(latest[rid]), "retest_count": count, "active_retests": active}
+                 for sid, rid, count, active in stats}
+    return ok({"items": [{**_multica_item(r), **by_source.get(r.id, {"latest_retest": None, "retest_count": 0, "active_retests": 0})} for r in rows],
+               "total": total, "page": page, "page_size": page_size})
+
+
+@router.get("/multica-results/{run_id}/retests")
+def multica_retest_history(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.api.eval_queue import _to_out
+    row = db.get(EvalRun, run_id)
+    if not row:
+        raise HTTPException(404, detail="测评结果不存在")
+    assert_project_role(db, user, row.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    if not row.pushed_multica:
+        raise HTTPException(400, detail="该结果尚未推送 Multica")
+    retests = db.query(EvalRun).options(load_only(*(getattr(EvalRun, f) for f in _MULTICA_FIELDS))).filter(
+        EvalRun.project_id == row.project_id, EvalRun.multica_retest_source_id == row.id).order_by(EvalRun.id.desc()).all()
+    return ok({"source": _to_out(row), "retests": [_multica_item(r) for r in retests]})
+
+
+@router.post("/multica-retest")
+def multica_retest(body: EvalMulticaRetestIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    from app.services.eval_multica_retest import create_retest
+    try:
+        return ok(create_retest(db, body, user.id))
+    except Exception:
+        db.rollback()
+        raise

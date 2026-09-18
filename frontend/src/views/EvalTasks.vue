@@ -500,6 +500,7 @@ import EvalArtifactRules from '@/components/EvalArtifactRules.vue'
 import EvalSummaryStatus from '@/components/EvalSummaryStatus.vue'
 import { evalSummaryState } from '@/utils/evalSummaryState'
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Tickets, Plus, Refresh, InfoFilled, Download, MoreFilled } from '@element-plus/icons-vue'
 import {
@@ -531,6 +532,7 @@ const DIM_TAG_TYPE = {
 }
 
 const app = useAppStore()
+const route = useRoute()
 const projects = ref([])
 const pid = ref(null)
 const tasks = ref([])
@@ -691,7 +693,12 @@ onMounted(async () => {
     ? dimRes.value.dimensions.map((d) => ({ k: d.key, label: d.label }))
     : [{ k: 'thinking', label: '思考推理' }, { k: 'workflow', label: '工作流' }, { k: 'clarification', label: '反问澄清' }]
   if (devices.value.length) runForm.value.runners = [devices.value[0].runner_id]
-  if (projects.value.length) { pid.value = pickDefaultProjectId(projects.value); await onProjectChange() }
+  if (projects.value.length) {
+    pid.value = projects.value.find(p => p.id === Number(route.query.project_id))?.id || pickDefaultProjectId(projects.value)
+    await onProjectChange()
+    const linkedTask = tasks.value.find(t => t.id === Number(route.query.task_id))
+    if (linkedTask) await openDetail(linkedTask, typeof route.query.batch_id === 'string' ? route.query.batch_id : null)
+  }
 })
 
 async function onProjectChange() {
@@ -920,15 +927,15 @@ async function doRun() {
 }
 
 // ── 详情/判定/综合评价 ──
-async function openDetail(row) {
+async function openDetail(row, batchId = null) {
   const requestId = ++detailRequestId
   detailTab.value = 'results'
   detailVisible.value = true
   detail.value = null
-  selectedBatchId.value = null   // 默认看最新批次
+  selectedBatchId.value = batchId   // 复测记录打开对应批次，普通入口看最新批次
   taskBatches.value = []
   try {
-    const result = await listEvalTaskRuns(row.id)
+    const result = await listEvalTaskRuns(row.id, batchId || undefined)
     if (requestId !== detailRequestId || !detailVisible.value) return
     detail.value = result
     await loadBatches(row.id)

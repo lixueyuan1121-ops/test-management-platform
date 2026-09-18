@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import shutil
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import requests
@@ -19,6 +20,11 @@ from app.core.config import settings
 logger = logging.getLogger("test_platform")
 MULTICA_EVAL_PROJECT = "fe648247-d5b5-43bb-876e-e31afa63d2a6"
 MULTICA_EVAL_ASSIGNEE = "79bfeb61-df55-40fe-acd4-36408563eeae"
+
+
+def push_time():
+    """推送日期统一使用北京时间，不受后端服务器所在时区影响。"""
+    return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
 
 
 def _safe_link(u):
@@ -33,7 +39,7 @@ def _payload(run, query=None) -> dict:
         snapshot = {}
     if not isinstance(snapshot, dict):
         snapshot = {}
-    return {
+    payload = {
         "run_id": run.id,
         "project_id": run.project_id,
         "share_link": _safe_link(run.share_link),
@@ -48,6 +54,9 @@ def _payload(run, query=None) -> dict:
         "answer": getattr(run, "answer", None),
         "target_engine": getattr(run, "target_engine", None),
     }
+    reason = payload.get("verdict_reason") or snapshot.get("title") or getattr(query, "title", None) or f"RUN-{run.id}"
+    payload["title"] = f"{push_time():%Y-%m-%d} 【测评反馈】{reason}"
+    return payload
 
 
 def _skill_command(args, description=None):
@@ -92,7 +101,7 @@ def _skill_description(payload):
 
 
 def _create_skill_task(payload):
-    title = "【测评反馈】" + (payload.get("verdict_reason") or "")
+    title = payload["title"]
     description = _skill_description(payload)
     raw = _skill_command([
         "issue", "create", "--title", title, "--project", MULTICA_EVAL_PROJECT,
@@ -139,7 +148,8 @@ def push_abnormal_run(run, query=None) -> str | None:
         # 占位替换(share_link 可能 None → 空串)
         cmd_str = tmpl.format(
             share_link=payload["share_link"] or "", run_id=run.id,
-            session_id=run.session_id or "", project_id=run.project_id)
+            session_id=run.session_id or "", project_id=run.project_id,
+            title=shlex.quote(payload["title"]))
         proc = subprocess.run(shlex.split(cmd_str), capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
             raise ValueError(f"multica CLI 失败(exit {proc.returncode}): {proc.stderr[:200]}")
