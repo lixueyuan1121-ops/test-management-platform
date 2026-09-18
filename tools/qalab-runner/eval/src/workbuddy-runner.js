@@ -313,6 +313,70 @@ class WorkbuddyRunner {
     this._interceptApproval = null;
   }
 
+  async _clearVideoApproval() {
+    await this._videoApproval?.element?.dispose().catch(() => {});
+    this._videoApproval = null;
+  }
+
+  // 5.5.6 的视频积分确认有两套实现：div[role=button] 用 tabindex=-1 表示提交中，
+  // conversation 面板用原生 disabled。选中样式仅表示 hover，不能据此跳过“确认”。
+  async _handleVideoApproval() {
+    const selector = this.wb.videoApprovalSelector || '.high-credit-approval-floating, .conversation-high-credit-approval';
+    const resolved = '.high-credit-approval-floating__decision, .conversation-high-credit-approval__decision';
+    const card = this.page.locator(`:is(${selector}):visible:not(:has(${resolved}))`).first();
+    if (!await card.count()) { await this._clearVideoApproval(); return false; }
+    const element = await card.elementHandle({ timeout: 300 }).catch(() => null);
+    if (!element) return true;
+    const optionSelector = '.high-credit-approval-floating__option, .conversation-high-credit-approval__option';
+    const labelSelector = '.high-credit-approval-floating__option-text, .conversation-high-credit-approval__option-text';
+    let options = [];
+    try {
+      const snapshot = await element.evaluate((el, { optionSelector, labelSelector }) => ({
+        connected: el.isConnected,
+        title: (el.querySelector('.high-credit-approval-floating__title, .conversation-high-credit-approval__title')?.textContent || '').trim(),
+        labels: [...el.querySelectorAll(optionSelector)].map(option => option.getClientRects().length
+          ? (option.querySelector(labelSelector)?.textContent || '').trim() : ''),
+      }), { optionSelector, labelSelector });
+      if (!snapshot.connected || !/^(确认开始生成视频|確認開始生成影片|Confirm video generation)[?？]?$/i.test(snapshot.title)) return true;
+      const confirmIndex = snapshot.labels.findIndex(label => /^(确认|確認|Confirm)$/i.test(label));
+      if (confirmIndex < 0 || !snapshot.labels.some(label => /^(拒绝|拒絕|Reject)$/i.test(label))) return true;
+      const signature = JSON.stringify([snapshot.title, snapshot.labels]);
+      const previous = this._videoApproval;
+      const sameCard = previous && previous.signature === signature
+        && await element.evaluate((el, old) => el === old, previous.element);
+      if (!sameCard) {
+        await this._clearVideoApproval();
+        this._videoApproval = { element, signature, attempts: 0, clickedAt: 0 };
+      }
+      const state = this._videoApproval;
+      options = await element.$$(optionSelector);
+      const confirm = options[confirmIndex];
+      // 固定当前按钮并一次读就绪状态；卡片随时可能卸载，不用会跳到下一张卡片的 locator。
+      const ready = confirm && await confirm.evaluate((el, labelSelector) => ({
+        enabled: el.isConnected && !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden'
+          && !el.matches(':disabled, [aria-disabled="true"], [aria-busy="true"], [tabindex="-1"]'),
+        label: (el.querySelector(labelSelector)?.textContent || '').trim(),
+      }), labelSelector);
+      if (!ready?.enabled || ready.label !== snapshot.labels[confirmIndex]) return true;
+      // 失败时两种组件都会恢复可操作，仍显示 pending；成功则替换为 decision 或移除面板。
+      if (state.attempts >= (this.wb.videoApprovalMaxAttempts ?? 3)) {
+        throw new Error('[WORKBUDDY_CONFIRM_FAILED] 视频生成确认提交多次失败，任务未继续');
+      }
+      if (state.attempts && Date.now() - state.clickedAt < (this.wb.videoApprovalRetryMs ?? 1000)) return true;
+      state.attempts++; state.clickedAt = Date.now();
+      try { await confirm.click({ timeout: 2000 }); }
+      catch (error) {
+        if (!await element.evaluate(el => el.isConnected)) return true;
+        throw new Error(`[WORKBUDDY_CONFIRM_FAILED] 视频生成确认点击未确认：${error.message.split('\n')[0]}`);
+      }
+      this._log(`   WorkBuddy 视频生成确认：已点击“${snapshot.labels[confirmIndex]}”（第 ${state.attempts} 次提交），等待视频生成`);
+      return true;
+    } finally {
+      for (const option of options) await option.dispose().catch(() => {});
+      if (this._videoApproval?.element !== element) await element.dispose().catch(() => {});
+    }
+  }
+
   // WorkBuddy InterceptCard：批量删除、受保护文件修改。按卡片标题和明确的单次授权项匹配，
   // 不复用反问的“默认第一项”规则；同组件也承载其他权限类型。
   async _handleIntercept() {
@@ -375,9 +439,10 @@ class WorkbuddyRunner {
     const deadline = Date.now() + timeout;
     let stableSince = 0;
     await this._clearInterceptApproval();
+    await this._clearVideoApproval();
     try {
       while (Date.now() < deadline) {
-        if (await this._handleIntercept() || await this._handleQuestion() || await this._handleWorkflow()) stableSince = 0;
+        if (await this._handleVideoApproval() || await this._handleIntercept() || await this._handleQuestion() || await this._handleWorkflow()) stableSince = 0;
         else if (await this.page.locator(`:is(${this.wb.generatingSelector || 'button.cr-send-button--sending, button.cr-send-button--stop'}):visible`).count()) stableSince = 0;
         else if (await this.page.locator(this.wb.footerSelector).nth(baselineFooterCount).isVisible()) {
           if (!stableSince) stableSince = Date.now();
@@ -388,6 +453,7 @@ class WorkbuddyRunner {
       return { completed: false, reason: 'timeout' };
     } finally {
       await this._clearInterceptApproval();
+      await this._clearVideoApproval();
     }
   }
 

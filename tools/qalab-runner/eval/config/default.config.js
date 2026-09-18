@@ -419,6 +419,10 @@ module.exports = {
     interceptCardSelector: '[class*="_container_"]:has(> [class*="_optionList_"] > button[class*="_optionItem_"])',
     interceptOptionSelector: '[class*="_optionList_"] > button[class*="_optionItem_"]',
     interceptMaxAttempts: 3,
+    // 视频积分确认：按标题精确选单次“确认”，兼容浮层和会话面板；提交中等待，失败后有限重试。
+    videoApprovalSelector: '.high-credit-approval-floating, .conversation-high-credit-approval',
+    videoApprovalMaxAttempts: 3,
+    videoApprovalRetryMs: 1000,
     generatingSelector: 'button.cr-send-button--sending, button.cr-send-button--stop',
     // 完成/元信息
     footerSelector: '.conversation-finished-footer',
