@@ -15,6 +15,7 @@ function makeRunner(calls, overrides = {}) {
   r._log = () => {};
   r._warn = () => {};
   r._focus = async () => { calls.push('focus'); };
+  r._conversationKey = async () => 'test-session';
   r._openCleanConversation = async () => { calls.push('openClean'); return true; };
   r._sendOne = async (tc) => { calls.push('send:' + tc.turnIndex); };
   r._extractCurrent = async (tc, opts) => { calls.push(`extract:${tc.turnIndex}:skip=${!!(opts || {}).skipPanels}`); return { answer: 'a' + tc.turnIndex }; };

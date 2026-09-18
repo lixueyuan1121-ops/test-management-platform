@@ -117,20 +117,23 @@ class DesktopRunner {
     await this._ensureCtx();   // 每条 run 开始先判定当前设备对话 UI 形态(iframe/主文档)
     const newSel = P.newTaskSelector || '.aside-panel__chat-button';
     const inputSel = P.inputSelector;
-    const userSel = P.userGroupSelector || '.chat-group.user';
+    const previousSession = await this._conversationKey();
+    this._newConversationPreviousSession = previousSession;
     await this._focus(); // 前台化，确保「新建任务」点击生效
     for (let attempt = 0; attempt < 4; attempt++) {
       const fl = this._fl();
       try {
-        const btn = fl.locator(newSel).first();
-        if (await btn.count() > 0) { await btn.click({ timeout: 5000 }).catch(() => {}); }
+        await this._clickNewTask(fl, newSel);
       } catch {}
       await this._sleep(1800);
       // 校验：输入框可见 且 无历史用户气泡 = 干净新对话
       try {
         await this._fl().locator(inputSel).first().waitFor({ state: 'visible', timeout: 8000 });
-        const users = await this._fl().locator(userSel).count().catch(() => 0);
-        if (users === 0) { this.dr.frame = this._fl(); return true; }
+        if (await this._isCleanConversation(previousSession)) {
+          // SPA 切换期间会短暂没有气泡，等稳定后再次验证。
+          await this._sleep(400);
+          if (await this._isCleanConversation(previousSession)) { this.dr.frame = this._fl(); return true; }
+        }
       } catch {}
       this._warn(`   新建对话第 ${attempt + 1} 次未干净（仍有历史气泡/输入框未就绪），重试...`);
     }
@@ -140,26 +143,64 @@ class DesktopRunner {
       await this._ensureCtxReady();   // 回 launcher 后轮询等输入框可见再定形(iframe 设备等真 iframe 重挂,不误判 main)
       await this._openCleanConversationOnce();
       this.dr.frame = this._fl();
-      return true;
+      await this._sleep(400);
+      return await this._isCleanConversation(previousSession);
     } catch (e) {
       this._warn(`   回 launcher 兜底也失败：${(e.message || '').split('\n')[0]}`);
       return false;
     }
   }
+
+  async _clickNewTask(ctx, selector) {
+    const buttons = ctx.locator(selector);
+    for (let i = 0; i < await buttons.count(); i++) {
+      if (await buttons.nth(i).isVisible()) { await buttons.nth(i).click({ timeout: 5000 }); return; }
+    }
+    throw new Error('未找到可见的新建任务入口');
+  }
+
+  async _conversationKey() {
+    const url = new URL(this.dr._liveFrame().url());
+    const sid = url.searchParams.get('sid');
+    return sid ? `${url.origin}:${sid}` : '';
+  }
+
+  async _isCleanConversation(previousSession = '') {
+    const ctx = this._fl();
+    if (!await ctx.locator(this.platform.inputSelector).first().isVisible()) return false;
+    const users = await ctx.locator(this.platform.userGroupSelector || '.chat-group.user').count();
+    const answers = await ctx.locator(this.platform.answerGroupSelector || '.chat-group.assistant').count();
+    if (users || answers) return false;
+    // 新客户端恢复历史时气泡尚未渲染，chatLoading 仍为 true，不能当成新会话。
+    if (await ctx.locator('openclaw-app').evaluateAll(hosts => hosts.some(host => host.chatLoading === true))) return false;
+    const session = await this._conversationKey();
+    return !previousSession || session !== previousSession;
+  }
+
+  async _assertSendContext({ followUp = false, expectedSession = '' } = {}) {
+    if (!followUp) {
+      if (!await this._isCleanConversation(this._newConversationPreviousSession)) {
+        throw new Error('[NAMI_NEW_CONVERSATION] 未确认独立空白会话，已阻止把本条用例发进历史对话');
+      }
+    } else if (expectedSession && await this._conversationKey() !== expectedSession) {
+      throw new Error('[NAMI_CONVERSATION_CHANGED] 多轮会话已切换，未发送后续问题');
+    }
+  }
   async _openCleanConversationOnce() {
     const fl = this._fl();
-    const btn = fl.locator(this.platform.newTaskSelector || '.aside-panel__chat-button').first();
-    if (await btn.count() > 0) { await btn.click({ timeout: 5000 }).catch(() => {}); await this._sleep(1500); }
-    await this._fl().locator(this.platform.inputSelector).first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+    await this._clickNewTask(fl, this.platform.newTaskSelector || '.aside-panel__chat-button');
+    await this._sleep(1500);
+    await this._fl().locator(this.platform.inputSelector).first().waitFor({ state: 'visible', timeout: 10000 });
   }
 
   // 发送一条 query 到「当前干净对话」，确认已开始执行后返回（不等完成）。复用 DialogRunner 的原子能力。
-  async _sendOne(testCase) {
+  async _sendOne(testCase, opts = {}) {
     const dr = this.dr;
     dr.label = testCase.caseId;
     dr.frame = this._fl();
-    dr.multiTurn = false;
+    dr.multiTurn = !!opts.multiTurn;
     await this._focus(); // 前台化，确保输入/发送点击生效
+    await this._assertSendContext(opts);
     // 基线：干净对话里回答组/footer 均为 0；供 waitForGenerationStart 判定「本轮新增」。
     dr._beginTurn(await dr._captureBaseline());
 
@@ -183,6 +224,7 @@ class DesktopRunner {
     // 平台模式为纳米 Work 注入采集预检，每一轮发送前确认真实连接已被监听。
     // 非平台桌面任务未配置此钩子时保持原行为。
     await this.beforeSend?.();
+    await this._assertSendContext(opts);
     const input = ctx.locator(this.platform.inputSelector).first();
     await input.waitFor({ timeout: 10000 });
     // 输入 query 并读回校验:附件 setInputFiles 后 ProseMirror 常失焦致 pressSequentially 静默不进字符,
@@ -206,6 +248,7 @@ class DesktopRunner {
       warn: (m) => this._warn(`   [${testCase.caseId}] ${m}`),
     });
     await this._sleep(300);
+    await this._assertSendContext(opts);
     await ctx.locator(this.platform.sendBtnSelector).first().click();
     await dr._dismissConfirmDialogs();        // 发送刚点下可能弹「消耗算力/是否继续」确认
     await dr.waitForGenerationStart();          // 确认已进入生成，再返回（下一条才去新建）
@@ -344,13 +387,17 @@ class DesktopRunner {
       try { const copied = await dr._withCritical(() => dr.extractAnswerViaCopy()); if (copied && copied.trim()) out.answer = copied.trim(); } catch {}
     }
     if (!this.execution.answerOnly) {
+      // 消费栏属于当前回答，先于会改变对话视图的分享面板抓取。
+      try { out.beanCost = (await dr._withCritical(() => dr._pollBeanCost('', { timeoutMs: 0 }))).value; } catch {}
       if (!skipPanels && this.execution.captureArtifact !== false) { try { const a = await dr._withCritical(() => dr.extractArtifactShareLink()); out.artifactShareLink = a.link; out.hasArtifact = a.hasCard; } catch {} }
       try { const c = await dr.extractCost(); out.cost = c.cost; out.costRaw = c.raw; } catch {}
       try { const d = await dr._withCritical(() => dr.extractReportedDuration()); out.reportedDuration = d.value; out.reportedDurationRaw = d.raw; } catch {}
       if (!skipPanels) {
         try { out.shareLink = await dr._withCritical(() => dr.extractConversationShareLink()); } catch {}
       }
-      try { out.beanCost = (await dr._withCritical(() => dr.extractBeanCost())).value; } catch {}
+      if (!out.beanCost) {
+        try { out.beanCost = (await dr._withCritical(() => dr.extractBeanCost())).value; } catch {}
+      }
       // 普通缺失字段只做就地补填；算力豆刷新由 extractBeanCost 单独控制并核对会话。
       try { await dr._refillEmptyFields(out, testCase.question); } catch {}
     }
@@ -417,7 +464,7 @@ class DesktopRunner {
     };
     this._log(`🔁 多轮会话:${sorted.length} 轮将在同一对话内顺序连发(轮次0新建对话,后续轮复用当前对话)`);
     await this._focus();
-    let aborted = false, abortMsg = '';
+    let aborted = false, abortMsg = '', expectedSession = '';
     for (let i = 0; i < sorted.length; i++) {
       const testCase = sorted[i];
       const isLast = i === sorted.length - 1;
@@ -435,7 +482,8 @@ class DesktopRunner {
         }
         // _sendOne 内先捕获发送前基线(prior turns 的回答组/footer 数),再发送本轮、确认已开始生成。
         // 首轮基线为 0;后续轮不新建对话、在当前对话追加提问,基线=已有轮数 → 后续等待/抓取只认「本轮新增」。
-        await this._sendOne(testCase);
+        await this._sendOne(testCase, { followUp: i > 0, multiTurn: sorted.length > 1, expectedSession });
+        expectedSession = await this._conversationKey();
         const done = await this.dr.waitForResponseComplete();          // 基线感知:等「本轮」回答完成
         const out = await this._extractCurrent(testCase, { skipPanels: !isLast }); // 中间轮跳过开面板抓取
         const result = this._buildResult(testCase, out,

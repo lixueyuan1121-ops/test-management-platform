@@ -46,23 +46,21 @@
           <div class="card-hd">
             <span class="light" :class="d.online ? 'on' : 'off'"></span>
             <div class="dev-name" :title="d.name">{{ d.name }}</div>
-            <!-- 正在执行的任务类型标识(去重):功能测试/测评任务/…(未知类型显示原文,便于扩展) -->
-            <span v-for="k in runKinds(d)" :key="k" class="kind-tag" :class="'k-' + k">{{ KIND_LABEL[k] || k }}</span>
-            <div class="runner-id">{{ d.runner_id }}</div>
-            <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain" class="plat-tag">{{ d.platform.toUpperCase() }}</el-tag>
-            <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('workbuddy')" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
-            <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('qwork')" size="small" effect="light" title="该执行机支持 QWork 对话测评">QWork</el-tag>
           </div>
+          <div class="runner-id" :title="d.runner_id">{{ d.runner_id }}</div>
 
           <div class="meta">
             <span class="owner">{{ d.owner.name || '—' }}</span>
             <span class="seen">{{ d.online ? '在线' : lastSeenText(d.last_seen_at) }}</span>
           </div>
 
-          <!-- 当前 runner:这台机此刻实际在跑哪类 runner(func/eval)——运行时感知,后端 active_kinds。
-               与上方 kind-tag(正在执行的具体任务)呼应;空闲(没启动 runner)时不显示。 -->
-          <div v-if="devCaps(d).length" class="caps">
+          <!-- 标签独立换行，避免多产品/执行状态挤占设备名称。 -->
+          <div class="device-tags">
+            <span v-for="k in runKinds(d)" :key="'kind-' + k" class="kind-tag" :class="'k-' + k">{{ KIND_LABEL[k] || k }}</span>
             <span v-for="c in devCaps(d)" :key="c" class="cap-tag" :class="'cap-' + c">{{ CAP_LABEL[c] || c }}</span>
+            <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain">{{ d.platform.toUpperCase() }}</el-tag>
+            <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('workbuddy')" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
+            <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('qwork')" size="small" effect="light" title="该执行机支持 QWork 对话测评">QWork</el-tag>
           </div>
 
           <!-- 四格计数 -->
@@ -227,7 +225,6 @@ onUnmounted(() => {
   .board .hero-r { text-align: left; }
   .board .kpi-wall { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .board .grid { grid-template-columns: minmax(0, 1fr); }
-  .board .card-hd { flex-wrap: wrap; }
   .board .counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 /* 浅色主题：白底 + 浅灰卡片浮起；hero 保留深色科技条作顶部锚点（对齐 Dashboard 浅底+深色hero 的模式） */
@@ -300,24 +297,26 @@ onUnmounted(() => {
   animation: scan 2.4s linear infinite;
 }
 
-.card-hd { display: flex; align-items: center; gap: 8px; }
-.light { width: 9px; height: 9px; border-radius: 50%; flex: none; margin-top: 2px; }
+.card-hd { display: grid; grid-template-columns: 9px minmax(0, 1fr); align-items: start; gap: 8px; }
+.light { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; }
 .light.on { background: #00b386; box-shadow: 0 0 7px rgba(0,179,134,.7); animation: breathe 1.8s ease-in-out infinite; }
 .light.off { background: #c0c6ce; }
-.dev-name { font-size: 15px; font-weight: 700; color: #1a1d21; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.runner-id { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #7d8a9b; background: #f0f2f5; padding: 2px 7px; border-radius: 5px; flex: none; }
-.plat-tag { margin-left: 4px; flex: none; }
-.wb-tag { margin-left: 4px; flex: none; background: #e8f4ff !important; color: #1677ff !important; border-color: #91caff !important; font-weight: 600; }
+.dev-name { min-width: 0; font-size: 15px; line-height: 22px; font-weight: 700; color: #1a1d21; overflow-wrap: anywhere; }
+.runner-id { align-self: flex-start; max-width: 100%; box-sizing: border-box; margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 16px; color: #7d8a9b; background: #f0f2f5; padding: 2px 7px; border-radius: 5px; overflow-wrap: anywhere; }
+.device-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.device-tags:empty { display: none; }
+.device-tags > * { flex: none; }
+.wb-tag { background: #e8f4ff !important; color: #1677ff !important; border-color: #91caff !important; font-weight: 600; }
 /* 任务类型标识:卡片头全称 tag + 明细行短标。功能=蓝系、测评=紫系;新类型在 KIND_* 与此处补一组即可 */
 .kind-tag { flex: none; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 5px; letter-spacing: .5px; }
 .run-kind { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; letter-spacing: .3px; }
 .k-func { background: #e8f1fb; color: #2f7dd1; }
 .k-eval { background: #f1ebfa; color: #7a4fd0; }
 .pip-eval { background: #7a4fd0; }
-.meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: #8b98a9; }
-.meta .seen { font-family: 'JetBrains Mono', monospace; color: #9aa5b1; }
+.meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; color: #8b98a9; }
+.meta .owner { min-width: 0; overflow-wrap: anywhere; }
+.meta .seen { flex: none; font-family: 'JetBrains Mono', monospace; color: #9aa5b1; }
 /* 当前 runner 标识(运行时:此刻在跑哪类 runner),弱于 kind-tag(正在执行的具体任务)——描边淡底,不抢眼 */
-.caps { display: flex; gap: 6px; margin-top: 6px; }
 .cap-tag { font-size: 10px; padding: 1px 8px; border-radius: 4px; border: 1px solid; letter-spacing: .3px; }
 .cap-func { color: #2f7dd1; border-color: #bcd9f5; background: #f4f9fe; }
 .cap-eval { color: #7a4fd0; border-color: #d8c9f2; background: #f9f6fe; }

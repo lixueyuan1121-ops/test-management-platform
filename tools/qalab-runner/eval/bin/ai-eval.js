@@ -937,6 +937,7 @@ program
       // (后端 list_pending 已保证整组不被 limit 拆到不同批次,见 eval_queue._take_whole_groups。)
       const conversations = groupIntoConversations(namiPending);
       const multiCount = conversations.filter(c => c.length > 1).length;
+      logger.info(`   纳米 Work 会话规划：${conversations.length - multiCount} 条独立单轮、${multiCount} 组多轮；单轮逐条新建任务`);
       if (multiCount > 0) logger.info(`   其中 ${multiCount} 个多轮会话(同组各轮将在同一对话内顺序连发)`);
 
       // 把一轮 run 的执行结果回写平台(report + uploadTrace),并清空 WS 收集器供下一轮/下一条独立抓取。

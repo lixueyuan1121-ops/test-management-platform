@@ -281,8 +281,8 @@ module.exports = {
     // 兜底 tooltip：从 content“…耗时10秒”中提取耗时；不匹配时回填原文
     durationRegex: '耗时[：:]*\\s*([^，,。\\n]+)',
 
-    // 算力豆比回答/tokens 晚显示：每秒重读当前回答消费栏，单次最多等 30 秒。
-    // 首次超时刷新当前对话一次，再等数值；仍缺失保持空值，不回退到账号账本。
+    // 算力豆比回答/tokens 晚显示：首次读取、刷新一次及字段补抓共用 30 秒预算。
+    // 先读最多 5 秒，缺失时刷新并核对会话；预算用尽后补抓只即读，不再重复长等。
     beanCostTimeoutMs: 30000,
     beanCostRetryGapMs: 1000,
     beanCostReloadOnce: true,

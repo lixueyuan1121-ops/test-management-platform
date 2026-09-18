@@ -1,30 +1,35 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const vm = require('node:vm');
 const DialogRunner = require('../src/dialog-runner');
 const DesktopRunner = require('../src/desktop-runner');
 
-// Run the actual DOM callback against successive answer groups. No avatar,
-// ledger, clipboard or click API is provided: this path must only read the DOM.
+// Successive locator snapshots exercise parsing and budgets without real waits.
+// Shadow DOM / frame behavior is covered by nami-isolation-ui.test.js.
 function fixture(snapshots, { baseGroups = 0, timeout = 1000, reload = false } = {}) {
   const r = new DialogRunner(null, {}, { beanCostTimeoutMs: timeout, beanCostRetryGapMs: 1, beanCostReloadOnce: reload });
   const stats = { reads: 0, waits: 0, warnings: [], users: ['question'], url: 'https://vm.work.n.cn/chat?id=1' };
   r.logger = { info() {}, warn: msg => stats.warnings.push(msg) };
   r._turnBaseline = { groupCount: baseGroups };
   r.page = { waitForTimeout: async () => { stats.waits++; } };
-  r._liveFrame = () => ({ evaluate: async (fn, args) => {
-    const snapshot = snapshots[Math.min(args.userSel ? Math.max(0, stats.reads - 1) : stats.reads++, snapshots.length - 1)];
-    if (snapshot instanceof Error) throw snapshot;
-    const document = { querySelectorAll: selector => {
-      if (selector === '.chat-group.user') return stats.users.map(textContent => ({ textContent }));
-      assert.equal(selector, '.chat-group.assistant');
-      return snapshot.map(text => ({ querySelectorAll: selector => {
-        assert.equal(selector, '.chat-token-cost');
-        return text == null ? [] : [{ textContent: text }];
-      } }));
-    } };
-    return vm.runInNewContext(`(${fn.toString()})(args)`, { document, args, location: { href: stats.url } });
-  } });
+  let snapshot = snapshots[0], identityRead = false;
+  const groups = {
+    count: async () => {
+      if (identityRead) identityRead = false;
+      else snapshot = snapshots[Math.min(stats.reads++, snapshots.length - 1)];
+      if (snapshot instanceof Error) throw snapshot;
+      return snapshot.length;
+    },
+    nth: index => ({ locator: selector => {
+      assert.equal(selector, '.chat-token-cost');
+      return { count: async () => snapshot[index] == null ? 0 : 1,
+        nth: () => ({ isVisible: async () => true, innerText: async () => snapshot[index] }) };
+    } }),
+  };
+  r.frame = { locator: selector => {
+    if (selector === '.chat-group.user') return { allTextContents: async () => { identityRead = true; return stats.users; } };
+    assert.equal(selector, '.chat-group.assistant'); return groups;
+  } };
+  r._liveFrame = () => ({ url: () => stats.url });
   return { r, stats };
 }
 
@@ -136,11 +141,11 @@ for (const embedded of [false, true]) {
     const refresh = async () => { refreshes++; };
     if (embedded) frame.goto = async url => { assert.equal(url, stats.url); await refresh(); };
     else r.page.reload = refresh;
-    r._waitForFrame = async () => { rebound++; return frame; };
+    r._waitForFrame = async () => { rebound++; return r.frame; };
     assert.equal((await r.extractBeanCost()).value, '23');
     assert.equal(refreshes, 1);
     assert.equal(rebound, 1);
-    assert.equal(r.frame, frame);
+    assert.ok(r.frame.locator);
   });
 }
 
@@ -151,7 +156,7 @@ test('reload returning a different conversation never fills its bean cost', asyn
   r._liveFrame = () => frame;
   r.page.mainFrame = () => frame;
   r.page.reload = async () => { stats.users = ['different question']; };
-  r._waitForFrame = async () => frame;
+  r._waitForFrame = async () => r.frame;
   assert.equal((await r.extractBeanCost()).value, '');
   assert.equal(stats.reads, 1, 'must not read consumption from the mismatched conversation');
   assert.equal((await r.extractBeanCost({ reload: false })).value, '');
@@ -167,6 +172,7 @@ test('refill can suppress another reload and reload failures keep consumption em
   r.page.reload = async () => { refreshes++; throw new Error('reload failed'); };
   assert.equal((await r.extractBeanCost({ reload: false })).value, '');
   assert.equal(refreshes, 0);
+  r._beginTurn({ groupCount: 0 });
   assert.equal((await r.extractBeanCost()).value, '');
   assert.equal(refreshes, 1);
 });
@@ -189,7 +195,8 @@ test('desktop intermediate turn captures consumption and refills without sharing
   dr._refillEmptyFields = async out => { refills++; assert.equal(out.beanCost, '23'); };
   const desktop = Object.create(DesktopRunner.prototype);
   desktop.dr = dr;
-  desktop._fl = () => ({});
+  const frame = dr.frame;
+  desktop._fl = () => frame;
   desktop.execution = { copyAnswer: false };
   const result = await desktop._extractCurrent({ question: 'question' }, { skipPanels: true });
   assert.equal(result.beanCost, '23');
@@ -199,4 +206,49 @@ test('desktop intermediate turn captures consumption and refills without sharing
   desktop.execution.answerOnly = true;
   assert.equal((await desktop._extractCurrent({ question: 'question' })).beanCost, '');
   assert.equal(refills, 1);
+});
+
+test('initial read, reload and repeated field refills share one 30-second budget', async t => {
+  const { r, stats } = fixture([['本次回答消耗：1K tokens']], { timeout: 30000, reload: true });
+  let now = 0, refreshes = 0;
+  t.mock.method(Date, 'now', () => now);
+  r.execution.beanCostRetryGapMs = 1000;
+  r.page.waitForTimeout = async ms => { now += ms; };
+  const frame = r._liveFrame();
+  r._liveFrame = () => frame;
+  r.page.mainFrame = () => frame;
+  r.page.reload = async () => { refreshes++; now += 1500; };
+  r._waitForFrame = async () => r.frame;
+  const out = { beanCost: '' };
+  r.execution.requiredFields = ['beanCost'];
+  r.execution.refillRounds = 2;
+  out.beanCost = (await r.extractBeanCost()).value;
+  assert.equal(now, 30000);
+  await r._refillEmptyFields(out, 'question');
+  await r.extractBeanCost();
+  assert.equal(now, 30000, 'refill does not allocate two more 30-second waits');
+  assert.equal(refreshes, 1, 'at most one refresh per turn');
+  assert.equal(stats.warnings.length, 1);
+  r._beginTurn({ groupCount: 0 });
+  await r.extractBeanCost();
+  assert.equal(now, 60000, 'new test turn gets its own budget');
+});
+
+test('late-visible beans can still be picked up instantly after the wait budget is exhausted', async () => {
+  const { r } = fixture([['tokens'], ['2 算力豆']], { timeout: 0 });
+  assert.equal((await r.extractBeanCost()).value, '');
+  assert.equal((await r.extractBeanCost({ reload: false })).value, '2');
+});
+
+test('multi-turn and automatic continuation do not refresh their conversation', async () => {
+  for (const multi of [true, false]) {
+    const { r } = fixture([['tokens'], ['tokens', 'tokens']], { timeout: 0, reload: true });
+    if (multi) r.multiTurn = true;
+    else r._workContinuation = { costGroupIndexes: [0] };
+    r.page.reload = async () => { throw new Error('must not reload'); };
+    let identityChecks = 0;
+    r._beanCostTurnKey = async () => { identityChecks++; return 'turn'; };
+    assert.equal((await r.extractBeanCost()).value, '');
+    assert.equal(identityChecks, 0);
+  }
 });

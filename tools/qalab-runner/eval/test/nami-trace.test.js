@@ -159,6 +159,7 @@ test('desktop execution does not type or click send when trace preflight fails',
   let inputActions = 0;
   runner.platform = {};
   runner._focus = async () => {};
+  runner._assertSendContext = async () => {}; // 独立会话校验由 nami-isolation-ui 覆盖；本例只隔离 trace 预检。
   runner._fl = () => ({});
   runner.dr = {
     execution: {}, _captureBaseline: async () => ({}),

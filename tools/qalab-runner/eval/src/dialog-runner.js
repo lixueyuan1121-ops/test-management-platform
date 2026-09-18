@@ -132,7 +132,7 @@ class DialogRunner {
     this._turnBaseline = baseline;
     this._workContinuation = { count: 0, pending: null, waitingSince: null,
       completionBaseline: null, costGroupIndexes: [] };
-    this._beanCostExpectedTurn = '';
+    this._beanCostAttempt = { deadline: null, reloaded: false, expectedTurn: '', warned: false };
   }
 
   _completionBaseline() {
@@ -141,14 +141,14 @@ class DialogRunner {
 
   // DesktopRunner 共用一个 DialogRunner；切换任务时必须同时切换基线和续作状态。
   _captureTurnState() {
-    return { baseline: this._turnBaseline, continuation: this._workContinuation };
+    return { baseline: this._turnBaseline, continuation: this._workContinuation, beanCostAttempt: this._beanCostAttempt };
   }
 
   _restoreTurnState(state) {
     if (!state) return;
     this._turnBaseline = state.baseline;
     this._workContinuation = state.continuation;
-    this._beanCostExpectedTurn = '';
+    this._beanCostAttempt = state.beanCostAttempt || null;
   }
 
   async _handleWorkContinuation() {
@@ -322,6 +322,8 @@ class DialogRunner {
         // 正文、tokens 是纯 DOM 读取，不怕切换，放在临界区外。
         // 多轮中间轮：跳过「开面板」类抓取（产物分享/对话分享——开顶栏面板会
         // 改变对话视图、污染下一轮发送），只留 tokens/耗时/本轮算力豆；末轮再抓全字段。
+        // 先读取当前回答消费；打开分享/产物面板可能暂时替换对话 DOM。
+        out.beanCost = (await this._withCritical(() => this._pollBeanCost('', { timeoutMs: 0 }))).value;
         if (!skipPanelExtracts && this.execution.captureArtifact !== false) {
           const art = await this._withCritical(() => this.extractArtifactShareLink());
           out.artifactShareLink = art.link; out.hasArtifact = art.hasCard;
@@ -336,7 +338,8 @@ class DialogRunner {
           this.logger.info(`       ↳ [${this.label}] 多轮中间轮：已跳过分享链接/产物抓取（末轮再抓）`);
         }
 
-        out.beanCost = (await this._withCritical(() => this.extractBeanCost())).value;
+        // 已显示的豆数直接保留；需要等待/刷新时放在最后，避免刷新干扰其他字段抓取。
+        if (!out.beanCost) out.beanCost = (await this._withCritical(() => this.extractBeanCost())).value;
 
         // 补填：对话还开着时，对“应有却为空”的字段就地重抓（代价小，无需翻历史会话）
         await this._refillEmptyFields(out, question);
@@ -562,7 +565,8 @@ class DialogRunner {
     for (let r = 0; r < rounds; r++) {
       const missing = this._missingFields(out);
       if (missing.length === 0) return;
-      if (this.logger) this.logger.info(`       ↳ 补填缺失字段(第 ${r + 1} 轮): ${missing.join(', ')}`);
+      if (this._beanCostAttempt?.expectedTurn && await this._beanCostTurnKey().catch(() => '') !== this._beanCostAttempt.expectedTurn) return;
+      if (this.logger) this.logger.info(`       ↳ 字段补抓(第 ${r + 1} 次，不重新发送问题): ${missing.join(', ')}`);
       await this._withCritical(async () => {
         for (const f of missing) {
           try {
@@ -589,6 +593,7 @@ class DialogRunner {
   async _reloadAndRefill(out, question) {
     if (!this.execution.refillReloadOnce) return [];        // 默认关闭；开启才刷新重抓
     if (this.multiTurn) return [];                          // 多轮会话禁用 reload：会打乱对话 iframe 状态，连累后续轮发送失败
+    if (this._beanCostAttempt?.expectedTurn && await this._beanCostTurnKey().catch(() => '') !== this._beanCostAttempt.expectedTurn) return [];
     // 算力豆已有独立的「刷新一次 + 会话核对」，不再因它缺失重复整页刷新。
     const before = this._missingFields(out).filter(f => f !== 'beanCost');
     if (before.length === 0) return [];                      // 没缺失，不必刷新
@@ -1499,74 +1504,96 @@ class DialogRunner {
     } catch { return ''; }
   }
 
-  // F 算力豆：普通用例只读当前回答；「继续工作」追加的各轮合计为同一条测评的消费。
-  // tokens 可能先出现，算力豆稍后才渲染；等待后刷新一次，再核对会话并读取。
+  // 同一回答的首次读取、刷新和补抓共用等待预算，不能每次重新等 30 秒。
   async extractBeanCost({ reload = true } = {}) {
-    if (reload) this._beanCostExpectedTurn = '';
-    const first = await this._pollBeanCost(this._beanCostExpectedTurn || '');
-    if (first.value || !reload || this.execution.beanCostReloadOnce === false) return first;
-    const turn = await this._beanCostTurnKey().catch(() => '');
-    if (!turn) return first; // 没有可核对的当前会话，不盲目刷新。
-    this._beanCostExpectedTurn = turn; // 后续就地补填也必须核对，不能在刷新失配后读取别的会话。
-    try {
-      if (this.logger) this.logger.info(`       ↳ [${this.label}] 算力豆尚未显示，刷新当前对话后重读一次`);
-      const frame = this._liveFrame();
-      const options = { waitUntil: 'domcontentloaded', timeout: this.execution.timeout || 60000 };
-      // iframe 形态只重载对话 frame，保留桌面外壳和其他任务列表。
-      // 主文档形态直接刷新当前页；全程处于调用方的抓取临界区内。
-      if (frame === this.page.mainFrame()) await this.page.reload(options);
-      else await frame.goto(frame.url(), options);
-      this.frame = await this._waitForFrame(options.timeout);
-      return await this._pollBeanCost(turn);
-    } catch (e) {
-      if (this.logger) this.logger.warn(`       ↳ [${this.label}] 算力豆刷新重读失败: ${e.message}`);
-      return first;
+    const timeout = Math.max(0, this.execution.beanCostTimeoutMs ?? 30000);
+    const attempt = this._beanCostAttempt ||= { deadline: null, reloaded: false, expectedTurn: '', warned: false };
+    attempt.deadline ??= Date.now() + timeout;
+    const remaining = () => Math.max(0, attempt.deadline - Date.now());
+    // 真多轮/自动续作保留现有视图和各轮计费边界，不刷新重排回答组。
+    const canReload = reload && !attempt.reloaded && (remaining() > 0 || timeout === 0 && !attempt.warned) && !this.multiTurn
+      && !this._workContinuation?.costGroupIndexes?.length && this.execution.beanCostReloadOnce !== false;
+    const first = await this._pollBeanCost(attempt.expectedTurn, {
+      timeoutMs: canReload ? Math.min(5000, Math.floor(remaining() / 2)) : remaining(),
+    });
+    if (first.value) return first;
+    let result = first;
+    if (canReload) {
+      const turn = await this._beanCostTurnKey().catch(() => '');
+      if (turn) {
+        attempt.reloaded = true;
+        attempt.expectedTurn = turn;
+        try {
+          if (this.logger) this.logger.info(`       ↳ [${this.label}] 当前回答暂未取到算力豆（${first.reason}），刷新核对后重读；共用 ${timeout}ms 等待预算`);
+          const frame = this._liveFrame();
+          const options = { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(remaining(), this.execution.timeout || 60000)) };
+          if (frame === this.page.mainFrame()) await this.page.reload(options);
+          else await frame.goto(frame.url(), options);
+          this.frame = await this._waitForFrame(Math.max(1, remaining()));
+          result = await this._pollBeanCost(turn, { timeoutMs: remaining() });
+        } catch (e) {
+          result = { ...first, reason: `刷新未恢复：${e.message.split('\n')[0]}` };
+        }
+      } else if (remaining() > 0) {
+        result = await this._pollBeanCost('', { timeoutMs: remaining() });
+      }
     }
+    if (!result.value && !attempt.warned) {
+      attempt.warned = true;
+      if (this.logger) this.logger.warn(`       ↳ [${this.label}] 算力豆未取到：${result.reason}；保留空值，后续补抓不重新累计等待`);
+    }
+    return { value: result.value, raw: result.raw };
   }
 
-  // 刷新前后核对 URL、完整用户轮次和回答组数量，避免读取刷新后误切到的其他对话/轮次。
+  // Locator 与页面操作使用相同的 frame，并能穿透 open shadow DOM。
+  // 仅以会话和用户提问识别轮次；刷新可能合并工具回答组，不能将回答容器数量当作身份。
   async _beanCostTurnKey() {
-    return this._liveFrame().evaluate(({ groupSel, userSel, baseGroups }) => {
-      const answers = document.querySelectorAll(groupSel);
-      const users = [...document.querySelectorAll(userSel)].map(el => (el.textContent || '').trim());
-      if (answers.length <= baseGroups || !users.length || !users[users.length - 1]) return '';
-      return JSON.stringify({ url: location.href, users, answers: answers.length });
-    }, { groupSel: this.platform.answerGroupSelector || '.chat-group.assistant',
-      userSel: this.platform.userGroupSelector || '.chat-group.user', baseGroups: this._baseGroups() });
+    const ctx = this._ctx();
+    const groups = ctx.locator(this.platform.answerGroupSelector || '.chat-group.assistant');
+    const users = await ctx.locator(this.platform.userGroupSelector || '.chat-group.user').allTextContents();
+    if (await groups.count() <= this._baseGroups() || !users.length || !users.at(-1).trim()) return '';
+    const url = new URL(this._liveFrame().url());
+    const session = url.searchParams.get('sid');
+    return JSON.stringify({ url: session ? `${url.origin}${url.pathname}?sid=${session}` : url.href,
+      users: users.map(text => text.replace(/[\s\u200b\ufeff]+/g, ' ').trim()) });
   }
 
-  async _pollBeanCost(expectedTurn = '') {
+  async _pollBeanCost(expectedTurn = '', { timeoutMs = this.execution.beanCostTimeoutMs ?? 30000 } = {}) {
     const groupSel = this.platform.answerGroupSelector || '.chat-group.assistant';
     const sel = this.platform.beanCostSelector || '.chat-token-cost';
-    const timeout = this.execution.beanCostTimeoutMs ?? 30000;
     const retryGap = Math.max(1, this.execution.beanCostRetryGapMs ?? 1000);
-    const deadline = Date.now() + Math.max(0, timeout);
+    const deadline = Date.now() + Math.max(0, timeoutMs);
     const baseGroups = this._baseGroups();
-    let raw = '';
+    let raw = '', reason = '未找到本轮回答';
     do {
       try {
         if (expectedTurn && await this._beanCostTurnKey() !== expectedTurn) {
-          raw = ''; // SPA 尚未恢复目标会话，继续等，绝不读取当前其他会话的消费。
+          raw = ''; reason = '刷新后目标会话或用户轮次尚未恢复';
         } else {
-          const rows = await this._liveFrame().evaluate(({ groupSel, sel, baseGroups, completedGroups }) => {
-            const groups = document.querySelectorAll(groupSel);
-            if (groups.length <= baseGroups) return [];
-            // 自动续作按每次点击前的末组 + 最终回答计费。中间工具组不另算一轮，历史用例不计入。
-            const indexes = [...completedGroups, groups.length - 1];
-            if (new Set(indexes).size !== indexes.length) return []; // 续作尚未产出新回答，不能返回首轮的部分消费。
-            return indexes.map(i => {
-              if (i < baseGroups || !groups[i]) return '';
-              const footers = groups[i].querySelectorAll(sel);
-              return footers.length ? (footers[footers.length - 1].textContent || '').trim() : '';
-            });
-          }, { groupSel, sel, baseGroups, completedGroups: this._workContinuation?.costGroupIndexes || [] });
+          const groups = this._ctx().locator(groupSel);
+          const n = await groups.count();
+          const indexes = [...(this._workContinuation?.costGroupIndexes || []), n - 1];
+          const rows = [];
+          if (n > baseGroups && new Set(indexes).size === indexes.length) {
+            for (const index of indexes) {
+              let text = '';
+              if (index >= baseGroups && index < n) {
+                const footers = groups.nth(index).locator(sel);
+                for (let i = await footers.count() - 1; i >= 0; i--) {
+                  if (await footers.nth(i).isVisible()) {
+                    text = (await footers.nth(i).innerText({ timeout: 500 })).trim(); break;
+                  }
+                }
+              }
+              rows.push(text);
+            }
+          }
           raw = rows.join('\n');
-          // 单位必须是「算力豆」，避免把前面的 279.9K tokens 当成豆数。
-          // 支持小数、千分位和跨 DOM 节点的空白；显式 0 是有效消耗，缺失保持空。
-          const values = rows.map(row => row.replace(/\s+/g, ' ').match(/(?:^|[^\d.,+\-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*算力豆/)?.[1].replace(/,/g, ''));
+          // 不读账号总额、历史轮次或 tokens。跨节点空白/零宽字符不影响算力豆识别。
+          const values = rows.map(row => row.replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ')
+            .match(/(?:^|[^\d.,+\-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*算力豆/)?.[1].replace(/,/g, ''));
           if (values.length && values.every(v => v !== undefined)) {
             if (values.length === 1) return { value: values[0], raw };
-            // 十进制整数累加，避免 0.1 + 0.2 回填成 0.30000000000000004。
             const scale = Math.max(...values.map(v => (v.split('.')[1] || '').length));
             const total = values.reduce((sum, v) => {
               const [whole, fraction = ''] = v.split('.');
@@ -1576,14 +1603,16 @@ class DialogRunner {
             if (this.logger) this.logger.info(`       ↳ [${this.label}] 本条测评 ${values.length} 轮算力豆合计：${values.join(' + ')} = ${value}`);
             return { value, raw };
           }
+          reason = !rows.length ? `未找到本轮回答（回答组 ${n}，发送前 ${baseGroups}）`
+            : rows.some(row => !row) ? '本轮回答中未找到可见消费栏'
+            : `消费栏尚无有效豆数：${raw.slice(0, 160)}`;
         }
-      } catch (_) { /* 页面/iframe 短暂重渲染，下轮重新定位。 */ }
+      } catch (error) { reason = `页面读取失败：${error.message.split('\n')[0]}`; }
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       await this.page.waitForTimeout(Math.min(retryGap, remaining));
     } while (true);
-    if (this.logger) this.logger.warn(`       ↳ [${this.label}] 当前回答算力豆在 ${timeout}ms 内未显示或会话尚未恢复，保留空值`);
-    return { value: '', raw };
+    return { value: '', raw, reason };
   }
 
   // 多轮对话：在「同一对话」里按顺序连发 turns（已按 turnIndex 排好的同会话用例数组）。
@@ -1592,7 +1621,7 @@ class DialogRunner {
   // 逐轮回调 onTurnDone(result, testCase) 便于「每轮完成即回填对应行」。整段多轮跑完由调用方 close。
   async runConversation(turns, onTurnDone) {
     // 多轮标记：turns>1 即多轮会话。会话期内禁用通用 _reloadAndRefill，避免整页重载打断后续发送。
-    // 算力豆独立刷新会等待对话 frame 就绪，并核对完整轮次后才读取。
+    // 算力豆在多轮内同样只原地等待/读取，保留上下文和各轮计费边界。
     this.multiTurn = turns.length > 1;
     const results = [];
     for (const testCase of turns) {
