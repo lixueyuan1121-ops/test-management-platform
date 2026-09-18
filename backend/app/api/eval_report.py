@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.models.ai_eval import EvalTask, EvalBatchSummary
+from app.services.eval_report_details import detail_row, render_query_details, fmt_duration as _fmt_dur
 
 # 独立 prefix(不挂 /api):短链要短、要像页面 URL。
 router = APIRouter(tags=["eval-report"])
@@ -52,7 +53,7 @@ _PAGE_TMPL = """<!DOCTYPE html>
 <title>{title}</title>
 <style>
   body {{ margin:0; background:#f5f7fa; color:#34495e; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; }}
-  .wrap {{ max-width:900px; margin:0 auto; padding:28px 20px 60px; }}
+  .wrap {{ max-width:1200px; margin:0 auto; padding:28px 20px 60px; }}
   .card {{ background:#fff; border:1px solid #e4e7ed; border-radius:10px; padding:26px 30px; box-shadow:0 1px 3px rgba(0,0,0,.04); }}
   .hd {{ margin-bottom:18px; padding-bottom:14px; border-bottom:1px solid #eef2f6; }}
   .hd h1 {{ font-size:20px; margin:0 0 6px; color:#1f2d3d; }}
@@ -67,6 +68,7 @@ _PAGE_TMPL = """<!DOCTYPE html>
   .body blockquote {{ border-left:3px solid #dfe6ec; margin:8px 0; padding:6px 14px; color:#7d8a9b; background:#f8fafc; }}
   .body code {{ background:#eef2f6; border-radius:3px; padding:1px 5px; font-size:13px; }}
   .ft {{ text-align:center; color:#b4bcc7; font-size:12px; margin-top:22px; }}
+  @media(max-width:640px) {{ .wrap {{ padding:12px 8px 30px; }} .card {{ padding:18px 12px; }} }}
   .tip {{ text-align:center; color:#8a97a6; padding:60px 20px; font-size:15px; }}
 </style>
 </head>
@@ -108,26 +110,8 @@ def render_report_page(task: EvalTask, db: Session | None = None) -> str:
     return _PAGE_TMPL.format(title=title, meta=meta, content=content)
 
 
-def _fmt_dur(ms) -> str:
-    """毫秒→紧凑耗时,与前端 fmtDur 同口径:秒<60→Ns;否则 MmSs(整分省秒);不进位小时(故 269m41s)。"""
-    if not ms:
-        return "—"
-    s = round(ms / 1000)
-    if s < 60:
-        return f"{s}s"
-    m, r = divmod(s, 60)
-    return f"{m}m{r}s" if r else f"{m}m"
-
-
-_VERDICT_LABEL = {"pass": "通过", "fail": "不通过", "error": "判定出错"}
-
-
 def _detail_table_html(db: Session | None, task: EvalTask) -> str:
-    """任务最新批次的逐条执行明细表(#/用例/维度/结果/评分/耗时)。无 db / 无批次 / 无 run → 空串。
-
-    内容全部经 _html.escape(明细由本函数生成,非 AI 输出);与 summary_html 拼接安全。
-    """
-    import json
+    """按冻结 query 聚合本批次各产品、配置与独立执行的明细，不调用模型。"""
 
     from app.models import EvalQuery, EvalRun
 
@@ -136,6 +120,11 @@ def _detail_table_html(db: Session | None, task: EvalTask) -> str:
     rows = (db.query(EvalRun)
             .filter(EvalRun.eval_task_id == task.id, EvalRun.batch_id == task.last_batch_id)
             .order_by(EvalRun.id).all())
+    from app.services.eval_experiment import samples_with_missing, trial_metrics
+    from app.services.eval_metrics import outcome_metrics
+    samples, manifest = samples_with_missing(db, task.last_batch_id, task.project_id)
+    # Include planned-but-missing runs; do not make incomplete comparisons look complete.
+    rows.extend(r for r in samples if getattr(r.status, "value", r.status) == "missing")
     rows = [r for r in rows if getattr(r.status, "value", r.status) != "cancelled"]
     if not rows:
         return ""
@@ -145,23 +134,6 @@ def _detail_table_html(db: Session | None, task: EvalTask) -> str:
         for q in db.query(EvalQuery.id, EvalQuery.title, EvalQuery.dimension).filter(EvalQuery.id.in_(qids)).all():
             qmap[q.id] = q
     e = _html.escape
-    trs = []
-    for i, r in enumerate(rows, 1):
-        try:
-            p = json.loads(r.payload) if r.payload else {}
-        except (ValueError, TypeError):
-            p = {}
-        q = qmap.get(r.eval_query_id)
-        title = p.get("title") or (q.title if q else f"run#{r.id}")
-        dim = p.get("dimension", q.dimension if q else "") or "—"
-        verdict = _VERDICT_LABEL.get(r.verdict, "—")
-        score = r.score if r.score is not None else "—"
-        trs.append(
-            f"<tr><td>{i}</td><td>{e(str(title))}</td><td>{e(str(dim))}</td>"
-            f"<td>{e(verdict)}</td><td>{e(str(score))}</td><td>{e(_fmt_dur(r.duration_ms))}</td></tr>")
-    from app.services.eval_experiment import samples_with_missing, trial_metrics
-    from app.services.eval_metrics import outcome_metrics
-    samples, manifest = samples_with_missing(db, task.last_batch_id, task.project_id)
     metrics = outcome_metrics(samples)
     overview = (f"<h2>覆盖率与稳定性</h2><p>有效样本通过率 {e(str(metrics['pass_rate'] if metrics['pass_rate'] is not None else '—'))}% · "
                 f"判定覆盖率 {e(str(metrics['coverage_rate']))}% · 已确认成功占比 {e(str(metrics['confirmed_success_rate']))}%</p>"
@@ -173,11 +145,7 @@ def _detail_table_html(db: Session | None, task: EvalTask) -> str:
             for item in trial_metrics(samples)['by_engine_variant']:
                 overview += f"<tr><td>{e(item['engine'])} / {e(item['variant'])}</td><td>{item['success_rate']}%</td><td>{item['coverage_rate']}%</td><td>{e(str(item['mean_score'] if item['mean_score'] is not None else '—'))}</td></tr>"
             overview += '</table>'
-    return (
-        overview + '<h2>逐条执行明细</h2>'
-        '<table><thead><tr><th>#</th><th>用例</th><th>维度</th><th>结果</th><th>评分</th><th>耗时</th></tr></thead>'
-        '<tbody>' + "".join(trs) + '</tbody></table>'
-    )
+    return overview + render_query_details([detail_row(r, qmap.get(r.eval_query_id)) for r in rows])
 
 
 @router.get("/r/{code}", response_class=HTMLResponse, include_in_schema=False)
