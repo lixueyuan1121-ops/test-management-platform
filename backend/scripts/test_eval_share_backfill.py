@@ -5,7 +5,7 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.api.eval_queue import report, _backfill_conversation_share
+from app.api.eval_queue import report, _backfill_conversation_share, _backfill_qwork_conversation_share
 from app.core.deps import RunnerCtx
 from app.core.enums import EvalRunStatus
 from app.db.session import Base
@@ -69,6 +69,45 @@ class ShareBackfillTests(unittest.TestCase):
             source = self.run_row(**values)
             self.assertEqual(_backfill_conversation_share(self.db, source), 0)
         self.assertIsNone(target.share_link)
+
+    def test_qwork_latest_full_share_updates_previous_snapshot_without_changing_judgment(self):
+        first = self.run_row(target_engine="qwork", session_id="qs1", score=4, verdict="pass",
+                             answer="first", status=EvalRunStatus.judged,
+                             share_link="https://qwork.360.cn/share/first")
+        last = self.run_row(target_engine="qwork", status=EvalRunStatus.running,
+                            payload='{"conversation_group":"g1","compare_group":"A","turn_index":1}')
+        link = "https://qwork.360.cn/share/all"
+        report(last.id, EvalReportIn(status="done", answer="last", session_id="qs1", share_link=link),
+               runner="r1", claim_token="claim1", db=self.db, ctx=RunnerCtx())
+        self.db.refresh(first)
+        self.assertEqual(first.share_link, link)
+        self.assertEqual((first.answer, first.score, first.verdict, first.status),
+                         ("first", 4, "pass", EvalRunStatus.judged))
+
+    def test_qwork_never_crosses_session_product_execution_or_turn_boundary(self):
+        source = self.run_row(target_engine="qwork", session_id="qs1", share_link="https://qwork.360.cn/share/all",
+                              payload='{"conversation_group":"g1","compare_group":"A","turn_index":1}')
+        for variant in [dict(session_id="qs2"), dict(session_id=None), dict(target_engine="namiwork"),
+                        dict(target_engine="workbuddy"), dict(project_id=2), dict(batch_id="b2"),
+                        dict(eval_task_id=22), dict(runner="r2"), dict(claim_token="claim2"),
+                        dict(status=EvalRunStatus.cancelled), dict(status=EvalRunStatus.running),
+                        dict(payload='{"conversation_group":"other","compare_group":"A"}'),
+                        dict(payload='{"conversation_group":"g1","compare_group":"B"}'),
+                        dict(payload='{"conversation_group":"g1","compare_group":"A","turn_index":2}'),
+                        dict(payload='[]')]:
+            values = dict(target_engine="qwork", session_id="qs1")
+            values.update(variant)
+            target = self.run_row(**values)
+            self.assertEqual(_backfill_qwork_conversation_share(self.db, source), 0)
+            self.assertIsNone(target.share_link)
+
+    def test_qwork_missing_or_invalid_link_does_not_erase_existing_share(self):
+        target = self.run_row(target_engine="qwork", session_id="qs1", share_link="https://qwork.360.cn/share/old")
+        for link in [None, "https://work.n.cn/share/other", "https://qwork.360.cn.evil/share/other", "https://qwork.360.cn/share/"]:
+            source = self.run_row(target_engine="qwork", session_id="qs1", share_link=link,
+                                  payload='{"conversation_group":"g1","compare_group":"A","turn_index":1}')
+            self.assertEqual(_backfill_qwork_conversation_share(self.db, source), 0)
+        self.assertEqual(target.share_link, "https://qwork.360.cn/share/old")
 
 
 if __name__ == "__main__":

@@ -106,7 +106,8 @@ class RunnerDistributionTests(unittest.TestCase):
                         'gui-mcp/runtime-loader.mjs', 'gui-mcp/selectors.json',
                         'eval/src/workbuddy-runner.js', 'eval/src/desktop-runner.js',
                         'eval/src/qwork-runner.js', 'eval/src/qwork-pool.js', 'eval/src/qwork-batch.js',
-                        'eval/src/qwork-native-files.js', 'eval/src/qwork-trace.js', 'eval/src/product-routing.js'):
+                        'eval/src/qwork-native-files.js', 'eval/src/qwork-trace.js', 'eval/src/qwork-permissions.js',
+                        'eval/src/qwork-share.js', 'eval/src/product-routing.js'):
                 self.assertIn(rel, names)
             for rel in names:
                 parts = Path(rel).parts

@@ -89,7 +89,8 @@ test('模型忽略英文大小写，精确匹配列表，未知/重复模型拒�
 function fakeRunner({ waiting = false, permission = false, sendFailure = false } = {}) {
   let sends = 0, cancels = 0, created = 0;
   const stored = { attempts: [], messages: [] };
-  const runner = new QworkRunner({ waitForTimeout: () => new Promise(r => setTimeout(r, 2)) }, { pollMs: 1 }, { taskTimeout: 8 });
+  const runner = new QworkRunner({ waitForTimeout: () => new Promise(r => setTimeout(r, 2)) }, { pollMs: 1, permissionWaitMs: 0 }, { taskTimeout: 100 });
+  runner._share = async () => ({ status: 'completed', url: 'https://qwork.360.cn/share/test', selected_all: true });
   runner._startEvents = async () => {};
   runner._stopEvents = async () => ({ events: [], dropped: 0 });
   runner._invoke = async (group, method, args) => {
@@ -107,7 +108,7 @@ function fakeRunner({ waiting = false, permission = false, sendFailure = false }
         { role: 'assistant', text: `本轮 ${sends}` });
     }
     if (method === 'cancel') { cancels++; stored.attempts.forEach(a => { if (a.status === 'running') a.status = 'interrupted'; }); }
-    if (method === 'pendingPermissions') return permission ? [{ requestId: 'p1', description: '需确认' }] : [];
+    if (method === 'pendingPermissions') return permission ? [{ request_id: 'p1', session_id: 's1', summary: '未知权限操作' }] : [];
     return [];
   };
   return { runner, counts: () => ({ sends, cancels, created }) };
@@ -135,7 +136,7 @@ test('超时和权限等待保存部分内容，取消当前任务，后续轮�
     assert.equal(results[1].errorCode, 'QWORK_PREVIOUS_TURN_FAILED');
     assert.equal(traces[0].capture_diagnostics.status, 'partial');
     assert.deepEqual(counts(), { sends: 1, cancels: 1, created: 1 });
-    if (permission) assert.equal(traces[0].pending_interactions.permissions[0].requestId, 'p1');
+    if (permission) assert.equal(traces[0].pending_interactions.permissions[0].request_id, 'p1');
   }
 });
 
@@ -169,6 +170,26 @@ test('轨迹上传重试在报告终态之前；彻底失败仍有本地完整�
       assert.equal(JSON.parse(await fs.readFile(path.join(outputDir, '1/trace.json'), 'utf8')).answer, '首轮完成');
       if (fail) assert.match(body.reason, /完整记录已保存/);
     }
+  } finally { await fs.rm(outputDir, { recursive: true, force: true }); }
+});
+
+test('分享结果回填原生 URL；分享失败记录原因，不重发已完成回答', async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'qwork-share-report-'));
+  try {
+    const { runner, counts } = fakeRunner();
+    let sent;
+    const client = { uploadTrace: async () => {}, report: async (_id, body) => { sent = body; } };
+    const result = await runner.runOne(cases[0]);
+    await reportQworkRun(client, 1, result, runner.trace, { outputDir });
+    assert.equal(sent.share_link, 'https://qwork.360.cn/share/test');
+    runner._share = async () => ({ status: 'failed', reason: '分享服务不可用' });
+    const failedShare = await runner.runOne(cases[1]);
+    await reportQworkRun(client, 2, failedShare, runner.trace, { outputDir });
+    assert.equal(sent.status, 'done');
+    assert.equal(sent.share_link, null);
+    assert.equal(sent.reason, '分享服务不可用');
+    assert.equal(counts().sends, 2);
+    assert.equal(counts().cancels, 0);
   } finally { await fs.rm(outputDir, { recursive: true, force: true }); }
 });
 

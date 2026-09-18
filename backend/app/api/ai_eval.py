@@ -562,7 +562,8 @@ def list_eval_queries(
     project_id: int = Query(...),
     dimension: str | None = Query(None),
     eval_task_id: int | None = Query(None),
-    limit: int = Query(200, le=500),
+    limit: int = Query(200, ge=1, le=500),
+    before_id: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -570,14 +571,19 @@ def list_eval_queries(
 
     可选筛选:dimension=按测评维度、eval_task_id=只看某测评任务用例集内的题(读其 query_ids);
     二者可叠加(AND)。测评任务无用例时返回空列表。
+    before_id 按 ID 倒序继续加载较早用例，避免用例库/任务编辑仅能看到最近 200 条。
     """
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     q = db.query(EvalQuery).filter(EvalQuery.project_id == project_id)
+    if before_id is not None:
+        q = q.filter(EvalQuery.id < before_id)
     if dimension:
         q = q.filter(EvalQuery.dimension == dimension)
     if eval_task_id is not None:
         task = db.get(EvalTask, eval_task_id)
-        qids = json.loads(task.query_ids) if (task and task.query_ids) else []
+        if not task or task.project_id != project_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在或不属于该项目")
+        qids = json.loads(task.query_ids) if task.query_ids else []
         if not qids:
             return ok([])
         q = q.filter(EvalQuery.id.in_(qids))

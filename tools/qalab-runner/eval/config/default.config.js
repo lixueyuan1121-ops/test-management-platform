@@ -347,7 +347,12 @@ module.exports = {
     launchTimeout: 60000,
     readyTimeout: 30000,
   },
-  qwork: { model: process.env.QWORK_MODEL || '', pollMs: 1000, eventMaxBytes: 5 * 1024 * 1024 },
+  qwork: {
+    model: process.env.QWORK_MODEL || '', pollMs: 1000, eventMaxBytes: 5 * 1024 * 1024,
+    permissionWaitMs: 120000, // 未知权限/真实追问留出人工处理时间，仍受整轮 taskTimeout 限制
+    permissionAckTimeoutMs: 15000,
+    shareTimeoutMs: 45000, // 分享最多两次尝试，故障不重发题目
+  },
 
   // ========== WorkBuddy 桌面客户端 CDP 连接（独立于纳米 desktop 段；被测引擎 target_engine=workbuddy） ==========
   // WorkBuddy = 腾讯 Electron 客户端（com.tencent.workbuddy.mac）。与纳米不同：靠环境变量

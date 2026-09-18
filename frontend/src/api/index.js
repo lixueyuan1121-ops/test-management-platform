@@ -1,4 +1,5 @@
 import http from './http'
+import { loadEvalQueryPages } from '@/utils/evalQueryPages'
 
 export const login = (username, password) =>
   http.post('/auth/login', { username, password })
@@ -125,7 +126,7 @@ export const listEvalDevices = (runner) => http.get('/eval-devices', { params: {
 // 对话测评用例库:某项目历史生成的 eval_query 列表(再次触发验证用)。
 // filters 可带 dimension(按维度) / eval_task_id(只看某测评任务用例集),二者可叠加。
 export const listEvalQueries = (projectId, filters = {}) =>
-  http.get('/ai/eval-queries', { params: { project_id: projectId, ...filters } })
+  loadEvalQueryPages(params => http.get('/ai/eval-queries', { params }), { project_id: projectId, ...filters })
 
 // ===== 对话测评判定（读 trace + 引擎判三维：思考/工具/产物）=====
 // 单条触发判定；provider 可空（后端按默认引擎）。返回已解包的 _run_out（含 verdict/verdict_dims/is_abnormal）。

@@ -400,6 +400,7 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
     r.duration_ms = body.duration_ms
     r.finished_at = func.now()
     _backfill_conversation_share(db, r)
+    _backfill_qwork_conversation_share(db, r)
     if r.claim_token:
         remaining = db.query(EvalRun).filter(
             EvalRun.claim_token == r.claim_token, EvalRun.status == EvalRunStatus.running,
@@ -421,6 +422,43 @@ def report(run_id: int, body: EvalReportIn, runner: str = Query(...),
         except Exception:
             pass  # 一条龙触发失败绝不影响 runner 回写
     return ok(_to_out(r))
+
+
+def _backfill_qwork_conversation_share(db: Session, source: EvalRun) -> int:
+    """QWork 分享是各轮快照；最新全选链接同步到同次执行、同会话的前序结果。"""
+    if (source.target_engine != "qwork" or not source.share_link or not source.session_id
+            or not source.claim_token or not source.batch_id):
+        return 0
+    try:
+        url = urlsplit(source.share_link)
+        if (url.scheme != "https" or url.hostname != "qwork.360.cn" or url.username or url.password
+                or not url.path.startswith("/share/") or not url.path[7:]):
+            return 0
+        payload = json.loads(source.payload or "{}")
+        group, turn = payload.get("conversation_group"), int(payload.get("turn_index") or 0)
+        if not group:
+            return 0
+    except (ValueError, TypeError, AttributeError):
+        return 0
+    candidates = db.query(EvalRun).filter(
+        EvalRun.id != source.id, EvalRun.project_id == source.project_id,
+        EvalRun.batch_id == source.batch_id, EvalRun.eval_task_id == source.eval_task_id,
+        EvalRun.target_engine == "qwork", EvalRun.runner == source.runner,
+        EvalRun.claim_token == source.claim_token, EvalRun.session_id == source.session_id,
+        EvalRun.status.in_([EvalRunStatus.done, EvalRunStatus.judged, EvalRunStatus.judging]),
+    ).with_for_update().all()
+    filled = 0
+    for target in candidates:
+        try:
+            other = json.loads(target.payload or "{}")
+            if (other.get("conversation_group") != group or other.get("compare_group") != payload.get("compare_group")
+                    or int(other.get("turn_index") or 0) >= turn):
+                continue
+        except (ValueError, TypeError, AttributeError):
+            continue
+        target.share_link = source.share_link
+        filled += 1
+    return filled
 
 
 def _backfill_conversation_share(db: Session, source: EvalRun) -> int:

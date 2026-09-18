@@ -113,16 +113,22 @@
           <div class="qpick">
             <div class="qpick-head">
               <el-radio-group v-model="queryView" size="small" aria-label="用例范围"><el-radio-button value="all">全部用例</el-radio-button><el-radio-button value="selected">已选 {{ editForm.query_ids.length }}</el-radio-button></el-radio-group>
-              <el-button size="small" type="primary" text :icon="Plus" @click="customVisible = true">新增自定义用例</el-button>
+              <el-button size="small" type="primary" text :icon="Plus" :disabled="queriesLoading || !!queryLoadError" @click="customVisible = true">新增自定义用例</el-button>
             </div>
             <div class="qpick-filters">
               <el-select v-model="queryTaskFilter" clearable filterable placeholder="按任务筛选" aria-label="按任务筛选">
                 <el-option v-for="task in tasks" :key="task.id" :label="task.name" :value="task.id" />
               </el-select>
               <el-input v-model="queryTitleFilter" clearable placeholder="搜索用例标题" aria-label="搜索用例标题" />
-              <span class="muted">共 {{ filteredQueries.length }} 条</span>
+              <span v-if="!queriesLoading && !queryLoadError" class="muted">共 {{ filteredQueries.length }} 条</span>
             </div>
-            <el-table :data="filteredQueries" row-key="id" size="small" border max-height="360">
+            <el-alert v-if="queryLoadError" type="error" :closable="false" show-icon :title="queryLoadError">
+              <el-button size="small" @click="loadEditQueries">重新加载用例</el-button>
+            </el-alert>
+            <el-alert v-if="missingSelectedQueryIds.length" type="warning" :closable="false" show-icon
+              :title="`有 ${missingSelectedQueryIds.length} 条已选用例不在当前项目用例库中，原有勾选已保留`"
+              :description="`用例 ID：${missingSelectedQueryIds.join('、')}。请核对是否已删除或属于其他项目。`" />
+            <el-table v-if="!queryLoadError" v-loading="queriesLoading" :data="filteredQueries" row-key="id" size="small" border max-height="360">
               <el-table-column width="40">
                 <template #header>
                   <el-checkbox aria-label="全选筛选结果" :model-value="allFilteredSelected" :indeterminate="someFilteredSelected && !allFilteredSelected" :disabled="!filteredQueries.length" @change="selectFilteredQueries" />
@@ -145,7 +151,7 @@
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!editForm.name.trim()" @click="saveTask">保存</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!editForm.name.trim() || queriesLoading || !!queryLoadError" @click="saveTask">保存</el-button>
       </template>
     </el-dialog>
 
@@ -545,6 +551,14 @@ const editing = ref(null)
 const editForm = ref({ name: '', description: '', query_ids: [], target_engines: [] })
 const engineList = ref([])   // 被测产品注册表(listEvalEngines);>1 才显示产品勾选
 const allQueries = ref([])
+const queriesLoading = ref(false)
+const queryLoadError = ref('')
+let queryLoadVersion = 0
+const missingSelectedQueryIds = computed(() => {
+  if (queriesLoading.value || queryLoadError.value) return []
+  const available = new Set(allQueries.value.map(q => q.id))
+  return editForm.value.query_ids.filter(id => !available.has(id))
+})
 const queryTaskFilter = ref(null)
 const queryTitleFilter = ref('')
 const queryView = ref('all')
@@ -703,9 +717,24 @@ async function openEdit(row) {
   editForm.value = row
     ? { name: row.name, description: row.description || '', query_ids: [...row.query_ids], target_engines: [...(row.target_engines || [])] }
     : { name: '', description: '', query_ids: [], target_engines: defaultEngines }
-  try { allQueries.value = await listEvalQueries(pid.value) || [] } catch { allQueries.value = [] }
   editVisible.value = true
-  await nextTick()
+  await loadEditQueries()
+}
+
+async function loadEditQueries() {
+  const version = ++queryLoadVersion
+  const projectId = pid.value
+  allQueries.value = []
+  queryLoadError.value = ''
+  queriesLoading.value = true
+  try {
+    const rows = await listEvalQueries(projectId)
+    if (version === queryLoadVersion && projectId === pid.value) allQueries.value = rows
+  } catch (error) {
+    if (version === queryLoadVersion) queryLoadError.value = `用例加载失败：${error.message || '请重试'}`
+  } finally {
+    if (version === queryLoadVersion) queriesLoading.value = false
+  }
 }
 
 async function saveTask() {

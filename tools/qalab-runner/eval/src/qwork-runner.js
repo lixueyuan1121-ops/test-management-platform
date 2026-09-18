@@ -4,6 +4,8 @@ const { randomUUID } = require('node:crypto');
 const { normalize, configError } = require('./dialog-config');
 const { prepareQworkFiles } = require('./qwork-native-files');
 const { idOf, buildQworkTrace, qworkRawIndex } = require('./qwork-trace');
+const { documentCleanupPermission, allowQworkPermission } = require('./qwork-permissions');
+const { createQworkShare } = require('./qwork-share');
 
 function findQworkModel(catalog, wanted) {
   const models = catalog?.models || [];
@@ -49,6 +51,7 @@ class QworkRunner {
     const sessions = await this._invoke('sessions', 'list');
     const current = sessions.find(s => idOf(s.session_id) === this.sessionId);
     if (!current || normalize(current.model) !== normalize(model.value)) throw configError('QWork 模型回读不一致，未发送题目');
+    this.cwd = current.cwd;
     this.executionConfig.observed = { model: current.model, model_label: model.label, permission_mode: current.permission_mode,
       conversation_mode: current.conversation_mode };
     this.executionConfig.status = 'verified';
@@ -94,17 +97,72 @@ class QworkRunner {
       next = candidates[0];
       if (next) {
         this.turnId = next.turnId;
-        if (!['pending', 'running'].includes(next.status)) return { history, attempt: next };
+        if (!['pending', 'running'].includes(next.status)) {
+          if (next.status === 'completed') this.pendingInteractions = null;
+          return { history, attempt: next };
+        }
         const permissions = await this._invoke('sessions', 'pendingPermissions', [this.sessionId]);
         const questions = await this._invoke('sessions', 'pendingQuestions', [this.sessionId]);
         if (permissions.length || questions.length) {
           this.pendingInteractions = { permissions, questions };
-          throw new Error('[QWORK_INPUT_REQUIRED] QWork 等待权限确认或补充回答，已保存请求内容');
+          await this._handleInteractions(permissions, questions);
+        } else {
+          this.pendingInteractions = null; this.interactionWait = null;
         }
       }
       await this.page.waitForTimeout(this.config.pollMs || 1000);
     }
+    if (this.interactionWait) throw new Error(`[QWORK_INPUT_REQUIRED] 本轮时限已到，仍等待${this.interactionWait.detail}；完整请求已保存`);
     throw new Error('[QWORK_TIMEOUT] QWork 本轮执行超时，已保留返回内容');
+  }
+  async _handleInteractions(permissions, questions) {
+    const unresolved = [];
+    for (const request of permissions) {
+      if (idOf(request.session_id) !== this.sessionId) throw new Error('[QWORK_PERMISSION_ERROR] 权限请求不属于当前会话');
+      const previous = this.permissionActions.find(a => a.request.request_id === request.request_id);
+      if (previous?.status === 'allowed') {
+        if (Date.now() - previous.at > (this.config.permissionAckTimeoutMs ?? 15000))
+          throw new Error('[QWORK_PERMISSION_ERROR] 权限确认后未恢复执行，已保存请求与确认记录');
+        continue;
+      }
+      if (await documentCleanupPermission(request, { sessionId: this.sessionId, cwd: this.cwd, exePath: this.config.executablePath })) {
+        if (this.permissionActions.length >= 30) throw new Error('[QWORK_PERMISSION_ERROR] 本轮权限请求过多，已停止重复确认');
+        const action = { request, decision: { decision: 'allow', scope: 'once' }, at: Date.now(), status: 'submitting',
+          reason: '已核验当前任务目录的文档临时解包清理' };
+        this.permissionActions.push(action);
+        try {
+          const accepted = await this._allowPermission(request);
+          if (!accepted) throw new Error('权限请求已过期或未被接受');
+          action.status = 'allowed';
+          this.logger?.info?.(`[qwork] 已仅本次允许：${request.input?.description || request.tool_name}`);
+        } catch (error) {
+          action.status = 'failed'; action.error = error.message;
+          throw new Error(`[QWORK_PERMISSION_ERROR] 权限确认失败：${error.message}`);
+        }
+      } else unresolved.push(request);
+    }
+    if (!unresolved.length && !questions.length) { this.interactionWait = null; return; }
+    const key = JSON.stringify([...unresolved, ...questions].map(r => r.request_id || r.id || r));
+    const detail = unresolved.length
+      ? `权限确认：${unresolved[0].summary || unresolved[0].tool_name || '未知操作'}；${unresolved[0].input?.description || ''}`
+      : `补充回答：${questions[0].question || questions[0].title || JSON.stringify(questions[0])}`;
+    if (this.interactionWait?.key !== key) {
+      this.interactionWait = { key, at: Date.now(), detail: detail.slice(0, 500) };
+      this.logger?.warn?.(`[qwork] 等待人工处理${detail.slice(0, 500)}；可在 QWork 对应任务中确认后继续（${this.sessionId}）`);
+    }
+    if (Date.now() - this.interactionWait.at >= (this.config.permissionWaitMs ?? 120000))
+      throw new Error(`[QWORK_INPUT_REQUIRED] QWork 等待人工处理超时：${detail.slice(0, 500)}；完整请求已保存`);
+  }
+  _allowPermission(request) { return allowQworkPermission(this.page, request); }
+  async _share(history) {
+    const completedTurns = history.attempts.filter(a => a.status === 'completed').length;
+    if (!completedTurns) return { status: 'unavailable', reason: 'QWork 仅允许分享已完成回合' };
+    let error;
+    for (let i = 0; i < 2; i++) {
+      try { return await createQworkShare(this.page, { sessionId: this.sessionId, completedTurns, timeout: this.config.shareTimeoutMs }); }
+      catch (failure) { error = failure; this.logger?.warn?.(`[qwork] ${failure.message}（${i + 1}/2）`); }
+    }
+    return { status: 'failed', reason: error.message, session_id: this.sessionId };
   }
   async _capture(history, turnId) {
     const diagnostics = [];
@@ -123,6 +181,7 @@ class QworkRunner {
       events: stream.events, eventsDropped: stream.dropped, files, deliveries, credits, diagnostics,
       previousTurnIds: [...this.previousTurnIds] });
     this.trace.pending_interactions = this.pendingInteractions || null;
+    this.trace.permission_actions = this.permissionActions;
     this.trace.execution_config = this.executionConfig;
     this.previousTurnIds.push(turnId);
   }
@@ -130,6 +189,7 @@ class QworkRunner {
     const started = Date.now();
     this.trace = { product: 'qwork', tool_calls: [], artifacts: [] };
     this.turnId = null; this.pendingInteractions = null; this.executionConfig = null; this.cancelError = null;
+    this.permissionActions = []; this.interactionWait = null;
     let error = null, history, completed = false, dispatched = false;
     try {
       await this._configure(testCase, create);
@@ -168,14 +228,22 @@ class QworkRunner {
       if (stream?.events?.length) this.trace.unresolved_events = stream.events;
     }
     const success = !error && completed && !!this.trace.answer;
+    // 分享故障只重试分享，不重发题目、不取消已完成的回答。
+    if (history && dispatched) {
+      try { this.trace.share = await this._share(history); }
+      catch (failure) { this.trace.share = { status: 'failed', reason: `QWork 分享失败：${failure.message}` }; }
+    }
     if (error && this.executionConfig?.status === 'checking') this.executionConfig.status = 'failed';
     this.trace.execution_config = this.executionConfig;
+    this.trace.permission_actions = this.permissionActions;
+    this.trace.pending_interactions = this.pendingInteractions;
     this.trace.session_id ||= this.sessionId;
     if (error) this.trace.execution_error = error.message;
     if (this.cancelError) this.trace.cancel_error = this.cancelError;
     return { caseId: testCase.caseId, row: testCase.row, account: 'qwork',
       conversationId: testCase.conversationId, turnIndex: testCase.turnIndex, question: testCase.question,
       answer: this.trace.answer || '', rawMessage: qworkRawIndex(this.trace),
+      shareLink: this.trace.share?.url || null, shareError: this.trace.share?.status === 'failed' ? this.trace.share.reason : null,
       reportedDuration: this.trace.reported_duration, beanCost: this.trace.bean_cost,
       cost: this.trace.usage ? Object.values(this.trace.usage).reduce((n, v) => n + v, 0) : null,
       executionConfig: this.executionConfig, durationMs: Date.now() - started, success,

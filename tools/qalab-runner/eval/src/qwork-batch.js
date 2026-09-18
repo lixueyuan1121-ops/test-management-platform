@@ -31,8 +31,9 @@ async function reportQworkRun(client, runId, result, trace, { outputDir = './out
     bean_cost: reportMetric(result.beanCost), tokens: reportMetric(result.cost),
     reported_duration: reportMetric(result.reportedDuration), duration_ms: result.durationMs ?? null,
     session_id: trace.session_id || null,
+    share_link: result.shareLink || null,
     reason: uploadError ? `QWork 轨迹上传失败：${uploadError.message}；完整记录已保存 ${dir}`
-      : result.success ? null : result.errorMessage || result.completeReason || 'QWork 本轮未完成',
+      : result.success ? result.shareError || null : result.errorMessage || result.completeReason || 'QWork 本轮未完成',
   };
   await fs.writeFile(path.join(dir, 'report.json'), JSON.stringify(body), { mode: 0o600 });
   await client.report(runId, body);
