@@ -74,22 +74,6 @@ class DesktopRunner {
   // 导致切不动对话、卡在某个会话）。故所有基于点击的交互前都先把主窗口带到前台，保证点击落地。
   async _focus() { try { await this.page.bringToFront(); } catch (_) {} }
 
-  // 归一化文本用于「提问 ↔ 用例 query」匹配（去空白，取前若干字比较，容忍平台对 query 的包装/截断）
-  _norm(s) { return ('' + (s || '')).replace(/\s+/g, ''); }
-  _matchQuery(shown, want) {
-    const a = this._norm(shown), b = this._norm(want);
-    if (!a || !b) return false;
-    if (a === b) return true;
-    if (a.length >= 6 && b.startsWith(a)) return true;   // 列表/气泡可能截断
-    if (b.length >= 6 && a.startsWith(b)) return true;
-    if (b.length >= 8 && a.includes(b)) return true;      // 平台把 query 包进「用户问题：…」
-    if (a.length >= 8 && b.includes(a)) return true;
-    return false;
-  }
-
-  // 读当前显示对话的「首个用户提问」文本（复用观察器实现）。桌面并发用它做任务定位与串台判断。
-  async _readFirstQuery() { return this.watcher._readFirstQuery(); }
-
   // 读当前对话「本次是否已完成」的快照：是否生成中 / footer(完成信号)数 / 最后一组是否有真实答案气泡+其文本。
   async _probeState() {
     const P = this.platform;
@@ -296,35 +280,67 @@ class DesktopRunner {
       `附件多半已上传,放行继续输入 query。输入区 DOM 片段(供补 attachmentCardSelector):\n${domSnippet}`);
   }
 
-  // 切换到某任务对话：优先用缓存 index 直达并校验，失配则全表扫描按「首个提问≈用例 query」定位。
-  async _switchToTask(task, maxItems = 12) {
-    const P = this.platform;
-    await this._focus(); // 前台化，否则列表点击可能不生效（切不动对话）
-    const items = this._fl().locator(P.taskListItemSelector || '.aside-panel-task-list__item');
-    const total = await items.count().catch(() => 0);
-    if (total === 0) return false;
-    const tryIndex = async (i) => {
-      if (i < 0 || i >= total) return false;
-      const prev = await this._readFirstQuery();
-      await items.nth(i).click({ timeout: 4000 }).catch(() => {});
-      await this.watcher._waitSwitchSettled(prev);      // 等内容区切到位（复用观察器）
-      const q = await this._readFirstQuery();
-      if (this._matchQuery(q, task.question)) {
-        task.listIndex = i;
-        this.dr._restoreTurnState(task.turnState);
-        this.dr.label = task.case.caseId;
-        this.dr.frame = this._fl();
-        return true;
+  // /plan、技能卡片、附件会改写用户气泡，自动标题也会变化。发送后立即绑定实际 sid，
+  // 后续定位、交互、抓取只认该会话，不能用标题/问题近似匹配另一条用例。
+  async _bindTaskConversation(task) {
+    const deadline = Date.now() + (this.execution.desktopSessionBindTimeoutMs ?? 5000);
+    do {
+      const url = new URL(this.dr._liveFrame().url());
+      const sid = url.searchParams.get('sid');
+      const key = sid ? `${url.origin}:${sid}` : '';
+      if (key && key !== this._newConversationPreviousSession) {
+        task.sessionKey = key;
+        task.sessionId = sid;
+        if (await this._waitForTaskConversation(task)) return;
+        break; // 已观察到新 sid 后不再改绑；外部切换窗口不能把本条任务绑定到别的会话。
       }
-      return false;
-    };
-    if (task.listIndex != null && await tryIndex(task.listIndex)) return true; // 缓存命中
-    const cap = Math.min(total, maxItems);
-    for (let i = 0; i < cap; i++) {
-      if (i === task.listIndex) continue;
-      if (await tryIndex(i)) return true;
-    }
+      await this._sleep(100);
+    } while (Date.now() < deadline);
+    throw new Error('[NAMI_TASK_BIND_FAILED] 任务已发送，但未能确认新会话 ID；停止本条抓取，避免串用其他会话');
+  }
+
+  async _isTaskCurrent(task) {
+    if (!task.sessionKey || await this._conversationKey() !== task.sessionKey) return false;
+    const ctx = this._fl();
+    const loading = await ctx.locator('openclaw-app').evaluateAll(apps => apps.some(app => app.chatLoading === true));
+    if (loading) return false;
+    const users = ctx.locator(this.platform.userGroupSelector || '.chat-group.user');
+    if (!await users.first().isVisible().catch(() => false)) return false;
+    const renderedSid = await users.first().evaluate(el => el.closest('.chat-thread')?.getAttribute('data-session-id') || '');
+    if (renderedSid && renderedSid !== task.sessionId) return false;
+    return await this._conversationKey() === task.sessionKey;
+  }
+
+  async _waitForTaskConversation(task) {
+    const deadline = Date.now() + (this.execution.desktopTaskSwitchTimeoutMs ?? 6000);
+    let stableSince = null;
+    do {
+      if (await this._isTaskCurrent(task)) {
+        if (stableSince != null && Date.now() - stableSince >= 200) return true;
+        stableSince ??= Date.now();
+      } else stableSince = null;
+      await this._sleep(100);
+    } while (Date.now() < deadline);
     return false;
+  }
+
+  async _switchToTask(task) {
+    if (!task.sessionKey || !task.sessionId) return false;
+    await this._focus();
+    this.dr.frame = this._fl();
+    // 当前已经是目标会话时直接处理，列表折叠、未刷新、标题重写都不影响。
+    if (await this._conversationKey() !== task.sessionKey) {
+      const ctx = this._fl();
+      const items = ctx.locator(this.platform.taskListItemSelector || '.aside-panel-task-list__item');
+      const target = items.and(ctx.locator(`[data-session-id=${JSON.stringify(task.sessionId)}]:visible`));
+      if (await target.count() !== 1) return false;
+      try { await target.click({ timeout: 4000 }); } catch { return false; }
+    }
+    if (!await this._waitForTaskConversation(task)) return false;
+    task.listIndex = await this._currentSelectedIndex();
+    this.dr._restoreTurnState(task.turnState);
+    this.dr.label = task.case.caseId;
+    return true;
   }
 
   // 读当前任务条目的 agent 名（供诊断 B）：从左侧「已选中」条目里读 taskListAgentSelector。
@@ -342,13 +358,14 @@ class DesktopRunner {
 
   // 读左侧列表第 i 个条目是否有「执行中」标志（不切对话，纯读列表 DOM）。
   // 返回 true=执行中、false=疑似完成、null=条目不存在/selector 未配（定位失效，交上层重定位）。
-  async _readItemRunning(i) {
+  async _readItemRunning(i, sessionId = '') {
     const P = this.platform;
     if (!P.taskListRunningSelector || i == null) return null;
     try {
       const items = this._fl().locator(P.taskListItemSelector || '.aside-panel-task-list__item');
       const total = await items.count();
       if (i < 0 || i >= total) return null;
+      if (sessionId && await items.nth(i).getAttribute('data-session-id') !== sessionId) return null;
       return await items.nth(i).locator(P.taskListRunningSelector).first().isVisible();
     } catch { return null; }
   }
@@ -531,9 +548,11 @@ class DesktopRunner {
         t.startTime = Date.now();
         await this._sendOne(t.case);
         t.turnState = this.dr._captureTurnState();
+        await this._bindTaskConversation(t);
         t.listIndex = await this._currentSelectedIndex(); // 记录选中条目 index，供阶段2扫列表判完成（不切对话）
         t.status = 'running';
         this._log(`   [${i + 1}/${tasks.length}] 已发送并开始执行：${t.case.caseId}  「${t.question.slice(0, 24)}」`);
+        this._log(`       ↳ [${t.case.caseId}] 已绑定会话 sid=${t.sessionId}`);
       } catch (e) {
         t.errorMsg = (e.message || '').split('\n')[0]; t.endTime = Date.now();
         this._warn(`   [${i + 1}/${tasks.length}] 发送失败：${t.case.caseId} - ${t.errorMsg}`);
@@ -557,15 +576,17 @@ class DesktopRunner {
           continue;
         }
         // 扫左侧列表条目「执行中」标志（不切对话内容区）：false=疑似完成；true=执行中(跳过)；null=index失效
-        const flag = await this._readItemRunning(t.listIndex);
+        const flag = await this._readItemRunning(t.listIndex, t.sessionId);
         if (flag === null) t.listIndex = null;
-        const byFlag = (flag === false);
+        const byFlag = (flag !== true); // 索引变化/列表尚未出现也立即按 sid 定位，不空等 fallback。
         const byFallback = Date.now() - (t.lastProbeAt || t.startTime) > fallbackMs;
-        const awaitingContinuation = t.turnState?.continuation?.pending || t.turnState?.continuation?.waitingSince != null;
-        if (!byFlag && !byFallback && !awaitingContinuation) continue;
+        const byCurrent = await this._conversationKey() === t.sessionKey;
+        const awaitingInteraction = t.turnState?.continuation?.pending || t.turnState?.continuation?.waitingSince != null ||
+          t.turnState?.protectedOperation?.pending;
+        if (!byFlag && !byFallback && !byCurrent && !awaitingInteraction) continue;
         // 疑似完成 或 到 fallback：切过去 probeState 复查（顺带处理反问/确认弹窗让任务继续）
         const ok = await this._switchToTask(t);
-        if (!ok) { this._log(`   ⏳ 暂未定位到任务 ${t.case.caseId}（列表未出齐/标题变动），下轮重试`); t.listIndex = null; continue; }
+        if (!ok) { this._log(`   ⏳ 暂未恢复任务 ${t.case.caseId}（sid=${t.sessionId}，会话未加载或列表尚未出现），下轮重试`); t.listIndex = null; continue; }
         t.lastProbeAt = Date.now();
         try {
           if (await this.dr._dismissConfirmDialogs()) {
@@ -585,7 +606,7 @@ class DesktopRunner {
         } else t.stable = 0;
         t.lastText = st.txt;
         const mark = st.generating ? '执行中' : (done ? '完成' : '…');
-        const why = byFlag ? 'flag' : 'fallback';
+        const why = byFlag ? 'flag' : (byCurrent ? 'current' : 'fallback');
         this._log(`   🔎 复查 ${t.case.caseId}[${why}] → ${mark}${st.txt ? '：' + st.txt.slice(0, 30).replace(/\s+/g, ' ') : ''}`);
         if (done) {
           try {
@@ -617,11 +638,16 @@ class DesktopRunner {
     if (t.status === 'done' && t.result) return; // 幂等
     this.dr._restoreTurnState(t.turnState);
     t.endTime = t.endTime || Date.now();
-    let out = { answer: '', shareLink: '', artifactShareLink: '', hasArtifact: false,
-      reportedDuration: '', reportedDurationRaw: '', beanCost: '', cost: '', costRaw: '', reloadRecoveredFields: [] };
+    const emptyOut = () => ({ answer: '', shareLink: '', artifactShareLink: '', hasArtifact: false,
+      reportedDuration: '', reportedDurationRaw: '', beanCost: '', cost: '', costRaw: '', reloadRecoveredFields: [] });
+    let out = emptyOut();
     if (!t.errorMsg) {
-      try { out = await this._extractCurrent(t.case); }
-      catch (e) { t.errorMsg = t.errorMsg || (e.message || '').split('\n')[0]; }
+      try {
+        if (!await this._isTaskCurrent(t)) throw new Error(`[NAMI_TASK_NOT_FOUND] 未确认任务会话 sid=${t.sessionId || '未知'}，未抓取其他对话的结果`);
+        out = await this._extractCurrent(t.case);
+        if (!await this._isTaskCurrent(t)) throw new Error('[NAMI_CONVERSATION_CHANGED] 抓取期间会话发生变化，已丢弃本次抓取内容');
+      }
+      catch (e) { out = emptyOut(); t.errorMsg = t.errorMsg || (e.message || '').split('\n')[0]; }
     }
     // 完成信号已出但没抓到正文 → 诊断 D
     if (this.diag && t.completed && !t.errorMsg && !(out.answer && out.answer.trim())) {

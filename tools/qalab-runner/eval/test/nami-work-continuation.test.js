@@ -12,9 +12,13 @@ after(async () => { await browser?.close(); });
 const platform = { answerGroupSelector: '.chat-group.assistant', answerSelector: '.chat-bubble.has-copy',
   costSelector: '.chat-token-cost', stopSignalSelector: '#stop', taskListItemSelector: '.task' };
 
-async function fixture(t, { card = true, disabled = false, error = '', delay = null, surface = 'page' } = {}) {
+async function fixture(t, { card = true, disabled = false, error = '', delay = null, surface = 'page', sessionUrl = false } = {}) {
   const page = await browser.newPage();
   t.after(() => page.close());
+  if (sessionUrl) {
+    await page.route('https://fixture.work.n.cn/**', route => route.fulfill({ contentType: 'text/html', body: '<body></body>' }));
+    await page.goto('https://fixture.work.n.cn/chat');
+  }
   let ctx = page;
   if (surface === 'iframe') {
     await page.setContent('<iframe name="nami-work" style="width:100%;height:800px" srcdoc="<body></body>"></iframe>');
@@ -233,11 +237,12 @@ test('desktop completion probe uses the current continuation stage', async t => 
 });
 
 test('desktop patrol preserves continuation and bean boundaries across two tasks', async t => {
-  const { page, r } = await fixture(t, { card: false });
+  const { page, r } = await fixture(t, { card: false, sessionUrl: true });
   await page.evaluate(() => {
     window.tasks = {};
     window.renderTask = id => {
       window.currentTask = id;
+      history.replaceState({}, '', '?sid=' + id);
       const task = window.tasks[id];
       document.querySelector('main').innerHTML = `<div class="chat-group user">${id}</div>`;
       window.appendAnswer(`${id}首轮`, `${id === 'A' ? 1 : 7} 算力豆`, id === 'A' && !task.continued);
@@ -248,6 +253,7 @@ test('desktop patrol preserves continuation and bean boundaries across two tasks
     const nav = document.createElement('nav'); document.body.prepend(nav);
     for (const id of ['A', 'B']) {
       const button = document.createElement('button'); button.className = 'task'; button.textContent = id;
+      button.dataset.sessionId = id;
       button.onclick = () => window.renderTask(id); nav.append(button);
     }
   });

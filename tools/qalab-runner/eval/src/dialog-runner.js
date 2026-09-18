@@ -133,6 +133,7 @@ class DialogRunner {
     this._workContinuation = { count: 0, pending: null, waitingSince: null,
       completionBaseline: null, costGroupIndexes: [] };
     this._beanCostAttempt = { deadline: null, reloaded: false, expectedTurn: '', warned: false };
+    this._protectedOperation = { pending: null };
   }
 
   _completionBaseline() {
@@ -141,7 +142,8 @@ class DialogRunner {
 
   // DesktopRunner 共用一个 DialogRunner；切换任务时必须同时切换基线和续作状态。
   _captureTurnState() {
-    return { baseline: this._turnBaseline, continuation: this._workContinuation, beanCostAttempt: this._beanCostAttempt };
+    return { baseline: this._turnBaseline, continuation: this._workContinuation, beanCostAttempt: this._beanCostAttempt,
+      protectedOperation: this._protectedOperation };
   }
 
   _restoreTurnState(state) {
@@ -149,6 +151,7 @@ class DialogRunner {
     this._turnBaseline = state.baseline;
     this._workContinuation = state.continuation;
     this._beanCostAttempt = state.beanCostAttempt || null;
+    this._protectedOperation = state.protectedOperation || { pending: null };
   }
 
   async _handleWorkContinuation() {
@@ -689,6 +692,8 @@ class DialogRunner {
   //  · 纯确认框（反问/授权/风险确认）→ 点“确认/继续/允许…”类按钮。
   // 返回是否对弹窗/反问做了处理（true 表示“有交互待处理”，调用方据此避免误判任务完成）。
   async _dismissConfirmDialogs() {
+    // 受保护操作默认选中“拒绝”，必须先走专用处理；失败不可落回通用表单并误提交默认项。
+    if (await this._handleProtectedOperation()) return true;
     // 先处理内联的「专家反问」选择题卡片（最常见，且不是 modal）
     try { if (await this._handleAskForms()) return true; } catch (_) {}
     // 再处理「工作流/工具确认」卡片（tool-confirm-modal，复杂任务规划 Workflow 时弹出）
@@ -696,6 +701,60 @@ class DialogRunner {
     if (await this._dismissModalConfirmDialogs()) return true;
     // 先解除工具/确认框遮挡，再处理纳米 Work 续作卡片；续作错误必须上抛。
     return this._handleWorkContinuation();
+  }
+
+  async _handleProtectedOperation() {
+    const cards = this._ctx().locator(this.platform.askFormSelector || '.chat-ask-form-card, chat-question-form-card');
+    const state = this._protectedOperation || (this._protectedOperation = { pending: null });
+    for (let i = await cards.count() - 1; i >= 0; i--) {
+      const card = cards.nth(i);
+      if (!await card.isVisible()) continue;
+      const title = card.locator('.ask-form__title');
+      if (!await title.count()) continue;
+      const text = (await title.innerText()).replace(/\s/g, '');
+      if (!/^(?:【单选】)?是否允许执行本次受保护操作[？?]?$/.test(text)) continue;
+      const fail = detail => new Error(`[NAMI_PROTECTED_OPERATION] ${detail}；未提交默认拒绝选项`);
+      const description = await card.locator('.ask-form__desc').innerText({ timeout: 2000 }).catch(() => '');
+      const groups = card.locator('.ask-form__options');
+      const options = card.locator('.ask-form__option');
+      if (!/统一安全策略要求确认/.test(description) || await groups.count() !== 1 ||
+          await groups.getAttribute('aria-multiselectable') === 'true' || await options.count() !== 2) {
+        throw fail('受保护操作卡片结构未识别');
+      }
+      const labels = await options.locator('.ask-form__option-label').allTextContents();
+      const allowIndex = labels.findIndex(s => s.trim() === '允许本次操作');
+      const denyIndex = labels.findIndex(s => s.trim() === '拒绝本次操作');
+      if (labels.length !== 2 || allowIndex < 0 || denyIndex < 0) throw fail('未找到明确的单次允许/拒绝选项');
+      const requestKey = await card.evaluate(el => el.questionKey || '');
+      const key = JSON.stringify([requestKey, text, description, labels]);
+      if (state.pending?.key === key) {
+        if (Date.now() - state.pending.submittedAt > 15000) throw fail('单次允许已提交，但确认卡片超过 15 秒未消失');
+        return true; // 等待提交结果，不重复批准同一请求，也不把等待中的旧答案判成完成。
+      }
+      const allow = options.nth(allowIndex), deny = options.nth(denyIndex);
+      const selected = opt => opt.evaluate(el => {
+        const aria = el.getAttribute('aria-selected');
+        return aria == null ? el.classList.contains('is-selected') : aria === 'true';
+      });
+      if (!await selected(allow)) await allow.click({ timeout: 2000 });
+      const deadline = Date.now() + 2000;
+      while ((!await selected(allow) || await selected(deny)) && Date.now() < deadline) await this.page.waitForTimeout(50);
+      if (!await selected(allow) || await selected(deny)) throw fail('未能确认“允许本次操作”已选中');
+      const submit = card.locator(this.platform.askFormSubmitSelector || '.ask-form__btn--ok');
+      if (await submit.count() !== 1 || !await submit.isVisible() || !await submit.isEnabled() ||
+          (await submit.innerText()).trim() !== '提交') throw fail('提交按钮不可用');
+      // 等待 Lit 更新后再次核对，防止换题时沿用上一题的选中状态。
+      const currentKey = JSON.stringify([await card.evaluate(el => el.questionKey || ''),
+        (await title.innerText()).replace(/\s/g, ''), await card.locator('.ask-form__desc').innerText(),
+        await options.locator('.ask-form__option-label').allTextContents()]);
+      if (currentKey !== key) throw fail('操作请求在确认期间发生变化');
+      await submit.click({ timeout: 2000 });
+      state.pending = { key, submittedAt: Date.now() };
+      if (this.logger) this.logger.info(`       ↳ [${this.label}] 受保护操作：已选择“允许本次操作”并提交，等待任务继续`);
+      return true;
+    }
+    state.pending = null;
+    return false;
   }
 
   async _dismissModalConfirmDialogs() {
