@@ -129,25 +129,90 @@ class WorkbuddyRunner {
       : `找不到模型「${wanted}」：模型列表未加载或没有可见选项，请检查客户端状态`);
   }
 
+  async _modelTriggers() {
+    // 首页/历史任务切换时旧输入区可能仍挂载。与真实编辑器同属的可见 input-container 优先，
+    // 兼容旧客户端及自定义选择器没有该容器的情况；不再对全页直接取第一个隐藏按钮。
+    const editor = this.wb.inputSelector || '[contenteditable="true"][role="textbox"]';
+    const containers = this.page.locator('.cr-input-container:visible')
+      .filter({ has: this.page.locator(`:is(${editor}):visible`) });
+    const scope = await containers.count() ? containers : this.page;
+    const primary = scope.locator(`:is(${this.wb.modelTriggerSelector || 'button.cr-model-selector__trigger'}):visible`);
+    if (await primary.count()) return primary;
+    // 5.5.6 实测的语义属性，不依赖样式前缀；只匹配模型 combobox，不点普通“确认”按钮。
+    return scope.locator('button[aria-label="Select model"][aria-haspopup="listbox"]:visible');
+  }
+
+  async _modelControlDiagnostic() {
+    const snapshot = { matches: 0, visible: 0, enabled: 0, visibleEditors: 0, homeVisible: false };
+    try {
+      snapshot.matches = await this.page.locator(this.wb.modelTriggerSelector || 'button.cr-model-selector__trigger').count();
+      const candidates = await this._modelTriggers();
+      snapshot.visible = await candidates.count();
+      snapshot.enabled = await candidates.evaluateAll(es => es.filter(el => !el.matches(':disabled, [aria-disabled="true"]')).length);
+      snapshot.visibleEditors = await this.page.locator(`:is(${this.wb.inputSelector || '[contenteditable="true"][role="textbox"]'}):visible`).count();
+      snapshot.homeVisible = await this.page.locator(`:is(${this.wb.newTaskReadySelector || '.wb-home-page'}):visible`).count() > 0;
+    } catch (_) { /* 页面销毁时也保留已读到的诊断，不输出对话正文。 */ }
+    return snapshot;
+  }
+
+  async _waitForModelTrigger({ open = false, deadline } = {}) {
+    const started = Date.now();
+    deadline ??= started + (this.wb.modelReadyTimeoutMs ?? 30000);
+    let waitingLogged = false, lastError = '';
+    do {
+      try {
+        const candidates = await this._modelTriggers();
+        // 同时出现多个可见入口时等旧区域卸载，不能猜哪一个属于本条任务。
+        if (await candidates.count() === 1 && await candidates.isEnabled() &&
+            await candidates.getAttribute('aria-disabled') !== 'true') {
+          if (open && await candidates.getAttribute('aria-expanded') !== 'true') {
+            // 短 actionability 尝试 + 重新定位，兼容 React 卸载/替换按钮；共用总预算，且只重试打开列表。
+            await candidates.click({ timeout: Math.max(1, Math.min(1500, deadline - Date.now())) });
+          }
+          if (waitingLogged) this._log(`   WorkBuddy 模型入口已就绪（等待 ${((Date.now() - started) / 1000).toFixed(1)}s）`);
+          return candidates;
+        }
+      } catch (error) {
+        if (this.page.isClosed()) break;
+        lastError = (error.message || '').split('\n')[0];
+      }
+      if (!waitingLogged && Date.now() - started >= 1000) {
+        this._log('   WorkBuddy 正在等待当前输入区的模型入口加载并可用，尚未发送题目');
+        waitingLogged = true;
+      }
+      if (Date.now() < deadline) await this.page.waitForTimeout(Math.min(100, deadline - Date.now()));
+    } while (Date.now() < deadline);
+    const diagnostic = await this._modelControlDiagnostic();
+    if (this.executionConfig) this.executionConfig.modelControl = diagnostic;
+    throw new Error(`[WORKBUDDY_MODEL_NOT_READY] 模型入口未就绪（可见 ${diagnostic.visible}，可用 ${diagnostic.enabled}，` +
+      `输入框 ${diagnostic.visibleEditors}，首页 ${diagnostic.homeVisible ? '已显示' : '未显示'}）；` +
+      `可能仍在加载模型数据、控件被禁用或页面尚未切换完成，未发送题目${lastError ? `；${lastError}` : ''}`);
+  }
+
   // 选模型档并回读验证，英文大小写/空白归一化，但不同版本或后缀不互相替代。
   async _applyDialogOptions() {
     const options = this.execution.dialogOptions || {};
     this.executionConfig = { schema_version: 1, requested: { ...options }, observed: {}, status: 'checking' };
     try {
       if (options.chatMode || options.thinkingDepth) throw configError('WorkBuddy 暂不支持指定对话模式或思考深度');
-      const trigger = this.page.locator(this.wb.modelTriggerSelector).first();
       if (options.model) {
-        await trigger.click({ timeout: 4000 });
+        const deadline = Date.now() + (this.wb.modelReadyTimeoutMs ?? 30000);
+        await this._waitForModelTrigger({ open: true, deadline });
         const selected = await this._findModelOption(options.model);
         await selected.scrollIntoViewIfNeeded({ timeout: 4000 });
         await selected.click({ timeout: 4000 });
         await this.page.keyboard.press('Escape').catch(() => {});
+        const trigger = await this._waitForModelTrigger({ deadline });
         this.executionConfig.observed.model = await verifySelection(this.page, trigger, options.model);
-      } else this.executionConfig.observed.model = await readSelection(trigger).catch(() => []);
+      } else {
+        const triggers = await this._modelTriggers();
+        this.executionConfig.observed.model = await triggers.count() === 1 ? await readSelection(triggers).catch(() => []) : [];
+      }
       this.executionConfig.status = options.model ? 'verified' : 'observed';
     } catch (error) {
-      const failure = error.message?.startsWith('[CONFIG_ERROR]') ? error : configError(error.message);
-      this.executionConfig.status = 'config_error';
+      const uiNotReady = error.message?.startsWith('[WORKBUDDY_MODEL_NOT_READY]');
+      const failure = uiNotReady || error.message?.startsWith('[CONFIG_ERROR]') ? error : configError(error.message);
+      this.executionConfig.status = uiNotReady ? 'ui_not_ready' : 'config_error';
       this.executionConfig.error = failure.message;
       await this.page.keyboard.press('Escape').catch(() => {});
       throw failure;
@@ -162,7 +227,7 @@ class WorkbuddyRunner {
     if (testCase.dialogOptions) this.execution.dialogOptions = testCase.dialogOptions;
     try { await this._applyDialogOptions(); }
     finally { testCase.executionConfig = structuredClone(this.executionConfig || null); }
-    const input = this.page.locator(this.wb.inputSelector).first();
+    const input = this.page.locator(`:is(${this.wb.inputSelector}):visible`).first();
     // 附件(如有):必须先粘贴附件、确认「附件卡片挂上」再输 query,绝不「无附件裸发 query」——那样是
     // 对着没附件的回答评分,污染判定。WorkBuddy 附件走原生文件对话框(setInputFiles 不适用),真机坐实
     // 可行方案 = 系统剪贴板放 file-url + 聚焦编辑器 + CDP Meta+V 粘贴 → Slate 渲染成 file inline block。

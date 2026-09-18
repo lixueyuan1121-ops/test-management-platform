@@ -33,6 +33,11 @@ WorkBuddy 测评中出现“确认开始生成视频？”积分确认卡时，�
 请求失败且按钮恢复可操作后默认最多提交 3 次，仍失败时报告 `WORKBUDDY_CONFIRM_FAILED`。
 日志记录每次视频确认操作；积分由 WorkBuddy 按实际生成结算。
 
+WorkBuddy 发送前单独等待模型入口就绪：模型数据未返回时客户端不会渲染按钮，不能以首页/输入框已显示代替。
+默认最多等待 30 秒（`workbuddy.modelReadyTimeoutMs`），入口可用后立即继续；忽略隐藏旧控件，优先当前输入区，
+兼容按钮重绘和语义属性入口。仍未就绪时报告 `WORKBUDDY_MODEL_NOT_READY` 及控件状态，模型名不存在仍报告
+`CONFIG_ERROR`。只重试模型入口定位/打开列表，不重新发送题目；选择后仍需回读确认模型，名称匹配不区分大小写。
+
 ## 快速上手（Windows）
 
 1. 装 [Node.js 18+](https://nodejs.org/zh-cn/)（LTS，默认安装即可）

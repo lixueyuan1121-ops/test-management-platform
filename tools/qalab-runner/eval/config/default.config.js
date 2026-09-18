@@ -382,6 +382,7 @@ module.exports = {
     sendBtnSelector: 'button.cr-send-button',                     // 发送键（也可输入框内 Enter）
     // 模型下拉（挨着语音输入 cr-voice-trigger）
     modelTriggerSelector: 'button.cr-model-selector__trigger',
+    modelReadyTimeoutMs: 30000,                               // 模型数据未就绪时客户端不渲染按钮；轮询可见/可用入口，非固定等待
     modelOptionSelector: '.cr-model-selector__item',
     modelOptionNameSelector: '.cr-model-selector__item-name',    // 纯模型名；不含优惠标签/积分倍率
     modelSelectedHint: 'cr-model-selector__item--selected',
