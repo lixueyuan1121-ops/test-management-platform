@@ -2,6 +2,7 @@ from app.models.module_entry import ModuleEntry
 from app.models.record_session import RecordSession
 """导入所有模型，便于 Base.metadata.create_all 一次性建全表。"""
 from app.models.user import User
+from app.models.geelib_account import GeelibAccount
 from app.models.project import Project, Team, ProjectMember
 from app.models.task import Task
 from app.models.report import DailyReport
@@ -34,6 +35,7 @@ __all__ = [
     "ModuleEntry",
     "RecordSession",
     "User",
+    "GeelibAccount",
     "Project",
     "Team",
     "ProjectMember",

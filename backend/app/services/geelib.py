@@ -4,7 +4,8 @@
 写进极库云缺陷系统」，产出可追踪的工作项 ID 回填到 RemainingIssue.external_ref。
 
 鉴权与端点（与 sso-geelib-project-skill 同源，但零 Node 依赖，后端纯 Python 复刻）：
-- token：subprocess 调 `qihoo-sso-cli -app geelib -tool sso-geelib-project-skill`，取 stdout
+- 手动操作由调用方传入当前登录人的 app_token；不使用服务器凭据。
+- 后台自动报送 token：subprocess 调 `qihoo-sso-cli -app geelib -tool sso-geelib-project-skill`，取 stdout
   JSON 的 app_token；进程内缓存 4 分钟（仿 skill 的 auth.ts，留 1 分钟余量）。
 - 建缺陷：POST {GEELIB_API_URL}/openapi/Matter/add，头 `X-Agent-Auth: Bearer <token>`，
   体 {sub_id, type_id:"缺陷", title, mkd_content}；响应 errno===2000 为成功，data 里带工作项 id。
@@ -104,14 +105,16 @@ def resolve_sub_id(project_code: str | None, geelib_sub_id: int | None = None) -
 
 
 def _post_matter_add(sub_id: int, title: str, mkd_content: str,
-                     executor_mail: str | None = None) -> dict:
+                     executor_mail: str | None = None, *, app_token: str | None = None) -> dict:
     """POST /openapi/Matter/add 建缺陷；errno!=2000 抛 GeelibError。返回 data(含工作项 id)。
 
     executor_mail：执行人邮箱。极库云「缺陷」类型把「执行人」列为必填，
     不传会返回 errno=3000。同时接口要求 content（富文本）非空，
     mkd_content 虽也支持但不能替代 content，因此两者均传。
     """
-    token = get_app_token()
+    token = get_app_token() if app_token is None else app_token
+    if not token.strip():
+        raise GeelibError("个人极库云授权为空，请重新绑定")
     url = f"{settings.GEELIB_API_URL.rstrip('/')}/openapi/Matter/add"
     # content（富文本）和 mkd_content（markdown）均传，极库云要求 content 非空
     # mkd_content 是多段 markdown：逐行转 HTML 段落（转义防特殊字符破坏富文本），
@@ -155,12 +158,15 @@ def _post_matter_add(sub_id: int, title: str, mkd_content: str,
     return payload or {}
 
 
-def _post_matter_edit_status(sub_id: int, matter_id: int, status_name: str) -> None:
+def _post_matter_edit_status(sub_id: int, matter_id: int, status_name: str, *,
+                             app_token: str | None = None) -> None:
     """编辑工作项状态（POST /openapi/Matter/add 带 id = 编辑语义，与 skill edit.ts 同源）。
 
     data 编辑时只支持单个 dict（不是数组）。errno!=2000 抛 GeelibError（带 errno）。
     """
-    token = get_app_token()
+    token = get_app_token() if app_token is None else app_token
+    if not token.strip():
+        raise GeelibError("个人极库云授权为空，请重新绑定")
     url = f"{settings.GEELIB_API_URL.rstrip('/')}/openapi/Matter/add"
     body = {
         "sub_id": sub_id,
@@ -186,7 +192,7 @@ def _post_matter_edit_status(sub_id: int, matter_id: int, status_name: str) -> N
 _ERRNO_ILLEGAL_TRANSITION = 5001
 
 
-def mark_verified(sub_id: int, external_ref: str | None) -> dict:
+def mark_verified(sub_id: int, external_ref: str | None, *, app_token: str | None = None) -> dict:
     """把已上报的缺陷流转到「已验证」（平台侧遗留问题标记已解决时的联动）。
     返回 {ok, matter_id, reason}。
 
@@ -207,13 +213,13 @@ def mark_verified(sub_id: int, external_ref: str | None) -> dict:
         return {"ok": False, "reason": f"external_ref 中的工作项 id 非法：{raw!r}"}
     matter_id = int(raw)
     try:
-        _post_matter_edit_status(sub_id, matter_id, "已验证")
+        _post_matter_edit_status(sub_id, matter_id, "已验证", app_token=app_token)
     except GeelibError as e:
         if e.errno != _ERRNO_ILLEGAL_TRANSITION:
             raise
         # 状态机不许直跳（如还在「新建」）：先过渡「已修复」再「已验证」
-        _post_matter_edit_status(sub_id, matter_id, "已修复")
-        _post_matter_edit_status(sub_id, matter_id, "已验证")
+        _post_matter_edit_status(sub_id, matter_id, "已修复", app_token=app_token)
+        _post_matter_edit_status(sub_id, matter_id, "已验证", app_token=app_token)
     logger.info("极库云缺陷已流转已验证 sub_id=%s matter=%s", sub_id, matter_id)
     return {"ok": True, "matter_id": matter_id, "reason": None}
 
@@ -251,12 +257,13 @@ def report_defect(sub_id: int, title: str, description: str | None = None,
                   severity: str | None = None, platform_url: str | None = None,
                   extra: list[str] | None = None,
                   executor_mail: str | None = None,
-                  share_link: str | None = None) -> dict:
+                  share_link: str | None = None, *, app_token: str | None = None) -> dict:
     """上报一条缺陷到极库云。返回 {ok, matter_id, ref, reason}。
 
     executor_mail：执行人邮箱（极库云「缺陷」类型的必填字段）。传 None 时回退到
     GEELIB_DEFAULT_EXECUTOR 环境变量；两者均空则由极库云侧报 3000。
     share_link：对话分享链接（来自 eval_run.share_link），写进缺陷正文便于跳转复核。
+    app_token：手动操作必须传个人授权；None 仅供后台自动任务使用服务器 CLI。
 
     未开通道 → ok=False+reason（不抛）。其余失败抛 GeelibError（调用方决定吞/抛）。
     ref 是回填 RemainingIssue.external_ref 的字符串（形如 "geelib#<id>"）。
@@ -266,7 +273,7 @@ def report_defect(sub_id: int, title: str, description: str | None = None,
     if not sub_id:
         return {"ok": False, "reason": "未配置该项目的极库云 sub_id（Project.geelib_sub_id 或 GEELIB_SUB_MAP）"}
     content = build_defect_body(description, severity, platform_url, extra, share_link=share_link)
-    data = _post_matter_add(sub_id, title, content, executor_mail=executor_mail)
+    data = _post_matter_add(sub_id, title, content, executor_mail=executor_mail, app_token=app_token)
     matter_id = data.get("id") or data.get("matter_id") or data.get("Id")
     ref = f"geelib#{matter_id}" if matter_id else "geelib#?"
     logger.info("极库云缺陷已创建 sub_id=%s matter=%s title=%s", sub_id, matter_id, title[:40])

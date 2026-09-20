@@ -2,6 +2,7 @@
   <div class="issues functional-workspace">
     <WorkspacePage title="遗留问题">
       <template #actions>
+            <GeelibAccount />
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
@@ -39,11 +40,13 @@
         <el-table-column prop="created_at" label="创建时间" width="160">
           <template #default="{ row }">{{ row.created_at?.slice(0,16).replace('T',' ') }}</template>
         </el-table-column>
-        <el-table-column v-if="canManage" label="操作" width="230">
+        <el-table-column v-if="canReport" label="操作" width="230">
           <template #default="{ row }">
-            <el-button v-if="row.status==='open'" link type="success" :disabled="updating" @click="resolve(row)">标记解决</el-button>
-            <el-button v-else link type="warning" :disabled="updating" @click="reopen(row)">重开</el-button>
-            <el-button link type="primary" @click="openEdit(row)">关联缺陷</el-button>
+            <template v-if="canManage">
+              <el-button v-if="row.status==='open'" link type="success" :disabled="updating" @click="resolve(row)">标记解决</el-button>
+              <el-button v-else link type="warning" :disabled="updating" @click="reopen(row)">重开</el-button>
+              <el-button link type="primary" @click="openEdit(row)">关联缺陷</el-button>
+            </template>
             <el-button v-if="!row.external_ref" link type="danger" :loading="reporting===row.id" @click="reportGeelib(row)">上报极库云</el-button>
           </template>
         </el-table-column>
@@ -65,6 +68,7 @@
 
 <script setup>
 import WorkspacePage from '@/components/WorkspacePage.vue'
+import GeelibAccount from '@/components/GeelibAccount.vue'
 import '@/styles/workspace-overlays.css'
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -86,6 +90,7 @@ const safeRef = value => /^https?:\/\//i.test(value || '')
 onBeforeUnmount(() => { disposed = true; ++version })
 const reporting = ref(null)
 const canManage = computed(() => auth.roleIn(pid.value) === 'admin')
+const canReport = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
 const dialog = reactive({ visible: false, id: null, title: '', external_ref: '', saving: false })
 
 onMounted(async () => {
@@ -135,7 +140,7 @@ async function reportGeelib(row) {
   if (reporting.value !== null) return
   reporting.value = row.id
   try {
-    await ElMessageBox.confirm(`确认把「${row.title}」作为缺陷上报到极库云？上报后会回填工作项编号。`, '上报极库云', { type: 'warning', confirmButtonText: '确认上报', cancelButtonText: '取消' })
+    await ElMessageBox.confirm(`确认使用当前登录人绑定的极库云账号报送「${row.title}」？上报后会回填工作项编号。`, '上报极库云', { type: 'warning', confirmButtonText: '确认上报', cancelButtonText: '取消' })
   } catch { reporting.value = null; return }
   try {
     const res = await reportIssueToGeelib(row.id)

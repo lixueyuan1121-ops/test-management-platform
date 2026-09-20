@@ -9,6 +9,8 @@ api_router.include_router(requirement_analysis.router)
 from app.api import test_missions
 api_router.include_router(test_missions.router)
 api_router.include_router(auth.router)
+from app.api import geelib_account
+api_router.include_router(geelib_account.router)
 api_router.include_router(projects.router)
 api_router.include_router(members.router)
 api_router.include_router(users.router)

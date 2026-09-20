@@ -986,3 +986,10 @@ CREATE TABLE IF NOT EXISTS `eval_batch_summary` (
   UNIQUE KEY `uk_eval_summary_share` (`summary_share_code`),
   CONSTRAINT `fk_eval_summary_task` FOREIGN KEY (`eval_task_id`) REFERENCES `eval_task` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- 个人极库云授权；已有库由 Base.metadata.create_all 在启动时补建。
+CREATE TABLE IF NOT EXISTS geelib_account (
+    user_id BIGINT NOT NULL PRIMARY KEY,
+    account_name VARCHAR(128) NULL,
+    credentials TEXT NULL,
+    pending_auth TEXT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

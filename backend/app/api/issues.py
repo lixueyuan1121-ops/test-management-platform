@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.models import DailyReport, Project, RemainingIssue, Task, User
 from app.schemas.common import ok
 from app.schemas.issue import IssueUpdate
+from app.services.geelib_account import get_user_app_token, GeelibAccountError
 
 router = APIRouter(prefix="/api/issues", tags=["issues"])
 
@@ -120,7 +121,7 @@ def update_issue(
                                        getattr(proj, "geelib_sub_id", None))
         if sub_id:
             try:
-                res = geelib.mark_verified(sub_id, it.external_ref)
+                res = geelib.mark_verified(sub_id, it.external_ref, app_token=get_user_app_token(db, user.id))
                 geelib_sync = {"ok": res["ok"], "msg": res.get("reason") or "极库云缺陷已流转「已验证」"}
             except geelib.GeelibError as e:
                 geelib_sync = {"ok": False, "msg": f"极库云状态联动失败：{e}"}
@@ -138,7 +139,7 @@ def report_issue_to_geelib(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """把遗留问题上报到极库云缺陷系统，成功后回填 external_ref（人复核后一键上报）。仅项目 admin。
+    """把遗留问题上报到极库云缺陷系统，成功后回填 external_ref（人复核后一键上报）。项目 admin/member 使用各自授权。
 
     已上报（external_ref 已含 geelib#）则幂等返回，不重复建单。通道未启用/未配 sub_id 返回 409，
     上报失败返回 502，把极库云原因透传给前端。
@@ -149,7 +150,7 @@ def report_issue_to_geelib(
     it = db.get(RemainingIssue, iid)
     if not it:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="遗留问题不存在")
-    assert_project_role(db, user, it.project_id, (ProjectRole.admin,))
+    assert_project_role(db, user, it.project_id, (ProjectRole.admin, ProjectRole.member))
 
     if it.external_ref and str(it.external_ref).startswith("geelib#"):
         return ok({**_to_out(db, it), "already_reported": True})
@@ -187,7 +188,10 @@ def report_issue_to_geelib(
             extra=[f"平台遗留问题 #{it.id}"],
             executor_mail=executor_mail,
             share_link=share_link,
+            app_token=get_user_app_token(db, user.id),
         )
+    except GeelibAccountError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from None
     except geelib.GeelibError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"极库云上报失败：{e}")
     if not res.get("ok"):

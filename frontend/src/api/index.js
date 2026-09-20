@@ -44,8 +44,12 @@ export const aiStats = (params) => http.get('/stats/ai', { params })
 // AI 价值漏斗：生成→采纳→可自动化→执行→通过 + 真bug/选择器卡点/省时
 export const aiFunnel = (days = 30, config = {}) => http.get('/stats/ai-funnel', { ...config, params: { days } })
 export const listIssues = (project_id, status) => http.get('/issues', { params: { project_id, status } })
-export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data)
-export const reportIssueToGeelib = (id) => http.post(`/issues/${id}/report-geelib`)
+export const updateIssue = (id, data) => http.patch(`/issues/${id}`, data, { timeout: data.status === 'resolved' ? 160000 : 15000 })
+export const reportIssueToGeelib = (id) => http.post(`/issues/${id}/report-geelib`, null, { timeout: 100000 })
+export const getGeelibAccount = () => http.get('/auth/geelib')
+export const authorizeGeelibAccount = () => http.post('/auth/geelib/authorize')
+export const completeGeelibAccount = (data) => http.post('/auth/geelib/complete', data, { timeout: 40000 })
+export const disconnectGeelibAccount = () => http.delete('/auth/geelib')
 
 // ===== 测试工具广场 =====
 export const listCategories = (include_inactive) => {

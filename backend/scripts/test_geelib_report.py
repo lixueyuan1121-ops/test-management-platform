@@ -17,7 +17,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.core.enums import IssueSeverity, IssueStatus
 from app.db.session import Base
-from app.models import Project, RemainingIssue
+from app.models import Project, RemainingIssue, User
 from app.services import geelib
 
 _engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
@@ -195,12 +195,16 @@ def test_endpoint_report_flow():
     _fake_admin_role()
     orig_enabled = settings.GEELIB_ENABLED
     orig_report = geelib.report_defect
+    orig_personal_token = issues_api.get_user_app_token
+    issues_api.get_user_app_token = lambda db, uid: "PERSONAL"
+    user = User(id=123, username="reporter", name="Reporter", password_hash="x")
+    _s.add(user); _s.commit()
 
     # 通道关 → 409
     settings.GEELIB_ENABLED = False
     it = _seed_issue(sub=419)
     try:
-        issues_api.report_issue_to_geelib(it.id, db=_s, user=None)
+        issues_api.report_issue_to_geelib(it.id, db=_s, user=user)
         assert False, "通道关应 409"
     except Exception as e:
         assert getattr(e, "status_code", None) == 409, e
@@ -210,7 +214,7 @@ def test_endpoint_report_flow():
     it2 = _seed_issue(code="nosub", sub=None)
     settings.GEELIB_SUB_MAP = ""  # 确保无映射
     try:
-        issues_api.report_issue_to_geelib(it2.id, db=_s, user=None)
+        issues_api.report_issue_to_geelib(it2.id, db=_s, user=user)
         assert False, "缺 sub_id 应 409"
     except Exception as e:
         assert getattr(e, "status_code", None) == 409, e
@@ -218,26 +222,27 @@ def test_endpoint_report_flow():
     # 成功 → 回填 external_ref
     geelib.report_defect = lambda **k: {"ok": True, "matter_id": 777, "ref": "geelib#777", "reason": None}
     it3 = _seed_issue(sub=419)
-    resp = issues_api.report_issue_to_geelib(it3.id, db=_s, user=None)
+    resp = issues_api.report_issue_to_geelib(it3.id, db=_s, user=user)
     _s.refresh(it3)
     assert it3.external_ref == "geelib#777", it3.external_ref
     assert resp["data"]["matter_id"] == 777
 
     # 已上报 → 幂等
-    resp2 = issues_api.report_issue_to_geelib(it3.id, db=_s, user=None)
+    resp2 = issues_api.report_issue_to_geelib(it3.id, db=_s, user=user)
     assert resp2["data"]["already_reported"] is True
 
     # 上报失败 → 502
     geelib.report_defect = lambda **k: (_ for _ in ()).throw(geelib.GeelibError("极库云 500"))
     it4 = _seed_issue(sub=419)
     try:
-        issues_api.report_issue_to_geelib(it4.id, db=_s, user=None)
+        issues_api.report_issue_to_geelib(it4.id, db=_s, user=user)
         assert False, "失败应 502"
     except Exception as e:
         assert getattr(e, "status_code", None) == 502, e
 
     settings.GEELIB_ENABLED = orig_enabled
     geelib.report_defect = orig_report
+    issues_api.get_user_app_token = orig_personal_token
     print("OK endpoint report flow")
 
 

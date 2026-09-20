@@ -168,9 +168,15 @@ class Settings(BaseSettings):
     CI_HOOK_TOKEN: str = ""
 
     # ---- 极库云(geelib)缺陷上报（把遗留问题/回归失败推成极库云工作项「缺陷」）----
-    # 鉴权走 qihoo-sso-cli 取 app_token（与 sso-geelib-project-skill 同源），无人值守纯 HTTP，
-    # 不依赖 Node/skill。未开或缺 sub_id 映射即整条通道静默关闭，不影响任何业务流程。
+    # 手动报送走个人 SSO；后台自动报送通过服务器 qihoo-sso-cli 取 app_token。
+    # 未开或缺 sub_id 映射时通道不可用，自动报送不影响主流程。
     GEELIB_ENABLED: bool = False
+    # 个人授权使用独立 OAuth 客户端；禁止回退到服务器 CLI 登录人。
+    GEELIB_SSO_URL: str = "https://sts.login.ops.360.net:4436"
+    GEELIB_OAUTH_CLIENT_ID: str = ""
+    GEELIB_OAUTH_CLIENT_SECRET: str = ""
+    GEELIB_OAUTH_SCOPE: str = "internal.read internal.write user.read"
+    GEELIB_TOKEN_ENCRYPTION_KEY: str = ""  # Fernet key，所有后端实例保持一致
     GEELIB_API_URL: str = "http://geelib.agent-auth.qihoo.net"
     GEELIB_SSO_BIN: str = ""            # 空则运行时 shutil.which("qihoo-sso-cli")
     GEELIB_SSO_APP: str = "geelib"      # qihoo-sso-cli -app 值
