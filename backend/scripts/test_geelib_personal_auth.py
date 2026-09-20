@@ -1,5 +1,8 @@
 """个人授权隔离回归；内存 DB 和模拟外部请求，不创建真实缺陷。"""
 import time
+import tempfile
+import os
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +24,13 @@ from app.services import geelib, geelib_account as accounts
 
 class PersonalAuthTest(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        config_file = Path(directory.name) / 'sso.json'
+        config_file.write_text('{}')
+        p = patch.object(settings, 'GEELIB_SSO_CONFIG_FILE', str(config_file)); p.start(); self.addCleanup(p.stop)
+        p = patch.object(settings, 'GEELIB_TOKEN_KEY_FILE', str(Path(directory.name) / 'geelib.key')); p.start(); self.addCleanup(p.stop)
+        p = patch.dict(os.environ, {'SSO_URL': '', 'SSO_CLIENT_ID': '', 'SSO_CLIENT_SECRET': ''}); p.start(); self.addCleanup(p.stop)
         self.engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)
         self.db = sessionmaker(bind=self.engine)()
@@ -57,6 +67,22 @@ class PersonalAuthTest(unittest.TestCase):
         self.assertEqual(params['code_challenge_method'], ['S256'])
         self.assertIn('code_verifier', exchange.call_args.kwargs['data'])
         return flow, result
+
+    def test_existing_deployment_without_new_env_can_bind(self):
+        # 回归截图中的真实条件：部署只配置过 GEELIB_ENABLED，没有新增 OAuth/key 环境变量。
+        with patch.object(settings, 'GEELIB_OAUTH_CLIENT_ID', ''), patch.object(settings, 'GEELIB_SSO_URL', ''), patch.object(settings, 'GEELIB_TOKEN_ENCRYPTION_KEY', ''):
+            status = self.request('GET', '/api/auth/geelib').json()['data']
+            self.assertTrue(status['configured'], status)
+            flow = self.request('POST', '/api/auth/geelib/authorize').json()['data']
+            params = parse_qs(urlparse(flow['authorization_url']).query)
+            self.assertEqual(params['client_id'], ['a14ca4e6e00a488991b15501901fafbd'])
+            self.assertEqual(urlparse(flow['authorization_url']).hostname, 'sts.login.ops.qihoo.net')
+            # 下一请求/重建 cipher 后仍能解密绑定会话，不依赖进程缓存。
+            with patch.object(accounts, '_post', return_value={'access_token': 'personal', 'username': 'own-account'}):
+                result = self.request('POST', '/api/auth/geelib/complete', json={'state': flow['state'], 'code': 'code'})
+                self.assertEqual(result.status_code, 200, result.text)
+            self.assertNotIn('personal', self.db.get(GeelibAccount, 1).credentials)
+            self.shared.assert_not_called()
 
     def test_binding_encrypted_and_private(self):
         _, result = self.bind()

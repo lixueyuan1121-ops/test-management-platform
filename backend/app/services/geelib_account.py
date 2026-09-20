@@ -8,7 +8,7 @@ import hashlib
 import json
 import secrets
 import time
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 import requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.geelib_account import GeelibAccount
 from app.services.geelib import GeelibError
+from app.services.geelib_sso_config import client_config, credential_cipher
 
 _REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
@@ -27,26 +28,30 @@ class GeelibAccountError(GeelibError):
 
 def _cipher() -> Fernet:
     try:
-        return Fernet(settings.GEELIB_TOKEN_ENCRYPTION_KEY.encode())
-    except (ValueError, TypeError):
-        raise GeelibAccountError("请管理员配置极库云个人授权加密密钥") from None
+        return credential_cipher()
+    except ValueError as exc:
+        raise GeelibAccountError(str(exc)) from None
+
+
+def configuration_error() -> str | None:
+    try:
+        client_config()
+        _cipher()
+    except (ValueError, GeelibAccountError) as exc:
+        return str(exc)
+    return None
 
 
 def configured() -> bool:
-    if not settings.GEELIB_OAUTH_CLIENT_ID or urlparse(settings.GEELIB_SSO_URL).scheme != "https":
-        return False
-    try:
-        _cipher()
-        return True
-    except GeelibAccountError:
-        return False
+    return configuration_error() is None
 
 
 def _require_config():
     if not settings.GEELIB_ENABLED:
         raise GeelibAccountError("极库云上报通道未启用")
-    if not configured():
-        raise GeelibAccountError("请管理员配置极库云个人 SSO 授权（OAuth 客户端、HTTPS 地址和加密密钥）")
+    error = configuration_error()
+    if error:
+        raise GeelibAccountError(error)
 
 
 def _encrypt(data: dict) -> str:
@@ -62,13 +67,15 @@ def _decrypt(value: str) -> dict:
 
 def account_status(db: Session, user_id: int) -> dict:
     row = db.get(GeelibAccount, user_id)
-    return {"enabled": settings.GEELIB_ENABLED, "configured": configured(),
+    error = configuration_error() if settings.GEELIB_ENABLED else "极库云上报通道未启用"
+    return {"enabled": settings.GEELIB_ENABLED, "configured": error is None, "configuration_error": error,
             "bound": bool(row and row.credentials),
             "account_name": row.account_name if row and row.credentials else None}
 
 
 def start_authorization(db: Session, user_id: int) -> dict:
     _require_config()
+    client = client_config()
     state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     row = db.get(GeelibAccount, user_id)
     if row is None:
@@ -77,16 +84,16 @@ def start_authorization(db: Session, user_id: int) -> dict:
     row.pending_auth = _encrypt({"state": state, "verifier": verifier, "expires_at": time.time() + 300})
     db.commit()
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    params = {"client_id": settings.GEELIB_OAUTH_CLIENT_ID, "redirect_uri": _REDIRECT_URI,
+    params = {"client_id": client["client_id"], "redirect_uri": _REDIRECT_URI,
               "scope": settings.GEELIB_OAUTH_SCOPE, "response_type": "code", "state": state,
               "code_challenge": challenge, "code_challenge_method": "S256"}
-    return {"authorization_url": f"{settings.GEELIB_SSO_URL.rstrip('/')}/oauth/authorize?{urlencode(params)}",
+    return {"authorization_url": f"{client['sso_url']}/oauth/authorize?{urlencode(params)}",
             "state": state, "expires_in": 300}
 
 
 def _post(path: str, **kwargs) -> dict:
     try:
-        resp = requests.post(f"{settings.GEELIB_SSO_URL.rstrip('/')}{path}",
+        resp = requests.post(f"{client_config()['sso_url']}{path}",
                              timeout=30, allow_redirects=False, **kwargs)
         data = resp.json()
     except (requests.RequestException, ValueError):
@@ -113,6 +120,7 @@ def _credentials(data: dict, previous: dict | None = None) -> dict:
 
 def finish_authorization(db: Session, user_id: int, state: str, code: str) -> dict:
     _require_config()
+    client = client_config()
     row = db.query(GeelibAccount).filter_by(user_id=user_id).with_for_update().first()
     if not row or not row.pending_auth:
         raise GeelibAccountError("请先发起个人账号授权")
@@ -125,8 +133,8 @@ def finish_authorization(db: Session, user_id: int, state: str, code: str) -> di
     row.pending_auth = claimed
     db.commit()
     data = _post("/oauth/token", data={"grant_type": "authorization_code", "code": code.strip(),
-                 "client_id": settings.GEELIB_OAUTH_CLIENT_ID,
-                 "client_secret": settings.GEELIB_OAUTH_CLIENT_SECRET,
+                 "client_id": client["client_id"],
+                 "client_secret": client["client_secret"],
                  "redirect_uri": _REDIRECT_URI, "code_verifier": pending["verifier"]})
     # 授权交换期间如用户解绑/重新发起绑定，不覆盖新状态。
     db.expire_all()
@@ -149,6 +157,7 @@ def disconnect(db: Session, user_id: int) -> None:
 
 def get_user_app_token(db: Session, user_id: int) -> str:
     _require_config()
+    client = client_config()
     row = db.query(GeelibAccount).filter_by(user_id=user_id).with_for_update().first()
     if not row or not row.credentials:
         raise GeelibAccountError("请先绑定我的极库云账号，再报送 Bug")
@@ -157,8 +166,8 @@ def get_user_app_token(db: Session, user_id: int) -> str:
         if not creds.get("refresh_token"):
             raise GeelibAccountError("个人极库云授权已过期，请重新绑定")
         data = _post("/oauth/token", data={"grant_type": "refresh_token",
-                     "refresh_token": creds["refresh_token"], "client_id": settings.GEELIB_OAUTH_CLIENT_ID,
-                     "client_secret": settings.GEELIB_OAUTH_CLIENT_SECRET})
+                     "refresh_token": creds["refresh_token"], "client_id": client["client_id"],
+                     "client_secret": client["client_secret"]})
         creds = _credentials(data, creds)
         row.credentials = _encrypt(creds)
     # 刷新后的凭据先持久化；业务授权可能需要用户在 SSO 的 IM 卡片里确认。

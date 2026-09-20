@@ -2,11 +2,13 @@
   <el-button size="small" @click="open">{{ account.bound ? `极库云：${account.account_name}` : '绑定我的极库云账号' }}</el-button>
   <el-dialog v-model="visible" title="我的极库云账号" width="520px" :close-on-click-modal="false" :before-close="close">
     <p>当前平台账号：{{ auth.user?.name }}（{{ auth.user?.username }}）</p>
-    <el-alert v-if="!account.enabled || !account.configured" type="warning" :closable="false"
-      title="请管理员先启用极库云通道并配置个人 SSO 授权。" />
+    <el-alert v-if="loadError" type="error" :closable="false" title="账号状态加载失败，请重试。" />
+    <el-button v-if="loadError" size="small" @click="open">重试</el-button>
+    <el-alert v-else-if="!account.enabled || !account.configured" type="warning" :closable="false"
+      :title="account.configuration_error || '极库云通道暂不可用，请联系平台管理员。'" />
     <p v-if="account.bound">已绑定：{{ account.account_name }}。手动报送及状态同步将使用此账号。</p>
-    <p>点击授权后，在 SSO 页面登录你自己的账号，再将页面返回的授权码粘贴到这里。授权会话 5 分钟内有效。</p>
-    <el-button :disabled="!account.enabled || !account.configured" :loading="busy" @click="start">{{ account.bound ? '重新授权 / 更换账号' : '开始个人授权' }}</el-button>
+    <p>点击开始个人授权，再打开 SSO 页面，用你自己的企业账号登录。将 SSO 返回的授权码粘贴到这里即可绑定，两个系统的用户名无需相同。授权会话 5 分钟内有效。</p>
+    <el-button :disabled="loadError || !account.enabled || !account.configured" :loading="busy" @click="start">{{ account.bound ? '重新授权 / 更换账号' : '开始个人授权' }}</el-button>
     <div v-if="flow" class="auth-flow">
       <el-link :href="flow.authorization_url" target="_blank" rel="noopener noreferrer" type="primary">打开 SSO 授权页面</el-link>
       <el-input v-model="code" type="password" show-password autocomplete="off" placeholder="粘贴本次授权码" :disabled="busy" />
@@ -28,12 +30,25 @@ import { getGeelibAccount, authorizeGeelibAccount, completeGeelibAccount, discon
 const auth = useAuthStore()
 const account = ref({ bound: false, configured: false, enabled: false })
 const visible = ref(false), busy = ref(false), flow = ref(null), code = ref('')
-async function refresh() { account.value = await getGeelibAccount() }
+const loadError = ref(false)
+async function refresh() {
+  try { account.value = await getGeelibAccount(); loadError.value = false }
+  catch (error) { loadError.value = true; throw error }
+}
 onMounted(() => { refresh().catch(() => {}) })
 async function open() {
   visible.value = true
   try { await refresh() } catch { /* 拦截器提示 */ }
 }
+async function ensureBound() {
+  try { await refresh() } catch { visible.value = true; return false }
+  if (!account.value.bound || !account.value.enabled || !account.value.configured) {
+    visible.value = true
+    return false
+  }
+  return true
+}
+defineExpose({ ensureBound })
 function close(done) {
   if (busy.value) return
   code.value = ''; flow.value = null; visible.value = false

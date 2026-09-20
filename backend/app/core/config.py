@@ -171,12 +171,14 @@ class Settings(BaseSettings):
     # 手动报送走个人 SSO；后台自动报送通过服务器 qihoo-sso-cli 取 app_token。
     # 未开或缺 sub_id 映射时通道不可用，自动报送不影响主流程。
     GEELIB_ENABLED: bool = False
-    # 个人授权使用独立 OAuth 客户端；禁止回退到服务器 CLI 登录人。
-    GEELIB_SSO_URL: str = "https://sts.login.ops.360.net:4436"
+    # 空值复用 qihoo-sso-cli 客户端配置/内置公共客户端；不读取 CLI 个人 token。
+    GEELIB_SSO_URL: str = ""
     GEELIB_OAUTH_CLIENT_ID: str = ""
     GEELIB_OAUTH_CLIENT_SECRET: str = ""
     GEELIB_OAUTH_SCOPE: str = "internal.read internal.write user.read"
-    GEELIB_TOKEN_ENCRYPTION_KEY: str = ""  # Fernet key，所有后端实例保持一致
+    GEELIB_SSO_CONFIG_FILE: str = ""  # 空则读系统及当前服务用户的 qihoo-sso-cli/config.json
+    GEELIB_TOKEN_ENCRYPTION_KEY: str = ""  # 可覆盖自动持久化密钥；多实例保持一致
+    GEELIB_TOKEN_KEY_FILE: str = ""  # 默认 backend/.secrets/geelib.key，需持久化备份
     GEELIB_API_URL: str = "http://geelib.agent-auth.qihoo.net"
     GEELIB_SSO_BIN: str = ""            # 空则运行时 shutil.which("qihoo-sso-cli")
     GEELIB_SSO_APP: str = "geelib"      # qihoo-sso-cli -app 值

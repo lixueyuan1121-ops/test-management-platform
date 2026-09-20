@@ -28,7 +28,8 @@ const assert = require('node:assert/strict');
     await page.goto(`${base}/issues`);
     await page.getByRole('button', { name: '上报极库云', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '标记解决', exact: true }).count(), 0);
-    await page.getByRole('button', { name: '绑定我的极库云账号', exact: true }).click();
+    // 未绑定时直接报送应打开绑定窗口，而不是调用报送接口弹配置错误。
+    await page.getByRole('button', { name: '上报极库云', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '我的极库云账号' });
     await dialog.getByRole('button', { name: '开始个人授权', exact: true }).click();
     await dialog.getByRole('link', { name: '打开 SSO 授权页面' }).waitFor();

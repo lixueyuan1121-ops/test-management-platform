@@ -2,7 +2,7 @@
   <div class="issues functional-workspace">
     <WorkspacePage title="遗留问题">
       <template #actions>
-            <GeelibAccount />
+            <GeelibAccount ref="geelibAccount" />
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
@@ -89,6 +89,7 @@ let version = 0, disposed = false
 const safeRef = value => /^https?:\/\//i.test(value || '')
 onBeforeUnmount(() => { disposed = true; ++version })
 const reporting = ref(null)
+const geelibAccount = ref(null)
 const canManage = computed(() => auth.roleIn(pid.value) === 'admin')
 const canReport = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
 const dialog = reactive({ visible: false, id: null, title: '', external_ref: '', saving: false })
@@ -140,6 +141,7 @@ async function reportGeelib(row) {
   if (reporting.value !== null) return
   reporting.value = row.id
   try {
+    if (!await geelibAccount.value?.ensureBound()) { reporting.value = null; return }
     await ElMessageBox.confirm(`确认使用当前登录人绑定的极库云账号报送「${row.title}」？上报后会回填工作项编号。`, '上报极库云', { type: 'warning', confirmButtonText: '确认上报', cancelButtonText: '取消' })
   } catch { reporting.value = null; return }
   try {
