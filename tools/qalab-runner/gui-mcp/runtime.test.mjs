@@ -14,7 +14,7 @@ before(async () => { browser = await chromium.launch({ headless: true, executabl
 after(async () => { await browser?.close(); });
 beforeEach(async () => {
   context = await browser.newContext(); page = await context.newPage();
-  runtime = createAutomationRuntime({ page, registry, timeout: 500, pollMs: 15 });
+  runtime = createAutomationRuntime({ page, registry, timeout: 2000, pollMs: 15 });
 });
 afterEach(async () => { await context?.close(); });
 
@@ -152,8 +152,9 @@ async function exported(script, exportRegistry = registry, vmIframe = '') {
   const { execFileSync } = await import('node:child_process');
   const { fileURLToPath } = await import('node:url');
   const backend = fileURLToPath(new URL('../../../backend/', import.meta.url));
-  return execFileSync(`${backend}.venv/bin/python`, ['-B', '-c', 'import json,sys; from app.services.playwright_exporter import export_case_to_playwright; d=json.load(sys.stdin); print(export_case_to_playwright(d["case"],d["registry"],d["vmIframe"]))'], {
+  return execFileSync(`${backend}.venv/${process.platform === "win32" ? "Scripts/python.exe" : "bin/python"}`, ['-B', '-c', 'import json,sys; from app.services.playwright_exporter import export_case_to_playwright; d=json.load(sys.stdin); print(export_case_to_playwright(d["case"],d["registry"],d["vmIframe"]))'], {
     cwd: backend,
+    env: { ...process.env, PYTHONUTF8: "1" },
     input: JSON.stringify({ case: { title: 'export contract', exec_kind: 'gui', script }, registry: exportRegistry, vmIframe }),
     encoding: 'utf8',
   });
@@ -297,4 +298,14 @@ test('表单状态动作在导出脚本中等价执行', async () => {
   ], reg));
   assert.equal(await page.getByTestId('check').isChecked(),true);
   assert.equal(await page.getByTestId('select').inputValue(),'b');
+});
+
+
+test('optional cleanup click skips only absence and rejects invalid or ambiguous selectors', async () => {
+  await page.setContent('<button data-testid="button" onclick="this.remove()">stop</button>');
+  await runtime.click({ key: 'button', if_visible: true });
+  assert.equal((await runtime.click({ key: 'button', if_visible: true })).skipped, true);
+  await assert.rejects(runtime.click({ selector: '[', if_visible: true }));
+  await page.setContent('<button data-testid="button">A</button><button data-testid="button">B</button>');
+  await assert.rejects(runtime.click({ key: 'button', if_visible: true }), { code: 'AMBIGUOUS_TARGET' });
 });

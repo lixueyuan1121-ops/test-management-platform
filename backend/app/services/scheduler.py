@@ -217,12 +217,16 @@ def reap_stale_exec_runs(session_factory=None) -> int:
                         func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff)
                 .all())
         for r in rows:
+            cancelled = r.fail_kind == "cancel_requested"
             changed = db.query(ExecRun).filter(
                 ExecRun.id == r.id, ExecRun.status == ExecStatus.running,
+                ExecRun.fail_kind == r.fail_kind,
                 func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff,
-            ).update({ExecRun.status: ExecStatus.failed, ExecRun.fail_kind: "timeout",
+            ).update({ExecRun.status: ExecStatus.blocked if cancelled else ExecStatus.failed,
+                      ExecRun.verdict: "blocked" if cancelled else r.verdict,
+                      ExecRun.fail_kind: "cancelled" if cancelled else "timeout",
                       ExecRun.finished_at: func.now(),
-                      ExecRun.reason: "自动收口:执行超 2 小时未回填(执行机中断),标记失败"},
+                      ExecRun.reason: "手动终止：执行机已失联，已释放占用" if cancelled else "自动收口:执行超 2 小时未回填(执行机中断),标记失败"},
                      synchronize_session=False)
             reaped += changed
         if rows:

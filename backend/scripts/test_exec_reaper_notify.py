@@ -50,6 +50,7 @@ def test_reaper():
     s = _Session()
     p = _seed(s)
     stale = _run(s, p.id, "running", minutes_ago=200, batch="b-stale")     # 超 2h → 收
+    cancelled = _run(s, p.id, "running", minutes_ago=200, batch="b-cancel", fail_kind="cancel_requested")
     fresh = _run(s, p.id, "running", minutes_ago=10, batch="b-fresh")      # 未超 → 留
     pend = _run(s, p.id, "pending", minutes_ago=999, batch="b-pend")       # pending → 留
     done = _run(s, p.id, "passed", minutes_ago=999, batch="b-done")        # 终态 → 留
@@ -60,6 +61,8 @@ def test_reaper():
     s2 = _Session()
     assert s2.get(ExecRun, stale.id).status.value == "failed", "超龄 running 应被收口为 failed"
     assert "自动收口" in (s2.get(ExecRun, stale.id).reason or "")
+    assert s2.get(ExecRun, cancelled.id).status.value == "blocked"
+    assert s2.get(ExecRun, cancelled.id).fail_kind == "cancelled"
     assert s2.get(ExecRun, fresh.id).status.value == "running", "近期 running 不应动"
     assert s2.get(ExecRun, pend.id).status.value == "pending", "pending 不应动"
     assert s2.get(ExecRun, done.id).status.value == "passed", "终态不应动"

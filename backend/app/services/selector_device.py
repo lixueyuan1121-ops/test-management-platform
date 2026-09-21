@@ -54,16 +54,22 @@ def reap_stale_exec_locks(db, device_id):
     device = db.get(RunnerDevice, device_id)
     if device is None:
         return 0
-    cutoff = datetime.utcnow() - timedelta(minutes=EXEC_HEARTBEAT_STALE_MINUTES)
-    changed = db.query(ExecRun).filter(
+    cutoff = db.query(func.now()).scalar() - timedelta(minutes=EXEC_HEARTBEAT_STALE_MINUTES)
+    stale = db.query(ExecRun).filter(
         or_(ExecRun.runner_device_id == device_id,
             and_(ExecRun.runner_device_id.is_(None), ExecRun.runner == device.runner_id)),
         ExecRun.status == "running",
         func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff,
-    ).update({ExecRun.status: "failed", ExecRun.fail_kind: "timeout",
-              ExecRun.finished_at: func.now(),
-              ExecRun.reason: "自动收口:执行机心跳超时(runner 猝死/强关未回写),标记失败"},
-             synchronize_session="fetch")
+    )
+    changed = stale.filter(ExecRun.fail_kind == "cancel_requested").update({
+        ExecRun.status: "blocked", ExecRun.verdict: "blocked", ExecRun.fail_kind: "cancelled",
+        ExecRun.finished_at: func.now(),
+        ExecRun.reason: "手动终止：执行机心跳已超时，已释放占用；旧执行机恢复后必须停止原任务",
+    }, synchronize_session="fetch")
+    changed += stale.update({ExecRun.status: "failed", ExecRun.verdict: "fail",
+        ExecRun.fail_kind: "timeout", ExecRun.finished_at: func.now(),
+        ExecRun.reason: "自动收口:执行机心跳超时(runner 猝死/强关未回写),标记失败",
+    }, synchronize_session="fetch")
     if changed:
         db.commit()
     return changed

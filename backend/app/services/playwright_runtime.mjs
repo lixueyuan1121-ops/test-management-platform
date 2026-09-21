@@ -388,7 +388,16 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     },
     assertVisible: (args) => check("visible", args),
     assertAbsent: (args) => check("absent", args),
-    async click(args) { const r = await resolve(args); await r.loc.click({ timeout: Math.max(1, limit(args)) }); return { clicked: args.key || args.selector, via: r.hit }; },
+    async click(args) {
+      // Optional cleanup skips only a valid absent target, never broken selectors.
+      if (args.if_visible === true) {
+        const found = await inspect(args, { requireVisible: true });
+        if (!found.count || !await found.loc.isVisible()) return { skipped: true, reason: "目标当前不可见" };
+      }
+      const r = await resolve(args);
+      await r.loc.click({ timeout: Math.max(1, limit(args)) });
+      return { clicked: args.key || args.selector, via: r.hit };
+    },
     async setChecked(args) {
       if (typeof args.checked !== 'boolean') throw error('INVALID_CHECKED', 'checked 必须是布尔值');
       const r = await resolve(args);

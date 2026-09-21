@@ -27,12 +27,13 @@
           <template #title>
             <div class="batch-head">
               <el-tag :type="b.failed ? 'danger' : (b.blocked ? 'warning' : (b.total > 0 && b.passed === b.total ? 'success' : 'info'))" size="small" effect="dark">
-                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : (b.total > 0 && b.passed === b.total ? '全部通过' : '尚未全部判定')) }}
+                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : (b.total > 0 && b.passed === b.total ? '全部通过' : (b.cancelled === b.total ? '已终止' : '尚未全部判定'))) }}
               </el-tag>
               <span class="batch-id">{{ b.label }}</span>
               <span class="batch-stat">
                 共 {{ b.total }} · <b class="ok">{{ b.passed }} 过</b> · <b class="ng">{{ b.failed }} 失</b>
                 <template v-if="b.blocked"> · <b class="blk">{{ b.blocked }} 阻塞</b></template>
+                <template v-if="b.cancelled"> · {{ b.cancelled }} 已终止</template>
                 <template v-if="b.flaky"> · <b class="flk" title="重试后通过(不稳定)">{{ b.flaky }} 抖动</b></template>
                 · 功能通过率 {{ b.rate }}%
               </span>
@@ -102,8 +103,11 @@
             </el-table-column>
             <el-table-column label="操作" width="180" align="center" fixed="right">
               <template #default="{ row }">
-                <el-link type="primary" @click="openCorrect(row)">纠偏</el-link>
-                <el-link type="warning" class="op-retry" @click="onRetry(row)">重试</el-link>
+                <el-link v-if="!isActive(row)" type="primary" @click="openCorrect(row)">纠偏</el-link>
+                <el-link v-if="!isActive(row)" type="warning" class="op-retry" @click="onRetry(row)">重试</el-link>
+                <el-button v-if="isActive(row) && canStop" size="small" type="danger" plain
+                  :loading="stopping.has(row.run_id)" :disabled="row.cancel_requested"
+                  @click="onStop(row)">{{ row.cancel_requested ? '终止中…' : '手动终止' }}</el-button>
                 <el-link v-if="canTriage(row)" type="warning" class="triage-btn"
                          :class="{ busy: row._triaging }" @click="doTriage(row)">
                   {{ row._triaging ? `归因中${row._pos > 0 ? `（排队第 ${row._pos + 1} 位）` : '…'}` : 'AI归因' }}
@@ -121,8 +125,8 @@
     <el-dialog v-model="rep.visible" title="执行报告" width="720px" top="6vh">
       <div v-if="rep.row" class="rep">
         <div class="rep-head">
-          <el-tag :type="rep.row.verdict === 'pass' ? 'success' : 'danger'" size="small" effect="dark">
-            {{ rep.row.verdict === 'pass' ? '通过' : '失败' }}
+          <el-tag :type="resultType(rep.row)" size="small" effect="dark">
+            {{ resultLabel(rep.row) }}
           </el-tag>
           <b>{{ rep.row.title || `#${rep.row.case_id}` }}</b>
           <span class="rep-meta">{{ KIND_LABEL[rep.row.kind] || rep.row.kind }} · {{ rep.row.runner }} · {{ rep.row.duration_ms != null ? (rep.row.duration_ms / 1000).toFixed(1) + 's' : '—' }}</span>
@@ -223,15 +227,16 @@
 import { execResultBatches } from '@/utils/execResultBatches'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
-import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, triageExecRun } from '@/api'
+import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, cancelExecRun, triageExecRun } from '@/api'
 import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import { describeSelectorTarget } from '@/utils/selector-target-description'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
 import { useAppStore } from '@/store/app'
+import { useAuthStore } from '@/store/auth'
 import http from '@/api/http'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
@@ -272,6 +277,28 @@ const shot = ref({ visible: false, url: '' })
 const correct = ref({ visible: false, row: null, verdict: 'pass', reason: '', saving: false, maintain: false, expected: '', steps: '', script: '', scriptOrig: '' })
 const activeBatches = ref([])
 const app = useAppStore()
+const auth = useAuthStore()
+const canStop = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
+const stopping = ref(new Set())
+const isActive = row => ['pending', 'running'].includes(row.status)
+let pollTimer
+onMounted(() => {
+  pollTimer = setInterval(() => {
+    if (rows.value.some(isActive) && !loading.value) load(true).catch(() => {})
+  }, 5000)
+})
+onUnmounted(() => clearInterval(pollTimer))
+async function onStop(row) {
+  if (stopping.value.has(row.run_id) || row.cancel_requested) return
+  stopping.value.add(row.run_id)
+  try {
+    const updated = await cancelExecRun(row.run_id)
+    Object.assign(row, updated)
+    ElMessage.success(updated.cancel_requested ? '已请求终止，等待执行机停止；请保持 Runner 在线' : '已终止')
+    await load(true)
+  } catch { /* API interceptor displays the failure */ }
+  finally { stopping.value.delete(row.run_id) }
+}
 
 const runners = computed(() => [...new Set(rows.value.map((r) => r.runner).filter(Boolean))])
 
@@ -306,18 +333,22 @@ async function onProjectChange() {
   await load()
 }
 
-async function load() {
+async function load(silent = false) {
+  silent = silent === true
   if (!pid.value) return
   loading.value = true
   try {
-    rows.value = await listExecHistory({
+    const queryProject = pid.value
+    const nextRows = await listExecHistory({
       project_id: pid.value,
       task_id: taskId.value || undefined,
       runner: runner.value || undefined,
       verdict: verdict.value || undefined,
     })
-    // 默认展开最新批次,方便一进来就看到结果
-    activeBatches.value = batches.value.slice(0, 1).map((b) => b.id)
+    if (pid.value !== queryProject) return
+    rows.value = nextRows
+    // Polling preserves the expanded batch.
+    if (!silent) activeBatches.value = batches.value.slice(0, 1).map((b) => b.id)
     prefetchFixKeys()   // 预取 blocked 行的待补 key,决定是否显示「补齐选择器」入口
   } finally { loading.value = false }
 }
@@ -339,7 +370,7 @@ function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—
 
 // 三态结果:pass 通过 / fail 功能失败(真 bug) / blocked 选择器阻塞(不计功能失败率)。
 // 后端把 selector 阻塞的 verdict 直接写成 blocked;老数据可能仅 status=blocked,一并识别。
-function isBlocked(row) { return row.verdict === 'blocked' || row.status === 'blocked' }
+function isBlocked(row) { return row.fail_kind !== 'cancelled' && (row.verdict === 'blocked' || row.status === 'blocked') }
 
 // ---- AI 失败归因:失败/阻塞可归因;结果落行上(徽标+悬浮详情),失败可重试 ----
 function canTriage(row) { return row.status === 'failed' || isBlocked(row) }
@@ -367,12 +398,15 @@ async function doTriage(row) {
   }
 }
 function resultType(row) {
+  if (row.cancel_requested || row.fail_kind === 'cancelled') return 'info'
   if (row.verdict === 'pass') return 'success'
   if (isBlocked(row)) return 'warning'
   if (row.verdict === 'fail') return 'danger'
   return 'info'
 }
 function resultLabel(row) {
+  if (row.cancel_requested) return '终止中'
+  if (row.fail_kind === 'cancelled') return '已终止'
   if (row.verdict === 'pass') return '通过'
   if (isBlocked(row)) return '选择器阻塞'
   if (row.verdict === 'fail') return '失败'

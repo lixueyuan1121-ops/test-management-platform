@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runInWorker } from "./execution-worker.mjs";
 import { createHash } from "node:crypto";
 import { createRecordingClient } from "./recording-client.mjs";
 import { createRecordingPump } from "./recording-pump.mjs";
@@ -86,7 +87,7 @@ const guiCore = createGuiCore({ cdpUrl: `http://127.0.0.1:${CDP_PORT}` });
 // ---- 平台 API(契约见 app/routers/exec_queue.py:{code,msg,data} 信封)----
 async function api(method, path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
-    method, headers: H, body: body ? JSON.stringify(body) : undefined,
+    method, headers: H, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000),
   });
   const env = await res.json().catch(() => ({}));
   if (!res.ok || (env.code !== 0 && env.code !== undefined && ![200, 201].includes(env.code))) {
@@ -113,7 +114,7 @@ async function uploadProbeShot(id, buffer) {
   const fd = new FormData();
   fd.append("file", new Blob([buffer], { type: "image/png" }), `probe-${id}.png`);
   const res = await fetch(`${BASE_URL}/api/probe/${id}/screenshot?runner=${encodeURIComponent(RUNNER_ID)}`, {
-    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd,
+    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd, signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json().catch(() => ({}));
@@ -124,7 +125,7 @@ async function uploadExecShot(runId, idx, buffer) {
   const fd = new FormData();
   fd.append("file", new Blob([buffer], { type: "image/png" }), `exec-${runId}-${idx}.png`);
   const res = await fetch(`${BASE_URL}/api/exec-queue/${runId}/screenshot?idx=${idx}&runner=${encodeURIComponent(RUNNER_ID)}`, {
-    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd,
+    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd, signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const j = await res.json().catch(() => ({}));
@@ -135,7 +136,7 @@ async function uploadExecTrace(runId, path) {
   const fd = new FormData();
   fd.append("file", new Blob([readFileSync(path)], { type: "application/zip" }), `exec-${runId}-trace.zip`);
   const response = await fetch(`${BASE_URL}/api/exec-queue/${runId}/trace?runner=${encodeURIComponent(RUNNER_ID)}`, {
-    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd,
+    method: "POST", headers: { Authorization: `Bearer ${RUNNER_TOKEN}` }, body: fd, signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) throw new Error(`Trace 上传 HTTP ${response.status}`);
   const body = await response.json();
@@ -600,24 +601,7 @@ async function handlePerf() {
 }
 
 // ---- 主循环 ----
-async function tick() {
-  const pending = await fetchPending();
-  if (!pending?.length) return;
-  log(`拉到 ${pending.length} 条待执行`);
-  const batch = [];   // 本批各条结果(供结束语汇总)
-  for (const item of pending) {
-    let claimed = false;
-    let heartbeatTimer;
-    try {
-      await claim(item.run_id);
-      claimed = true;
-      const heartbeat = () => api("POST", `/api/exec-queue/${item.run_id}/heartbeat?runner=${encodeURIComponent(RUNNER_ID)}`)
-        .catch(e => log(`run_id=${item.run_id} 心跳失败: ${e.message}`));
-      await heartbeat();
-      heartbeatTimer = setInterval(heartbeat, 60000);
-      heartbeatTimer.unref();
-      log(`执行 run_id=${item.run_id} kind=${item.kind} case=${item.case_id}`);
-
+async function executeItem(item) {
       let result;
       if (DRY) {
         result = { verdict: "pass", reason: "dry-run 握手验证", duration_ms: 1 };
@@ -698,14 +682,6 @@ async function tick() {
         catch (e) { log(`  报告截图处理失败 run_id=${item.run_id}: ${e.message}`); }
       }
 
-      await report(item.run_id, {
-        verdict: result.verdict,
-        fail_kind: result.fail_kind ?? null,   // selector=选择器/环境阻塞(后端映射 blocked);business=功能失败;pass 时 null
-        reason: result.reason ?? "",
-        evidence_url: result.evidence ?? null,
-        duration_ms: result.duration_ms ?? null,
-        report: reportJson,
-      });
       // 定位候选建议上报:本条用例定位失败后发现的候选只进入评审，不修改本条结果,
       // 把铸造的候选连同证据推给平台进「自学习待确认」评审队列。失败不影响回写主流程。
       try {
@@ -718,6 +694,36 @@ async function tick() {
           log(`  自学习上报 ${heals.length} 个 key: ${heals.map((h) => h.key).join(",")}`);
         }
       } catch (e) { log(`  自学习上报失败(不影响回写): ${e.message}`); }
+
+  return { ...result, report: reportJson };
+}
+
+async function tick() {
+  const pending = await fetchPending();
+  if (!pending?.length) return;
+  log(`拉到 ${pending.length} 条待执行`);
+  const batch = [];   // 本批各条结果(供结束语汇总)
+  for (const item of pending) {
+    let claimed = false;
+    try {
+      await claim(item.run_id);
+      claimed = true;
+      const heartbeat = () => api("POST", `/api/exec-queue/${item.run_id}/heartbeat?runner=${encodeURIComponent(RUNNER_ID)}`);
+      log(`执行 run_id=${item.run_id} kind=${item.kind} case=${item.case_id}`);
+
+      const result = await runInWorker({
+        file: fileURLToPath(import.meta.url), item, heartbeat, log,
+        args: DRY ? ["--dry"] : [],
+        timeoutMs: Number(process.env.EXEC_TIMEOUT_MS || 900000),
+      });
+      await report(item.run_id, {
+        verdict: result.verdict,
+        fail_kind: result.fail_kind ?? null,   // selector=选择器/环境阻塞(后端映射 blocked);business=功能失败;pass 时 null
+        reason: result.reason ?? "",
+        evidence_url: result.evidence ?? null,
+        duration_ms: result.duration_ms ?? null,
+        report: result.report,
+      });
       // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
       const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";
       log(`回写 run_id=${item.run_id} -> ${result.verdict} (${result.duration_ms ?? "?"}ms)${reasonTail}`);
@@ -730,8 +736,6 @@ async function tick() {
         try { await report(item.run_id, { verdict: "fail", fail_kind: "selector", reason: `runner异常: ${e.message}` }); } catch {}
       }
       batch.push({ verdict: "fail", fail_kind: "selector" });
-    } finally {
-      clearInterval(heartbeatTimer);
     }
   }
   // 本批结束语:一批跑完给个明确收尾状态(此前静默结束,无人值守时看不出跑没跑完)。
@@ -762,7 +766,20 @@ process.on("unhandledRejection", (e) => log("未处理拒绝(已忽略,继续轮
 // 入口:--update 自升级(run.sh/run.cmd 启动前调;updated → exit 75 通知外层重启);
 // upload 子命令直传本地 session;否则常驻三队列轮询。
 const _argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-if (process.argv.includes("--check")) {
+if (process.argv.includes("--exec-worker")) {
+  // Exit if the supervising runner disappears; no orphan can continue clicking.
+  process.on("disconnect", () => {
+    if (process.platform !== "win32") { try { process.kill(-process.pid, "SIGKILL"); } catch {} }
+    else execFile("taskkill", ["/PID", String(process.pid), "/T", "/F"], { windowsHide: true });
+  });
+  process.once("message", async (item) => {
+    let result;
+    try { result = await executeItem(item); }
+    catch (e) { result = { verdict: "fail", fail_kind: "selector", reason: `执行异常: ${e.message}` }; }
+    try { await guiCore.close?.(); } catch {}
+    process.send({ type: "result", result }, () => process.exit(0));
+  });
+} else if (process.argv.includes("--check")) {
   log("runner 启动检查通过：模块加载正常，未连接平台、未执行任务");
 } else if (process.argv.includes("--update")) {
   const dir = dirname(fileURLToPath(import.meta.url));

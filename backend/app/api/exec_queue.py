@@ -87,6 +87,8 @@ def _maybe_auto_retry(db: Session, r: ExecRun) -> bool:
     """
     from app.core.config import settings
     max_retry = int(settings.EXEC_AUTO_RETRY or 0)
+    if r.fail_kind in ("cancelled", "cancel_requested"):
+        return False
     if max_retry <= 0 or r.status not in (ExecStatus.failed, ExecStatus.blocked):
         return False
     if (r.attempt or 1) > max_retry:
@@ -535,6 +537,8 @@ def _to_out(r: ExecRun) -> dict:
         "payload": json.loads(r.payload or "{}"),
         "verdict": r.verdict,
         "fail_kind": r.fail_kind,
+        "cancel_requested": r.fail_kind == "cancel_requested",
+        "cancelled": r.fail_kind == "cancelled",
         "retry_of": r.retry_of,
         "attempt": r.attempt,
         "flaky": bool(r.flaky),
@@ -823,19 +827,61 @@ def claim(
     return ok(_to_out(r))
 
 
+def _finish_cancelled(db, r, report_body=None):
+    r.status = ExecStatus.blocked
+    r.verdict = "blocked"
+    r.fail_kind = "cancelled"
+    r.finished_at = func.now()
+    r.reason = (r.reason or "手动终止").split("；等待执行机")[0] + "；执行已终止"
+    if report_body is not None and report_body.report is not None:
+        r.report = json.dumps(report_body.report, ensure_ascii=False)
+        r.duration_ms = report_body.duration_ms
+    if r.checklist_item_id:
+        item = db.get(ChecklistItem, r.checklist_item_id)
+        if item:
+            item.exec_status = ChecklistStatus.blocked
+            item.executed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(r)
+    return ok(_to_out(r))
+
+
+@router.post("/{run_id}/cancel")
+def cancel_run(run_id: int, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    r = db.query(ExecRun).filter(ExecRun.id == run_id).with_for_update().first()
+    if not r:
+        raise HTTPException(404, "执行项不存在")
+    assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    if r.status not in (ExecStatus.pending, ExecStatus.running) or r.fail_kind == "cancel_requested":
+        return ok(_to_out(r))
+    r.reason = f"用户 {user.id} 请求手动终止"
+    if r.status == ExecStatus.pending:
+        return _finish_cancelled(db, r)
+    # Keep the device occupied until its worker has stopped and acknowledged.
+    r.fail_kind = "cancel_requested"
+    r.reason += "；等待执行机停止当前操作（执行机需支持终止功能）"
+    db.commit()
+    db.refresh(r)
+    return ok(_to_out(r))
+
+
 @router.post("/{run_id}/heartbeat")
 def heartbeat(run_id: int, runner: str = Query(...), db: Session = Depends(get_db),
               ctx: RunnerCtx = Depends(require_runner_ctx)):
     if ctx.device is not None:
         runner = ctx.device.runner_id
-    q = db.query(ExecRun).filter(ExecRun.id == run_id, ExecRun.runner == runner,
-                                 ExecRun.status == ExecStatus.running)
-    if ctx.device:
-        q = q.filter(ExecRun.runner_device_id == ctx.device.id)
-    changed = q.update({ExecRun.heartbeat_at: func.now()}, synchronize_session=False)
-    if not changed:
-        db.rollback()
-        raise HTTPException(409, detail="执行已结束或不属于此设备")
+        from app.services.selector_device import lock_device
+        lock_device(db, ctx)
+    r = db.query(ExecRun).filter(
+        ExecRun.id == run_id, ExecRun.runner == runner,
+        _device_run_filter(db, ctx),
+    ).with_for_update().first()
+    if not r:
+        raise HTTPException(403, "执行项不属于此设备")
+    if r.status != ExecStatus.running:
+        return ok({"alive": False, "cancel_requested": r.fail_kind == "cancelled"})
+    r.heartbeat_at = func.now()
     if ctx.device:
         ctx.device.last_seen_at = datetime.utcnow()
         ctx.device.last_exec_at = datetime.utcnow()
@@ -843,7 +889,8 @@ def heartbeat(run_id: int, runner: str = Query(...), db: Session = Depends(get_d
     if not ctx.device:
         from app.services.dispatcher import touch_runner_heartbeat
         touch_runner_heartbeat(db, runner, kind="exec")
-    return ok({"alive": True})
+    return ok({"alive": True, "cancel_requested": r.fail_kind == "cancel_requested"})
+
 
 
 # ---- ④ runner 回写结果，并同步验收清单项状态 ----
@@ -863,6 +910,11 @@ def report(
     # 归属校验：只能回写派给自己的执行项（见 claim 说明）。
     if r.runner != runner or not db.query(ExecRun.id).filter(ExecRun.id == run_id, _device_run_filter(db, ctx)).first():
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+
+    if r.fail_kind == "cancelled":
+        return ok(_to_out(r))  # late worker success must not revive a cancelled run
+    if r.fail_kind == "cancel_requested":
+        return _finish_cancelled(db, r, body)
 
     if r.started_at is not None and r.status != ExecStatus.running:
         raise HTTPException(409, detail="执行已结束,拒绝过期回填")
@@ -972,6 +1024,9 @@ def correct_verdict(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
 
+    if r.status in (ExecStatus.pending, ExecStatus.running):
+        raise HTTPException(409, detail="请先终止当前执行，再纠偏结果")
+
     is_pass = body.verdict == "pass"
     is_blocked = body.verdict == "blocked"
     # 与 report 端点一致:blocked→fail_kind=selector;fail→business;pass→None。
@@ -1010,6 +1065,8 @@ def retry_run(
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行记录不存在")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
+    if r.status in (ExecStatus.pending, ExecStatus.running):
+        raise HTTPException(409, "该执行仍在排队或运行，请终止并等待确认后再重试")
     tc = db.get(TestCase, r.test_case_id)
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="用例不存在或已删除，无法重试")

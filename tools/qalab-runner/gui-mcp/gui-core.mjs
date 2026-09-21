@@ -534,14 +534,14 @@ export function createGuiCore(opts = {}) {
     },
     async screenshot(path) {
       await ensureConnected();
-      await page.screenshot({ path, fullPage: false });
+      await page.screenshot({ path, fullPage: false, timeout: 8000 });
       return { evidence: path };
     },
     // 截当前视口为 PNG Buffer(供执行报告上传,不落本地文件)。失败返回 null,不阻断执行。
     async shotBuffer() {
       try {
         await ensureConnected();
-        return await page.screenshot({ fullPage: false, type: "png" });
+        return await page.screenshot({ fullPage: false, type: "png", timeout: 8000 });
       } catch {
         return null;
       }

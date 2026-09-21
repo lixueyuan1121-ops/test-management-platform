@@ -13,7 +13,8 @@ export function execResultBatches(rows) {
     const eff = list.filter((r) => !r._superseded)
     const passed = eff.filter((r) => r.verdict === 'pass').length
     const failed = eff.filter((r) => r.verdict === 'fail').length
-    const blocked = eff.filter((r) => r.verdict === 'blocked' || r.status === 'blocked').length
+    const cancelled = eff.filter((r) => r.fail_kind === 'cancelled').length
+    const blocked = eff.filter((r) => r.fail_kind !== 'cancelled' && (r.verdict === 'blocked' || r.status === 'blocked')).length
     const flaky = eff.filter((r) => r.flaky).length
     const total = eff.length
     const durSum = list.reduce((n, r) => n + (r.duration_ms || 0), 0)
@@ -26,7 +27,7 @@ export function execResultBatches(rows) {
       id: key,
       label: key === '__none__' ? '(未分批 · 历史记录)' : `批次 ${key}`,
       rows: list,
-      total, passed, failed, blocked, flaky,
+      total, passed, failed, blocked, cancelled, flaky,
       rate: fnDenom ? Math.round((passed / fnDenom) * 100) : 0,
       runner: [...new Set(list.map((r) => r.runner).filter(Boolean))].join(', ') || '—',
       durationText: durSum ? (durSum / 1000).toFixed(1) + 's' : '—',

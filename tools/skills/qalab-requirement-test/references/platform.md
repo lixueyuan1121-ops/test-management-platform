@@ -30,10 +30,15 @@ GET /api/ai/testcases/{id} 校验脚本及正文；GET /api/exec-queue/history?p
 含非空 precondition 时先调用 Claude Code 导航；含 judge 或不支持的步骤可能调用模型。确定性脚本不应为无必要的环境文字引入 Claude 依赖。
 用例库执行/重试需线上设备 Runner 在线。重试读取最新用例，新增执行记录。外部回填不等价于已验证这一完整链路。
 
+## 执行终止
+执行列表对排队项直接取消，对运行项发送终止请求。Runner 每 5 秒检查心跳返回的 cancel_requested，杀掉本条执行子进程及其工具后回写，再释放设备锁；默认整条执行超时 15 分钟（EXEC_TIMEOUT_MS）。旧 Runner 需要更新并重启才能响应终止；不能仅把服务端状态改成结束后继续让旧进程操作。
+
 ## Namiwork 已验证的示例
 首页导航 [data-testid="nav-home"]；首页写文档入口 [data-testid="home-skill-chip"] + has_text=写文档；
 输入 [data-testid="message-input"]；选中技能 [data-kind="skill"][data-skill-name="writing-router"]；
 发送 [data-testid="send-button"]。
+独立任务入口 [data-testid="aside-new-task-btn"]；点击后先断言 home-greeting-title 可见、chat-user-query 不存在、message-input 文本为空，再选技能并发送。
+路由验收结束后，使用 click + selector=[data-testid="send-button"]:has(img[src*="pause"]) + args.if_visible=true 停止本次仍在生成的回复，再 assert_absent 验证停止并返回首页。if_visible 需更新后的 Runner；它只跳过当前不可见目标，非法或重复匹配仍失败。
 输入用 click → press End → type 追加，不能 fill 擦除技能标签。
 实际工具区域 .chat-inline-tool-event__detail.format-code 读取 writing-router/SKILL.md，随后返回 name: writing-router / 全能写作工作站。仅当需求为技能路由时以这些作为验收，生成文档需求还需验证交付物。
 writing-router 合理调用 huibao-writer 等下级写作技能不等于路由错误。选择器随版本变化，执行前须现场核实。

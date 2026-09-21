@@ -592,3 +592,5 @@ export const decideTestMission = (id, data) => http.post(`/test-missions/${id}/d
 export const testMissionMetrics = (params) => http.get('/test-missions/metrics', { params })
 
 export const getMissionRunEvidence = (id, runId) => http.get(`/test-missions/${id}/runs/${runId}`)
+
+export const cancelExecRun = (id) => http.post(`/exec-queue/${id}/cancel`)
