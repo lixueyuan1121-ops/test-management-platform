@@ -671,7 +671,11 @@ class DialogRunner {
 
     const base = this._baseGroups(); // 多轮：只认「基线之后新增的回答组」为本轮已启动，忽略上一轮旧气泡
     while (Date.now() < deadline) {
-      await this._dismissConfirmDialogs(); // 确认框可能拦住任务启动，先点掉
+      if (await this._dismissConfirmDialogs()) {
+        // 提交仍在途时也可能有生成图标/旧答案，不能据此释放下一条发送。
+        await this.page.waitForTimeout(500);
+        continue;
+      }
       if (await this._probeGenerating()) { this.generating = true; return; }
       // 兜底：极快返回的任务可能没捕捉到“生成中”，看是否已出现「本轮新增」的真实答案气泡
       try {
@@ -704,34 +708,31 @@ class DialogRunner {
   }
 
   async _handleProtectedOperation() {
-    const cards = this._ctx().locator(this.platform.askFormSelector || '.chat-ask-form-card, chat-question-form-card');
+    // 客户端 ask-user-floating.ts 的浮层结构；不按标题、描述或选项文案识别。
+    const cards = this._ctx().locator(this.platform.protectedOperationSelector ||
+      '.chat-ask-form-floating .chat-ask-form-card, .chat-ask-form-floating chat-question-form-card');
     const state = this._protectedOperation || (this._protectedOperation = { pending: null });
     for (let i = await cards.count() - 1; i >= 0; i--) {
       const card = cards.nth(i);
       if (!await card.isVisible()) continue;
-      const title = card.locator('.ask-form__title');
-      if (!await title.count()) continue;
-      const text = (await title.innerText()).replace(/\s/g, '');
-      if (!/^(?:【单选】)?是否允许执行本次受保护操作[？?]?$/.test(text)) continue;
       const fail = detail => new Error(`[NAMI_PROTECTED_OPERATION] ${detail}；未提交默认拒绝选项`);
-      const description = await card.locator('.ask-form__desc').innerText({ timeout: 2000 }).catch(() => '');
       const groups = card.locator('.ask-form__options');
       const options = card.locator('.ask-form__option');
-      if (!/统一安全策略要求确认/.test(description) || await groups.count() !== 1 ||
-          await groups.getAttribute('aria-multiselectable') === 'true' || await options.count() !== 2) {
-        throw fail('受保护操作卡片结构未识别');
-      }
-      const labels = await options.locator('.ask-form__option-label').allTextContents();
-      const allowIndex = labels.findIndex(s => s.trim() === '允许本次操作');
-      const denyIndex = labels.findIndex(s => s.trim() === '拒绝本次操作');
-      if (labels.length !== 2 || allowIndex < 0 || denyIndex < 0) throw fail('未找到明确的单次允许/拒绝选项');
-      const requestKey = await card.evaluate(el => el.questionKey || '');
-      const key = JSON.stringify([requestKey, text, description, labels]);
+      // 普通多选、填空、三项及以上反问继续使用原反问处理器。
+      if (await groups.count() !== 1 || await groups.getAttribute('aria-multiselectable') === 'true' ||
+          await options.count() !== 2) continue;
+      // questionKey 标识逻辑请求；旧组件无此属性时只用内容区分快照，不解释文案。
+      const readKey = () => card.evaluate(el => el.questionKey || JSON.stringify([
+        el.querySelector('.ask-form__title')?.textContent,
+        el.querySelector('.ask-form__desc')?.textContent,
+        [...el.querySelectorAll('.ask-form__option-label')].map(opt => opt.textContent)
+      ]));
+      const key = await readKey();
       if (state.pending?.key === key) {
-        if (Date.now() - state.pending.submittedAt > 15000) throw fail('单次允许已提交，但确认卡片超过 15 秒未消失');
+        if (Date.now() - state.pending.submittedAt > 15000) throw fail('第 2 项已提交，但确认卡片超过 15 秒未消失');
         return true; // 等待提交结果，不重复批准同一请求，也不把等待中的旧答案判成完成。
       }
-      const allow = options.nth(allowIndex), deny = options.nth(denyIndex);
+      const allow = options.nth(1), deny = options.nth(0);
       const selected = opt => opt.evaluate(el => {
         const aria = el.getAttribute('aria-selected');
         return aria == null ? el.classList.contains('is-selected') : aria === 'true';
@@ -739,22 +740,27 @@ class DialogRunner {
       if (!await selected(allow)) await allow.click({ timeout: 2000 });
       const deadline = Date.now() + 2000;
       while ((!await selected(allow) || await selected(deny)) && Date.now() < deadline) await this.page.waitForTimeout(50);
-      if (!await selected(allow) || await selected(deny)) throw fail('未能确认“允许本次操作”已选中');
+      if (!await selected(allow) || await selected(deny)) throw fail('未能确认第 2 项已选中');
       const submit = card.locator(this.platform.askFormSubmitSelector || '.ask-form__btn--ok');
-      if (await submit.count() !== 1 || !await submit.isVisible() || !await submit.isEnabled() ||
-          (await submit.innerText()).trim() !== '提交') throw fail('提交按钮不可用');
+      if (await submit.count() !== 1 || !await submit.isVisible() || !await submit.isEnabled()) throw fail('提交按钮不可用');
       // 等待 Lit 更新后再次核对，防止换题时沿用上一题的选中状态。
-      const currentKey = JSON.stringify([await card.evaluate(el => el.questionKey || ''),
-        (await title.innerText()).replace(/\s/g, ''), await card.locator('.ask-form__desc').innerText(),
-        await options.locator('.ask-form__option-label').allTextContents()]);
+      const currentKey = await readKey();
       if (currentKey !== key) throw fail('操作请求在确认期间发生变化');
       await submit.click({ timeout: 2000 });
       state.pending = { key, submittedAt: Date.now() };
-      if (this.logger) this.logger.info(`       ↳ [${this.label}] 受保护操作：已选择“允许本次操作”并提交，等待任务继续`);
+      if (this.logger) this.logger.info(`       ↳ [${this.label}] 受保护操作浮层：已选择第 2 项并提交，等待卡片关闭`);
       return true;
     }
     state.pending = null;
     return false;
+  }
+
+  async waitForProtectedOperations() {
+    const deadline = Date.now() + (this.execution.generationStartTimeout || 120000);
+    while (await this._handleProtectedOperation()) {
+      if (Date.now() >= deadline) throw new Error('[NAMI_PROTECTED_OPERATION] 浮层持续待处理，已阻止新建对话');
+      await this.page.waitForTimeout(200);
+    }
   }
 
   async _dismissModalConfirmDialogs() {

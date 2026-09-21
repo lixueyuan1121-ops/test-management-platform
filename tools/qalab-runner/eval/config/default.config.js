@@ -144,7 +144,8 @@ module.exports = {
     // 平台把反问渲染成 chat-question-form-card：每个 .ask-form__options 是一道题，
     // 选项为 .ask-form__option（role=option，选中态 class 含 is-selected），提交按钮 .ask-form__btn--ok。
     // 普通反问为每题选第一个选项（已选则跳过）后提交。
-    // “是否允许执行本次受保护操作？”单独处理：核对单次“允许本次操作”选中后提交，不沿用默认拒绝。
+    // 双选项单选浮层按位置选第 2 项再提交，不依赖标题/选项/按钮文案。
+    protectedOperationSelector: '.chat-ask-form-floating .chat-ask-form-card, .chat-ask-form-floating chat-question-form-card',
     askFormSelector: '.chat-ask-form-card, chat-question-form-card',
     askFormOptionsGroupSelector: '.ask-form__options',
     askFormOptionSelector: '.ask-form__option',

@@ -2,6 +2,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const DialogRunner = require('../src/dialog-runner');
+const DesktopRunner = require('../src/desktop-runner');
 const platform = require('../config/default.config').platform;
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
@@ -17,7 +18,7 @@ async function fixture(t, { embedded = false, delay = 0, stay = false, reversed 
   await frame.evaluate(({ delay, stay, reversed }) => {
     const app = document.createElement('openclaw-app'); document.body.append(app);
     const root = app.attachShadow({ mode: 'open' });
-    root.innerHTML = '<div class="chat-group user">当前测试</div><div class="chat-group assistant">等待确认</div><chat-question-form-card></chat-question-form-card>';
+    root.innerHTML = '<div class="chat-group user">当前测试</div><div class="chat-group assistant">等待确认</div><div class="chat-ask-form-floating"><chat-question-form-card></chat-question-form-card></div>';
     const card = root.querySelector('chat-question-form-card');
     card.questionKey = 'protected-request-1';
     // 与产品 DOM 一致：卡片本身 light DOM，外围 openclaw-app 是 open shadow root。
@@ -58,10 +59,10 @@ for (const embedded of [false, true]) test(`protected operation overrides defaul
   assert.equal(await r._dismissConfirmDialogs(), false);
 });
 
-test('permission choice follows the exact label even if option order changes', async t => {
+test('floating choice follows position 2 even if option order changes', async t => {
   const { r, frame } = await fixture(t, { reversed: true });
   await r._dismissConfirmDialogs();
-  assert.deepEqual(await frame.evaluate(() => window.answers), ['允许本次操作']);
+  assert.deepEqual(await frame.evaluate(() => window.answers), ['拒绝本次操作']);
 });
 
 test('submitted card is not clicked twice; stalled submission fails explicitly', async t => {
@@ -74,13 +75,11 @@ test('submitted card is not clicked twice; stalled submission fails explicitly',
   assert.equal(await frame.evaluate(() => window.answers.length), 1);
 });
 
-for (const failure of ['unknown-option', 'selection-failed', 'disabled-submit', 'multi-choice']) test(`${failure} never falls through to generic default-deny submit`, async t => {
+for (const failure of ['selection-failed', 'disabled-submit']) test(`${failure} never falls through to generic default-deny submit`, async t => {
   const { r, frame } = await fixture(t);
   await frame.evaluate(failure => {
-    if (failure === 'unknown-option') window.card.querySelectorAll('.ask-form__option-label')[1].textContent = '永久允许';
     if (failure === 'selection-failed') window.card.querySelectorAll('.ask-form__option')[1].onclick = () => {};
     if (failure === 'disabled-submit') window.card.querySelector('.ask-form__btn--ok').disabled = true;
-    if (failure === 'multi-choice') window.card.querySelector('.ask-form__options').setAttribute('aria-multiselectable', 'true');
   }, failure);
   r._handleAskForms = async () => { assert.fail('must not use generic submit'); };
   await assert.rejects(r._dismissConfirmDialogs(), /NAMI_PROTECTED_OPERATION/);
@@ -89,7 +88,7 @@ for (const failure of ['unknown-option', 'selection-failed', 'disabled-submit', 
 
 test('ordinary AskUser continues through its existing handler', async t => {
   const { r, frame } = await fixture(t);
-  await frame.evaluate(() => window.card.querySelector('.ask-form__title').textContent = '请选择输出格式');
+  await frame.evaluate(() => window.card.parentElement.classList.remove('chat-ask-form-floating'));
   let calls = 0; r._handleAskForms = async () => { calls++; return true; };
   assert.equal(await r._dismissConfirmDialogs(), true);
   assert.equal(calls, 1);
@@ -132,7 +131,7 @@ test('identical card can appear again after its previous submission has closed',
   await r._dismissConfirmDialogs();
   assert.equal(await r._dismissConfirmDialogs(), false);
   await frame.evaluate(() => {
-    document.querySelector('openclaw-app').shadowRoot.append(window.card);
+    document.querySelector('openclaw-app').shadowRoot.querySelector('.chat-ask-form-floating').append(window.card);
     window.card.querySelectorAll('.ask-form__option').forEach(option => {
       const denied = option.textContent.startsWith('拒绝本次操作');
       option.setAttribute('aria-selected', String(denied));
@@ -164,4 +163,94 @@ test('response wait processes three approvals before accepting a completion foot
   r._hasCurrentCompletionFooter = async () => true;
   assert.deepEqual(await r.waitForResponseComplete(), { completed: true, reason: 'footer' });
   assert.deepEqual(await frame.evaluate(() => window.answers), Array(3).fill('允许本次操作'));
+});
+
+test('changed title, description, option labels and submit caption still select position 2', async t => {
+  const { r, frame } = await fixture(t);
+  await frame.evaluate(() => {
+    window.card.querySelector('.ask-form__title').textContent = 'Operation confirmation';
+    window.card.querySelector('.ask-form__desc').textContent = 'Details have changed';
+    const labels = window.card.querySelectorAll('.ask-form__option-label');
+    labels[0].textContent = 'Stop'; labels[1].textContent = '本次运行内允许上述操作';
+    window.card.querySelector('.ask-form__btn--ok').textContent = 'Submit';
+  });
+  await r._dismissConfirmDialogs();
+  assert.deepEqual(await frame.evaluate(() => window.answers), ['本次运行内允许上述操作']);
+});
+
+for (const kind of ['multi', 'three-options']) test(`${kind} floating question keeps the ordinary AskUser handler`, async t => {
+  const { r, frame } = await fixture(t);
+  await frame.evaluate(kind => {
+    const group = window.card.querySelector('.ask-form__options');
+    if (kind === 'multi') group.setAttribute('aria-multiselectable', 'true');
+    else group.append(group.firstElementChild.cloneNode(true));
+  }, kind);
+  let calls = 0; r._handleAskForms = async () => { calls++; return true; };
+  assert.equal(await r._dismissConfirmDialogs(), true);
+  assert.equal(calls, 1);
+  assert.deepEqual(await frame.evaluate(() => window.answers), []);
+});
+
+test('generation signal does not release send gate before approval closes', async t => {
+  const { r, frame } = await fixture(t, { stay: true });
+  await frame.evaluate(() => {
+    const submit = window.card.querySelector('.ask-form__btn--ok');
+    const onSubmit = submit.onclick;
+    submit.onclick = () => { onSubmit(); setTimeout(() => window.card.remove(), 700); };
+  });
+  r._probeGenerating = async () => true;
+  await r.waitForGenerationStart();
+  assert.equal(await frame.evaluate(() => window.card.isConnected), false);
+  assert.deepEqual(await frame.evaluate(() => window.answers), ['允许本次操作']);
+});
+
+async function desktopWithPopup(t) {
+  const { r, frame, page } = await fixture(t, { stay: true });
+  await frame.evaluate(() => {
+    window.events = [];
+    const root = document.querySelector('openclaw-app').shadowRoot;
+    const button = document.createElement('button'); button.id = 'new-task'; button.textContent = '新建任务';
+    button.onclick = () => window.events.push('new-task'); root.prepend(button);
+  });
+  const d = new DesktopRunner(page.context(), page, { ...platform, newTaskSelector: '#new-task', inputSelector: 'body' }, {});
+  d.dr = r;
+  d._ensureCtx = async () => {}; d._fl = () => frame; d._focus = async () => {};
+  d._conversationKey = async () => ''; d._isCleanConversation = async () => true;
+  d._sleep = async () => {};
+  return { d, r, frame, page };
+}
+
+test('new conversation waits for all three late popups to submit and close', async t => {
+  const { d, frame } = await desktopWithPopup(t);
+  await frame.evaluate(() => {
+    const card = window.card;
+    card.querySelector('.ask-form__btn--ok').onclick = () => {
+      const index = [...card.querySelectorAll('.ask-form__option')].findIndex(el => el.getAttribute('aria-selected') === 'true');
+      window.answers.push(index);
+      window.events.push('submit-' + window.answers.length);
+      setTimeout(() => {
+        if (window.answers.length === 3) { card.remove(); window.events.push('closed'); return; }
+        card.questionKey = 'next-' + window.answers.length;
+        card.querySelectorAll('.ask-form__option').forEach((el, i) => {
+          el.setAttribute('aria-selected', String(i === 0)); el.classList.toggle('is-selected', i === 0);
+        });
+      }, 250);
+    };
+  });
+  assert.equal(await d._openCleanConversation(), true);
+  assert.deepEqual(await frame.evaluate(() => window.answers), [1, 1, 1]);
+  assert.deepEqual(await frame.evaluate(() => window.events), ['submit-1', 'submit-2', 'submit-3', 'closed', 'new-task']);
+});
+
+for (const failure of ['disabled', 'stalled']) test(`${failure} approval blocks new-task retries and launcher navigation`, async t => {
+  const { d, r, frame, page } = await desktopWithPopup(t);
+  if (failure === 'disabled') {
+    await frame.evaluate(() => window.card.querySelector('.ask-form__btn--ok').disabled = true);
+  } else {
+    await r._handleProtectedOperation(); r._protectedOperation.pending.submittedAt -= 16000;
+  }
+  const url = page.url();
+  await assert.rejects(d._openCleanConversation(), /NAMI_PROTECTED_OPERATION/);
+  assert.deepEqual(await frame.evaluate(() => window.events), []);
+  assert.equal(page.url(), url);
 });

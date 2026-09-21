@@ -108,7 +108,9 @@ class DesktopRunner {
       const fl = this._fl();
       try {
         await this._clickNewTask(fl, newSel);
-      } catch {}
+      } catch (e) {
+        if (e.message?.includes('[NAMI_PROTECTED_OPERATION]')) throw e;
+      }
       await this._sleep(1800);
       // 校验：输入框可见 且 无历史用户气泡 = 干净新对话
       try {
@@ -122,6 +124,7 @@ class DesktopRunner {
       this._warn(`   新建对话第 ${attempt + 1} 次未干净（仍有历史气泡/输入框未就绪），重试...`);
     }
     // 兜底：回 launcher 强制干净（整页重载较重，仅在按钮反复失败时用）
+    await this.dr.waitForProtectedOperations();
     try {
       await this.page.goto(this.platform.chatUrl || 'https://work.n.cn/launcher', { waitUntil: 'domcontentloaded', timeout: this.execution.timeout || 60000 });
       await this._ensureCtxReady();   // 回 launcher 后轮询等输入框可见再定形(iframe 设备等真 iframe 重挂,不误判 main)
@@ -130,12 +133,17 @@ class DesktopRunner {
       await this._sleep(400);
       return await this._isCleanConversation(previousSession);
     } catch (e) {
+      if (e.message?.includes('[NAMI_PROTECTED_OPERATION]')) throw e;
       this._warn(`   回 launcher 兜底也失败：${(e.message || '').split('\n')[0]}`);
       return false;
     }
   }
 
   async _clickNewTask(ctx, selector) {
+    this.dr.frame = ctx;
+    // 连发间隔中可能刚出现确认卡；必须等提交完成，不能带着待确认切去下一条。
+    // 放在点击入口，覆盖正常新建、重试和 launcher 兜底路径。
+    await this.dr.waitForProtectedOperations();
     const buttons = ctx.locator(selector);
     for (let i = 0; i < await buttons.count(); i++) {
       if (await buttons.nth(i).isVisible()) { await buttons.nth(i).click({ timeout: 5000 }); return; }
