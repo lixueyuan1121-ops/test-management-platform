@@ -13,13 +13,16 @@ def is_valid_candidate(cand: dict) -> bool:
     return (isinstance(cand, dict) and cand.get("by") in VALID_BYS
             and isinstance(cand.get("value"), str) and bool(cand["value"].strip())
             and ("name" not in cand or isinstance(cand["name"], str))
-            and ("exact" not in cand or type(cand["exact"]) is bool))
+            and ("exact" not in cand or type(cand["exact"]) is bool)
+            and ("has_text" not in cand or (isinstance(cand["has_text"], str) and bool(cand["has_text"].strip())))
+            and ("nth" not in cand or (type(cand["nth"]) is int and cand["nth"] >= 0))
+            and ("primary" not in cand or type(cand["primary"]) is bool))
 
 
 def normalize_candidate(cand: dict) -> dict | None:
     if not is_valid_candidate(cand):
         return None
-    return {k: cand[k] for k in ("by", "value", "name", "exact", "src", "status", "disabled") if k in cand}
+    return {k: cand[k] for k in ("by", "value", "name", "exact", "has_text", "nth", "primary", "src", "status", "disabled") if k in cand}
 
 
 def candidate_identity(cand: dict) -> str:
@@ -33,7 +36,7 @@ def candidate_identity(cand: dict) -> str:
             except ValueError:
                 pass
     return json.dumps([cand.get("by"), cand.get("value"), cand.get("name") or None,
-                       cand.get("exact", False)], ensure_ascii=False, separators=(",", ":"))
+                       cand.get("exact", False)] + ([cand.get("has_text"), cand.get("nth")] if "has_text" in cand or "nth" in cand else []), ensure_ascii=False, separators=(",", ":"))
 
 
 def is_active_candidate(cand: dict) -> bool:
@@ -52,6 +55,7 @@ def is_fragile(cand: dict) -> bool:
 
 
 def candidate_rank(cand: dict) -> int:
+    if cand.get("primary"): return -1
     by, value = cand.get("by"), cand.get("value", "")
     if by == "testid": return 0
     if by == "role" and cand.get("name") and cand.get("exact"): return 1

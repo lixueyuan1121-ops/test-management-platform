@@ -8,6 +8,8 @@ import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { captureProbeScreenshot } from './probe-screenshot.mjs';
+import { inspectSelectionMatches } from './selection-matches.mjs';
 import { rectInsideRatio } from "./probe-collect.mjs";
 import { createAutomationRuntime, isDirectBusinessPage } from "./runtime-loader.mjs";
 import { tokensForKey, pickConfident, mintedToCandidates, discoverInPage } from "./heal.mjs";
@@ -331,6 +333,10 @@ export function createGuiCore(opts = {}) {
         const registry = { ...REGISTRY, __selection: { frame: item.frame || 'auto', candidates: item.candidates || [] } };
         const checker = createAutomationRuntime({ page, registry, vmIframe: VM_IFRAME, timeout: 500 });
         try {
+          if (item.inspect_only) {
+            results.push({ key: item.key, ok: true, ...await inspectSelectionMatches(checker, item) });
+            continue;
+          }
           const result = await checker.inspect({ ...(item.target || {}), key: '__selection' }, { requireVisible: true });
           const visible = result.count === 1 && await result.loc.isVisible();
           const actual = result.count === 1 ? await result.loc.evaluate(el => ({ tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').trim().slice(0, 40) })) : null;
@@ -348,17 +354,23 @@ export function createGuiCore(opts = {}) {
           const curText = actual?.text || '';
           const textOk = hasTestid || !expText || !curText || curText === expText || curText.includes(expText) || expText.includes(curText);
           const expectedOk = !item.expected || (actual && tagOk && textOk);
-          const sameElement = visible && expectedOk;
+          const sameElement = visible && expectedOk && (!item.require_identity || identityVerified);
           if (visible && sameElement) await result.loc.evaluate(el => {
             const old = el.style.outline;
             el.style.outline = '3px solid #409eff';
             setTimeout(() => { el.style.outline = old; }, 1200);
           });
           results.push({ key: item.key, ok: visible && !!sameElement, identity_verified: !!identityVerified, count: result.count, visible, actual, hit: result.hit,
-            error: !visible ? '当前页面未唯一匹配可见元素（元素可能未加载/被遮挡/定位到多个），请在设备停到目标页后重新探测' : !sameElement ? '定位到的元素标签与选中时不一致，请重新探测该元素' : null });
-        } catch (error) { results.push({ key: item.key, ok: false, error: error.message, code: error.code }); }
+            error: !visible ? '当前页面未唯一匹配可见元素（元素可能未加载/被遮挡/定位到多个），请在设备停到目标页后重新探测' : !sameElement ? (item.require_identity && !identityVerified ? '选中的 DOM 已变化，请重新查看命中并选择目标' : '定位到的元素标签与选中时不一致，请重新探测该元素') : null });
+        } catch (error) {
+          let details = {};
+          if (error.code === 'AMBIGUOUS_TARGET') {
+            try { details = await inspectSelectionMatches(checker, item); } catch { /* retain the original error */ }
+          }
+          results.push({ key: item.key, ok: false, error: error.message, code: error.code, ...details });
+        }
       }
-      return { validation: results, checked_at: new Date().toISOString() };
+      return { validation: results, locator_features: ['has_text', 'nth', 'primary', 'require_identity'], checked_at: new Date().toISOString() };
     },
     async probe({ contains = "", bbox = null, limit = 0, screenshot = false } = {}) {
       const relax = !!bbox;               // 框选：放宽采集(穿透+不过滤白名单/去重)
@@ -383,11 +395,8 @@ export function createGuiCore(opts = {}) {
       };
       // 整页截图(可选,discover 用):fullPage 展开主文档滚动区,坐标系=主文档内容左上(0,0)。
       // 注:iframe 内部滚动区不随 fullPage 展开——iframe 内滚出可视区的元素框可能不准(已知限制)。
-      let screenshotBuffer = null;
-      if (screenshot) {
-        try { screenshotBuffer = await page.screenshot({ fullPage: true, type: "png" }); }
-        catch { screenshotBuffer = null; }   // 截图失败不阻断探测,降级为无底图
-      }
+      const { screenshotBuffer, screenshotError } = screenshot
+        ? await captureProbeScreenshot(page) : { screenshotBuffer: null, screenshotError: null };
       // 主文档滚动量 + CSS 尺寸:元素 rect 是各 frame 视口相对,+ mainScroll 转主文档内容绝对
       // (对齐 fullPage 图);pageSize 供前端把 absRect 归一化到截图展示尺寸(自动消 devicePixelRatio)。
       const mainScroll = await main.evaluate(() => ({ x: window.scrollX, y: window.scrollY })).catch(() => ({ x: 0, y: 0 }));
@@ -426,7 +435,7 @@ export function createGuiCore(opts = {}) {
         // 无元素的 frame 不产空组(减少噪音),但保留有错误的组供排查。
         if (els.length) groups.push({ frame, frameMatch: fmatch, url: target.url(), total: els.length, elements: els.slice(0, cap) });
       }
-      return { groups, pageSize, screenshotBuffer, frameAliases: vm === main && isDirectBusinessPage(page.url()) ? {vm:"shell", content:"shell", ...(page.frames().length === 1 ? {auto:"shell"} : {})} : {} };
+      return { groups, pageSize, screenshotBuffer, screenshotError, frameAliases: vm === main && isDirectBusinessPage(page.url()) ? {vm:"shell", content:"shell", ...(page.frames().length === 1 ? {auto:"shell"} : {})} : {} };
     },
     // 校验一批语义 key 是否在当前页命中(逐个 isKeyVisible,复用同一定位引擎)。
     // 供 runner 的 probe verify 模式用:回归确认某作用域已登记的 key 仍能在页面上定位到。

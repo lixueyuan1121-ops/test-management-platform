@@ -120,10 +120,9 @@
       <!-- discover/box 结果：按 shell/vm/iframe 分组；组内 新增/可更新 排前、已存在垫底，可一键隐藏已存在 -->
       <template v-else-if="(probe.mode === 'discover' || probe.mode === 'box') && probe.result">
         <div v-if="!enrichedGroups.length" class="form-hint">未扫到元素（页面可能未加载或无可交互元素）</div>
-        <template v-else>
-          <div v-if="probe.screenshotUrl && shotBoxes.length" class="shot-panel">
+          <div v-if="probe.screenshotUrl" class="shot-panel">
             <div class="shot-bar">
-              <span class="form-hint">页面截图（{{ shotBoxes.length }}/{{ boxTotal }} 个元素已框选{{ approxCount ? `，其中 ${approxCount} 个位置近似（虚线）` : '' }}）</span>
+              <span class="form-hint">页面截图（当前页 {{ shotBoxes.length }} 个标框，共 {{ boxTotal }} 个元素{{ approxCount ? `，其中 ${approxCount} 个位置近似（虚线）` : '' }}）</span>
               <div class="shot-zoom">
                 <el-button-group size="small">
                   <el-button :disabled="zoom <= 0.25" @click="zoom = Math.max(0.25, +(zoom - 0.25).toFixed(2))">－</el-button>
@@ -133,9 +132,12 @@
                 <span class="form-hint zoom-val">{{ Math.round(zoom * 100) }}%</span>
               </div>
             </div>
-            <div class="shot-viewport">
+            <el-alert v-if="probe.screenshotState === 'error'" :title="probe.screenshotError" type="warning" :closable="false" class="screenshot-error">
+              <el-button size="small" @click="retryProbeScreenshot">{{ probe.screenshotUrl ? '重试获取截图' : '重新探测并获取截图' }}</el-button>
+            </el-alert>
+            <div v-show="probe.screenshotState !== 'error'" class="shot-viewport" v-loading="probe.screenshotState === 'loading'" element-loading-text="截图加载中…">
               <div class="shot-wrap" :style="{ width: (zoom * 100) + '%' }">
-                <img :src="probe.screenshotUrl" class="shot-img" alt="页面截图" />
+                <img :key="probe.screenshotUrl" :src="probe.screenshotUrl" class="shot-img" alt="页面截图" @load="probe.screenshotState = 'ready'" @error="onScreenshotError" />
                 <div
                   class="shot-overlay" :class="{ 'box-selecting': boxMode }"
                   @mousedown="onBoxDown" @mousemove="onBoxMove" @mouseup="onBoxUp" @mouseleave="onBoxUp"
@@ -155,6 +157,9 @@
               </div>
             </div>
           </div>
+          <el-alert v-else :title="probe.screenshotState === 'waiting' ? '元素已探测完成，正在等待截图上传…' : (probe.screenshotError || '本次截图暂未获取')" :type="probe.screenshotState === 'waiting' ? 'info' : 'warning'" :closable="false" class="screenshot-status" style="margin-bottom:12px">
+            <el-button v-if="probe.screenshotState !== 'waiting'" size="small" :disabled="!probe.requestId" @click="retryProbeScreenshot">{{ probe.screenshotUrl ? '重试获取截图' : '重新探测并获取截图' }}</el-button>
+          </el-alert>
           <div class="probe-toolbar">
             <el-checkbox v-model="batchMode" :disabled="batchSaving">批量选择未添加元素</el-checkbox>
             <el-button size="small" :disabled="batchSaving" @click="selectAllUnadded">全选未添加（最多100个）</el-button>
@@ -163,7 +168,8 @@
             <el-checkbox v-model="probe.hideExists" size="small">隐藏「已存在」（{{ totalCounts.exists }}）</el-checkbox>
             <span class="form-hint">新增 {{ totalCounts.new }} · 可更新 {{ totalCounts.update }} · 已存在 {{ totalCounts.exists }}</span>
           </div>
-          <div v-for="(g, gi) in enrichedGroups" :key="gi" class="probe-group">
+          <el-pagination v-if="visibleElementCount > probePageSize" v-model:current-page="probePage" :page-size="probePageSize" :total="visibleElementCount" layout="total, prev, pager, next, jumper" style="margin-bottom:12px" />
+          <div v-for="g in pagedGroups" :key="g._groupId" class="probe-group">
             <div class="probe-group-head">
               <el-tag size="small" :type="g.frame === 'vm' ? 'success' : 'info'">{{ g.frame }}</el-tag>
               <span class="probe-group-url" :title="g.url">{{ g.url || '' }}</span>
@@ -225,7 +231,6 @@
               </el-table-column>
             </el-table>
           </div>
-        </template>
       </template>
 
       <!-- verify 结果：命中/失效逐 key 展示，失效标红并给「重新探测更新」 -->
@@ -424,14 +429,14 @@
     </el-dialog>
 
     <!-- 加为 key：探测元素 → 落库为选择器（新建 / 更新已有 key 追加候选到头部）-->
-    <el-dialog v-model="add.visible" :show-close="!add.saving" :close-on-click-modal="!add.saving" :close-on-press-escape="!add.saving" title="加为 key" width="560px">
+    <el-dialog v-model="add.visible" :show-close="!add.saving && !locatorConfig.checking" :close-on-click-modal="!add.saving && !locatorConfig.checking" :close-on-press-escape="!add.saving && !locatorConfig.checking" title="加为 key" width="720px">
       <div class="add-preview">
         <div class="form-hint">来源元素（{{ add.frame }} frame）</div>
         <div><el-tag size="small" type="info" effect="plain">{{ add.tag }}{{ add.type ? `[${add.type}]` : '' }}</el-tag> <span class="probe-el-text">{{ add.name || add.text || '（无文本）' }}</span></div>
         <div class="add-cand">best 候选：<code>{{ add.cand ? candLabel(add.cand) : '—' }}</code></div>
-        <div v-if="add.mode === 'create' && add.cands.length" class="add-cands">
-          <span class="form-hint">新建将存 {{ add.cands.length }} 个候选（testid 优先 + css 兜底，执行期可回落）：</span>
-          <el-tag v-for="(c, ci) in add.cands" :key="ci" size="small" effect="plain"
+        <div v-if="add.mode === 'create' && locatorPreview.length" class="add-cands">
+          <span class="form-hint">将保存 {{ locatorPreview.length }} 个候选（所选定位优先）：</span>
+          <el-tag v-for="(c, ci) in locatorPreview" :key="ci" size="small" effect="plain"
                   :type="c.by === 'testid' ? 'success' : (c.by === 'css' ? 'primary' : 'info')" class="cand-chip">
             {{ candLabel(c) }}
           </el-tag>
@@ -444,7 +449,7 @@
           该元素在嵌套 iframe，将按 frame url 定位：<code>{{ add.frame }}</code>（执行时必须唯一匹配此 frame）
         </div>
       </div>
-      <el-form label-width="90px" :disabled="add.saving" style="margin-top:12px">
+      <el-form label-width="90px" :disabled="add.saving || locatorConfig.checking" style="margin-top:12px">
         <el-form-item label="模式">
           <el-radio-group v-model="add.mode">
             <el-radio v-if="fixCtx.activeKey && fixCtx.caseIds.length" value="reuse">复用已有 key</el-radio>
@@ -488,38 +493,51 @@
               <li v-for="(c, ci) in (addTarget.candidates || [])" :key="ci"><code>{{ candLabel(c) }}</code></li>
               <li v-if="!(addTarget.candidates || []).length" class="form-hint">（空）</li>
             </ul>
-            <div class="form-hint">合并后顺序（稳定优先，脆弱文案候选降到末尾）</div>
+            <div class="form-hint">保存后的定位顺序（所选方式优先）</div>
             <ol class="cand-list merged">
               <li v-for="(c, ci) in addMergedPreview" :key="ci"><code>{{ candLabel(c) }}</code> <el-tag v-if="c._new" type="warning" size="small" effect="plain">新</el-tag></li>
             </ol>
           </div>
         </el-form-item>
-        <!-- XPath 定位:新建/更新两种模式都可用。CSS 满足不了(同 class 多命中)时用它按文本精确定位。 -->
-        <el-form-item label="XPath 定位">
-          <el-alert v-if="add.cssCount >= 2" type="warning" :closable="false" show-icon class="xpath-alert">
-            该元素的 CSS 类在本次探测命中 <b>{{ add.cssCount }}</b> 个（多为同 class、仅文本不同的控件），CSS 会定位串到别的元素。建议用下方 XPath 按文本精确定位。
-          </el-alert>
-          <el-input v-model="add.xpath" clearable placeholder='可选：CSS 满足不了时填 XPath，如 //button[normalize-space(.)="打开文件夹"]'>
-            <template #append>
-              <el-button :disabled="!add.xpathAuto" @click="add.xpath = add.xpathAuto">自动生成</el-button>
-            </template>
-          </el-input>
-          <div class="form-hint">
-            填了就并入候选并<b>排在 CSS 之前</b>（testid &gt; xpath &gt; css）；{{ add.mode === 'update' ? '合并进所选已有 key' : '随新 key 一起存' }}。留空则不加。
-            <span v-if="add.xpathAuto">建议：<code class="xpath-suggest" @click="add.xpath = add.xpathAuto" title="点击采纳">{{ add.xpathAuto }}</code></span>
-          </div>
-          <el-alert v-if="add.ambiguousCount > 1" type="error" :closable="false" show-icon class="xpath-alert" style="margin-top:8px">
-            上次保存时该候选在页面匹配到 <b>{{ add.ambiguousCount }}</b> 个相同元素,执行时无法确定是哪个。请用 XPath 限定到唯一,例如:
-            <div style="margin-top:4px">
-              · 按文本:<code>//button[contains(normalize-space(.),"报告")]</code><br>
-              · 按第几个:<code>(//div[@class="title"])[1]</code>（下标从 1 起）
+        <template v-if="add.mode !== 'reuse'">
+          <el-form-item label="定位方式">
+            <el-radio-group v-model="locatorConfig.mode" @change="resetLocatorMatches">
+              <el-radio value="single">单个定位</el-radio><el-radio value="combined">组合定位（加文本）</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="主要定位">
+            <el-radio-group v-model="locatorConfig.by" @change="changeLocatorBy">
+              <el-radio value="testid">testid</el-radio><el-radio value="xpath">XPath</el-radio><el-radio value="css">CSS</el-radio>
+            </el-radio-group>
+            <el-input v-model="locatorConfig.value" aria-label="定位值" placeholder="输入定位值" @input="resetLocatorMatches" />
+          </el-form-item>
+          <el-form-item v-if="locatorConfig.mode === 'combined'" label="包含文本">
+            <el-input v-model="locatorConfig.text" aria-label="组合文本" placeholder="定位器和这段文本必须同时匹配" @input="resetLocatorMatches" />
+          </el-form-item>
+          <el-form-item label="候选兜底">
+            <el-checkbox v-model="locatorConfig.keepFallback" @change="resetLocatorMatches">保留其它候选作为兜底</el-checkbox>
+            <div class="form-hint" style="width:100%">默认仅保存所选方案。启用兜底后，主要定位失效时会尝试其它候选。</div>
+          </el-form-item>
+          <el-form-item label="选择目标">
+            <el-button :loading="locatorConfig.checking" :disabled="add.saving || !locatorPreview.length" @click="inspectLocatorMatches">查看当前命中</el-button>
+            <span v-if="locatorConfig.nth !== null" class="form-hint">已选第 {{ locatorConfig.nth + 1 }} 个匹配（按当前 DOM 顺序）</span>
+            <div v-if="locatorConfig.error" class="form-hint" role="alert">{{ locatorConfig.error }}</div>
+            <div v-if="locatorConfig.matches.length" class="locator-matches">
+              <div class="form-hint">命中 {{ locatorConfig.count }} 个元素，请选一个 DOM 保存到当前 key。{{ locatorConfig.truncated ? '当前展示前 30 个，请收紧定位或文本条件。' : '' }}</div>
+              <el-radio-group v-model="locatorConfig.selectedRef" class="locator-match-list" @change="chooseLocatorMatch">
+                <el-radio v-for="(m, index) in locatorConfig.matches" :key="m.element_ref" :value="m.element_ref" :disabled="!m.visible" class="locator-match-option">
+                  <span>#{{ index + 1 }} &lt;{{ m.tag }}&gt; {{ m.accessibleName || m.text || '无文本' }}</span>
+                  <span class="form-hint">{{ m.frame }} · {{ m.absRect ? '位置 '+Math.round(m.absRect.x)+','+Math.round(m.absRect.y) : '无坐标' }}{{ !m.visible ? ' · 不可见' : '' }}</span>
+                  <span v-if="probe.screenshotUrl && m.absRect" class="locator-match-crop" :style="matchCropStyle(m)"></span>
+                </el-radio>
+              </el-radio-group>
             </div>
-          </el-alert>
-        </el-form-item>
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
-        <el-button :disabled="add.saving" @click="add.visible = false">取消</el-button>
-        <el-button type="primary" :loading="add.saving" @click="submitAddAsKey">保存</el-button>
+        <el-button :disabled="add.saving || locatorConfig.checking" @click="add.visible = false">取消</el-button>
+        <el-button type="primary" :loading="add.saving" :disabled="locatorConfig.checking" @click="submitAddAsKey">保存</el-button>
       </template>
     </el-dialog>
 
@@ -603,11 +621,13 @@
 </template>
 
 <script setup>
-import { elementStatus, suggestKey, sameFrameDomain } from '@/utils/probe-batch'
+import { createProbeScreenshotLoader } from '@/utils/probe-screenshot'
+import { configuredCandidates } from '@/utils/locator-config'
+import { createElementStatusMatcher, suggestKey, sameFrameDomain } from '@/utils/probe-batch'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 const activeView = ref('registry')
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, markRaw } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
@@ -752,8 +772,8 @@ onMounted(async () => {
 
 let disposed = false, listVersion = 0, learnedVersion = 0, probeVersion = 0
 const loadError = ref(false), reviewing = ref(false), deleting = ref(false)
-const contextLocked = computed(() => batchSaving.value || batchVisible.value || dialog.visible || dialog.saving || add.visible || add.saving || probe.running || probeCountdown.value > 0 || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
-onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll(); cancelDelayedProbe() })
+const contextLocked = computed(() => batchSaving.value || batchVisible.value || dialog.visible || dialog.saving || add.visible || add.saving || locatorConfig.checking || probe.running || probeCountdown.value > 0 || trialRunning.value || bulkAdding.value || historyDialog.visible || historyDialog.saving || importing.value || reviewing.value || deleting.value)
+onUnmounted(() => { disposed = true; ++listVersion; ++learnedVersion; ++probeVersion; stopPoll(); screenshotLoader.cancel(); cancelDelayedProbe() })
 
 async function onProjectChange() {
   if (pid.value) setLastProjectId(pid.value)
@@ -780,6 +800,8 @@ async function reload() {
     if (disposed || version !== listVersion) return
     rows.value = scope ? (data.by_sub?.[scope] || []) : (data.shared || [])
     effectiveRows.value = [...new Map([...(data.shared || []), ...rows.value].map(row => [row.key, row])).values()]
+    const registeredKeys = new Set(effectiveRows.value.map(row => row.key))
+    for (const [uid, key] of savedProbeKeys) if (!registeredKeys.has(key)) savedProbeKeys.delete(uid)
     // 回显当前作用域的扫描分支 / vm_iframe（保存分支时回传 vm_iframe，避免被清）
     scanBranch.value = data.scope?.scan_branch || ''
     scopeVmIframe.value = data.scope?.vm_iframe || ''
@@ -1181,8 +1203,30 @@ const route = useRoute()
 // updateTarget：verify 里点「重新探测更新」预置的目标 key，下次「加为 key」默认选它（更新已有）。
 const probe = reactive({
   runner: '', contains: '', mode: 'discover', page: '',
-  running: false, done: false, result: null, updateTarget: '', hideExists: false, screenshotUrl: '',
+  running: false, done: false, result: null, updateTarget: '', hideExists: false, screenshotUrl: '', requestId: null, screenshotState: 'idle', screenshotError: '',
 })
+const screenshotLoader = createProbeScreenshotLoader({
+  fetchProbe: getProbe,
+  onUrl: url => { probe.screenshotUrl = url + (url.includes('?') ? '&' : '?') + 'loaded=' + Date.now(); probe.screenshotState = 'loading' },
+  onError: error => { probe.screenshotState = 'error'; probe.screenshotError = error },
+})
+function retryProbeScreenshot() {
+  if (!probe.requestId || disposed) return
+  if (!probe.screenshotUrl) {
+    if (probe.mode === 'box' && lastBox.value) runProbe('box', { bbox: lastBox.value, screenshot: true })
+    else runProbe('discover')
+    return
+  }
+  probe.screenshotState = 'waiting'; probe.screenshotError = ''
+  screenshotLoader.load(probe.requestId)
+}
+function onScreenshotError() {
+  probe.screenshotState = 'error'; probe.screenshotError = '截图加载失败，请重试获取截图'
+}
+watch([pid, subProduct, () => probe.runner], () => {
+  screenshotLoader.cancel(); probe.requestId = null
+  if (probe.screenshotState === 'waiting') probe.screenshotState = 'idle'
+}, { flush: 'sync' })
 let pollTimer = null
 
 function stopPoll() {
@@ -1195,6 +1239,8 @@ async function runProbe(mode, extraParams = {}) {
   const version = ++probeVersion
   if (!pid.value || !probe.runner) { ElMessage.warning('请先选择项目和在线设备'); return }
   stopPoll()
+  screenshotLoader.cancel()
+  probe.requestId = null; probe.screenshotState = 'idle'; probe.screenshotError = ''
   probe.mode = mode
   if (mode !== 'box') lastBox.value = null   // 非框选:清掉上次的框选标注
   probe.running = true
@@ -1209,6 +1255,7 @@ async function runProbe(mode, extraParams = {}) {
   } catch { probe.running = false; return /* http 拦截器已提示 */ }
   if (disposed || version !== probeVersion) return
   if (!id) { probe.running = false; ElMessage.error('发起探测失败'); return }
+  probe.requestId = id
 
   const startedAt = Date.now()
   let polling = false
@@ -1226,8 +1273,12 @@ async function runProbe(mode, extraParams = {}) {
     if (disposed || version !== probeVersion) return
     if (r.status === 'done') {
       stopPoll()
-      probe.running = false; probe.done = true; probe.result = r.result || {}
+      probe.running = false; probe.done = true; probe.result = markRaw(r.result || {})
       probe.screenshotUrl = r.screenshot_url || ''
+      if (mode !== 'verify') {
+        if (probe.screenshotUrl) probe.screenshotState = 'loading'
+        else { probe.screenshotState = 'waiting'; probe.screenshotError = ''; screenshotLoader.load(id) }
+      }
       // 成功/失败提示(尤其框选:让用户明确知道识别到没有、识别了几个)。
       const n = (probe.result.groups || []).reduce((s, g) => s + (g.elements || []).length, 0)
       if (mode === 'box') {
@@ -1361,12 +1412,41 @@ function elementDisplayName(el) {
 }
 function candLabel(c) {
   if (!c || !c.by) return '—'
-  return `${_BY_LABEL[c.by] || c.by}=${c.value}${c.name ? ` · ${c.name}` : ""}${c.exact ? "（精确）" : ""}`
+  return `${_BY_LABEL[c.by] || c.by}=${c.value}${c.has_text ? ` + text包含「${c.has_text}」` : ""}${c.nth !== undefined ? ` · 第${c.nth + 1}个` : ""}${c.name ? ` · ${c.name}` : ""}${c.exact ? "（精确）" : ""}`
 }
 
 // 当前作用域 rows 的候选反查索引:candKey → key 名(取第一个命中的 key)。
 const allProbeElements = computed(() => (probe.result?.groups || []).flatMap((g, gi) => (g.elements || []).map((el, ei) => ({...el, _uid:`${gi}-${ei}`, _frameMatch:g.frameMatch || g.frame || 'auto'}))))
-function matchStatus(el) { return elementStatus(el, effectiveRows.value, allProbeElements.value, probe.result?.frameAliases || {}) }
+const statusMatcher = computed(() => createElementStatusMatcher(effectiveRows.value, allProbeElements.value, probe.result?.frameAliases || {}))
+// A saved XPath/validated candidate may not exist in the original snapshot.
+// Remember the exact selected element instead of inferring identity from shared CSS.
+const savedProbeKeys = reactive(new Map())
+watch([() => probe.result, pid, subProduct], () => savedProbeKeys.clear(), { flush: 'sync' })
+function rememberProbeSave(uid, key) {
+  if (uid && key) savedProbeKeys.set(uid, key)
+}
+function matchStatus(el) {
+  const key = savedProbeKeys.get(el._uid)
+  return key ? { type: 'exists', key, keys: [key] } : statusMatcher.value(el)
+}
+
+const groupOffsets = computed(() => {
+  let offset = 0
+  return (probe.result?.groups || []).map(g => { const start = offset; offset += (g.elements || []).length; return start })
+})
+const probePage = ref(1)
+const probePageSize = 50
+const visibleElementCount = computed(() => enrichedGroups.value.reduce((n, g) => n + g.elements.length, 0))
+const pagedGroups = computed(() => {
+  const start = (probePage.value - 1) * probePageSize
+  let offset = 0
+  return enrichedGroups.value.flatMap((g, gi) => {
+    const elements = g.elements.slice(Math.max(0, start - offset), Math.max(0, start + probePageSize - offset))
+    offset += g.elements.length
+    return elements.length || (!visibleElementCount.value && gi === 0) ? [{ ...g, elements, _groupId: gi }] : []
+  })
+})
+watch([() => probe.result, () => probe.hideExists, () => fixCtx.activeKey], () => { probePage.value = 1; hoverKey.value = '' })
 
 const STATUS_META = {
   exists: { label: '已添加', tag: 'success' },
@@ -1381,14 +1461,14 @@ const keyIndex = computed(() => {
   return idx
 })
 
-// discover 结果按标识增强：每元素附 _status/_hitCands/_hitFrame；组内计数；排序 新增→可更新→已存在；可隐藏已存在。
-const STATUS_ORDER = { new: 0, update: 1, exists: 2, none: 3 }
+// discover 结果按标识增强：每元素附 _status/_hitCands/_hitFrame；组内计数；排序 已添加→可更新→未添加；可隐藏已存在。
+const STATUS_ORDER = { exists: 0, update: 1, new: 2, none: 3 }
 const enrichedGroups = computed(() => {
   if ((probe.mode !== 'discover' && probe.mode !== 'box') || !probe.result) return []
   const kIdx = keyIndex.value
   return (probe.result.groups || []).map((g, gi) => {
     let els = (g.elements || []).map((el, ei) => {
-      const status = el.best ? matchStatus({ ...el, _frameMatch: g.frameMatch || g.frame || 'auto' }) : { type: 'none' }
+      const status = el.best ? matchStatus(allProbeElements.value[groupOffsets.value[gi] + ei]) : { type: 'none' }
       const hit = status.key ? kIdx.get(status.key) : null
       return { ...el, _uid: `${gi}-${ei}`, _frameMatch: g.frameMatch || g.frame || 'auto', _status: status, _hitCands: hit ? (hit.candidates || []) : [], _hitFrame: hit ? (hit.frame || '') : '' }
     })
@@ -1418,9 +1498,10 @@ const totalCounts = computed(() => {
 const hoverKey = ref('')
 // zoom：截图显示缩放（1=适应视口宽度）；框用百分比定位，随 wrap 宽度自动缩放。
 const zoom = ref(1)
+watch(visibleElementCount, count => { probePage.value = Math.min(probePage.value, Math.max(1, Math.ceil(count / probePageSize))) })
 
 // 截图上的框：每个有 absRect 的元素按 absRect/pageSize 归一化成百分比定位（响应式，自动消 dpr）。
-// 基于 enrichedGroups（已按 hideExists 过滤/排序），故隐藏已存在时框也同步减少。
+// 只渲染当前页标框，避免大页面生成成千上万个叠层节点；过滤与列表保持一致。
 const shotBoxes = computed(() => {
   const ps = probe.result?.pageSize
   if (!probe.screenshotUrl || !ps || !ps.w || !ps.h) return []
@@ -1428,7 +1509,7 @@ const shotBoxes = computed(() => {
   const fixIdx = new Map()
   if (fixCtx.bulk) bulkMatches.value.forEach((m, i) => { if (m.el?._uid) fixIdx.set(m.el._uid, { key: m.key, no: i + 1 }) })
   const boxes = []
-  for (const g of enrichedGroups.value) {
+  for (const g of pagedGroups.value) {
     for (const el of g.elements) {
       if (!el.absRect) continue
       const fix = fixIdx.get(el._uid) || null
@@ -1491,7 +1572,7 @@ function reprobeForKey(key) {
 // segTab/segScene/segElem=四段式 desc 的第1/3/4段(第2段=页面 add.page);desc 保存时由它们拼成。
 const add = reactive({
   visible: false, mode: 'create', tag: '', type: '', text: '', name: '', frame: 'auto',
-  cand: null, cands: [], key: '', page: '', desc: '',
+  cand: null, cands: [], key: '', page: '', desc: '', elementUid: '',
   segTab: '', segScene: '', segElem: '', targetId: null, saving: false, status: null,
   // XPath 手动纠正:cssCount=该元素 CSS 类在本次探测里命中几个(≥2=多命中,建议 XPath);
   // xpath=用户采纳/编辑的 XPath 值(非空则并入候选,排在 css 之前);xpathAuto=自动生成的建议值。
@@ -1499,6 +1580,72 @@ const add = reactive({
   // ambiguousCount=上次校验时 best 候选实际匹配到的元素数(>1 提示用 XPath 消歧到唯一)。
   ambiguousCount: 0,
 })
+
+const locatorConfig = reactive({ mode: 'single', by: 'css', value: '', text: '', keepFallback: false,
+  nth: null, selectedRef: '', matches: [], count: 0, truncated: false, checking: false, error: '' })
+let locatorCheckVersion = 0
+const locatorPreview = computed(() => configuredCandidates(locatorConfig, add.cands))
+function resetLocatorMatches() {
+  ++locatorCheckVersion
+  Object.assign(locatorConfig, { nth: null, selectedRef: '', matches: [], count: 0, truncated: false, error: '', checking: false })
+}
+function configureLocator(el) {
+  resetLocatorMatches()
+  const testid = (el.candidates || []).find(c => c.by === 'testid')
+  const css = (el.candidates || []).find(c => c.by === 'css')
+  const xpath = autoXPath(el)
+  const chosen = testid || (xpath ? { by: 'xpath', value: xpath } : css) || { by: 'css', value: '' }
+  Object.assign(locatorConfig, { mode: 'single', by: chosen.by, value: chosen.value, text: el.text || '', keepFallback: false })
+}
+function changeLocatorBy() {
+  resetLocatorMatches()
+  locatorConfig.value = locatorConfig.by === 'xpath' ? add.xpathAuto : (add.cands.find(c => c.by === locatorConfig.by)?.value || '')
+}
+function showLocatorMatches(result) {
+  locatorConfig.matches = result.matches || []
+  locatorConfig.count = result.count || 0
+  locatorConfig.truncated = !!result.truncated
+  locatorConfig.selectedRef = ''
+  locatorConfig.nth = null
+}
+async function inspectLocatorMatches() {
+  const candidates = configuredCandidates({ ...locatorConfig, nth: null, keepFallback: false })
+  if (!candidates.length || locatorConfig.checking) return
+  const version = ++locatorCheckVersion
+  const snapshot = probe.result
+  locatorConfig.checking = true
+  locatorConfig.error = ''
+  try {
+    const checked = await validateSelectedItems([{ key: '__preview', frame: add.frame, candidates,
+      element_ref: add.elementRef, inspect_only: true }], true)
+    if (version !== locatorCheckVersion || snapshot !== probe.result || !add.visible) return
+    const result = checked[0]
+    showLocatorMatches(result)
+    if (!Array.isArray(result.matches)) locatorConfig.error = result.error || '设备版本尚不支持命中列表，请更新 Runner 后重试'
+    else if (!result.matches.length) locatorConfig.error = result.error || '没有匹配到元素，请修改定位条件'
+  } catch (error) { if (version === locatorCheckVersion) locatorConfig.error = error.message || '查询命中失败' }
+  finally { if (version === locatorCheckVersion) locatorConfig.checking = false }
+}
+function chooseLocatorMatch(ref) {
+  const match = locatorConfig.matches.find(m => m.element_ref === ref)
+  if (!match?.visible || !match.candidate) return
+  const original = allProbeElements.value.find(el => el.element_ref === ref)
+  if (add.segScene === add.name.trim().slice(0, 16)) add.segScene = (match.accessibleName || match.text || '').trim().slice(0, 16)
+  if (original) { add.cands = toCands(original); add.cand = toCand(original.best); add.xpathAuto = autoXPath(original); hoverKey.value = original._uid }
+  locatorConfig.nth = match.candidate.nth ?? null
+  locatorConfig.error = ''
+  Object.assign(add, { elementRef: ref, elementUid: original?._uid || '', tag: match.tag,
+    text: match.text || '', name: match.accessibleName || match.text || '', frame: match.frame || add.frame })
+}
+function matchCropStyle(match) {
+  const r = match.absRect, ps = probe.result?.pageSize
+  if (!r || !ps) return {}
+  const scale = Math.min(2, 180 / Math.max(r.w, 1), 44 / Math.max(r.h, 1))
+  return { width: Math.max(20, r.w * scale) + 'px', height: Math.max(20, r.h * scale) + 'px',
+    backgroundImage: 'url(' + JSON.stringify(probe.screenshotUrl) + ')', backgroundSize: (ps.w * scale) + 'px ' + (ps.h * scale) + 'px',
+    backgroundPosition: (-r.x * scale) + 'px ' + (-r.y * scale) + 'px' }
+}
+watch(() => add.visible, visible => { if (!visible) resetLocatorMatches() })
 
 // 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
 const addTarget = computed(() => (add.mode === 'update' && add.targetId ? rows.value.find((r) => r.id === add.targetId) || null : null))
@@ -1569,6 +1716,7 @@ const addComposedDesc = computed(() => {
 })
 
 function openAddAsKey(el, frame) {
+  configureLocator(el)
   const cand = toCand(el.best)
   const cands = toCands(el)
   const status = matchStatus({ ...el, _frameMatch: frame })   // #3 标识:exists/update/new
@@ -1596,7 +1744,7 @@ function openAddAsKey(el, frame) {
       || inferControlType({}, isForActiveKey ? `${fixCtx.ctx || ''} ${fixCtx.activeKey || ''}` : (el.text || ''))
     Object.assign(add, {
       visible: true, saving: false, status,
-      tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
+      tag: el.tag, elementUid: el._uid || '', elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
       cand, cands,
       mode: (isForActiveKey && status.key && fixCtx.caseIds.length) ? 'reuse' : 'create',
       key: autoKey, page: probe.page || '',
@@ -1604,6 +1752,7 @@ function openAddAsKey(el, frame) {
       segTab: '', segScene: scene, segElem, cssCount, xpathAuto, xpath,
       ambiguousCount: 0,
     })
+    if (cssCount > 1) inspectLocatorMatches()
     return
   }
   // 预置更新目标优先级:verify 的「重新探测更新」预置 > 对比标识命中的已有 key。
@@ -1614,7 +1763,7 @@ function openAddAsKey(el, frame) {
   const autoKey = preset ? '' : suggestKey(el, probe.page, new Set(effectiveRows.value.map((r) => r.key)))
   Object.assign(add, {
     visible: true, saving: false, status,
-    tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
+    tag: el.tag, elementUid: el._uid || '', elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
     cand, cands,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
@@ -1623,27 +1772,12 @@ function openAddAsKey(el, frame) {
     cssCount, xpathAuto, xpath,
     ambiguousCount: 0,
   })
+  if (cssCount > 1) inspectLocatorMatches()
 }
 
-// 新建时最终落库的候选:把用户采纳/编辑的 XPath 并入。
-// 关键:用户采纳的 XPath 是为"消歧"专门选的,须排在 testid 之后、其余(role/text/css 等易多命中)之前——
-// 否则 orderCandidates 会把 xpath 降到第 7 档,执行时先撞上会多命中的 role/text,消歧就白填了(图14/15)。
-function addCreateCandidates() {
-  const base = (add.cands && add.cands.length) ? add.cands.slice() : (add.cand ? [add.cand] : [])
-  const xp = (add.xpath || '').trim()
-  if (!xp) return orderCandidates(base).slice(0, MAX_CANDIDATES)
-  const rest = orderCandidates(base.filter((c) => !(c.by === 'xpath' && c.value === xp)))
-  const testids = rest.filter((c) => c.by === 'testid')
-  const others = rest.filter((c) => c.by !== 'testid')
-  return [...testids, { by: 'xpath', value: xp }, ...others].slice(0, MAX_CANDIDATES)
-}
-
-// 更新已有 key 时的合并候选:把 best + (可选)XPath 并入目标 key 现有候选;
-// 去重、脆弱同 by 就地替换、orderCandidates 排序(testid>xpath>css>脆弱)、限长。新建/更新共用此口径。
-function updateMergedCandidates(existing) {
-  const xp = (add.xpath || '').trim()
-  return mergeCandidates(add.cands?.length ? add.cands : [add.cand].filter(Boolean), xp ? [{ by: 'xpath', value: xp }] : [], existing || [])
-}
+// 新建与更新均保留用户指定的主要方案；只有明确启用时才附加兜底候选。
+function addCreateCandidates() { return configuredCandidates(locatorConfig, add.cands) }
+function updateMergedCandidates(existing) { return configuredCandidates(locatorConfig, [...add.cands, ...(existing || [])]) }
 
 // 保存前重新在当前设备验证，避免截图过期后把另一元素回填进 key。
 // confirmOnFail:校验不通过时的兜底确认回调(返回 true=用户坚持保存)。设备端 identity 在
@@ -1663,6 +1797,13 @@ async function validateSelectedItems(items, partial = false, confirmOnFail = nul
     const result = await getProbe(started.id)
     if (result.status === 'failed') throw new Error(result.error || '设备校验失败')
     if (result.status === 'done') {
+      const features = result.result?.locator_features || []
+      const needed = new Set(items.flatMap(item => [
+        ...(item.require_identity ? ['require_identity'] : []),
+        ...(item.candidates || []).flatMap(c => [
+          ...(c.has_text !== undefined ? ['has_text'] : []), ...(c.nth !== undefined ? ['nth'] : []),
+          ...(c.primary && item.candidates.length > 1 ? ['primary'] : [])])]))
+      if ([...needed].some(feature => !features.includes(feature))) throw new Error('设备 Runner 版本不支持当前定位方式，请更新 Runner 后重试')
       const checked = result.result?.validation || []
       if (checked.length !== items.length) throw new Error('设备版本不支持完整定位校验，请更新 Runner')
       const failures = checked.filter(item => !item.ok)
@@ -1678,6 +1819,9 @@ async function validateSelectedItems(items, partial = false, confirmOnFail = nul
 }
 
 async function submitAddAsKey() {
+  if (locatorConfig.checking) return
+  if (add.mode !== 'reuse' && locatorConfig.count > 1 && !locatorConfig.selectedRef) { ElMessage.warning('请先选择一个命中元素'); return }
+  if (add.mode !== 'reuse' && !locatorPreview.value.length) { ElMessage.warning('请填写定位值；组合定位还需填写文本'); return }
   if (add.saving) return
   if (!add.cand) { ElMessage.error('该元素没有可用候选'); return }
   if (add.mode === 'create' && !add.key.trim()) { ElMessage.warning('key 名不能为空'); return }
@@ -1691,11 +1835,18 @@ async function submitAddAsKey() {
       throw new Error(`选中元素在「${add.frame || 'auto'}」域,与原 key「${targetRow?.key}」的「${targetRow?.frame || 'auto'}」域不同。若确属同一元素,请改用「新建 key」;否则请核对作用域后重新探测`)
     await validateSelectedItems([{ key: add.mode === 'create' ? add.key : targetRow?.key,
       candidates: add.mode === 'create' ? addCreateCandidates() : add.mode === 'reuse' ? targetRow?.candidates : updateMergedCandidates(targetRow?.candidates),
-      frame: add.mode === 'create' ? add.frame : targetRow?.frame, element_ref: add.elementRef, expected: { tag: add.tag, text: add.text } }],
+      frame: add.mode === 'create' || locatorConfig.selectedRef ? add.frame : targetRow?.frame, element_ref: add.elementRef, require_identity: !!locatorConfig.selectedRef, expected: { tag: add.tag, text: add.text } }],
       false,
       // 设备校验没过不硬拦:亲手选的元素给用户最终决定权(校验受动态元素/宽泛候选/往返 identity 失效影响易误判)。
-      // 命中多个(AMBIGUOUS)时提示先补 XPath 更稳妥,但仍允许坚持保存。
-      async (msg) => {
+      // 多命中时要求在返回列表中选定一个 DOM；已明确选择的元素必须通过身份校验。
+      async (msg, failures) => {
+        const ambiguity = failures.find(f => f.code === 'AMBIGUOUS_TARGET' || f.count > 1)
+        if (ambiguity) {
+          showLocatorMatches(ambiguity)
+          locatorConfig.error = ambiguity.matches?.length ? '请选择命中的目标元素后再保存' : '设备未返回命中列表，请更新 Runner 后重试“查看当前命中”'
+          return false
+        }
+        if (locatorConfig.selectedRef) return false
         const ambiguous = /匹配\s*\d+\s*个/.test(msg)
         try {
           await ElMessageBox.confirm(
@@ -1726,8 +1877,8 @@ async function submitAddAsKey() {
           choice = 'merge'
         } catch (act) { choice = act === 'cancel' ? 'overwrite' : 'rename' }
         if (choice === 'rename') return   // 保持「加为 key」对话框打开,让用户改名后再存(saving 由 finally 复位)
-        const merged = choice === 'merge' ? mergeCandidates(candidates, [], dup.candidates || []) : candidates
-        await patchSelector(dup.id, { candidates: merged, expected_revision: dup.revision })
+        const merged = choice === 'merge' ? configuredCandidates({ ...locatorConfig, keepFallback: true }, [...candidates, ...(dup.candidates || [])]) : candidates
+        await patchSelector(dup.id, { candidates: merged, ...(locatorConfig.selectedRef ? { frame: add.frame } : {}), expected_revision: dup.revision })
         ElMessage.success(choice === 'merge' ? `已把候选合并到已有 key「${dup.key}」` : `已用新候选覆盖 key「${dup.key}」`)
         if (fixCtx.keys.includes(dup.key) && !fixCtx.done.includes(dup.key)) fixCtx.done.push(dup.key)
       } else {
@@ -1742,10 +1893,11 @@ async function submitAddAsKey() {
       const existing = target?.candidates || []
       // 合并 best +（可选）XPath 到目标 key 现有候选;去重、脆弱同 by 就地替换、排序(testid>xpath>css>脆弱)、限长。
       const merged = updateMergedCandidates(existing)
-      await patchSelector(add.targetId, { candidates: merged, expected_revision: target?.revision })
+      await patchSelector(add.targetId, { candidates: merged, ...(locatorConfig.selectedRef ? { frame: add.frame } : {}), expected_revision: target?.revision })
       ElMessage.success('已更新已有 key 的候选')
       if (target && probe.updateTarget === target.key) probe.updateTarget = ''
     }
+    rememberProbeSave(add.elementUid, add.mode === 'create' ? add.key.trim() : targetRow?.key)
     if (add.mode === 'create' && fixCtx.keys.includes(add.key.trim()) && !fixCtx.done.includes(add.key.trim())) fixCtx.done.push(add.key.trim())
     add.visible = false
     await reload()
@@ -1821,6 +1973,7 @@ async function batchAddMatched() {
         })
         markSelectorNew(created)
         }
+        rememberProbeSave(m.el._uid, m.reuseKey && fixCtx.caseIds.length ? m.reuseKey : m.key)
         ok += 1
         if (!fixCtx.done.includes(m.key)) fixCtx.done.push(m.key)
       } catch { failed.push(m.key) }  // 单个失败(如 key 冲突)不阻断其余
@@ -1876,6 +2029,7 @@ async function saveProbeBatch() {
         if(!hit) {row.error='设备未返回已验证定位，请更新 Runner';continue}
         const created=await createSelector({project_id:pid.value,sub_product:subProduct.value,platform:'web',key:row.key,frame:row.el._frameMatch,page:probe.page || '',desc:`[${probe.page || '当前页'}]-[${elementDisplayName(row.el) || row.el.tag}]`,candidates:[hit]})
         markSelectorNew(created);row.saved=true;row.error='已添加'
+        rememberProbeSave(row.el._uid, row.key)
         batchPicked.value=batchPicked.value.filter(uid=>uid!==row.el._uid)
       } catch(e) {row.error=e.message || '保存失败（未覆盖已有 key）'}
     }
@@ -1888,6 +2042,12 @@ async function saveProbeBatch() {
 </script>
 
 <style scoped>
+.locator-matches { width:100%; max-height:320px; overflow:auto; margin-top:10px; }
+.locator-match-list { display:flex; flex-direction:column; align-items:stretch; width:100%; }
+.locator-match-option { height:auto; min-height:58px; margin:4px 0; padding:8px; border:1px solid #dcdfe6; border-radius:4px; }
+.locator-match-option :deep(.el-radio__label) { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; width:100%; white-space:normal; overflow-wrap:anywhere; }
+.locator-match-option :deep(.el-radio__label) > span:not(.locator-match-crop) { grid-column:1; }
+.locator-match-crop { grid-column:2; grid-row:1 / 3; display:block; background-repeat:no-repeat; border:1px solid #dcdfe6; }
 .box-state { position:absolute; top:0; left:0; font-size:10px; line-height:12px; padding:0 2px; color:white; background:#1677ff; white-space:nowrap; pointer-events:none; }
 .box-exists .box-state { background:#278342; }
 .el-box.box-picked { border:2px solid #e68600; background:#e6860033; }

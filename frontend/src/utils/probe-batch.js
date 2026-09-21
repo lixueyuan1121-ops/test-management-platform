@@ -39,6 +39,7 @@ function cssClasses(value) {
 function sameTarget(regC, probeC) {
   const strip = c => { const { exact, ...rest } = c; return rest }
   const r = strip(regC), p = strip(probeC)
+  if (r.has_text !== p.has_text || r.nth !== p.nth) return false
   if (r.by === 'css' && p.by === 'css') {
     const rc = cssClasses(r.value), pc = cssClasses(p.value)
     if (rc && pc && rc.length) return rc.every(x => pc.includes(x))   // 注册类全部出现在探测类里
@@ -68,7 +69,7 @@ export function elementStatus(el, rows, elements, aliases = {}) {
     if (regCands.some(rc => isTestid(rc) && elTestids.some(pc => sameTarget(rc, pc)))) return true
     // 1.5) xpath 精确命中:元素位置唯一 xpath 与注册 key 的 xpath 候选完全相等 → 同一元素(位置唯一,无视 frame)。
     //      这是"无 testid + 共享 class"元素判「已存在」的唯一可靠依据,防其一直显示未添加、被反复重复添加。
-    if (elXPaths.length && regCands.some(rc => rc.by === 'xpath' && elXPaths.includes(rc.value))) return true
+    if (elXPaths.length && regCands.some(rc => rc.by === 'xpath' && rc.nth === undefined && rc.has_text === undefined && elXPaths.includes(rc.value))) return true
     // 2) 非 testid 命中:frame 归一后同域,且注册候选匹配到探测的"唯一"非 testid 候选。
     if (normFrame(row.frame, aliases) !== elFrame) return false
     return regCands.some(rc => !isTestid(rc) && uniqueNon.some(pc => sameTarget(rc, pc)))
@@ -91,4 +92,72 @@ export function suggestKey(el, page, reserved) {
   const stem = `${/^[a-zA-Z]/.test(hint) ? hint : 'element_'+hint}_${el.tag || 'element'}_${hash(signature)}`.slice(0,56)
   let key=stem, n=2; while(reserved.has(key)) key=`${stem}_${n++}`
   reserved.add(key); return key
+}
+
+// Build once per probe/registry snapshot. Candidate postings avoid rescanning the
+// entire page for every element; uniqueness is cached and stops at two hits.
+export function createElementStatusMatcher(rows, elements, aliases = {}) {
+  const identity = c => candidateIdentity({ ...c, exact: false })
+  const classes = c => c.by === 'css' ? cssClasses(c.value) : null
+  const token = c => classes(c)?.[0] ? `class:${classes(c)[0]}` : identity(c)
+  const add = (map, key, value) => {
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(value)
+  }
+  const registered = new Map(), testids = new Map(), xpaths = new Map(), scanned = new Map()
+  rows.forEach((row, index) => {
+    for (const c of (row.candidates || []).filter(distinctive)) {
+      const entry = { c, index }
+      if (isTestid(c)) { for (const key of new Set([identity(c), token(c)])) add(testids, key, entry) }
+      else add(registered, JSON.stringify([normFrame(row.frame, aliases), token(c)]), entry)
+      if (c.by === 'xpath' && c.nth === undefined && c.has_text === undefined) add(xpaths, c.value, entry)
+    }
+  })
+  elements.forEach((el, index) => {
+    const frame = normFrame(el._frameMatch, aliases)
+    for (const c of (el.candidates || []).filter(c => distinctive(c) && !isTestid(c))) {
+      for (const key of new Set(classes(c)?.map(x => `class:${x}`) || [identity(c)])) {
+        add(scanned, JSON.stringify([frame, key]), { c, index })
+      }
+    }
+  })
+  const uniqueCache = new Map(), statusCache = new WeakMap()
+  const lookupTokens = c => [...new Set([identity(c), ...(classes(c) || []).map(x => `class:${x}`)])]
+  return el => {
+    if (statusCache.has(el)) return statusCache.get(el)
+    const hits = new Set(), frame = normFrame(el._frameMatch, aliases)
+    const candidates = (el.candidates || []).filter(distinctive)
+    const record = entries => { for (const entry of entries || []) hits.add(entry.index) }
+    for (const xp of [(el.uniqueXPath || '').trim(), ...candidates.filter(c => c.by === 'xpath').map(c => c.value)]) {
+      if (xp) record(xpaths.get(xp))
+    }
+    for (const c of candidates) {
+      if (isTestid(c)) {
+        for (const key of lookupTokens(c)) record((testids.get(key) || []).filter(entry => sameTarget(entry.c, c)))
+        continue
+      }
+      const cacheKey = JSON.stringify([frame, identity(c)])
+      if (!uniqueCache.has(cacheKey)) {
+        const found = new Set()
+        // Start with the rarest CSS class instead of a shared container class.
+        const tokens = classes(c)?.map(x => `class:${x}`) || [identity(c)]
+        const postings = tokens.map(key => scanned.get(JSON.stringify([frame, key])) || [])
+        const shortest = postings.reduce((a, b) => a.length <= b.length ? a : b)
+        for (const entry of shortest) {
+          if (sameTarget(c, entry.c)) found.add(entry.index)
+          if (found.size > 1) break
+        }
+        uniqueCache.set(cacheKey, found.size === 1)
+      }
+      if (uniqueCache.get(cacheKey)) {
+        for (const key of lookupTokens(c)) {
+          record((registered.get(JSON.stringify([frame, key])) || []).filter(entry => sameTarget(entry.c, c)))
+        }
+      }
+    }
+    const keys = [...new Set([...hits].sort((a, b) => a - b).map(i => rows[i].key))]
+    const result = keys.length ? { type: 'exists', key: keys[0], keys } : { type: 'new' }
+    statusCache.set(el, result)
+    return result
+  }
 }

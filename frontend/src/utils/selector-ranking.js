@@ -3,14 +3,17 @@ export const FRAGILE_BYS = new Set(['text', 'role'])
 const VALID_BYS = new Set(['testid', 'xpath', 'role', 'label', 'text', 'placeholder', 'css'])
 export function normalizeCandidate(c) {
   if (!c || !VALID_BYS.has(c.by) || typeof c.value !== 'string' || !c.value.trim()
+      || ('has_text' in c && (typeof c.has_text !== 'string' || !c.has_text.trim()))
+      || ('nth' in c && (!Number.isInteger(c.nth) || c.nth < 0))
+      || ('primary' in c && typeof c.primary !== 'boolean')
       || ('name' in c && typeof c.name !== 'string') || ('exact' in c && typeof c.exact !== 'boolean')) return null
-  return Object.fromEntries(['by', 'value', 'name', 'exact', 'src', 'status', 'disabled']
+  return Object.fromEntries(['by', 'value', 'name', 'exact', 'has_text', 'nth', 'primary', 'src', 'status', 'disabled']
     .filter(k => k in c).map(k => [k, c[k]]))
 }
 export const candidateIdentity = c => {
   const match = c.by === 'css' && c.value?.match(/^\[data-testid=("(?:[^"\\]|\\.)*"|[\w-]+)\]$/)
   if (match) { try { c = { ...c, by: 'testid', value: match[1].startsWith('"') ? JSON.parse(match[1]) : match[1] } } catch {} }
-  return JSON.stringify([c.by, c.value, c.name || null, c.exact ?? false])
+  return JSON.stringify([c.by, c.value, c.name || null, c.exact ?? false, ...(c.has_text !== undefined || c.nth !== undefined ? [c.has_text ?? null, c.nth ?? null] : [])])
 }
 export const isActiveCandidate = c => !!normalizeCandidate(c) && c.src !== 'learned'
   && !['pending', 'rejected', 'retired'].includes(c.status) && c.disabled !== true
@@ -18,6 +21,7 @@ export function isFragile(c) {
   return (c?.by === 'role' && !(c.name && c.exact)) || (c?.by === 'text' && !c.exact)
 }
 export function candidateRank(c) {
+  if (c.primary) return -1
   if (c.by === 'testid') return 0
   if (c.by === 'role' && c.name && c.exact) return 1
   if (c.by === 'label') return 2

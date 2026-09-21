@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {suggestKey,elementStatus,sameFrameDomain} from './probe-batch.js';
+import {suggestKey,elementStatus as legacyElementStatus,createElementStatusMatcher,sameFrameDomain} from './probe-batch.js';
 
 // bug3:「加为 key-更新已有」的 frame 校验须按作用域等价,vm/shell/auto/content 归一后同域,
 // 不该把 auto vs vm、shell vs vm 当成"frame 不同"误拦;深层 iframe(url:...)才真隔离。
@@ -102,3 +102,51 @@ test('registry single class matches probe concatenated classes',()=>{
   const probe={_frameMatch:'vm',candidates:[{by:'css',value:'.chat-editor.chat-editor__send'}]};
   assert.equal(elementStatus(probe,rows,[probe]).key,'sendBtn');
 });
+
+function elementStatus(el, rows, elements, aliases = {}) {
+  const actual = createElementStatusMatcher(rows, elements, aliases)(el)
+  assert.deepEqual(actual, legacyElementStatus(el, rows, elements, aliases))
+  return actual
+}
+
+test('indexed matcher preserves candidate/frame semantics across mixed snapshots', () => {
+  const pool = [
+    {by:'css',value:'.a'}, {by:'css',value:'.a.b'}, {by:'css',value:'.b.c'},
+    {by:'css',value:'#unique'}, {by:'testid',value:'save'},
+    {by:'css',value:'[data-testid="save"]'}, {by:'testid',value:'save.icon'}, {by:'css',value:'[data-testid="save.icon"]'}, {by:'role',value:'button',name:'Save'},
+    {by:'xpath',value:'/html/button[1]'}, {by:'text',value:'hello',exact:true},
+    {by:'css',value:'.c',status:'retired'},
+  ]
+  const frames = ['auto', 'vm', 'url:other', 'alias']
+  const aliases = {alias:'vm'}
+  for (let seed = 1; seed < 30; seed++) {
+    const elements = Array.from({length:35}, (_, i) => ({
+      _frameMatch:frames[(i + seed) % frames.length],
+      candidates:[pool[(i * seed) % pool.length], pool[(i + seed) % pool.length]],
+      uniqueXPath:i % 7 === 0 ? '/html/button[1]' : '',
+    }))
+    const rows = Array.from({length:24}, (_, i) => ({key:`key${i}`,frame:frames[i % 4],candidates:[pool[(i + seed) % pool.length]]}))
+    const match = createElementStatusMatcher(rows, elements, aliases)
+    for (const el of elements) assert.deepEqual(match(el), legacyElementStatus(el, rows, elements, aliases))
+  }
+})
+
+test('10000 elements reuse the snapshot index and cached statuses', () => {
+  const elements = Array.from({length:10000}, (_, i) => ({_frameMatch:'shell',candidates:[{by:'css',value:'.shared'}, {by:'testid',value:`id-${i}`}]}))
+  const rows = elements.map((el, i) => ({key:`key-${i}`,frame:'vm',candidates:[el.candidates[1]]}))
+  const start = performance.now()
+  const match = createElementStatusMatcher(rows, elements)
+  elements.forEach((el, i) => { assert.equal(match(el).key, `key-${i}`); assert.equal(match(el), match(el)) })
+  const elapsed = performance.now() - start
+  console.log(`10000-element snapshot: ${elapsed.toFixed(0)}ms`)
+  assert.ok(elapsed < 10000, `matching took ${elapsed}ms`)
+})
+test('unique controls sharing a container class use the rarest class posting', () => {
+  const elements = Array.from({length:10000}, (_, i) => ({candidates:[{by:'css',value:`.shared .control-${i}`}]}))
+  const start = performance.now()
+  const match = createElementStatusMatcher([], elements)
+  elements.forEach(el => assert.equal(match(el).type, 'new'))
+  const elapsed = performance.now() - start
+  console.log(`10000 compound CSS controls: ${elapsed.toFixed(0)}ms`)
+  assert.ok(elapsed < 10000)
+})

@@ -553,12 +553,15 @@ async function handleProbes() {
         // discover:扫当前页元素拿候选选择器 + 整页截图(供网页叠框标注)。
         const out = await guiCore.probe({ ...(p.params || {}), screenshot: true });
         // 坐标数据(小)进 result TEXT;截图(大)走独立二进制端点,不塞 result(避免撑爆 MySQL 5.6 的 64KB)。
-        await reportProbe(p.id, { result: { groups: out.groups, pageSize: out.pageSize, frameAliases: out.frameAliases } });
         const shot = out.screenshotBuffer;
+        let screenshotError = out.screenshotError;
         if (shot && shot.length) {
           try { await uploadProbeShot(p.id, shot); log(`  截图已上传 id=${p.id} (${(shot.length / 1024).toFixed(0)}KB)`); }
-          catch (e) { log(`  截图上传失败 id=${p.id}: ${e.message}`); }
+          catch (e) { screenshotError = `截图上传失败：${e.message}`; log(`  截图上传失败 id=${p.id}: ${e.message}`); }
         }
+        if (screenshotError) log(`  截图失败 id=${p.id}: ${screenshotError}`);
+        // Upload first so new clients receive the screenshot URL with the completed result.
+        await reportProbe(p.id, { result: { groups: out.groups, pageSize: out.pageSize, frameAliases: out.frameAliases, screenshot_error: screenshotError || null } });
       }
       log(`回写探测 id=${p.id} mode=${(p.params || {}).mode || "discover"} -> done`);
     } catch (e) {
