@@ -113,7 +113,7 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(eval_artifacts.verify_run(self.db, row)['status'], 'fail')
             self.db.query(EvalArtifact).delete()
             self.db.commit()
-            self.upload(row, '图.png', b'unsupported')
+            self.upload(row, '图.svg', b'unsupported')
             self.assertEqual(eval_artifacts.verify_run(self.db, row)['status'], 'unknown')
 
     def test_migration_is_idempotent_and_keeps_existing_data(self):

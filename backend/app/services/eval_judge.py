@@ -70,6 +70,7 @@ def _judge_once(engine, trace: dict, expected: str, dimension: str | None) -> tu
             expected or "判定",
             prompt_builder=lambda: claude_runner.build_eval_judge_prompt(trace, expected, dimension),
             system_prompt=claude_runner.EVAL_JUDGE_SYSTEM_PROMPT,
+            **({"images": trace["_judge_images"]} if trace.get("_judge_images") else {}),
         ):
             et = evt.get("type")
             if et == "delta":
@@ -216,6 +217,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     from app.services.eval_snapshot import rubric_of, context_of
     expected, dimension = rubric_of(db, run)
     trace = _load_trace(run)
+    trace.pop('_judge_images', None)  # visual input must come from verified uploads, never trace-supplied base64
     trace["evaluation_context"] = context_of(db, run)
     from app.services.eval_artifacts import verify_run
     verification = verify_run(db, run) if isinstance(run, EvalRun) else None
@@ -224,11 +226,30 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         trace["artifacts"] = [*(trace.get("artifacts") or []), {"verification": verification}]
 
     provider_id = generators.normalize_provider(provider)
+    engine = None
+    if isinstance(run, EvalRun):
+        from app.services.eval_artifacts import image_evidence
+        images, visual = image_evidence(db, run)
+        if visual:
+            engine = generators.get_provider(provider_id)
+            can_see = provider_id == 'claude' or getattr(engine, 'supports_images', lambda: False)()
+            if images and can_see:
+                trace['_judge_images'] = images
+            for item in visual:
+                item['sent_to_model'] = bool(item.get('status') == 'ready' and can_see)
+                if item.get('status') == 'ready' and not can_see:
+                    item['reason'] = '当前判定引擎未配置视觉能力；只有尺寸证据，不能判断画面内容'
+            trace['artifacts'] = [*(trace.get('artifacts') or []), {'image_evidence': visual}]
     from app.core.config import settings
     requested_model = settings.DEEPSEEK_MODEL if provider_id == 'deepseek' else settings.AI_MODEL
+    if provider_id == 'deepseek' and trace.get('_judge_images'):
+        requested_model = settings.DEEPSEEK_VISION_MODEL
+    elif provider_id == 'anthropic_http':
+        from app.services.generators.anthropic_http_runner import _model
+        requested_model = _model()
     judgment_store.set_input(db, run, claude_runner.build_eval_judge_prompt(trace, expected, dimension),
         claude_runner.EVAL_JUDGE_SYSTEM_PROMPT, {"provider": provider_id, "votes": votes,
-        "trace_url": getattr(run, "trace", None), "rules_version": "context-v2",
+        "trace_url": getattr(run, "trace", None), "rules_version": "context-v3-images",
         "requested_model": requested_model or None, "observed_model": None,
         "execution_config": trace.get("execution_config"), "runtime": trace.get("runtime"),
         "input_files": trace.get("input_files")})
@@ -251,7 +272,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
         return {"verdict": "error", "reason": run.verdict_reason}
 
-    engine = generators.get_provider(provider_id)
+    engine = engine or generators.get_provider(provider_id)
     if not engine.is_available():
         # 引擎不可用(平台 AI 禁用/claude 缺失):镜像判定失败分支标 verdict=error,
         # 让前端走 error 分支露出真因(而非 verdict=null 的假成功)且可重判;保持 status 不变(done)。

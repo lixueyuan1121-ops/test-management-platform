@@ -103,6 +103,10 @@ def _model() -> str:
     return re.sub(r"\[[^\]]*\]\s*$", "", raw).strip()
 
 
+def supports_images() -> bool:
+    return is_available()
+
+
 def stream_generate(
     requirement: str,
     project_id: int | None = None,
@@ -110,6 +114,7 @@ def stream_generate(
     pages: list[str] | None = None,
     prompt_builder=None,
     system_prompt: str | None = None,
+    images: list[dict] | None = None,
 ) -> Iterator[dict]:
     """流式生成测试点，直接调 /v1/messages streaming，事件契约与 claude_runner 一致。
 
@@ -132,7 +137,10 @@ def stream_generate(
         "max_tokens": max(1024, settings.ANTHROPIC_HTTP_MAX_TOKENS),
         "stream": True,
         "system": system_prompt or _SYSTEM_MSG,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": ([{"type": "text", "text": prompt}] + [
+            {"type": "image", "source": {"type": "base64", "media_type": image["mime_type"], "data": image["data"]}}
+            for image in images
+        ]) if images else prompt}],
     }
 
     resp = None

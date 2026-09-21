@@ -1,5 +1,7 @@
 """Deterministic checks on captured files; never execute document code or fetch URLs."""
 import fnmatch
+import base64
+import io
 import hashlib
 import json
 import posixpath
@@ -17,6 +19,50 @@ from app.services.eval_snapshot import payload_of
 
 ARTIFACT_ROOT = Path(__file__).resolve().parents[2] / 'storage' / 'eval_artifacts'
 MAX_BYTES = 20 * 1024 * 1024
+IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
+
+
+def image_evidence(db, run):
+    """Only this attempt's uploaded bytes become visual input; URLs are not proof."""
+    from PIL import Image, ImageOps
+    files = db.query(EvalArtifact).filter_by(eval_run_id=run.id, attempt=attempt_of(db, run)).order_by(EvalArtifact.id).all()
+    images, evidence = [], []
+    for file in files:
+        if Path(file.name).suffix.lower() not in IMAGE_SUFFIXES:
+            continue
+        item = {'artifact_id': file.id, 'name': file.name, 'sha256': file.sha256}
+        evidence.append(item)
+        try:
+            if len(images) >= 6:
+                raise ValueError('单次最多核验6张图片，其余需分批核验')
+            path = ARTIFACT_ROOT / file.storage_key
+            if path.resolve().parent != ARTIFACT_ROOT.resolve() or path.stat().st_size > MAX_BYTES:
+                raise ValueError('产物路径或大小不符合采集约束')
+            data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != file.sha256:
+                raise ValueError('图片完整性校验失败，需重新采集')
+            with Image.open(io.BytesIO(data)) as original:
+                if original.width * original.height > 40_000_000:
+                    raise ValueError('图片像素超过核验上限')
+                frames = getattr(original, 'n_frames', 1)
+                img = ImageOps.exif_transpose(original)
+                img.load()
+                width, height = img.size
+                # Keep aspect ratio and the complete canvas; composite alpha onto white.
+                rgba = img.convert('RGBA')
+                preview = Image.new('RGB', rgba.size, 'white')
+                preview.paste(rgba, mask=rgba.getchannel('A'))
+                preview.thumbnail((1600, 1600))
+                output = io.BytesIO()
+                preview.save(output, format='JPEG', quality=90)
+                item.update(status='ready', image_index=len(images) + 1, width=width, height=height,
+                    aspect_ratio=round(width / height, 5), size_bytes=len(data), frames=frames,
+                    preview_width=preview.width, preview_height=preview.height,
+                    note='实际文件解码成功；附图为等比预览。多帧图片仅核验首帧。' if frames > 1 else '实际文件解码成功；附图为等比预览。')
+                images.append({'mime_type': 'image/jpeg', 'data': base64.b64encode(output.getvalue()).decode('ascii')})
+        except (OSError, ValueError, Image.DecompressionBombError) as error:
+            item.update(status='unknown', reason=str(error)[:300])
+    return images, evidence
 
 
 class ArtifactRule(BaseModel):
@@ -43,6 +89,16 @@ def rules_json(rules):
 
 def inspect_file(path, name):
     suffix = Path(name).suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        from PIL import Image
+        try:
+            with Image.open(path) as image:
+                if image.width * image.height > 40_000_000:
+                    raise NotImplementedError('图片像素超过核验上限')
+                image.load()
+                return {'format': suffix, 'text': '', 'width': image.width, 'height': image.height}
+        except Image.DecompressionBombError:
+            raise NotImplementedError('图片像素超过核验上限')
     if suffix in ('.txt', '.md', '.csv', '.tsv', '.json', '.html'):
         try:
             text = path.read_text(encoding='utf-8-sig')

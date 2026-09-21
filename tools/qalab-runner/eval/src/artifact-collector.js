@@ -6,6 +6,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const MAX_BYTES = 20 * 1024 * 1024;
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(?:[?#]|$)/i;
+const FILE_EXT = /\.(xlsx|docx|pptx|pdf|txt|md|csv|tsv|json|html|png|jpe?g|webp|gif)(?:[?#]|$)/i;
 
 function publicAddress(address) {
   if (net.isIPv4(address)) {
@@ -48,7 +50,7 @@ async function download(page, raw, timeout = 15000) {
 
 function filename(candidate) {
   const name = String(candidate.name || '').trim().split(/[\\/]/).pop();
-  if (name && /\.(xlsx|docx|pptx|pdf|txt|md|csv|tsv|json|html)$/i.test(name)) return name;
+  if (name && FILE_EXT.test(name)) return name;
   try { return decodeURIComponent(new URL(candidate.url).pathname.split('/').pop()); } catch { return name || 'artifact'; }
 }
 
@@ -60,13 +62,17 @@ async function candidatesFromPage(page, selectors = {}) {
     const links = await group.locator('a[href]').evaluateAll(els => els.map(el => ({
       url: el.href, name: el.getAttribute('download') || el.textContent.trim(), download: el.hasAttribute('download')
     })));
-    found.push(...links.filter(a => a.download || /\.(xlsx|docx|pptx|pdf|txt|md|csv|tsv|json|html)(?:[?#]|$)/i.test(a.url) || /\.(xlsx|docx|pptx|pdf|txt|md|csv|tsv|json|html)$/i.test(a.name)));
+    found.push(...links.filter(a => a.download || FILE_EXT.test(a.url) || FILE_EXT.test(a.name)));
+    found.push(...await group.locator('img[src]').evaluateAll(els => els.map(el => ({
+      url: el.currentSrc || el.src, name: el.getAttribute('alt') || '', image: true
+    }))));
   }
   return found;
 }
 
 async function collectArtifacts({ page, trace, rules, client, runId, selectors, downloadFile = download }) {
-  if (!Array.isArray(rules) || !rules.length) return;
+  const hasRules = Array.isArray(rules) && rules.length > 0;
+  if (!trace || !client || !runId) return;
   const diagnostics = [], captured = [];
   const candidates = [...(trace.artifacts || []).map(a => ({ name: a.name, url: a.download_url || a.file_url || a.url }))];
   try { candidates.push(...await candidatesFromPage(page, selectors)); }
@@ -75,11 +81,15 @@ async function collectArtifacts({ page, trace, rules, client, runId, selectors, 
   const started = Date.now();
   for (const candidate of candidates) {
     if (!candidate.url || seen.has(candidate.url)) continue;
+    // 图片是视觉判定的必要证据，无校验规则也采集；其他文件保持按规则采集。
+    if (!hasRules && !candidate.image && !IMAGE_EXT.test(candidate.url) && !IMAGE_EXT.test(candidate.name || '')) continue;
     if (seen.size >= 10 || Date.now() - started > 60000) { diagnostics.push({ status: 'unknown', reason: '已到本轮产物采集数量或时间上限' }); break; }
     seen.add(candidate.url);
-    const name = filename(candidate);
+    let name = filename(candidate);
     try {
       const { data, contentType } = await downloadFile(page, candidate.url, Math.min(15000, 60000 - (Date.now() - started)));
+      const imageExt = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' }[contentType.split(';')[0].trim().toLowerCase()];
+      if (imageExt && !IMAGE_EXT.test(name)) name = (name || 'image') + imageExt;
       if (/text\/html/i.test(contentType) && !/\.html$/i.test(name)) throw new Error('文件链接返回网页，未取得实际产物');
       const result = await client.uploadArtifact(runId, name, data);
       captured.push(result);
