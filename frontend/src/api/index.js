@@ -89,6 +89,10 @@ export const setCaseExecKind = (id, exec_kind) => http.patch(`/ai/testcases/${id
 export const updateTestcase = (id, patch) => http.patch(`/ai/testcases/${id}`, patch)
 // 删除测试点(级联清其清单项)
 export const deleteTestcase = (id) => http.delete(`/ai/testcases/${id}`)
+// 用例前置(关联用例):列出/挂/摘。执行主用例时前置会一并按序下发。
+export const listPrereqs = (id) => http.get(`/ai/testcases/${id}/prereqs`)
+export const addPrereq = (id, prereqCaseId, sortOrder) => http.post(`/ai/testcases/${id}/prereqs`, { prereq_case_id: prereqCaseId, ...(sortOrder != null ? { sort_order: sortOrder } : {}) })
+export const removePrereq = (id, linkId) => http.delete(`/ai/testcases/${id}/prereqs/${linkId}`)
 // 批量标记/取消回归(只改本项目用例;跨项目 id 后端忽略)。
 export const bulkSetRegression = (project_id, ids, is_regression) =>
   http.patch('/ai/testcases/regression', { ids, is_regression }, { params: { project_id } })
@@ -333,6 +337,10 @@ export const batchSetSelectorPage = (ids, page) => http.post('/selectors/batch-p
 // 返回 { imported, updated, skipped, invalid }
 export const importSelectors = (body) => http.post('/selectors/import', body)
 export const setSelectorScope = (body) => http.put('/selectors/scope', body)
+// 一键扫描并导入:平台机器本机拉已配分支代码扫 data-testid → 导入当前作用域 → 联动回填。
+// 未配分支/找不到代码副本/没装 git/git 失败 → 后端返回明确中文提示(拦截器弹出)。
+// 成功返回 { imported, updated, skipped, invalid, branch, head, scanned, auto_desc, restored }
+export const scanBranchImport = (body) => http.post('/selectors/scan-branch', body)
 // 删除前影响范围预览：该 key 被哪些可执行用例引用。返回 { count, cases:[{id,title,exec_kind}] }
 export const selectorUsage = (id) => http.get(`/selectors/${id}/usage`)
 // 批量确定性回填「选择器待补」用例（补 key 后联动复活，不调 AI）。返回 { restored, remaining }

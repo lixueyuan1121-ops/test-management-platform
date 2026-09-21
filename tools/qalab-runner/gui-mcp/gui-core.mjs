@@ -63,7 +63,10 @@ export function recordingFrame(frame, main, vm, url = frame.url()) {
 // registry/vmIframe 若传入则直接用之(runner 从 API 拉的注册表),否则 readFileSync 内置 selectors.json。
 export function createGuiCore(opts = {}) {
   const CDP_URL = opts.cdpUrl || process.env.CDP_URL || "http://127.0.0.1:9222";
-  const DEFAULT_TIMEOUT = Number(opts.timeout || process.env.GUI_TIMEOUT_MS || 10000);
+  // 每步定位/断言的默认超时(可用 GUI_TIMEOUT_MS 覆盖;单步可用 args.timeout_ms 覆盖)。
+  // 桌面 Electron + 业务 iframe 冷加载偏慢,默认给到 15s;配合 resolve()/check() 在超时窗口内的轮询,
+  // 覆盖"页面还没加载出来元素就被定位"的场景。改小会更快失败,改大更耐慢加载。
+  const DEFAULT_TIMEOUT = Number(opts.timeout || process.env.GUI_TIMEOUT_MS || 15000);
   // 冷启动时等页面 target 在 CDP 注册出来的上限(端口活≠页面就绪,见 ensureConnected)。
   const PAGE_READY_TIMEOUT = Number(opts.pageReadyTimeout || process.env.CDP_PAGE_READY_MS || 15000);
   // let(非 const):setRegistry 就地换表后,共享 runtime 通过 getter 读取新注册表。
@@ -333,15 +336,26 @@ export function createGuiCore(opts = {}) {
           const actual = result.count === 1 ? await result.loc.evaluate(el => ({ tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').trim().slice(0, 40) })) : null;
           const identityVerified = item.element_ref && result.count === 1
             ? await result.loc.evaluate((el, ref) => window.__qalabProbeElements?.get(ref) === el, item.element_ref) : false;
-          const sameElement = (!item.element_ref || identityVerified) && (!item.expected || (actual && (!item.expected.tag || actual.tag === item.expected.tag.toLowerCase())
-            && (!item.expected.text || actual.text === item.expected.text.trim().slice(0, 40))));
+          // 放宽 identity:动态刷新元素(如模型切换按钮)在"探测→保存"间会重渲染,旧 DOM 引用失效,
+          // 但只要当前唯一可见定位到、且 tag/text 与选中时一致,就是同一个语义元素,允许保存。
+          // identity_verified 仍如实上报(前端可知情),但不再作为 ok 的硬门槛。
+          // testid 定位是全局唯一权威(全应用不重复),命中即认元素,忽略文案漂移;
+          // 非 testid 时才用 tag+文本兜底防串到别的元素,但文本按"动态漂移"从宽:一方为空或互相包含即视为同一元素
+          //(边想边做/发送 这类按钮探测→保存间会改文案,严格全等会把同一元素误判成"已变化",导致重新探测也过不了)。
+          const hasTestid = (item.candidates || []).some((c) => c && (c.by === 'testid' || (c.by === 'css' && /\[data-testid[=~|]?=?/.test(c.value || ''))));
+          const tagOk = !item.expected?.tag || (actual && actual.tag === item.expected.tag.toLowerCase());
+          const expText = (item.expected?.text || '').trim().slice(0, 40);
+          const curText = actual?.text || '';
+          const textOk = hasTestid || !expText || !curText || curText === expText || curText.includes(expText) || expText.includes(curText);
+          const expectedOk = !item.expected || (actual && tagOk && textOk);
+          const sameElement = visible && expectedOk;
           if (visible && sameElement) await result.loc.evaluate(el => {
             const old = el.style.outline;
             el.style.outline = '3px solid #409eff';
             setTimeout(() => { el.style.outline = old; }, 1200);
           });
           results.push({ key: item.key, ok: visible && !!sameElement, identity_verified: !!identityVerified, count: result.count, visible, actual, hit: result.hit,
-            error: !visible ? '当前页面未唯一匹配可见元素' : !sameElement ? '页面状态已变化，当前元素与选中时不同，请重新探测' : null });
+            error: !visible ? '当前页面未唯一匹配可见元素（元素可能未加载/被遮挡/定位到多个），请在设备停到目标页后重新探测' : !sameElement ? '定位到的元素标签与选中时不一致，请重新探测该元素' : null });
         } catch (error) { results.push({ key: item.key, ok: false, error: error.message, code: error.code }); }
       }
       return { validation: results, checked_at: new Date().toISOString() };
@@ -440,6 +454,9 @@ export function createGuiCore(opts = {}) {
     async goto(url, args = {}) {
       await ensureConnected();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: Math.max(1, args.timeout_ms ?? DEFAULT_TIMEOUT) });
+      // domcontentloaded 只等顶层文档,SPA/业务 iframe 还没渲染完;不等就跑下一步会扑空(元素还没挂载)。
+      // 等业务内容 frame 就绪再返回,让导航后的首个定位步有内容可定位(探不到不抛,交后续步骤的轮询兜底)。
+      await waitForContentFrame().catch(() => {});
       return { url: page.url(), title: await page.title() };
     },
     // 用例间硬复位:reload 顶层清前端瞬态(选中/展开/弹窗/输入残留/焦点),等 vm iframe 就绪,再**主动

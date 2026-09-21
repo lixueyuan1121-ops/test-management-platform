@@ -25,7 +25,11 @@ export function xpathTextEq(text) {
 }
 
 // 生成 XPath:标签 + 各类名 contains + 精确文本。无任何条件(既无类又无文本)→ 返回空。
+// 优先用探测端在真实 DOM 里算好的 uniqueXPath(带同标签序号,保证唯一);它是"类多命中且文本也不唯一"
+// (如输入框内的模型选择/语音按钮)时唯一可靠的兜底。没有 uniqueXPath(旧 runner)才退回类+文本拼装。
 export function autoXPath(el) {
+  const unique = (el && typeof el.uniqueXPath === 'string') ? el.uniqueXPath.trim() : ''
+  if (unique) return unique
   const tag = (el?.tag || '*').toLowerCase() || '*'
   const conds = cssClassesFromEl(el).map((cls) => `contains(@class,'${cls}')`)
   const textEq = xpathTextEq(el?.text)

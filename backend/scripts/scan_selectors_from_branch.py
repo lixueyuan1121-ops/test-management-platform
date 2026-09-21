@@ -222,6 +222,7 @@ def _checkout_branch(repo: str, branch: str):
         print(f"[git] pull --ff-only 跳过({e});用当前 checkout 内容继续")
     head = _git(repo, "rev-parse", "--short", "HEAD")
     print(f"[git] 现在在 {branch} @ {head}")
+    return head
 
 
 def main():

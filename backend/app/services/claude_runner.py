@@ -701,13 +701,18 @@ def generate_script(kind: str, title: str, steps: str, expected: str, project_id
     return script, None
 
 
-def revalidate_for_backfill(script, project_id: int | None = None, sub_product: str = "", db=None) -> tuple[list, str | None]:
+def revalidate_for_backfill(script, project_id: int | None = None, sub_product: str = "", db=None, valid_keys=None) -> tuple[list, str | None]:
     """用当前注册表重新校验一份已存的 gui/e2e script(供「选择器待补」重生时确定性回填)。
 
     返回 (规范化步骤, 错误)。err is None 表示 script 引用的 key 现已全部注册、结构合法
     → 可直接回填、无需再调 AI(避免 AI 盲重写导致 key 名漂移、反复降级);err 非空则调用方
     落 AI 兜底。script 为空/非数组时 _validate_script 亦返回错误。
+
+    valid_keys:调用方预取好的「可用 key 集」。批量回填时传入(每作用域只算一次注册表),
+    避免逐条重建注册表(读全表+SHA256 序列化)造成 O(用例数×key 数) 卡顿。
     """
+    if valid_keys is not None:
+        return _validate_script(script, valid_keys)
     if db is not None:
         from app.services.selectors import usable_key_set
         return _validate_script(script, usable_key_set(db, project_id, sub_product))

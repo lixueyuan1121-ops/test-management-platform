@@ -41,7 +41,7 @@
                    :placeholder="myDevices.length ? '选择我的设备' : '未登记设备'" no-data-text="去『我的设备』注册">
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
-        <el-button type="primary" size="small" :loading="dispatching" @click="dispatchSelected">发送到执行机</el-button>
+        <el-button type="primary" size="small" :loading="dispatching" @click="openDispatchOrder">发送到执行机</el-button>
         <el-checkbox v-model="autoPrepare">自动补齐条件并执行全部所选用例</el-checkbox>
         <span v-if="autoPrepare" class="text-secondary">缺少对话、任务时创建测试数据；无法准备的用例也会给出阻塞报告</span>
         <el-divider direction="vertical" />
@@ -212,6 +212,20 @@
         <pre class="d-pre">{{ detail.row.steps || '—' }}</pre>
         <p class="d-row"><span class="d-k">预期</span></p>
         <pre class="d-pre">{{ detail.row.expected || '—' }}</pre>
+        <div class="d-row d-script-head">
+          <span class="d-k">关联用例(前置)</span>
+          <el-button link type="primary" size="small" @click="openPrereqPick">+ 添加前置</el-button>
+        </div>
+        <div v-if="prereq.loading" class="edit-hint">加载中…</div>
+        <div v-else-if="!prereq.list.length" class="edit-hint">未关联前置用例。执行本用例时,关联的前置会按顺序先执行、再执行本用例。</div>
+        <ol v-else class="prereq-list">
+          <li v-for="(p, i) in prereq.list" :key="p.id" class="prereq-item">
+            <span class="prereq-idx">{{ i + 1 }}</span>
+            <span class="prereq-title">{{ p.title || ('用例#' + p.prereq_case_id) }}</span>
+            <el-tag size="small" effect="plain">{{ (p.exec_kind || 'gui').toUpperCase() }}</el-tag>
+            <el-button link type="danger" size="small" @click="delPrereq(p)">移除</el-button>
+          </li>
+        </ol>
         <template v-if="detail.row.acceptance_links?.length">
           <p class="d-row"><span class="d-k">验收依据</span></p>
           <div v-for="link in detail.row.acceptance_links" :key="link.criterion_id">
@@ -238,6 +252,35 @@
         </template>
       </div>
     </el-drawer>
+    <el-dialog v-model="dispatchOrder.on" title="调整执行顺序" width="560px">
+      <div class="order-tip">执行机将按下列顺序依次执行；不调整即按当前(选中)顺序执行。</div>
+      <ol class="prereq-list">
+        <li v-for="(it, i) in dispatchOrder.rows" :key="it.id" class="order-item">
+          <span class="prereq-idx">{{ i + 1 }}</span>
+          <span class="prereq-title">{{ it.title }}</span>
+          <span>
+            <el-button link size="small" :disabled="i === 0" @click="moveDispatch(i, -1)">↑ 上移</el-button>
+            <el-button link size="small" :disabled="i === dispatchOrder.rows.length - 1" @click="moveDispatch(i, 1)">↓ 下移</el-button>
+          </span>
+        </li>
+      </ol>
+      <template #footer>
+        <el-button @click="dispatchOrder.on = false">取消</el-button>
+        <el-button type="primary" :loading="dispatching" @click="confirmDispatchOrder">按此顺序执行</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="prereq.pickVisible" title="选择前置用例" width="600px">
+      <el-input v-model="prereq.pickKeyword" placeholder="按标题搜索" clearable size="small" style="margin-bottom:8px" />
+      <div v-if="prereq.pickLoading" class="edit-hint">加载中…</div>
+      <div v-else-if="!prereqCandidates.length" class="edit-hint">无可选用例(已排除自己和已关联项)。</div>
+      <ul v-else class="prereq-pick-list">
+        <li v-for="c in prereqCandidates" :key="c.id" class="prereq-pick-item">
+          <span class="prereq-title">{{ c.title }}</span>
+          <el-tag size="small" effect="plain">{{ (c.exec_kind || 'gui').toUpperCase() }}</el-tag>
+          <el-button link type="primary" size="small" @click="pickPrereq(c)">添加</el-button>
+        </li>
+      </ul>
+    </el-dialog>
   </div>
 </template>
 
@@ -249,7 +292,7 @@ import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter, useRoute } from 'vue-router'
 import { useAppStore } from '@/store/app'
-import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, enqueueCases, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression } from '@/api'
+import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, enqueueCases, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression, listPrereqs, addPrereq, removePrereq } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
@@ -308,6 +351,7 @@ const myDevices = ref([])
 const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
+const dispatchOrder = reactive({ on: false, rows: [] })   // 发送到执行机前的排序弹窗:rows=[{id,title,_row}]
 const autoPrepare = ref(true)
 const fixing = ref(false)
 const selectedFixCount = computed(() => selected.value.filter((r) => r.selector_fix).length)
@@ -320,43 +364,65 @@ function canDispatch(row) {
 // 「仅因选择器缺失而降级」由后端算好 selector_fix / selector_fix_keys(见 _to_case_out),
 // 前端直接用,无需解析 kind_reason 文本。
 
-// 用例库下发:用例不一定挂清单项 → 先按任务分组 attachChecklist 建/取清单项,再 enqueue。
-async function dispatchSelected() {
+// 用例库下发:先让用户确认/调整执行顺序,再按序下发。两条下发路径(autoPrepare→enqueueCases、
+// 普通→attachChecklist+enqueueExec)都保序(数组顺序即执行顺序),故排序只需产出有序行数组。
+function openDispatchOrder() {
   if (!selected.value.length) return
   if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
+  // 参与排序/下发的行:autoPrepare 模式全选中项都发;普通模式只发可下发项。
+  const rows = autoPrepare.value ? selected.value.slice() : selected.value.filter(canDispatch)
+  if (!rows.length) {
+    ElMessage.warning(autoPrepare.value ? '没有选中用例' : '选中项里没有可下发的用例(需:已采纳 + 有关联任务 + 非人工)')
+    return
+  }
+  dispatchOrder.rows = rows.map((r) => ({ id: r.id, title: r.title, _row: r }))
+  if (dispatchOrder.rows.length === 1) { doDispatch(dispatchOrder.rows.map((x) => x._row)); return }
+  dispatchOrder.on = true
+}
+
+function moveDispatch(i, dir) {
+  const j = i + dir
+  const arr = dispatchOrder.rows
+  if (j < 0 || j >= arr.length) return
+  ;[arr[i], arr[j]] = [arr[j], arr[i]]
+}
+
+async function confirmDispatchOrder() {
+  await doDispatch(dispatchOrder.rows.map((x) => x._row))
+  if (!dispatching.value) dispatchOrder.on = false
+}
+
+// 按给定有序行数组下发(autoPrepare / 普通两条路径,均按数组顺序)。
+async function doDispatch(orderedRows) {
   if (autoPrepare.value) {
     dispatching.value = true
     try {
-      const res = await enqueueCases(pid.value, runner.value, selected.value.map(r => r.id), null, true)
-      ElMessage.success(`全部 ${res.run_ids.length} 条已下发，执行时自动检查并补齐条件；每条都会保留结果`)
+      const res = await enqueueCases(pid.value, runner.value, orderedRows.map(r => r.id), null, true)
+      ElMessage.success(`全部 ${res.run_ids.length} 条已按指定顺序下发，执行时自动检查并补齐条件；每条都会保留结果`)
+      dispatchOrder.on = false
       router.push({ path: '/exec-results', query: { project_id: pid.value, batch_id: res.batch_id } })
-    } catch { /* http 拦截器已提示；后端整批校验，不静默跳过 */ }
+    } catch { /* http 拦截器已提示 */ }
     finally { dispatching.value = false }
     return
   }
-  // selection 已放开(为支持批量采纳/删除),这里只取可下发的选中项
-  const items = selected.value.filter(canDispatch)
+  const items = orderedRows.filter(canDispatch)
   if (!items.length) { ElMessage.warning('选中项里没有可下发的用例(需:已采纳 + 有关联任务 + 非人工)'); return }
-  const skipped = selected.value.length - items.length
+  const skipped = orderedRows.length - items.length
   dispatching.value = true
   try {
-    // 按 task_id 分组:同一任务的用例一起 attachChecklist,拿回 checklist_item.id
-    const byTask = new Map()
-    for (const r of items) {
-      if (!byTask.has(r.task_id)) byTask.set(r.task_id, [])
-      byTask.get(r.task_id).push(r.id)
-    }
+    // 普通路径要经 attachChecklist 拿 itemIds。为保执行顺序,逐条 attach、按 items 顺序收集 itemId
+    //(而非按任务分组,否则同任务会打乱用户排序)。attachChecklist 幂等,单条调用可接受。
     const itemIds = []
-    for (const [tid, caseIds] of byTask) {
-      const checklist = await attachChecklist(tid, caseIds)   // 幂等:已存在则复用,返回这些用例对应的清单项
-      for (const it of checklist) {
-        if (caseIds.includes(it.test_case_id)) itemIds.push(it.id)
-      }
+    for (const r of items) {
+      const checklist = await attachChecklist(r.task_id, [r.id])
+      const hit = checklist.find((it) => it.test_case_id === r.id)
+      if (hit) itemIds.push(hit.id)
     }
     if (!itemIds.length) { ElMessage.warning('未能生成可下发的清单项'); return }
     const res = await enqueueExec(pid.value, runner.value, itemIds)
     const n = res?.run_ids?.length || itemIds.length
-    ElMessage.success(`已下发 ${n} 条到 ${runner.value}${skipped ? `(跳过 ${skipped} 条不可下发)` : ''},执行机跑完会自动回写结果`)
+    ElMessage.success(`已按指定顺序下发 ${n} 条到 ${runner.value}${skipped ? `(跳过 ${skipped} 条不可下发)` : ''},执行机跑完会自动回写结果`)
+    dispatchOrder.on = false
   } catch { /* http 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
@@ -476,7 +542,14 @@ async function onReviewChange(row, val) {
 // steps/title 作为语义匹配上下文（中文文案命中元素可见文字，key 名命中英文属性）。见 SelectorAdmin fixKeys 分支。
 async function locateMissingKeys(row) {
   const detail = await getTestcase(row.id)
-  const { contexts, hints } = collectMissingKeys([detail], [])
+  // 只带**当前仍未注册**的 key：优先用后端算的 missing_selector_keys(script 引用了但注册表没有的),
+  // 退回生成期 selector_fix_keys。否则会把整条链路里已补好的 key 也带过去,导致重复添加(图11/12)。
+  const genKeys = row.selector_fix_keys || detail.selector_fix_keys || []
+  const fixKeys = (detail.missing_selector_keys && detail.missing_selector_keys.length)
+    ? detail.missing_selector_keys
+    : (detail.missing_selector_keys ? [] : genKeys)   // 后端返回了空数组=全已注册,不再带任何 key
+  if (!fixKeys.length) { ElMessage.info('该用例引用的选择器 key 均已注册，可直接「批量回填」恢复执行'); return }
+  const { contexts, hints } = collectMissingKeys([{ ...detail, selector_fix: true, selector_fix_keys: fixKeys }], [])
   router.push({
     name: 'selectors',
     query: {
@@ -484,7 +557,7 @@ async function locateMissingKeys(row) {
       page: (row.page || '').split(',').filter(Boolean)[0] || '',
       sub_product: row.sub_product || '',
       case_ids: String(row.id),
-      fix_keys: (row.selector_fix_keys || []).join(','),
+      fix_keys: fixKeys.join(','),
       key_contexts: JSON.stringify(contexts),
       key_hints: JSON.stringify(hints),
       ctx: `${row.title || ''} ${row.steps || ''}`.trim().slice(0, 200),
@@ -609,16 +682,59 @@ async function doEditAndRegen() {
 const detail = reactive({ visible: false, row: null, loading: false })
 // script 直编态:on=编辑中,text=编辑区 JSON 文本,saving=保存中。
 const scriptEdit = reactive({ on: false, text: '', saving: false })
+// 关联前置用例:list=已挂前置;pick* = 挑选弹窗
+const prereq = reactive({ loading: false, list: [], pickVisible: false, pickLoading: false, candidates: [], pickKeyword: '' })
+const prereqCandidates = computed(() => {
+  const kw = prereq.pickKeyword.trim().toLowerCase()
+  return kw ? prereq.candidates.filter((c) => (c.title || '').toLowerCase().includes(kw)) : prereq.candidates
+})
 async function openDetail(row) {
   detail.row = { ...row }   // 先用列表行(含 steps/expected)即时展示
   detail.visible = true
   detail.loading = true
   scriptEdit.on = false     // 每次打开详情重置编辑态
+  loadPrereqs(row.id)       // 并行拉前置列表
   try {
     const full = await getTestcase(row.id)
     if (detail.row && detail.row.id === row.id) detail.row = full
   } catch { /* http 拦截器已提示;steps/expected 仍可见,仅 script 缺 */ }
   finally { detail.loading = false }
+}
+
+// ---- 关联前置用例 ----
+async function loadPrereqs(cid) {
+  prereq.list = []
+  prereq.loading = true
+  try { prereq.list = await listPrereqs(cid) } catch { prereq.list = [] }
+  finally { prereq.loading = false }
+}
+async function openPrereqPick() {
+  prereq.pickVisible = true
+  prereq.pickKeyword = ''
+  prereq.candidates = []
+  prereq.pickLoading = true
+  try {
+    // 拉本项目候选用例(排除自己 + 已关联的);复用 listCases。
+    const { items } = await listCases({ project_id: pid.value, page: 1, page_size: 200 })
+    const linked = new Set(prereq.list.map((p) => p.prereq_case_id))
+    prereq.candidates = (items || []).filter((c) => c.id !== detail.row.id && !linked.has(c.id))
+  } catch { prereq.candidates = [] }
+  finally { prereq.pickLoading = false }
+}
+async function pickPrereq(c) {
+  try {
+    await addPrereq(detail.row.id, c.id)
+    await loadPrereqs(detail.row.id)
+    prereq.pickVisible = false
+    ElMessage.success('已添加前置用例')
+  } catch { /* http 拦截器已提示(如成环/跨项目) */ }
+}
+async function delPrereq(p) {
+  try {
+    await removePrereq(detail.row.id, p.id)
+    await loadPrereqs(detail.row.id)
+    ElMessage.success('已移除前置')
+  } catch { /* http 拦截器已提示 */ }
 }
 function prettyScript(s) {
   if (!s) return '(无 script,该用例由 claude 兜底执行或非结构化)'
@@ -688,6 +804,14 @@ async function bulkDelete() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
+.prereq-list { margin: 4px 0; padding: 0; list-style: none; }
+.prereq-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.prereq-idx { flex: none; width: 20px; height: 20px; line-height: 20px; text-align: center; background: #ecf5ff; color: #409eff; border-radius: 50%; font-size: 12px; }
+.prereq-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prereq-pick-list { margin: 0; padding: 0; list-style: none; max-height: 50vh; overflow: auto; }
+.prereq-pick-item { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid #f0f0f0; }
+.order-tip { color: #909399; font-size: 13px; margin-bottom: 10px; }
+.order-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }

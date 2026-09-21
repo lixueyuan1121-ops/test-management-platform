@@ -68,7 +68,23 @@
                   </el-tag>
                 </el-tooltip>
                 <span class="reason">{{ row.reason || '—' }}</span>
-                <el-link v-if="isBlocked(row)" type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
+                <template v-if="isBlocked(row)">
+                  <el-tooltip
+                    v-if="row._fixKeys && row._fixKeys.length"
+                    effect="light" placement="right" :show-after="150" :hide-after="100"
+                    popper-class="missing-selector-tooltip" @before-show="loadFixTargets(row)"
+                  >
+                    <template #content>
+                      <div style="max-width:min(560px,75vw);max-height:55vh;overflow:auto">
+                        <div v-for="key in (row._fixKeys || [])" :key="key" style="padding:6px 0">
+                          <SelectorTargetNotes :selector-key="key" :notes="row._fixNotes?.[key] || [{ title: '脚本未说明具体元素，请补充对应操作描述' }]" />
+                        </div>
+                      </div>
+                    </template>
+                    <el-link type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
+                  </el-tooltip>
+                  <el-link v-else type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
+                </template>
               </template>
             </el-table-column>
             <el-table-column label="耗时" width="80" align="center">
@@ -212,6 +228,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, triageExecRun } from '@/api'
+import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
+import { describeSelectorTarget } from '@/utils/selector-target-description'
+import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
 import { useAppStore } from '@/store/app'
 import http from '@/api/http'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -299,7 +318,18 @@ async function load() {
     })
     // 默认展开最新批次,方便一进来就看到结果
     activeBatches.value = batches.value.slice(0, 1).map((b) => b.id)
+    prefetchFixKeys()   // 预取 blocked 行的待补 key,决定是否显示「补齐选择器」入口
   } finally { loading.value = false }
+}
+
+// 对 blocked 行并发预取 selector_fix_keys(限并发,避免一次太多请求)。
+// 结果放 row._fixKeys;「补齐选择器」入口只在 _fixKeys 非空时显示(与用例库口径一致)。
+async function prefetchFixKeys() {
+  const blocked = rows.value.filter(isBlocked)
+  const pool = 4
+  for (let i = 0; i < blocked.length; i += pool) {
+    await Promise.all(blocked.slice(i, i + pool).map((r) => loadFixTargets(r)))
+  }
 }
 
 function showReport(row) { rep.value = { visible: true, row } }
@@ -348,16 +378,103 @@ function resultLabel(row) {
   if (row.verdict === 'fail') return '失败'
   return STATUS_LABEL[row.status] || row.status
 }
-// blocked 行一键跳选择器管理:带项目 + 用例上下文(title/reason),SelectorAdmin 按上下文探测并高亮匹配元素。
-// reason 常含"未命中 key xxx",作为定位线索一并带上。复用 CaseLibrary「定位缺失 key」的 selectors 路由桥接。
-function fixSelector(row) {
-  router.push({
-    name: 'selectors',
-    query: {
-      project_id: pid.value,
+// 悬浮「补齐选择器」时懒加载说明:按 case_id 拉用例详情,取 selector_fix_keys + 对每个 key
+// 用 describeSelectorTarget 从 script 抽出"补哪个 key、对应哪个 DOM/操作"。结果缓存到 row 上,
+// 移开再悬浮不重复请求(除非上次出错)。执行记录行本身无这些字段,必须现拉详情。
+async function loadFixTargets(row) {
+  if (row._fixNotes && !row._fixError) return
+  const cid = row.case_id ?? row.test_case_id
+  if (!cid) { row._fixKeys = []; row._fixNotes = {}; return }
+  row._fixLoading = true; row._fixError = false
+  try {
+    const detail = await getTestcase(cid)
+    // 待补 key 取**当前仍未注册**的:后端 missing_selector_keys(script 引用了但注册表现在没有的)最准,
+    // 优先用它;它是明确的空数组=全已注册→不显示待补;后端没这字段(旧版)才退回生成期 keys / script 兜底。
+    // 修「待补单列出用例所有 key、实际只缺一个」——链路里已补好的 key 不再带过去,避免重复添加。
+    const keys = Array.isArray(detail.missing_selector_keys)
+      ? detail.missing_selector_keys
+      : (detail.selector_fix_keys?.length ? detail.selector_fix_keys : scriptKeys(detail.script))
+    row._fixKeys = keys
+    row._fixNotes = Object.fromEntries(keys.map((key) => {
+      const notes = describeSelectorTarget(key, detail.script)
+      return [key, notes.length ? notes : [{ title: '脚本未说明具体元素，请补充对应操作描述' }]]
+    }))
+  } catch { row._fixError = true }
+  finally { row._fixLoading = false }
+}
+
+// 从结构化 script 抽出所有 target.key(去重),作为 selector_fix_keys 为空时的兜底 key 来源。
+// blocked 常是运行期判定,用例此刻未必有生成期的 selector_fix_keys;但脚本里引用的 key 就是本次要补的候选。
+function scriptKeys(script) {
+  try { if (typeof script === 'string') script = JSON.parse(script) } catch { return [] }
+  const out = []
+  for (const s of (Array.isArray(script) ? script : [])) {
+    const k = s?.target?.key
+    if (k && !out.includes(k)) out.push(k)
+  }
+  return out
+}
+
+// blocked 行一键跳选择器管理的「设备探测」tab:按 case_id 拉用例详情,带齐 fix_keys/
+// sub_product/key_contexts 等桥接参数(对齐 CaseLibrary::locateMissingKeys)。所有 blocked 行都可点;
+// 生成期 selector_fix_keys 为空时,从 script(detail 或行内 payload)的 target.key 兜底,尽量带上 key。
+async function fixSelector(row) {
+  const cid = row.case_id ?? row.test_case_id
+  if (!cid) {
+    router.push({ name: 'selectors', query: {
+      project_id: pid.value, view: 'probe',
       ctx: `${row.title || ''} ${row.reason || ''}`.trim().slice(0, 200),
-    },
-  })
+    } })
+    return
+  }
+  let detail
+  try { detail = await getTestcase(cid) } catch { detail = null }
+  if (!detail) {
+    // 详情拉不到也要能跳:用行内 payload.script 兜底抽 key
+    const fbKeys = scriptKeys(row.payload?.script)
+    router.push({ name: 'selectors', query: {
+      project_id: pid.value, view: 'probe', case_ids: String(cid),
+      sub_product: row.payload?.sub_product || '',
+      fix_keys: fbKeys.join(','),
+      ctx: `${row.title || ''} ${row.reason || ''}`.trim().slice(0, 200),
+    } })
+    return
+  }
+  // 只带**当前仍未注册**的 key:后端 missing_selector_keys 最准(优先);它是明确空数组=全已注册→不跳,
+  // 提示直接回填;旧版后端无此字段才退回生成期 selector_fix_keys / script 兜底。避免把已补 key 带去重复添加。
+  const script = detail.script || row.payload?.script
+  const fixKeys = Array.isArray(detail.missing_selector_keys)
+    ? detail.missing_selector_keys
+    : (detail.selector_fix_keys?.length ? detail.selector_fix_keys : scriptKeys(script))
+  if (Array.isArray(detail.missing_selector_keys) && !fixKeys.length) {
+    ElMessage.info('该用例引用的选择器 key 均已注册，可直接「批量回填」恢复执行')
+    return
+  }
+  const genKeys = detail.selector_fix_keys || []
+  let contexts, hints
+  if (genKeys.length) {
+    ({ contexts, hints } = collectMissingKeys([{ ...detail, selector_fix: true, selector_fix_keys: fixKeys }], []))
+  } else {
+    // 兜底 key 不走 collectMissingKeys(它跳过非「待补」用例 → 无说明)。
+    // 直接用 describeSelectorTarget 基于 script 为每个 key 产出步骤说明,让跳转后悬浮能显示具体步骤。
+    contexts = {}; hints = {}
+    for (const k of fixKeys) {
+      const targets = describeSelectorTarget(k, script)
+      hints[k] = { targets }
+      contexts[k] = targets.map(t => `${t.description || t.title || ''} ${t.expected || ''}`.trim()).join(' ').slice(0, 1200)
+    }
+  }
+  router.push({ name: 'selectors', query: {
+    project_id: pid.value,
+    view: 'probe',
+    sub_product: detail.sub_product || row.payload?.sub_product || '',
+    page: (detail.page || '').split(',').filter(Boolean)[0] || '',
+    case_ids: String(cid),
+    fix_keys: fixKeys.join(','),
+    key_contexts: JSON.stringify(contexts),
+    key_hints: JSON.stringify(hints),
+    ctx: `${detail.title || row.title || ''} ${detail.steps || ''}`.trim().slice(0, 200),
+  } })
 }
 
 // 重试:对该条执行记录的用例重新入队,执行机会重跑。run 标识为 run_id(与纠偏一致),老记录回落 id。

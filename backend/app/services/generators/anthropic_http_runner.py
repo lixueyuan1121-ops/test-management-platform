@@ -129,7 +129,7 @@ def stream_generate(
 
     body = {
         "model": _model(),
-        "max_tokens": 32000,
+        "max_tokens": max(1024, settings.ANTHROPIC_HTTP_MAX_TOKENS),
         "stream": True,
         "system": system_prompt or _SYSTEM_MSG,
         "messages": [{"role": "user", "content": prompt}],
@@ -245,7 +245,17 @@ def stream_generate(
         _slots.release()
 
     if not completed or stop_reason in ("max_tokens", "refusal"):
-        yield {"type": "error", "msg": "模型未完整完成生成（连接中断或输出被截断），请重试或缩小生成范围"}
+        # 区分"被输出上限截断"与"连接中断",给出可操作指引:截断→调大 ANTHROPIC_HTTP_MAX_TOKENS 或缩小范围;
+        # 中断→重试。附带已收到的部分正文(partial),让上层能保存已完成部分、按阶段续跑,而非整批丢弃重来。
+        if stop_reason == "max_tokens":
+            msg = ("模型输出达到 token 上限被截断（本次上限 "
+                   f"{max(1024, settings.ANTHROPIC_HTTP_MAX_TOKENS)}）。"
+                   "请调大 ANTHROPIC_HTTP_MAX_TOKENS，或按模块拆分需求后分片生成")
+        elif stop_reason == "refusal":
+            msg = "模型拒绝完成本次生成（可能触发内容策略），请调整输入后重试"
+        else:
+            msg = "模型未完整完成生成（连接中断或输出被截断），请重试或缩小生成范围"
+        yield {"type": "error", "msg": msg, "truncated": stop_reason == "max_tokens", "partial": raw}
         return
     dur_ms = int((time.monotonic() - t0) * 1000)
     yield {"type": "result", "text": raw, "duration_ms": dur_ms,
@@ -259,6 +269,7 @@ def generate_script(
     expected: str,
     project_id: int | None = None,
     timeout: int | None = None,
+    sub_product: str = "",
 ) -> tuple[list, str | None]:
     """同步为单条 gui/e2e/api 用例生成结构化 script。返回 (script列表, 错误)。"""
     if not is_available():
@@ -269,7 +280,7 @@ def generate_script(
     if not _acquire_slot(_slots):
         return [], "anthropic_http 生成繁忙（已达并发上限），请稍后重试"
 
-    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id)
+    prompt = build_script_prompt(kind, title, steps or "", expected or "", project_id, sub_product)
     body = {
         "model": _model(),
         "max_tokens": 8192,

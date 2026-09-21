@@ -9,7 +9,7 @@ import logging
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, sessionmaker
@@ -413,20 +413,34 @@ def backfill_testcases(
             .filter(TestCase.project_id == project_id,
                     TestCase.kind_reason.like(f"{_SELECTOR_FIX_MARK}%"))
             .all())
+    # 按作用域预取注册表:usable_key_set / 页面映射各自重建全表(还带 SHA256 序列化),
+    # 逐条回填会 O(用例数×key 数) 卡死。这里每个 sub_product 只算一次,循环里复用。
+    from app.services.selectors import usable_key_set, shared_key_page_map
+    from app.services.claude_runner import _pages_for_script
+    _usable_cache, _page_cache = {}, {}
+    def _usable(sub):
+        if sub not in _usable_cache:
+            _usable_cache[sub] = usable_key_set(db, project_id, sub)
+        return _usable_cache[sub]
+    def _page_map(sub):
+        if sub not in _page_cache:
+            _page_cache[sub] = shared_key_page_map(db, project_id, sub)
+        return _page_cache[sub]
     restored = 0
     for tc in rows:
+        sub = tc.sub_product or ""
         sel_fix, _keys, intended = selector_fix_info(tc.kind_reason)
         old_script = _load_script_list(tc.script)
         if not (sel_fix and intended in ("gui", "e2e") and old_script):
             continue
-        norm, verr = revalidate_for_backfill(old_script, project_id=project_id, sub_product=tc.sub_product, db=db)
+        norm, verr = revalidate_for_backfill(old_script, valid_keys=_usable(sub))
         if verr is not None:
             continue
         tc.script = json.dumps(norm, ensure_ascii=False)
         tc.exec_kind = intended
         tc.kind_reason = None
         tc.last_gen_error = None
-        p = pages_for_script(norm, project_id, tc.sub_product)
+        p = _pages_for_script(norm, _page_map(sub))
         if p:
             tc.page = p
         restored += 1
@@ -497,7 +511,19 @@ def get_testcase(
         t = db.get(Task, tc.task_id)
         title = t.title if t else None
     from app.services.requirement_analysis import case_links
-    return ok(case_links(db, [_to_case_out(tc, task_title=title)])[0])
+    out = case_links(db, [_to_case_out(tc, task_title=title)])[0]
+    # 运行期「选择器待补」兜底:只有 script 引用了、但注册表里没有的 key 才是真正待补的。
+    # 生成期 selector_fix_keys 为空时(如执行期才 blocked 的用例),前端据此只列真缺的 key,
+    # 不再把整脚本引用的 key 全列出来(修「待补单列出当前用例所有 key、实际只缺一个」)。
+    try:
+        from app.services.selectors import usable_key_set
+        from app.services.claude_runner import _unregistered_keys
+        script = json.loads(tc.script or "[]")
+        valid = usable_key_set(db, tc.project_id, tc.sub_product) if tc.project_id else set()
+        out["missing_selector_keys"] = _unregistered_keys(script, valid)
+    except (ValueError, TypeError):
+        out["missing_selector_keys"] = []
+    return ok(out)
 
 
 @router.patch("/testcases/{cid}")
@@ -630,6 +656,85 @@ def delete_testcase(
     db.delete(tc)
     db.commit()
     return ok({"deleted": cid})
+
+
+def _prereq_out(db, link):
+    """把 TestCaseLink 序列化成前置项 dict(带前置用例标题/类型,供前端展示)。"""
+    pc = db.get(TestCase, link.prereq_case_id)
+    return {
+        "id": link.id,
+        "case_id": link.case_id,
+        "prereq_case_id": link.prereq_case_id,
+        "sort_order": link.sort_order,
+        "title": pc.title if pc else None,
+        "exec_kind": (getattr(pc, "exec_kind", None) if pc else None),
+    }
+
+
+@router.get("/testcases/{cid}/prereqs")
+def list_prereqs(cid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """列出该用例的前置用例(按 sort_order)。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _ALL_ROLES)
+    from app.models import TestCaseLink
+    links = (db.query(TestCaseLink).filter(TestCaseLink.case_id == cid)
+             .order_by(TestCaseLink.sort_order, TestCaseLink.id).all())
+    return ok([_prereq_out(db, lk) for lk in links])
+
+
+@router.post("/testcases/{cid}/prereqs")
+def add_prereq(cid: int, body: dict = Body(...), db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """给用例挂一个前置用例。body: {prereq_case_id, sort_order?}。防自引用/重复/跨项目/直接成环。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
+    prereq_id = body.get("prereq_case_id")
+    if not prereq_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="缺少 prereq_case_id")
+    if prereq_id == cid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="用例不能把自己当前置")
+    pc = db.get(TestCase, prereq_id)
+    if not pc or pc.project_id != tc.project_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="前置用例不存在或不在同一项目")
+    from app.models import TestCaseLink
+    # 直接成环拦截:被挂的前置 pc 若已把 cid 当它的前置,则 cid→pc→cid 成环。
+    if db.query(TestCaseLink).filter(TestCaseLink.case_id == prereq_id,
+                                     TestCaseLink.prereq_case_id == cid).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="不能互为前置(会形成循环)")
+    exists = db.query(TestCaseLink).filter(TestCaseLink.case_id == cid,
+                                           TestCaseLink.prereq_case_id == prereq_id).first()
+    if exists:
+        return ok(_prereq_out(db, exists))
+    order = body.get("sort_order")
+    if order is None:
+        order = db.query(func.coalesce(func.max(TestCaseLink.sort_order), -1)).filter(
+            TestCaseLink.case_id == cid).scalar() + 1
+    link = TestCaseLink(case_id=cid, prereq_case_id=prereq_id, sort_order=order)
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return ok(_prereq_out(db, link))
+
+
+@router.delete("/testcases/{cid}/prereqs/{link_id}")
+def remove_prereq(cid: int, link_id: int, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """摘除一个前置关联。"""
+    tc = db.get(TestCase, cid)
+    if not tc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
+    assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
+    from app.models import TestCaseLink
+    link = db.get(TestCaseLink, link_id)
+    if not link or link.case_id != cid:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="前置关联不存在")
+    db.delete(link)
+    db.commit()
+    return ok({"deleted": link_id})
 
 
 @router.post("/testcases/{cid}/gen-script")

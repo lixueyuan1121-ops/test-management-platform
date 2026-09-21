@@ -310,7 +310,11 @@
           placeholder="如 feature-add-testid_20260903（当前作用域）"
         />
         <el-button size="small" type="primary" plain :loading="savingBranch" @click="saveScanBranch">保存分支</el-button>
-        <span class="form-hint">本机 backend 目录运行：<code>python -m scripts.scan_selectors_from_branch --base-url … --project {{ pid }} --repo &lt;openclaw360-web 本地路径&gt; --import</code> 自动拉此分支扫描并导入</span>
+        <el-button size="small" type="success" :loading="scanning" :disabled="!scanBranch.trim()" @click="runScanBranch">扫描并导入</el-button>
+        <span class="form-hint">
+          「扫描并导入」由<b>平台所在机器</b>拉此分支代码扫 data-testid 直接入库（须该机有 openclaw360-web 副本 + git；未配置会提示）。
+          也可本机 backend 目录手动跑：<code>python -m scripts.scan_selectors_from_branch --project {{ pid }} --repo &lt;openclaw360-web 路径&gt; --import</code>
+        </span>
       </div>
 
       <el-result v-if="loadError" icon="error" title="注册表加载失败"><template #extra><el-button @click="reload">重试注册表</el-button></template></el-result>
@@ -504,6 +508,13 @@
             填了就并入候选并<b>排在 CSS 之前</b>（testid &gt; xpath &gt; css）；{{ add.mode === 'update' ? '合并进所选已有 key' : '随新 key 一起存' }}。留空则不加。
             <span v-if="add.xpathAuto">建议：<code class="xpath-suggest" @click="add.xpath = add.xpathAuto" title="点击采纳">{{ add.xpathAuto }}</code></span>
           </div>
+          <el-alert v-if="add.ambiguousCount > 1" type="error" :closable="false" show-icon class="xpath-alert" style="margin-top:8px">
+            上次保存时该候选在页面匹配到 <b>{{ add.ambiguousCount }}</b> 个相同元素,执行时无法确定是哪个。请用 XPath 限定到唯一,例如:
+            <div style="margin-top:4px">
+              · 按文本:<code>//button[contains(normalize-space(.),"报告")]</code><br>
+              · 按第几个:<code>(//div[@class="title"])[1]</code>（下标从 1 起）
+            </div>
+          </el-alert>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -592,7 +603,7 @@
 </template>
 
 <script setup>
-import { elementStatus, suggestKey } from '@/utils/probe-batch'
+import { elementStatus, suggestKey, sameFrameDomain } from '@/utils/probe-batch'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 const activeView = ref('registry')
@@ -602,7 +613,7 @@ import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import {
   listSelectors, createSelector, patchSelector, deleteSelector, importLegacySelectors,
-  batchDeleteSelectors, importSelectors, setSelectorScope, batchSetSelectorPage,
+  batchDeleteSelectors, importSelectors, setSelectorScope, batchSetSelectorPage, scanBranchImport,
   selectorUsage, backfillTestcases, enqueueCases, getTestcase, getSelectorHistory, restoreSelector, remapCaseSelector,
   listMyDevices, startProbe, getProbe,
   listModules, saveModule, deleteModule,
@@ -705,6 +716,9 @@ onMounted(async () => {
   try { devices.value = await listMyDevices() } catch { devices.value = [] }
   // 从用例库「定位缺失 key」带 query 跳来：预填项目/页面/缺失 key + 语义上下文，并自动探测。
   const q = route.query
+  // 显式 view/tab=probe 时先切到「设备探测」tab(兜底):即便无 fix_keys(如执行结果里无待补 key
+  // 的 blocked 行跳来),或项目未命中下面的过滤,也能稳定落到设备探测,而不是停在默认 registry。
+  if (q.view === 'probe' || q.tab === 'probe') activeView.value = 'probe'
   const qPid = q.project_id ? Number(q.project_id) : null
   if (qPid && projects.value.some((p) => p.id === qPid)) {
     pid.value = qPid
@@ -1017,6 +1031,36 @@ async function saveScanBranch() {
     })
     ElMessage.success('已保存扫描分支')
   } catch { /* 拦截器已提示 */ } finally { savingBranch.value = false }
+}
+
+// ---- 扫描并导入(平台机器本机拉分支代码扫 testid 入库)----
+const scanning = ref(false)
+async function runScanBranch() {
+  if (!pid.value || scanning.value) return
+  const branch = scanBranch.value.trim()
+  if (!branch) { ElMessage.warning('请先填写扫描分支'); return }
+  // 先确保分支已存(用户可能填了没点保存),再扫;同名 key 默认跳过,可选覆盖。
+  let overwrite = false
+  try {
+    await ElMessageBox.confirm(
+      `将由平台机器拉取分支「${branch}」的代码，扫 data-testid 导入到作用域「${subProduct.value || '项目级共享'}」。\n同名 key 默认跳过；如需以分支为准覆盖，请选「覆盖同名」。`,
+      '扫描并导入', { confirmButtonText: '开始扫描（跳过同名）', cancelButtonText: '覆盖同名', distinguishCancelAndClose: true, type: 'info' })
+  } catch (act) {
+    if (act !== 'cancel') return   // 关闭/ESC=取消;取消按钮=覆盖
+    overwrite = true
+  }
+  scanning.value = true
+  try {
+    await saveScanBranch()   // 幂等保存,保证后端读到的分支与输入一致
+    const r = await scanBranchImport({ project_id: pid.value, sub_product: subProduct.value, overwrite })
+    ElMessage.success(
+      `分支「${r.branch}」${r.head ? '@' + r.head : ''} 扫到 ${r.scanned} 个 testid：`
+      + `新增 ${r.imported}、覆盖 ${r.updated}、跳过 ${r.skipped}`
+      + `${r.auto_desc ? `（其中 ${r.auto_desc} 个 desc 自动生成、建议复核）` : ''}`
+      + `${r.restored ? `；联动回填 ${r.restored} 条待补用例` : ''}`)
+    await reload()
+  } catch { /* 未配分支/找不到副本/没装 git/git失败 → 后端已返回中文提示,拦截器弹出 */ }
+  finally { scanning.value = false }
 }
 
 // ---- 批量删除选中的 key ----
@@ -1452,6 +1496,8 @@ const add = reactive({
   // XPath 手动纠正:cssCount=该元素 CSS 类在本次探测里命中几个(≥2=多命中,建议 XPath);
   // xpath=用户采纳/编辑的 XPath 值(非空则并入候选,排在 css 之前);xpathAuto=自动生成的建议值。
   cssCount: 0, xpath: '', xpathAuto: '',
+  // ambiguousCount=上次校验时 best 候选实际匹配到的元素数(>1 提示用 XPath 消歧到唯一)。
+  ambiguousCount: 0,
 })
 
 // 更新已有：目标 key 当前 row（取现有候选做对比预览）；仅 update 模式且选定目标时有值。
@@ -1531,19 +1577,32 @@ function openAddAsKey(el, frame) {
   const allEls = enrichedGroups.value.flatMap((g) => g.elements)
   const cssCount = countCssMatches(allEls, cssSelectorValue(el))
   const xpathAuto = autoXPath(el)
-  // best 是易多命中的 css(非 testid) 且确实多命中 → 默认采纳自动 XPath;否则留空(用户可手填)。
-  const xpath = (cssCount >= 2 && cand && cand.by === 'css') ? xpathAuto : ''
-  // 「定位缺失 key」模式:直接新建选中的那个待补 key(预填 key 名),不走更新预置。
-  // 控件类型推断:先按「元素 tag/type + 元素自身文本」(最贴合该元素),判不出再退到用例步骤上下文。
+  // 何时默认采纳 XPath:best 非 testid(testid 全局唯一无需 XPath),且该元素定位不唯一——
+  // CSS 类多命中,或 best 是 role/text 这类天然易多命中的候选(如输入框内的模型选择/语音按钮,best=role=button
+  // 会匹配一堆按钮)。有探测端算好的 uniqueXPath 时它保证唯一,直接预填让这类元素能一次存成(修图14)。
+  const bestIsTestid = cand && (cand.by === 'testid' || (cand.by === 'css' && /\[data-testid/.test(cand.value || '')))
+  const likelyAmbiguous = (cssCount >= 2 && cand && cand.by === 'css') || (cand && ['role', 'text', 'label'].includes(cand.by))
+  const xpath = (!bestIsTestid && likelyAmbiguous && xpathAuto) ? xpathAuto : ''
+  // 「定位缺失 key」模式:若点的正是该待补 key 的匹配元素(_matchTop),预填待补 key 名;
+  // 若点了列表外的其它元素(与待补 key 无关,如图2 点了聊天输入按钮却带着 navProjects),
+  // 则改用 suggestKey 按该元素自动生成合适的 key 名,并走纯新建(不复用/不预置待补 key)。
   if (fixCtx.activeKey) {
+    // 仅当点的是该待补 key 的 Top3 高亮匹配元素才沿用待补 key 名;微弱 _matchScore 不算
+    //(否则点了列表外无关元素也会误填成 navProjects 这类待补 key)。
+    const isForActiveKey = !!el._matchTop
+    const reserved = new Set(effectiveRows.value.map(r => r.key))
+    const autoKey = isForActiveKey ? fixCtx.activeKey : suggestKey(el, probe.page, reserved)
     const segElem = inferControlType(el, el.text || '')
-      || inferControlType({}, `${fixCtx.ctx || ''} ${fixCtx.activeKey || ''}`)
+      || inferControlType({}, isForActiveKey ? `${fixCtx.ctx || ''} ${fixCtx.activeKey || ''}` : (el.text || ''))
     Object.assign(add, {
       visible: true, saving: false, status,
       tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
-      cand, cands, mode: status.key && fixCtx.caseIds.length ? 'reuse' : 'create', key: fixCtx.activeKey, page: probe.page || '',
-      targetId: effectiveRows.value.find(r => r.key === status.key)?.id || null,
+      cand, cands,
+      mode: (isForActiveKey && status.key && fixCtx.caseIds.length) ? 'reuse' : 'create',
+      key: autoKey, page: probe.page || '',
+      targetId: isForActiveKey ? (effectiveRows.value.find(r => r.key === status.key)?.id || null) : null,
       segTab: '', segScene: scene, segElem, cssCount, xpathAuto, xpath,
+      ambiguousCount: 0,
     })
     return
   }
@@ -1551,25 +1610,32 @@ function openAddAsKey(el, frame) {
   const presetByVerify = probe.updateTarget && rows.value.find((r) => r.key === probe.updateTarget)
   const presetByMatch = status.key && rows.value.find((r) => r.key === status.key)
   const preset = presetByVerify || presetByMatch
+  // 新建默认自动起名(语义+控件+签名去重,与批量一致),用户可改;更新模式不需要 key 名。
+  const autoKey = preset ? '' : suggestKey(el, probe.page, new Set(effectiveRows.value.map((r) => r.key)))
   Object.assign(add, {
     visible: true, saving: false, status,
     tag: el.tag, elementRef: el.element_ref || '', type: el.type || '', text: el.text || '', name: elementDisplayName(el), frame: frame || 'auto',
     cand, cands,
     // exists/update/有预置 → 默认更新已有;new → 默认新建。
     mode: preset ? 'update' : 'create',
-    key: '', page: probe.page || '', targetId: preset ? preset.id : null,
+    key: autoKey, page: probe.page || '', targetId: preset ? preset.id : null,
     segTab: '', segScene: scene, segElem: inferControlType(el, el.text || ''),
     cssCount, xpathAuto, xpath,
+    ambiguousCount: 0,
   })
 }
 
-// 新建时最终落库的候选:把用户采纳/编辑的 XPath 并入,排在 css 之前(orderCandidates 已给 xpath 固定档)。
+// 新建时最终落库的候选:把用户采纳/编辑的 XPath 并入。
+// 关键:用户采纳的 XPath 是为"消歧"专门选的,须排在 testid 之后、其余(role/text/css 等易多命中)之前——
+// 否则 orderCandidates 会把 xpath 降到第 7 档,执行时先撞上会多命中的 role/text,消歧就白填了(图14/15)。
 function addCreateCandidates() {
   const base = (add.cands && add.cands.length) ? add.cands.slice() : (add.cand ? [add.cand] : [])
   const xp = (add.xpath || '').trim()
-  if (!xp) return base
-  const withXp = [{ by: 'xpath', value: xp }, ...base.filter((c) => !(c.by === 'xpath' && c.value === xp))]
-  return orderCandidates(withXp).slice(0, MAX_CANDIDATES)
+  if (!xp) return orderCandidates(base).slice(0, MAX_CANDIDATES)
+  const rest = orderCandidates(base.filter((c) => !(c.by === 'xpath' && c.value === xp)))
+  const testids = rest.filter((c) => c.by === 'testid')
+  const others = rest.filter((c) => c.by !== 'testid')
+  return [...testids, { by: 'xpath', value: xp }, ...others].slice(0, MAX_CANDIDATES)
 }
 
 // 更新已有 key 时的合并候选:把 best + (可选)XPath 并入目标 key 现有候选;
@@ -1580,7 +1646,10 @@ function updateMergedCandidates(existing) {
 }
 
 // 保存前重新在当前设备验证，避免截图过期后把另一元素回填进 key。
-async function validateSelectedItems(items, partial = false) {
+// confirmOnFail:校验不通过时的兜底确认回调(返回 true=用户坚持保存)。设备端 identity 在
+// 探测→校验往返间常失效而退到 tag/text 比对(动态元素/宽泛候选易误判),故单条保存改为"提示可继续"
+// 而非硬拦——用户是亲手选的元素,给其最终决定权;批量(partial)仍按老口径逐条判定。
+async function validateSelectedItems(items, partial = false, confirmOnFail = null) {
   if (!probe.runner) throw new Error('请选择在线设备')
   if (items.some(item => !item.element_ref)) throw new Error('缺少本次探测的元素标识，请更新 Runner 后重新探测')
   if (items.length > 100) throw new Error('单次最多校验 100 个元素，请按页面分批处理')
@@ -1596,8 +1665,12 @@ async function validateSelectedItems(items, partial = false) {
     if (result.status === 'done') {
       const checked = result.result?.validation || []
       if (checked.length !== items.length) throw new Error('设备版本不支持完整定位校验，请更新 Runner')
-      const failures = checked.filter(item => !item.ok || !item.identity_verified)
-      if (failures.length && !partial) throw new Error(failures.map(item => `${item.key}: ${item.error || '无法确认原始元素，请更新 Runner 并重新探测'}`).join('；'))
+      const failures = checked.filter(item => !item.ok)
+      if (failures.length && !partial) {
+        const msg = failures.map(item => `${item.key}: ${item.error || '当前页面无法唯一定位该元素，请重新探测'}`).join('；')
+        if (confirmOnFail && await confirmOnFail(msg, failures)) return checked   // 用户确认仍要保存
+        throw new Error(msg)
+      }
       return checked
     }
   }
@@ -1612,10 +1685,25 @@ async function submitAddAsKey() {
   add.saving = true
   try {
     const targetRow = (add.mode === 'reuse' ? effectiveRows.value : rows.value).find(row => row.id === add.targetId)
-    if (add.mode === 'update' && targetRow?.frame !== add.frame) throw new Error('选中元素与原 key 的 frame 不同，请检查作用域')
+    // frame 校验按「作用域等价」而非字面相等:vm/shell/auto/content 本是同一主内容域(桌面版在 vm、
+    // 云端同元素在 shell、注册常写 auto),不该被当成 frame 不同拦下;只有深层 iframe(url:...)才真隔离。
+    if (add.mode === 'update' && !sameFrameDomain(targetRow?.frame, add.frame, probe.result?.frameAliases || {}))
+      throw new Error(`选中元素在「${add.frame || 'auto'}」域,与原 key「${targetRow?.key}」的「${targetRow?.frame || 'auto'}」域不同。若确属同一元素,请改用「新建 key」;否则请核对作用域后重新探测`)
     await validateSelectedItems([{ key: add.mode === 'create' ? add.key : targetRow?.key,
       candidates: add.mode === 'create' ? addCreateCandidates() : add.mode === 'reuse' ? targetRow?.candidates : updateMergedCandidates(targetRow?.candidates),
-      frame: add.mode === 'create' ? add.frame : targetRow?.frame, element_ref: add.elementRef, expected: { tag: add.tag, text: add.text } }])
+      frame: add.mode === 'create' ? add.frame : targetRow?.frame, element_ref: add.elementRef, expected: { tag: add.tag, text: add.text } }],
+      false,
+      // 设备校验没过不硬拦:亲手选的元素给用户最终决定权(校验受动态元素/宽泛候选/往返 identity 失效影响易误判)。
+      // 命中多个(AMBIGUOUS)时提示先补 XPath 更稳妥,但仍允许坚持保存。
+      async (msg) => {
+        const ambiguous = /匹配\s*\d+\s*个/.test(msg)
+        try {
+          await ElMessageBox.confirm(
+            `设备校验未通过：${msg}。\n${ambiguous ? '该定位命中多个元素，执行时可能选错；建议先在下方填/生成 XPath 限定到唯一。' : '若你确认这就是目标元素（动态元素或宽泛候选常导致误判），可仍旧保存。'}`,
+            '定位校验提示', { confirmButtonText: '仍要保存', cancelButtonText: '返回修改', type: 'warning', distinguishCancelAndClose: true })
+          return true
+        } catch { return false }
+      })
     if (add.mode === 'reuse') {
       const result = await remapCaseSelector({ project_id: pid.value, sub_product: subProduct.value,
         case_ids: fixCtx.caseIds, from_key: fixCtx.activeKey, to_key: targetRow.key, expected_revision: targetRow.revision })
@@ -1625,11 +1713,30 @@ async function submitAddAsKey() {
     } else if (add.mode === 'create') {
       // 存全部候选(testid > xpath > css 兜底;xpath 为用户采纳/编辑的精确定位);desc 用四段式拼装值。
       const candidates = addCreateCandidates()
-      await createSelector({
-        project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: add.key.trim(),
-        frame: add.frame || 'auto', page: add.page || '', desc: addComposedDesc.value, candidates,
-      })
-      ElMessage.success('已新建 key')
+      // 名称冲突不再静默失败/强改名:当前作用域已有同名 key 时弹窗让用户选(合并/覆盖/返回改名)。
+      const dup = effectiveRows.value.find((r) => r.key === add.key.trim())
+      if (dup) {
+        let choice
+        try {
+          await ElMessageBox({
+            title: '选择器名称冲突', type: 'warning', showCancelButton: true, distinguishCancelAndClose: true,
+            confirmButtonText: '合并候选到已有', cancelButtonText: '覆盖已有候选',
+            message: `当前作用域已存在 key「${dup.key}」（${(dup.candidates || []).length} 个候选）。\n· 合并：把本次候选并入已有 key（推荐，保留历史候选）\n· 覆盖：用本次候选替换已有 key 的候选\n· 关闭本弹窗（× / ESC）：返回修改 key 名`,
+          })
+          choice = 'merge'
+        } catch (act) { choice = act === 'cancel' ? 'overwrite' : 'rename' }
+        if (choice === 'rename') return   // 保持「加为 key」对话框打开,让用户改名后再存(saving 由 finally 复位)
+        const merged = choice === 'merge' ? mergeCandidates(candidates, [], dup.candidates || []) : candidates
+        await patchSelector(dup.id, { candidates: merged, expected_revision: dup.revision })
+        ElMessage.success(choice === 'merge' ? `已把候选合并到已有 key「${dup.key}」` : `已用新候选覆盖 key「${dup.key}」`)
+        if (fixCtx.keys.includes(dup.key) && !fixCtx.done.includes(dup.key)) fixCtx.done.push(dup.key)
+      } else {
+        await createSelector({
+          project_id: pid.value, sub_product: subProduct.value, platform: 'web', key: add.key.trim(),
+          frame: add.frame || 'auto', page: add.page || '', desc: addComposedDesc.value, candidates,
+        })
+        ElMessage.success('已新建 key')
+      }
     } else {
       const target = rows.value.find((r) => r.id === add.targetId)
       const existing = target?.candidates || []
@@ -1643,7 +1750,17 @@ async function submitAddAsKey() {
     add.visible = false
     await reload()
     await autoBackfill()
-  } catch (error) { ElMessage.error(error.message || '保存失败') }
+  } catch (error) {
+    const msg = error.message || '保存失败'
+    // 候选不唯一(AMBIGUOUS_TARGET):解析匹配数,置 ambiguousCount 触发 XPath 消歧提示。
+    const m = msg.match(/匹配\s*(\d+)\s*个元素/)
+    if (m) {
+      add.ambiguousCount = Number(m[1])
+      ElMessage.error(`该元素在页面匹配到 ${m[1]} 个,请用 XPath 限定到唯一后再保存`)
+    } else {
+      ElMessage.error(msg)
+    }
+  }
   finally { add.saving = false }
 }
 

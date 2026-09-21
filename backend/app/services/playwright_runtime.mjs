@@ -184,10 +184,27 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
 
   async function resolve(target, { requireVisible = true } = {}) {
     const end = Date.now() + limit(target);
+    // 页面/视图切换未稳时,scopes() 会抛瞬时错:业务 iframe 尚未挂载→INVALID_FRAME、
+    // 业务 iframe 短暂重复→AMBIGUOUS_FRAME。这些是"页面还没加载稳",不该立刻判失败——
+    // 在超时窗口内连同这些错一起轮询重试,直到 frame 就绪能稳定命中;超时后仍抛才把最后一次错抛出。
+    // (根因:原实现只对"没找到/不可见"轮询,inspect 抛错会直接跳出循环→页面没渲染完就误报失败。)
+    // 注意:不含 AMBIGUOUS_TARGET——目标本身重复命中是用例定位问题(需 nth/within/has_text 消歧),
+    // 应快速失败给出明确提示,而非空等整个超时。
+    const TRANSIENT = new Set(["INVALID_FRAME", "AMBIGUOUS_FRAME"]);
+    let lastErr = null;
     for (;;) {
-      const r = await inspect(target, { requireVisible });
-      if (r.count && (!requireVisible || await r.loc.isVisible())) return r;
-      if (Date.now() >= end) throw error("TARGET_TIMEOUT", `目标 ${target.key || target.selector} 在超时内未${requireVisible ? "可见" : "出现"}`);
+      try {
+        const r = await inspect(target, { requireVisible });
+        lastErr = null;
+        if (r.count && (!requireVisible || await r.loc.isVisible())) return r;
+      } catch (e) {
+        if (!TRANSIENT.has(e.code)) throw e;   // 非瞬时错(UNKNOWN_KEY/INVALID_SELECTOR 等)立即抛,不空转
+        lastErr = e;
+      }
+      if (Date.now() >= end) {
+        if (lastErr) throw lastErr;
+        throw error("TARGET_TIMEOUT", `目标 ${target.key || target.selector} 在超时内未${requireVisible ? "可见" : "出现"}`);
+      }
       await sleep(Math.min(pollMs, Math.max(1, end - Date.now())));
     }
   }
@@ -206,40 +223,51 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     const stableMs = Math.min(200, limit(args));
     let absentSince = null;
     let actual = null, locatable = false, hit;
+    // 与 resolve() 同理:断言期业务 iframe 未挂载会抛 INVALID_FRAME/AMBIGUOUS_FRAME(页面没加载稳),
+    // 在超时窗口内一并重试;CONTAINER_MISSING(记录不存在)与 AMBIGUOUS_TARGET(目标重复,需消歧)是真问题,照常抛。
+    const TRANSIENT = new Set(["INVALID_FRAME", "AMBIGUOUS_FRAME"]);
+    let lastErr = null;
     for (;;) {
-      const r = await inspect(args, { multiple: mode === "absent", all: mode === "absent", requireVisible: mode !== "absent" });
-      hit = r.hit;
-      locatable = !!r.count;
-      if (!r.count) actual = null;
-      let pass = false;
-      if (mode === "absent") {
-        // A missing container cannot prove that the intended record was checked.
-        if (r.containerMissing) throw error("CONTAINER_MISSING", "断言消失时所属记录未找到，无法完成检查");
-        const gone = !(await visibleCount(r));
-        absentSince = gone ? (absentSince ?? Date.now()) : null;
-        pass = gone && Date.now() - absentSince >= stableMs;
-      } else if (r.count) {
-        if (mode === "visible") pass = await r.loc.isVisible();
-        else {
-          // Read a fresh non-waiting snapshot. Giving textContent the last 1ms
-          // of the assertion budget can turn a normal failed assertion into an
-          // infrastructure timeout, even when the node exists.
-          const texts = await r.loc.evaluateAll((elements) => elements.map((el) => {
-            // Browser snapshots must also preserve upstream form-value assertions.
-            const isInput = ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
-            return String((isInput ? el.value : el.textContent) ?? "").trim();
-          }));
-          if (texts.length > 1) throw error("AMBIGUOUS_TARGET", "断言过程中目标变为多个匹配");
-          actual = texts[0] ?? null;
-          locatable = texts.length === 1;
-          if (locatable) {
-            const matched = args.contains ? actual.includes(String(args.expected)) : actual === String(args.expected);
-            pass = args.negate ? !matched : matched;
+      try {
+        const r = await inspect(args, { multiple: mode === "absent", all: mode === "absent", requireVisible: mode !== "absent" });
+        lastErr = null;
+        hit = r.hit;
+        locatable = !!r.count;
+        if (!r.count) actual = null;
+        let pass = false;
+        if (mode === "absent") {
+          // A missing container cannot prove that the intended record was checked.
+          if (r.containerMissing) throw error("CONTAINER_MISSING", "断言消失时所属记录未找到，无法完成检查");
+          const gone = !(await visibleCount(r));
+          absentSince = gone ? (absentSince ?? Date.now()) : null;
+          pass = gone && Date.now() - absentSince >= stableMs;
+        } else if (r.count) {
+          if (mode === "visible") pass = await r.loc.isVisible();
+          else {
+            // Read a fresh non-waiting snapshot. Giving textContent the last 1ms
+            // of the assertion budget can turn a normal failed assertion into an
+            // infrastructure timeout, even when the node exists.
+            const texts = await r.loc.evaluateAll((elements) => elements.map((el) => {
+              // Browser snapshots must also preserve upstream form-value assertions.
+              const isInput = ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+              return String((isInput ? el.value : el.textContent) ?? "").trim();
+            }));
+            if (texts.length > 1) throw error("AMBIGUOUS_TARGET", "断言过程中目标变为多个匹配");
+            actual = texts[0] ?? null;
+            locatable = texts.length === 1;
+            if (locatable) {
+              const matched = args.contains ? actual.includes(String(args.expected)) : actual === String(args.expected);
+              pass = args.negate ? !matched : matched;
+            }
           }
         }
+        const result = { pass, locatable, actual: actual?.slice(0, 200) ?? null, expected: args.expected, mode: args.contains ? "contains" : "equals", negate: !!args.negate, via: hit, fail_kind: "business" };
+        if (pass || Date.now() >= end) return result;
+      } catch (e) {
+        if (e.code === "CONTAINER_MISSING" || !TRANSIENT.has(e.code)) throw e;
+        lastErr = e;
+        if (Date.now() >= end) throw lastErr;
       }
-      const result = { pass, locatable, actual: actual?.slice(0, 200) ?? null, expected: args.expected, mode: args.contains ? "contains" : "equals", negate: !!args.negate, via: hit, fail_kind: "business" };
-      if (pass || Date.now() >= end) return result;
       await sleep(Math.min(pollMs, Math.max(1, end - Date.now())));
     }
   }

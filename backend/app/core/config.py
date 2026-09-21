@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # 留空则回落进程环境变量 ANTHROPIC_MODEL，再回落 cc-switch settings.json 的
     # ANTHROPIC_DEFAULT_OPUS_MODEL（网关严格区分大小写；与 claude CLI 用同一模型名）。
     ANTHROPIC_HTTP_MODEL: str = ""
+    # anthropic_http 单次响应的 output token 上限。需求理解/验收规则这类"一次产出大 JSON"的阶段,
+    # 上限过小会在正文产完前被网关按 max_tokens 截断→前端报"输出被截断"。默认给足;网关支持更大可上调。
+    ANTHROPIC_HTTP_MAX_TOKENS: int = 64000
+    # 「选择器管理」页「扫描并导入」按钮用:平台机器上 openclaw360-web 工作副本目录(内含 src/test-ids/bindings.ts)。
+    # 留空则端点自动探测常见路径;都找不到就提示用户配置。仅当平台机器本机有该代码副本 + git 凭据时可用。
+    SELECTOR_SCAN_REPO: str = ""
     AI_TIMEOUT_SECONDS: int = 900  # 单次生成硬超时=15 分钟(放开到最多 100 条用例,产出大、耗时长;配合 SSE 心跳防网关空闲切断)
     # Only formatting existing criteria into scenes; full requirement analysis keeps the CLI default.
     # Empty string inherits the configured Claude effort. This never changes the model itself.

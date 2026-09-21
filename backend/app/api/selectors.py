@@ -14,6 +14,7 @@ import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
@@ -510,10 +511,20 @@ def import_selectors(body: SelectorImportIn, db: Session = Depends(get_db),
     vm_iframe 非空时写入该作用域 scope。返回 {imported, updated, skipped, invalid}。
     """
     assert_project_role(db, user, body.project_id, _RW)
-    sub = _valid_sub(body.sub_product)
-    reg = body.registry or {}
+    res = _apply_import(db, user, body.project_id, _valid_sub(body.sub_product),
+                        body.registry or {}, body.vm_iframe, body.overwrite)
+    return ok(res)
+
+
+def _apply_import(db: Session, user: User, project_id: int, sub: str,
+                  reg: dict, vm_iframe: str, overwrite: bool) -> dict:
+    """把 registry 导入 (project_id, sub) 作用域的核心逻辑(手动导入 + 扫描导入共用)。
+
+    逐 key 校验候选合法性,非法只跳过计入 invalid;同名 overwrite 决定跳过/覆盖;vm_iframe 非空写 scope。
+    调用方负责鉴权。返回 {imported, updated, skipped, invalid}。
+    """
     have = {r.key: r for r in db.query(SelectorKey).filter(
-        SelectorKey.project_id == body.project_id, SelectorKey.sub_product == sub).all()}
+        SelectorKey.project_id == project_id, SelectorKey.sub_product == sub).all()}
     imported = updated = skipped = 0
     invalid = []
     for k, v in reg.items():
@@ -531,7 +542,7 @@ def import_selectors(body: SelectorImportIn, db: Session = Depends(get_db),
                        candidates=json.dumps(cands, ensure_ascii=False))
         existing = have.get(key)
         if existing:
-            if not body.overwrite:
+            if not overwrite:
                 skipped += 1
                 continue
             remember_selector(db, existing, user.id)
@@ -541,18 +552,116 @@ def import_selectors(body: SelectorImportIn, db: Session = Depends(get_db),
             existing.updated_by, existing.updated_at = user.id, datetime.utcnow()
             updated += 1
         else:
-            row = SelectorKey(project_id=body.project_id, sub_product=sub, key=key,
+            row = SelectorKey(project_id=project_id, sub_product=sub, key=key,
                               updated_by=user.id, updated_at=datetime.utcnow(), **payload)
             db.add(row)
             db.flush()
             have[key] = row
             imported += 1
-    vm = (body.vm_iframe or "").strip()
+    vm = (vm_iframe or "").strip()
     if vm:
-        sc = (db.query(SelectorScope).filter(SelectorScope.project_id == body.project_id,
+        sc = (db.query(SelectorScope).filter(SelectorScope.project_id == project_id,
                                              SelectorScope.sub_product == sub).first())
         if not sc:
-            sc = SelectorScope(project_id=body.project_id, sub_product=sub); db.add(sc)
+            sc = SelectorScope(project_id=project_id, sub_product=sub); db.add(sc)
         sc.vm_iframe = vm; sc.updated_at = datetime.utcnow()
     db.commit()
-    return ok({"imported": imported, "updated": updated, "skipped": skipped, "invalid": invalid})
+    return {"imported": imported, "updated": updated, "skipped": skipped, "invalid": invalid}
+
+
+# ---- 「扫描并导入」按钮:平台机器本机拉分支代码扫 testid 直接入库(需平台机器有 openclaw360-web 副本 + git)----
+
+
+def _resolve_scan_repo() -> str:
+    """定位平台机器上的 openclaw360-web 工作副本(内含 src/test-ids/bindings.ts)。
+
+    优先用 SELECTOR_SCAN_REPO;留空则探测常见路径。找不到返回 ""(调用方给"未配置"提示)。
+    """
+    from app.core.config import settings
+    cands = [settings.SELECTOR_SCAN_REPO] if settings.SELECTOR_SCAN_REPO else []
+    cands += [r"D:\git\openclaw360-web\openclaw360-web", r"D:\git\openclaw360-web",
+              os.path.expanduser("~/git/openclaw360-web/openclaw360-web")]
+    for p in cands:
+        if p and os.path.exists(os.path.join(p, "src", "test-ids", "bindings.ts")):
+            return p
+    return ""
+
+
+class ScanBranchIn(BaseModel):
+    project_id: int
+    sub_product: str = ""
+    overwrite: bool = False
+    no_git: bool = False       # True=不 fetch/checkout,直接扫当前工作副本(副本已在目标分支/离线时用)
+
+
+@router.post("/scan-branch")
+def scan_branch_import(body: ScanBranchIn, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    """一键:按作用域已配的扫描分支,在平台机器本机拉代码扫 data-testid → 导入当前作用域 → 联动回填。
+
+    未满足前置(没配分支/找不到 openclaw360-web 副本/没装 git/git 操作失败)时返回 400 + 明确中文提示,
+    前端直接弹出;满足则正常执行(等价于本地 scan_selectors_from_branch.py --import)。
+    """
+    import shutil
+    assert_project_role(db, user, body.project_id, _RW)
+    sub = _valid_sub(body.sub_product)
+
+    # 1) 分支:必须已在「选择器管理」保存
+    sc = (db.query(SelectorScope)
+          .filter(SelectorScope.project_id == body.project_id, SelectorScope.sub_product == sub).first())
+    branch = (sc.scan_branch if sc else "").strip()
+    if not branch:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            detail="未配置扫描分支:请先在上方填「扫描分支」并点「保存分支」")
+
+    # 2) 代码副本:平台机器本机须有 openclaw360-web 工作副本
+    repo = _resolve_scan_repo()
+    if not repo:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            detail="未找到 openclaw360-web 代码副本:请在后端 .env 配置 "
+                                   "SELECTOR_SCAN_REPO=<本机 openclaw360-web 目录>(须含 src/test-ids/bindings.ts)")
+
+    # 3) git:非 no_git 模式需要 git 拉分支
+    from scripts.scan_selectors_from_branch import (
+        parse_testids, build_registry, load_known_map, _checkout_branch,
+    )
+    head = ""
+    if not body.no_git:
+        if not shutil.which("git"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                detail="平台机器未安装 git(或不在 PATH):无法拉取分支。装好 git 或勾选「不切分支」直接扫当前副本")
+        try:
+            head = _checkout_branch(repo, branch) or ""
+        except Exception as exc:   # git 认证失败/分支不存在/工作区脏 → 明确回传
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                detail=f"git 拉取分支「{branch}」失败:{str(exc)[:300]}("
+                                       "常见:工作区有未提交改动、分支名错、无内网 GitLab 凭据)") from exc
+
+    # 4) 扫 bindings.ts → 注册表
+    bindings = os.path.join(repo, "src", "test-ids", "bindings.ts")
+    if not os.path.exists(bindings):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"未找到 {bindings}")
+    with open(bindings, encoding="utf-8") as f:
+        testids = parse_testids(f.read())
+    if not testids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="该分支 bindings.ts 未扫到任何 data-testid")
+    known_default = os.path.normpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "docs", "testid-selectors-export-full.json"))
+    known_map = load_known_map(known_default)
+    registry, auto_keys = build_registry(testids, known_map)
+
+    # 5) 导入当前作用域(复用手动导入的同一套校验/写库)
+    res = _apply_import(db, user, body.project_id, sub, registry,
+                        'iframe[src*=".work.n.cn"]', body.overwrite)
+
+    # 6) 联动回填「选择器待补」用例(补齐 key 后自动恢复可执行)
+    restored = 0
+    try:
+        from app.api.ai import backfill_testcases
+        restored = (backfill_testcases(project_id=body.project_id, db=db, user=user)
+                    or {}).get("data", {}).get("restored", 0)
+    except Exception:   # 回填失败不影响导入结果
+        restored = 0
+
+    return ok({**res, "branch": branch, "head": head, "scanned": len(testids),
+               "auto_desc": len(auto_keys), "restored": restored})
