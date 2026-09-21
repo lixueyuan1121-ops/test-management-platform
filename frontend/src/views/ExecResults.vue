@@ -5,12 +5,18 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:160px" @change="onProjectChange">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-button size="small" :icon="Refresh" aria-label="刷新执行结果" title="刷新执行结果" @click="load" />
+            <span class="refresh-hint">手动刷新</span>
+            <el-button size="small" :loading="loading" :icon="Refresh" aria-label="刷新执行结果" title="刷新执行结果" @click="load" />
       </template>
       <template #filters>
             <TaskPicker v-model="taskId" :tasks="tasks" placeholder="任务" width="220px" @change="load" />
             <el-select v-model="runner" placeholder="执行设备" size="small" clearable style="width:150px" @change="load">
               <el-option v-for="rn in runners" :key="rn" :label="rn" :value="rn" />
+            </el-select>
+            <el-select v-model="runStatus" placeholder="执行状态" size="small" clearable style="width:150px" @change="load">
+              <el-option label="待执行 / 执行中" value="active" />
+              <el-option label="待执行" value="pending" />
+              <el-option label="执行中" value="running" />
             </el-select>
             <el-select v-model="verdict" placeholder="结果" size="small" clearable style="width:110px" @change="load">
               <el-option label="通过" value="pass" />
@@ -19,6 +25,8 @@
             </el-select>
       </template>
 
+      <el-alert v-if="activeCount" type="info" :closable="false" style="margin-bottom:12px"
+        :title="`当前有 ${activeCount} 条待执行或运行中的任务，可在展开明细的操作列手动终止。状态变化后请点击右上角刷新。`" />
       <el-empty v-if="!batches.length" :description="loading ? '加载中…' : '暂无执行记录'" :image-size="70" />
 
       <!-- 按批次分组:每批一块,组头显汇总,展开看该批每条用例;单条点「报告」下钻逐步截图 -->
@@ -84,7 +92,7 @@
                     </template>
                     <el-link type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
                   </el-tooltip>
-                  <el-link v-else type="warning" class="fix-link" @click="fixSelector(row)">补齐选择器</el-link>
+                  <el-link v-else type="warning" class="fix-link" @mouseenter="loadFixTargets(row)" @focus="loadFixTargets(row)" @click="fixSelector(row)">补齐选择器</el-link>
                 </template>
               </template>
             </el-table-column>
@@ -105,8 +113,9 @@
               <template #default="{ row }">
                 <el-link v-if="!isActive(row)" type="primary" @click="openCorrect(row)">纠偏</el-link>
                 <el-link v-if="!isActive(row)" type="warning" class="op-retry" @click="onRetry(row)">重试</el-link>
-                <el-button v-if="isActive(row) && canStop" size="small" type="danger" plain
-                  :loading="stopping.has(row.run_id)" :disabled="row.cancel_requested"
+                <el-button v-if="isActive(row)" size="small" type="danger" plain
+                  :loading="stopping.has(row.run_id)" :disabled="row.cancel_requested || !canStop(row)"
+                  :title="!canStop(row) ? '当前项目为只读权限，无法终止' : row.cancel_requested ? '已请求终止，点击右上角刷新查看结果' : '停止本条用例执行'"
                   @click="onStop(row)">{{ row.cancel_requested ? '终止中…' : '手动终止' }}</el-button>
                 <el-link v-if="canTriage(row)" type="warning" class="triage-btn"
                          :class="{ busy: row._triaging }" @click="doTriage(row)">
@@ -123,7 +132,10 @@
 
     <!-- 单条执行的逐步报告(含截图) -->
     <el-dialog v-model="rep.visible" title="执行报告" width="720px" top="6vh">
-      <div v-if="rep.row" class="rep">
+      <div v-if="rep.row" v-loading="rep.loading" class="rep">
+        <el-alert v-if="rep.error" type="error" :closable="false" title="报告加载失败">
+          <el-button size="small" @click="showReport(rep.row)">重试加载报告</el-button>
+        </el-alert>
         <div class="rep-head">
           <el-tag :type="resultType(rep.row)" size="small" effect="dark">
             {{ resultLabel(rep.row) }}
@@ -161,7 +173,7 @@
             <img v-if="s.shot" :src="s.shot" class="step-shot" alt="步骤截图" @click="zoom(s.shot)" />
           </li>
         </ol>
-        <el-empty v-if="!(rep.row.report || []).length" description="该次执行无逐步报告" :image-size="60" />
+        <el-empty v-if="!rep.loading && !rep.error && !(rep.row.report || []).length" description="该次执行无逐步报告" :image-size="60" />
       </div>
     </el-dialog>
 
@@ -227,11 +239,11 @@
 import { execResultBatches } from '@/utils/execResultBatches'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
-import { listTasks, listExecHistory, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, cancelExecRun, triageExecRun } from '@/api'
+import { listTasks, listExecHistory, getExecRun, correctExecVerdict, getTestcase, updateTestcase, genTestcaseScript, retryExecRun, cancelExecRun, triageExecRun } from '@/api'
 import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import { describeSelectorTarget } from '@/utils/selector-target-description'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
@@ -269,40 +281,35 @@ const tasks = ref([])
 const taskId = ref(null)
 const runner = ref(null)
 const verdict = ref(null)
+const runStatus = ref(null)
 const rows = ref([])
 const loading = ref(false)
 const ev = ref({ visible: false, path: '' })
-const rep = ref({ visible: false, row: null })
+const rep = ref({ visible: false, row: null, loading: false, error: false })
 const shot = ref({ visible: false, url: '' })
 const correct = ref({ visible: false, row: null, verdict: 'pass', reason: '', saving: false, maintain: false, expected: '', steps: '', script: '', scriptOrig: '' })
 const activeBatches = ref([])
 const app = useAppStore()
 const auth = useAuthStore()
-const canStop = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
+const canStop = row => typeof row.can_cancel === 'boolean' ? row.can_cancel : ['admin', 'member'].includes(auth.roleIn(Number(row.project_id ?? pid.value)))
 const stopping = ref(new Set())
 const isActive = row => ['pending', 'running'].includes(row.status)
-let pollTimer
-onMounted(() => {
-  pollTimer = setInterval(() => {
-    if (rows.value.some(isActive) && !loading.value) load(true).catch(() => {})
-  }, 5000)
-})
-onUnmounted(() => clearInterval(pollTimer))
+const activeCount = computed(() => rows.value.filter(isActive).length)
+let listRequest = 0
 async function onStop(row) {
   if (stopping.value.has(row.run_id) || row.cancel_requested) return
   stopping.value.add(row.run_id)
   try {
     const updated = await cancelExecRun(row.run_id)
-    Object.assign(row, updated)
-    ElMessage.success(updated.cancel_requested ? '已请求终止，等待执行机停止；请保持 Runner 在线' : '已终止')
-    await load(true)
+    rows.value = rows.value.map(item => item.run_id === row.run_id ? { ...item, ...updated } : item)
+    ElMessage.success(updated.cancel_requested ? '已请求终止；请保持 Runner 在线，点击刷新查看确认结果' : '已终止')
   } catch { /* API interceptor displays the failure */ }
   finally { stopping.value.delete(row.run_id) }
 }
 
 const runners = computed(() => [...new Set(rows.value.map((r) => r.runner).filter(Boolean))])
 
-const hasReport = (row) => Array.isArray(row.report) && row.report.length > 0
+const hasReport = row => row.has_report ?? (Array.isArray(row.report) && row.report.length > 0)
 
 // 按 batch_id 分组;无 batch_id 的老记录归到 "(未分批)"。组内保持后端的时间倒序。
 // 组间按该组最新一条执行时间倒序。汇总数(总/过/失/通过率/耗时和/设备/时间)现算。
@@ -326,16 +333,20 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
-  taskId.value = null; runner.value = null; verdict.value = null
+  taskId.value = null; runner.value = null; verdict.value = null; runStatus.value = null
   if (!pid.value) { tasks.value = []; rows.value = []; return }
   setLastProjectId(pid.value)
-  tasks.value = await listTasks({ project_id: pid.value })
-  await load()
+  const project = pid.value
+  await Promise.all([
+    listTasks({ project_id: project }).then(items => { if (pid.value === project) tasks.value = items }),
+    load(),
+  ])
 }
 
 async function load(silent = false) {
   silent = silent === true
   if (!pid.value) return
+  const request = ++listRequest
   loading.value = true
   try {
     const queryProject = pid.value
@@ -344,26 +355,26 @@ async function load(silent = false) {
       task_id: taskId.value || undefined,
       runner: runner.value || undefined,
       verdict: verdict.value || undefined,
+      status: runStatus.value || undefined,
+      summary: true,
     })
-    if (pid.value !== queryProject) return
+    if (pid.value !== queryProject || request !== listRequest) return
     rows.value = nextRows
-    // Polling preserves the expanded batch.
-    if (!silent) activeBatches.value = batches.value.slice(0, 1).map((b) => b.id)
-    prefetchFixKeys()   // 预取 blocked 行的待补 key,决定是否显示「补齐选择器」入口
-  } finally { loading.value = false }
+    if (!silent) {
+      const active = batches.value.filter(b => b.rows.some(isActive))
+      activeBatches.value = (active.length ? active : batches.value.slice(0, 1)).map(b => b.id)
+    }
+  } finally { if (request === listRequest) loading.value = false }
 }
 
-// 对 blocked 行并发预取 selector_fix_keys(限并发,避免一次太多请求)。
-// 结果放 row._fixKeys;「补齐选择器」入口只在 _fixKeys 非空时显示(与用例库口径一致)。
-async function prefetchFixKeys() {
-  const blocked = rows.value.filter(isBlocked)
-  const pool = 4
-  for (let i = 0; i < blocked.length; i += pool) {
-    await Promise.all(blocked.slice(i, i + pool).map((r) => loadFixTargets(r)))
-  }
+async function showReport(row) {
+  rep.value = { visible: true, row, loading: true, error: false }
+  try {
+    const detail = await getExecRun(row.run_id)
+    if (rep.value.row?.run_id === row.run_id) rep.value.row = { ...row, ...detail }
+  } catch { if (rep.value.row?.run_id === row.run_id) rep.value.error = true }
+  finally { if (rep.value.row?.run_id === row.run_id) rep.value.loading = false }
 }
-
-function showReport(row) { rep.value = { visible: true, row } }
 function showEvidence(row) { ev.value = { visible: true, path: row.evidence_url } }
 function zoom(url) { shot.value = { visible: true, url } }
 function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—' }
@@ -416,7 +427,7 @@ function resultLabel(row) {
 // 用 describeSelectorTarget 从 script 抽出"补哪个 key、对应哪个 DOM/操作"。结果缓存到 row 上,
 // 移开再悬浮不重复请求(除非上次出错)。执行记录行本身无这些字段,必须现拉详情。
 async function loadFixTargets(row) {
-  if (row._fixNotes && !row._fixError) return
+  if (row._fixLoading || (row._fixNotes && !row._fixError)) return
   const cid = row.case_id ?? row.test_case_id
   if (!cid) { row._fixKeys = []; row._fixNotes = {}; return }
   row._fixLoading = true; row._fixError = false
@@ -517,6 +528,7 @@ async function onRetry(row) {
   try {
     await retryExecRun(runId)
     ElMessage.success('已重新入队,执行机将重跑该用例')
+    await load(true)
   } catch { /* http 拦截器已提示 */ }
 }
 

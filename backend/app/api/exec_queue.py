@@ -19,8 +19,8 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from starlette.responses import FileResponse
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.orm import Session, defer
+from sqlalchemy import func, case
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
@@ -519,7 +519,7 @@ def _payload_of(tc: TestCase | None, db: Session) -> dict:
     return payload
 
 
-def _to_out(r: ExecRun) -> dict:
+def _to_out(r: ExecRun, *, include_details=True) -> dict:
     return {
         "run_id": r.id,
         "checklist_item_id": r.checklist_item_id,
@@ -534,7 +534,7 @@ def _to_out(r: ExecRun) -> dict:
         # 用 getattr 兼容两者,避免一行坏数据让 runner 的 GET 轮询整个 500(实测踩过)。
         "kind": getattr(r.kind, "value", r.kind),
         "status": getattr(r.status, "value", r.status),
-        "payload": json.loads(r.payload or "{}"),
+        **({"payload": json.loads(r.payload or "{}")} if include_details else {}),
         "verdict": r.verdict,
         "fail_kind": r.fail_kind,
         "cancel_requested": r.fail_kind == "cancel_requested",
@@ -546,7 +546,7 @@ def _to_out(r: ExecRun) -> dict:
         "triage": _load_report(r.triage),   # 复用宽容 JSON 解析(坏数据回 None)
         "reason": r.reason,
         "evidence_url": r.evidence_url,
-        "report": _load_report(r.report),
+        **({"report": _load_report(r.report)} if include_details else {}),
         "duration_ms": r.duration_ms,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
@@ -731,13 +731,16 @@ def list_history(
     project_id: int = Query(...),
     task_id: int | None = Query(None),
     runner: str | None = Query(None),
-    verdict: str | None = Query(None),        # pass / fail
+    verdict: str | None = Query(None),
     status_: str | None = Query(None, alias="status"),
-    limit: int = Query(100, le=500),
+    batch_id: str | None = Query(None),
+    summary: bool = Query(False),
+    limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    membership = assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    writable = membership.role in _WRITE_ROLES
     q = db.query(ExecRun).filter(ExecRun.project_id == project_id)
     if task_id is not None:
         q = q.filter(ExecRun.task_id == task_id)
@@ -745,23 +748,46 @@ def list_history(
         q = q.filter(ExecRun.runner == runner)
     if verdict:
         q = q.filter(ExecRun.verdict == verdict)
-    if status_:
+    if batch_id:
+        q = q.filter(ExecRun.batch_id == batch_id)
+    if status_ == "active":
+        q = q.filter(ExecRun.status.in_((ExecStatus.pending, ExecStatus.running)))
+    elif status_:
         q = q.filter(ExecRun.status == status_)
+    if summary:
+        # Do not load large selector snapshots or step reports into Python/the list.
+        # Keep old active tasks in the limited result set, even after newer runs finish.
+        q = q.options(defer(ExecRun.payload), defer(ExecRun.report)).outerjoin(TestCase, TestCase.id == ExecRun.test_case_id)
+        q = q.add_columns(TestCase.title, ExecRun.report.notin_(("", "[]", "{}", "null")).label("has_report"))
+        rows = q.order_by(case((ExecRun.status.in_((ExecStatus.pending, ExecStatus.running)), 0), else_=1), ExecRun.id.desc()).limit(limit).all()
+        out = []
+        for r, title, has_report in rows:
+            d = _to_out(r, include_details=False)
+            d.update(title=title, has_report=bool(has_report), enqueued_by=r.enqueued_by,
+                     can_cancel=writable and r.status in (ExecStatus.pending, ExecStatus.running))
+            out.append(d)
+        return ok(out)
     rows = q.order_by(ExecRun.id.desc()).limit(limit).all()
-
-    # 批量补用例标题(payload 里有 title,优先用;缺失再查 test_case),避免 N+1
     out = []
     for r in rows:
-        title = None
-        try:
-            title = (json.loads(r.payload or "{}") or {}).get("title")
-        except (json.JSONDecodeError, ValueError):
-            title = None
         d = _to_out(r)
-        d["title"] = title
+        d["title"] = d["payload"].get("title")
         d["enqueued_by"] = r.enqueued_by
+        d["can_cancel"] = writable and r.status in (ExecStatus.pending, ExecStatus.running)
         out.append(d)
     return ok(out)
+
+
+@router.get("/{run_id}")
+def get_run_detail(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    r = db.get(ExecRun, run_id)
+    if not r:
+        raise HTTPException(404, "执行项不存在")
+    membership = assert_project_role(db, user, r.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    d = _to_out(r)
+    d["title"] = d["payload"].get("title")
+    d["can_cancel"] = membership.role in _WRITE_ROLES and r.status in (ExecStatus.pending, ExecStatus.running)
+    return ok(d)
 
 
 # ---- ② runner 拉取待执行 ----
