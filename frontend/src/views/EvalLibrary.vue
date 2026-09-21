@@ -73,9 +73,6 @@
         <el-table-column label="对话组" min-width="110"><template #default="{ row }"><span class="mono">{{ row.conversation_group || '—' }}</span></template></el-table-column>
         <el-table-column label="轮次" width="64" align="center"><template #default="{ row }"><span class="mono">{{ row.turn_index ?? 0 }}</span></template></el-table-column>
         <el-table-column label="生成时间" width="160"><template #default="{ row }"><span class="mono">{{ (row.created_at || '').replace('T',' ').slice(0,19) }}</span></template></el-table-column>
-        <el-table-column label="评审态" width="90" align="center">
-          <template #default="{ row }"><el-tag size="small" :type="row.review_status==='adopted'?'success':(row.review_status==='rejected'?'danger':'info')" effect="plain">{{ RS_LABEL[row.review_status] || row.review_status || '待评审' }}</el-tag></template>
-        </el-table-column>
         <el-table-column label="操作" width="118" align="center">
           <template #default="{ row }">
             <el-tooltip :content="hasPlaceholder(row) ? '按 {{占位符}} 批量生成变体题' : 'AI 帮你把这题挖成 {{变量}} 模板，再批量生成变体'" placement="left">
@@ -226,7 +223,6 @@ const DIM_TYPE = {
   workflow: 'warning', clarification: 'primary', context: 'success', safety: 'danger', refusal: 'info',
   hallucination: 'warning', creativity: 'primary', consistency: 'success',
 }
-const RS_LABEL = { pending: '待评审', adopted: '已采纳', rejected: '已拒绝' }
 
 const app = useAppStore()
 const projects = ref([])
