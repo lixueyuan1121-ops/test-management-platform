@@ -1,0 +1,4 @@
+interface:
+  display_name: "QA Lab 需求自动化测试"
+  short_description: "按需求优先验证主流程，真实执行自动化用例，并将成功结果回填线上平台"
+  default_prompt: "使用 $qalab-requirement-test 根据我的需求和应用地址执行主流程测试，通过后回填 QA Lab 线上项目。"
