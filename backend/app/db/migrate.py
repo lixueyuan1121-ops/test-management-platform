@@ -533,6 +533,16 @@ def ensure_api_env_table(engine=None) -> None:
     ApiEnv.__table__.create(bind=eng, checkfirst=True)
 
 
+def ensure_test_case_link_table(engine=None) -> None:
+    """建 test_case_link 表(幂等)。create_all 已能建;此处显式 CREATE(checkfirst)
+    保证老库也能补出该表(用例↔用例前置关联)。
+    """
+    from app.db.session import engine as _default_engine
+    from app.models.test_case_link import TestCaseLink
+    eng = engine if engine is not None else _default_engine
+    TestCaseLink.__table__.create(bind=eng, checkfirst=True)
+
+
 def ensure_fail_cluster_table(engine=None) -> None:
     """建 fail_cluster 表(幂等)。老库无需依赖模型 import 时机即可补出。"""
     from app.db.session import engine as _default_engine

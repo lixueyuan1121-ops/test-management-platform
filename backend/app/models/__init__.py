@@ -30,6 +30,7 @@ from app.models.requirement_analysis import RequirementSource, RequirementAnalys
 from app.models.fail_cluster import FailCluster
 from app.models.rts import RtsRecommendation
 from app.models.test_mission import TestMission, MissionEvent, MissionRun, MissionAssessment
+from app.models.test_case_link import TestCaseLink
 
 __all__ = [
     "ModuleEntry",
@@ -52,6 +53,7 @@ __all__ = [
     "AiJob",
     "ChecklistItem",
     "ExecRun",
+    "TestCaseLink",
     "RunnerDevice",
     "RunnerEvalHeartbeat",
     "ReleaseRecord",

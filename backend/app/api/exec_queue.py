@@ -316,6 +316,43 @@ def _new_batch_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
+def _expand_with_prereqs(db, ids):
+    """把用户选的用例 id 列表展开为「前置在前、主用例在后」的有序列表。
+
+    对每个用例,先递归展开其 TestCaseLink 前置(按 sort_order),再放自己。全程去重(每条最多一次)
+    并防环(visiting 栈拦截 A→C→A)。无关联时原样返回,保持原顺序。
+    """
+    from app.models import TestCaseLink
+    # 预取所有相关 link,避免循环内多次查库:case_id → [prereq_id 按 sort_order]
+    prereqs: dict[int, list[int]] = {}
+
+    def load(cid):
+        if cid in prereqs:
+            return prereqs[cid]
+        rows = (db.query(TestCaseLink)
+                .filter(TestCaseLink.case_id == cid)
+                .order_by(TestCaseLink.sort_order, TestCaseLink.id).all())
+        prereqs[cid] = [r.prereq_case_id for r in rows]
+        return prereqs[cid]
+
+    ordered: list[int] = []
+    seen: set[int] = set()
+
+    def visit(cid, stack):
+        if cid in seen or cid in stack:   # 已入列 或 成环 → 跳过
+            return
+        stack = stack | {cid}
+        for pid_ in load(cid):
+            visit(pid_, stack)
+        if cid not in seen:
+            seen.add(cid)
+            ordered.append(cid)
+
+    for cid in ids:
+        visit(cid, set())
+    return ordered
+
+
 def _dispatch_device_id(db, runner, owner_id=None):
     rows = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner).all()
     own = next((d for d in rows if d.owner_id == owner_id), None)
@@ -633,6 +670,7 @@ def enqueue_case_runs(db, user, body, commit=True):
     release_id = _valid_release_id(db, body.project_id, body.release_id)
 
     ids = list(dict.fromkeys(body.test_case_ids))  # 去重保序
+    ids = _expand_with_prereqs(db, ids)            # 展开关联前置:前置在前、主用例在后(去重防环)
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
     found = {c.id: c for c in cases}
     auto_cache: dict = {}        # runner=auto 时按平台缓存所选设备(同批同平台落同一台)

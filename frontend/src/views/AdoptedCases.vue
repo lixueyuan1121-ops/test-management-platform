@@ -45,6 +45,11 @@
         <el-table-column label="关联任务" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.task_title || '—' }}</template>
         </el-table-column>
+        <el-table-column label="操作" width="100" align="center">
+          <template #default="{ row }">
+            <el-button link type="warning" size="small" :loading="row._removing" @click="removeAdopt(row)">移除采纳</el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="pager">
@@ -75,7 +80,7 @@ const detailVisible = ref(false)
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listTasks, listCases, attachChecklist, enqueueExec, listMyDevices } from '@/api'
+import { listTasks, listCases, attachChecklist, enqueueExec, listMyDevices, reviewTestcase } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -155,6 +160,19 @@ async function load() {
 
 function canDispatch(row) {
   return !!row.task_id && (row.exec_kind || 'gui') !== 'manual'   // 本页已保证 adopted
+}
+
+// 移除采纳:把用例 review_status 置回 pending(后端同步 adopted=false、回流清单)。
+// 本页只看 adopted,移除后该行不再属于本页 → 从当前列表移除。
+async function removeAdopt(row) {
+  row._removing = true
+  try {
+    await reviewTestcase(row.id, 'pending')
+    displayRows.value = displayRows.value.filter((r) => r.id !== row.id)
+    total.value = Math.max(0, total.value - 1)
+    ElMessage.success('已移除采纳(置回待定)')
+  } catch { /* http 拦截器已提示 */ }
+  finally { row._removing = false }
 }
 
 async function dispatchSelected() {

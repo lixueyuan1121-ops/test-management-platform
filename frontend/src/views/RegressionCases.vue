@@ -40,7 +40,7 @@
           <el-option label="⚡ 自动调度(按平台挑在线空闲设备)" value="auto" />
           <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
-        <el-button type="success" size="small" :loading="dispatching" @click="runRegression">执行回归</el-button>
+        <el-button type="success" size="small" :loading="dispatching" @click="openOrderDialog">执行回归</el-button>
         <el-button type="primary" size="small" :loading="addingChecklist" @click="addToChecklist">加入上线checklist</el-button>
         <el-button size="small" :loading="exporting" @click="exportSelected">导出选中脚本</el-button>
         <span class="sel-hint">随选随跑,仅跳过 manual(不可自动化)用例</span>
@@ -101,6 +101,23 @@
       <section class="case-detail"><h3>步骤</h3><div>{{ inspectedCase?.steps || '未填写' }}</div></section>
       <section class="case-detail"><h3>预期</h3><div>{{ inspectedCase?.expected || '未填写' }}</div></section>
     </el-drawer>
+    <el-dialog v-model="orderDlg.on" title="调整执行顺序" width="560px">
+      <div class="order-tip">执行机将按下列顺序依次执行；不调整即按当前（选中）顺序执行。</div>
+      <ol class="order-list">
+        <li v-for="(it, i) in orderDlg.items" :key="it.id" class="order-item">
+          <span class="order-idx">{{ i + 1 }}</span>
+          <span class="order-title">{{ it.title }}</span>
+          <span class="order-actions">
+            <el-button link size="small" :disabled="i === 0" @click="moveOrder(i, -1)">↑ 上移</el-button>
+            <el-button link size="small" :disabled="i === orderDlg.items.length - 1" @click="moveOrder(i, 1)">↓ 下移</el-button>
+          </span>
+        </li>
+      </ol>
+      <template #footer>
+        <el-button @click="orderDlg.on = false">取消</el-button>
+        <el-button type="success" :loading="dispatching" @click="confirmOrderRun">按此顺序执行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -109,7 +126,7 @@ import WorkspacePage from '@/components/WorkspacePage.vue'
 import { Search } from '@element-plus/icons-vue'
 const inspectedCase = ref(null)
 const detailVisible = ref(false)
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
 import { listCases, listTasks, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, addReleaseChecklist, _blobErrorMsg } from '@/api'
@@ -145,6 +162,7 @@ const myDevices = ref([])
 const selected = ref([])
 const runner = ref('')
 const dispatching = ref(false)
+const orderDlg = reactive({ on: false, items: [] })   // 执行前排序弹窗:items=[{id,title}] 有序
 const exporting = ref(false)
 const addingChecklist = ref(false)
 const tableRef = ref(null)
@@ -214,18 +232,41 @@ async function load() {
   } finally { loading.value = false }
 }
 
-// 执行回归:直接按用例 id 下发(不依赖任务/采纳,不挂清单);只发非 manual。
-async function runRegression() {
+// 执行回归:先校验,再让用户确认/调整执行顺序,最后按序下发(不依赖任务/采纳,不挂清单;只发非 manual)。
+// 后端入队与拉取全链路保序(数组顺序即执行顺序),故前端只需产出用户想要的有序 id 数组。
+function openOrderDialog() {
   if (!selected.value.length) return
   if (!runner.value) { ElMessage.warning('请先选择执行设备(去『我的设备』注册)'); return }
   const items = selected.value.filter((r) => (r.exec_kind || 'gui') !== 'manual')
   if (!items.length) { ElMessage.warning('选中项里没有可执行的用例(manual 不可自动化)'); return }
-  const skipped = selected.value.length - items.length
+  // 默认顺序 = 当前选中顺序(表格 data 顺序);用户不调整即按此原顺序执行。
+  orderDlg.items = items.map((r) => ({ id: r.id, title: r.title }))
+  if (orderDlg.items.length === 1) { dispatchOrdered(orderDlg.items); return }  // 单条无需排序
+  orderDlg.on = true
+}
+
+// 上移(dir=-1)/下移(dir=1):相邻交换,产出用户自定义顺序。
+function moveOrder(i, dir) {
+  const j = i + dir
+  const arr = orderDlg.items
+  if (j < 0 || j >= arr.length) return
+  ;[arr[i], arr[j]] = [arr[j], arr[i]]
+}
+
+async function confirmOrderRun() {
+  await dispatchOrdered(orderDlg.items)
+  if (!dispatching.value) orderDlg.on = false
+}
+
+// 按给定有序数组下发。skipped 提示沿用原逻辑(基于选中总数)。
+async function dispatchOrdered(orderedItems) {
+  const skipped = selected.value.length - orderedItems.length
   dispatching.value = true
   try {
-    const res = await enqueueCases(pid.value, runner.value, items.map((r) => r.id))
-    const n = res?.run_ids?.length || items.length
-    ElMessage.success(`已下发 ${n} 条回归到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''},执行机跑完自动回写结果`)
+    const res = await enqueueCases(pid.value, runner.value, orderedItems.map((r) => r.id))
+    const n = res?.run_ids?.length || orderedItems.length
+    ElMessage.success(`已按指定顺序下发 ${n} 条回归到 ${runner.value}${skipped ? `(跳过 ${skipped} 条 manual)` : ''},执行机跑完自动回写结果`)
+    orderDlg.on = false
   } catch { /* http 拦截器已提示 */ }
   finally { dispatching.value = false }
 }
@@ -273,6 +314,12 @@ async function exportSelected() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
+.order-tip { color: #909399; font-size: 13px; margin-bottom: 10px; }
+.order-list { margin: 0; padding: 0; list-style: none; max-height: 50vh; overflow: auto; }
+.order-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }
+.order-idx { flex: none; width: 24px; height: 24px; line-height: 24px; text-align: center; background: #ecf5ff; color: #409eff; border-radius: 50%; font-size: 12px; }
+.order-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-actions { flex: none; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .intro { margin-bottom: 10px; }

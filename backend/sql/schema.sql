@@ -772,6 +772,20 @@ CREATE TABLE `module_entry` (
   KEY `idx_modentry_scope` (`project_id`,`sub_product`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 用例↔用例前置关联：把「前置用例」挂到「主用例」，执行主用例时先按 sort_order 跑前置。
+CREATE TABLE `test_case_link` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `case_id` BIGINT NOT NULL,
+  `prereq_case_id` BIGINT NOT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_test_case_link` (`case_id`,`prereq_case_id`),
+  KEY `idx_tcl_case` (`case_id`),
+  KEY `idx_tcl_prereq` (`prereq_case_id`),
+  CONSTRAINT `fk_tcl_case` FOREIGN KEY (`case_id`) REFERENCES `test_case`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_tcl_prereq` FOREIGN KEY (`prereq_case_id`) REFERENCES `test_case`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---------- 测试计划（主用例库可保存集合 + 定时回归，对位 feedback_regression_set 泛化） ----------
 CREATE TABLE `test_plan` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
