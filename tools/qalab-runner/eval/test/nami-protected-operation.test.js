@@ -108,3 +108,60 @@ test('pending approval state stays with its task when desktop switches conversat
   await r._dismissConfirmDialogs();
   assert.equal(await frame.evaluate(() => window.answers.length), 2, 'a distinct request can be approved');
 });
+
+test('one task handles consecutive requests with identical descriptions without an empty poll', async t => {
+  const { r, frame } = await fixture(t, { stay: true });
+  for (let request = 1; request <= 3; request++) {
+    await frame.evaluate(request => {
+      window.card.questionKey = `protected-request-${request}`;
+      window.card.querySelectorAll('.ask-form__option').forEach(option => {
+        const denied = option.textContent.startsWith('拒绝本次操作');
+        option.setAttribute('aria-selected', String(denied));
+        option.classList.toggle('is-selected', denied);
+      });
+    }, request);
+    assert.equal(await r._dismissConfirmDialogs(), true);
+    assert.equal(await r._dismissConfirmDialogs(), true, 'pending request is not resubmitted');
+    assert.equal(await frame.evaluate(() => window.answers.length), request);
+  }
+  assert.deepEqual(await frame.evaluate(() => window.answers), Array(3).fill('允许本次操作'));
+});
+
+test('identical card can appear again after its previous submission has closed', async t => {
+  const { r, frame } = await fixture(t);
+  await r._dismissConfirmDialogs();
+  assert.equal(await r._dismissConfirmDialogs(), false);
+  await frame.evaluate(() => {
+    document.querySelector('openclaw-app').shadowRoot.append(window.card);
+    window.card.querySelectorAll('.ask-form__option').forEach(option => {
+      const denied = option.textContent.startsWith('拒绝本次操作');
+      option.setAttribute('aria-selected', String(denied));
+      option.classList.toggle('is-selected', denied);
+    });
+  });
+  await r._dismissConfirmDialogs();
+  assert.deepEqual(await frame.evaluate(() => window.answers), Array(2).fill('允许本次操作'));
+});
+
+test('response wait processes three approvals before accepting a completion footer', async t => {
+  const { r, frame } = await fixture(t, { stay: true, embedded: true });
+  await frame.evaluate(() => {
+    const card = window.card;
+    card.querySelector('.ask-form__btn--ok').onclick = () => {
+      window.answers.push(card.querySelector('[aria-selected="true"] .ask-form__option-label').textContent);
+      if (window.answers.length === 3) { card.remove(); return; }
+      card.questionKey = `protected-request-${window.answers.length + 1}`;
+      card.querySelectorAll('.ask-form__option').forEach(option => {
+        const denied = option.textContent.startsWith('拒绝本次操作');
+        option.setAttribute('aria-selected', String(denied));
+        option.classList.toggle('is-selected', denied);
+      });
+    };
+  });
+  r.execution = { responseTimeout: 15000, completionSettleMs: 10 };
+  // A stale completion signal must not end the task while an approval is visible.
+  r._probeGenerating = async () => false;
+  r._hasCurrentCompletionFooter = async () => true;
+  assert.deepEqual(await r.waitForResponseComplete(), { completed: true, reason: 'footer' });
+  assert.deepEqual(await frame.evaluate(() => window.answers), Array(3).fill('允许本次操作'));
+});
