@@ -696,7 +696,7 @@ class DialogRunner {
   //  · 纯确认框（反问/授权/风险确认）→ 点“确认/继续/允许…”类按钮。
   // 返回是否对弹窗/反问做了处理（true 表示“有交互待处理”，调用方据此避免误判任务完成）。
   async _dismissConfirmDialogs() {
-    // 受保护操作默认选中“拒绝”，必须先走专用处理；失败不可落回通用表单并误提交默认项。
+    // 受保护操作固定选择第 1 项，必须先走专用处理；失败不可落回通用表单并误提交其他项。
     if (await this._handleProtectedOperation()) return true;
     // 先处理内联的「专家反问」选择题卡片（最常见，且不是 modal）
     try { if (await this._handleAskForms()) return true; } catch (_) {}
@@ -715,7 +715,7 @@ class DialogRunner {
     for (let i = await cards.count() - 1; i >= 0; i--) {
       const card = cards.nth(i);
       if (!await card.isVisible()) continue;
-      const fail = detail => new Error(`[NAMI_PROTECTED_OPERATION] ${detail}；未提交默认拒绝选项`);
+      const fail = detail => new Error(`[NAMI_PROTECTED_OPERATION] ${detail}；未自动提交其他选项`);
       const groups = card.locator('.ask-form__options');
       const options = card.locator('.ask-form__option');
       // 普通多选、填空、三项及以上反问继续使用原反问处理器。
@@ -729,18 +729,18 @@ class DialogRunner {
       ]));
       const key = await readKey();
       if (state.pending?.key === key) {
-        if (Date.now() - state.pending.submittedAt > 15000) throw fail('第 2 项已提交，但确认卡片超过 15 秒未消失');
+        if (Date.now() - state.pending.submittedAt > 15000) throw fail('第 1 项已提交，但确认卡片超过 15 秒未消失');
         return true; // 等待提交结果，不重复批准同一请求，也不把等待中的旧答案判成完成。
       }
-      const allow = options.nth(1), deny = options.nth(0);
+      const first = options.nth(0), second = options.nth(1);
       const selected = opt => opt.evaluate(el => {
         const aria = el.getAttribute('aria-selected');
         return aria == null ? el.classList.contains('is-selected') : aria === 'true';
       });
-      if (!await selected(allow)) await allow.click({ timeout: 2000 });
+      if (!await selected(first)) await first.click({ timeout: 2000 });
       const deadline = Date.now() + 2000;
-      while ((!await selected(allow) || await selected(deny)) && Date.now() < deadline) await this.page.waitForTimeout(50);
-      if (!await selected(allow) || await selected(deny)) throw fail('未能确认第 2 项已选中');
+      while ((!await selected(first) || await selected(second)) && Date.now() < deadline) await this.page.waitForTimeout(50);
+      if (!await selected(first) || await selected(second)) throw fail('未能确认第 1 项已选中');
       const submit = card.locator(this.platform.askFormSubmitSelector || '.ask-form__btn--ok');
       if (await submit.count() !== 1 || !await submit.isVisible() || !await submit.isEnabled()) throw fail('提交按钮不可用');
       // 等待 Lit 更新后再次核对，防止换题时沿用上一题的选中状态。
@@ -748,7 +748,7 @@ class DialogRunner {
       if (currentKey !== key) throw fail('操作请求在确认期间发生变化');
       await submit.click({ timeout: 2000 });
       state.pending = { key, submittedAt: Date.now() };
-      if (this.logger) this.logger.info(`       ↳ [${this.label}] 受保护操作浮层：已选择第 2 项并提交，等待卡片关闭`);
+      if (this.logger) this.logger.info(`       ↳ [${this.label}] 受保护操作浮层：已选择第 1 项并提交，等待卡片关闭`);
       return true;
     }
     state.pending = null;

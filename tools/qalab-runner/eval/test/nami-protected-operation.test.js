@@ -26,7 +26,7 @@ async function fixture(t, { embedded = false, delay = 0, stay = false, reversed 
       '<div class="ask-form__desc">NamiWork 的统一安全策略要求确认。\n触发来源：namiguard_sdk / file_access\n创建：C:\\work\\pipeline.mjs</div>' +
       '<div class="ask-form__options" role="listbox" aria-multiselectable="false"></div>' +
       '<button class="ask-form__btn--cancel">取消</button><button class="ask-form__btn--ok">提交</button>';
-    const labels = ['拒绝本次操作', '允许本次操作']; if (reversed) labels.reverse();
+    const labels = ['允许本次操作', '拒绝本次操作']; if (reversed) labels.reverse();
     for (const label of labels) {
       const option = document.createElement('div'); option.className = 'ask-form__option'; option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', String(label === '拒绝本次操作'));
@@ -52,14 +52,29 @@ async function fixture(t, { embedded = false, delay = 0, stay = false, reversed 
   return { page, frame, r };
 }
 
-for (const embedded of [false, true]) test(`protected operation overrides default deny in ${embedded ? 'iframe' : 'main'} shadow DOM`, async t => {
+for (const embedded of [false, true]) test(`protected operation selects first option over preselected second in ${embedded ? 'iframe' : 'main'} shadow DOM`, async t => {
   const { r, frame } = await fixture(t, { embedded, delay: 100 });
   assert.equal(await r._dismissConfirmDialogs(), true);
   assert.deepEqual(await frame.evaluate(() => window.answers), ['允许本次操作']);
   assert.equal(await r._dismissConfirmDialogs(), false);
 });
 
-test('floating choice follows position 2 even if option order changes', async t => {
+test('already selected first option submits without toggling it', async t => {
+  const { r, frame } = await fixture(t);
+  await frame.evaluate(() => {
+    window.optionClicks = 0;
+    window.card.querySelectorAll('.ask-form__option').forEach((option, i) => {
+      option.setAttribute('aria-selected', String(i === 0));
+      option.classList.toggle('is-selected', i === 0);
+      option.onclick = () => { window.optionClicks++; };
+    });
+  });
+  await r._dismissConfirmDialogs();
+  assert.deepEqual(await frame.evaluate(() => window.answers), ['允许本次操作']);
+  assert.equal(await frame.evaluate(() => window.optionClicks), 0);
+});
+
+test('floating choice follows position 1 even if option order changes', async t => {
   const { r, frame } = await fixture(t, { reversed: true });
   await r._dismissConfirmDialogs();
   assert.deepEqual(await frame.evaluate(() => window.answers), ['拒绝本次操作']);
@@ -78,7 +93,7 @@ test('submitted card is not clicked twice; stalled submission fails explicitly',
 for (const failure of ['selection-failed', 'disabled-submit']) test(`${failure} never falls through to generic default-deny submit`, async t => {
   const { r, frame } = await fixture(t);
   await frame.evaluate(failure => {
-    if (failure === 'selection-failed') window.card.querySelectorAll('.ask-form__option')[1].onclick = () => {};
+    if (failure === 'selection-failed') window.card.querySelectorAll('.ask-form__option')[0].onclick = () => {};
     if (failure === 'disabled-submit') window.card.querySelector('.ask-form__btn--ok').disabled = true;
   }, failure);
   r._handleAskForms = async () => { assert.fail('must not use generic submit'); };
@@ -165,13 +180,13 @@ test('response wait processes three approvals before accepting a completion foot
   assert.deepEqual(await frame.evaluate(() => window.answers), Array(3).fill('允许本次操作'));
 });
 
-test('changed title, description, option labels and submit caption still select position 2', async t => {
+test('changed title, description, option labels and submit caption still select position 1', async t => {
   const { r, frame } = await fixture(t);
   await frame.evaluate(() => {
     window.card.querySelector('.ask-form__title').textContent = 'Operation confirmation';
     window.card.querySelector('.ask-form__desc').textContent = 'Details have changed';
     const labels = window.card.querySelectorAll('.ask-form__option-label');
-    labels[0].textContent = 'Stop'; labels[1].textContent = '本次运行内允许上述操作';
+    labels[0].textContent = '本次运行内允许上述操作'; labels[1].textContent = 'Stop';
     window.card.querySelector('.ask-form__btn--ok').textContent = 'Submit';
   });
   await r._dismissConfirmDialogs();
@@ -232,13 +247,13 @@ test('new conversation waits for all three late popups to submit and close', asy
         if (window.answers.length === 3) { card.remove(); window.events.push('closed'); return; }
         card.questionKey = 'next-' + window.answers.length;
         card.querySelectorAll('.ask-form__option').forEach((el, i) => {
-          el.setAttribute('aria-selected', String(i === 0)); el.classList.toggle('is-selected', i === 0);
+          el.setAttribute('aria-selected', String(i === 1)); el.classList.toggle('is-selected', i === 1);
         });
       }, 250);
     };
   });
   assert.equal(await d._openCleanConversation(), true);
-  assert.deepEqual(await frame.evaluate(() => window.answers), [1, 1, 1]);
+  assert.deepEqual(await frame.evaluate(() => window.answers), [0, 0, 0]);
   assert.deepEqual(await frame.evaluate(() => window.events), ['submit-1', 'submit-2', 'submit-3', 'closed', 'new-task']);
 });
 
