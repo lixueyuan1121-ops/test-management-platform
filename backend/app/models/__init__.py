@@ -93,3 +93,5 @@ __all__ = [
     "MissionRun",
 ]
 from .selector_revision import SelectorRevision
+
+from app.models.verified_import_job import VerifiedImportJob, VerifiedImportItem

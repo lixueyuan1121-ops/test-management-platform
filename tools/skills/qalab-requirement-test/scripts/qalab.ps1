@@ -1,7 +1,8 @@
 ﻿param(
-  [ValidateSet('login','status','import','logout','preview')][string]$Action = 'status',
+  [ValidateSet('login','status','import','logout','preview','job')][string]$Action = 'status',
   [string]$BaseUrl = 'https://qalab.claw.qihoo.net',
-  [string]$PayloadPath
+  [string]$PayloadPath,
+  [int]$JobId
 )
 $ErrorActionPreference = 'Stop'
 $origin = [Uri]$BaseUrl
@@ -66,13 +67,18 @@ $projects = Call-Api 'GET' '/api/projects' $null $session.access_token
 $devices = Call-Api 'GET' '/api/devices' $null $session.access_token
 $schema = Call-Api 'GET' '/openapi.json' $null ''
 $available = $null -ne $schema.paths.'/api/verified-imports'.post
+$asyncAvailable = $null -ne $schema.paths.'/api/verified-imports/jobs'.post
 $dedupAvailable = $null -ne $schema.paths.'/api/verified-imports/preview'.post
 if ($Action -eq 'status') {
-  @{platform=$BaseUrl;user=$me.user.username;projects=$projects;devices=@($devices | Select-Object id,runner_id,name,platform,active_kinds,last_seen_at);verified_import_available=$available;dedup_available=$dedupAvailable} | ConvertTo-Json -Depth 8
+  @{platform=$BaseUrl;user=$me.user.username;projects=$projects;devices=@($devices | Select-Object id,runner_id,name,platform,active_kinds,last_seen_at);verified_import_available=$available;dedup_available=$dedupAvailable;async_import_available=$asyncAvailable} | ConvertTo-Json -Depth 8
   exit
 }
-if (!$available) { throw '线上尚未发布 POST /api/verified-imports。待导入文件保留，不会写到 localhost。' }
-if (!$dedupAvailable) { throw '线上尚未发布平台查重接口；请先更新服务器，保留报告不盲目新增' }
+if ($Action -eq 'job') {
+  if ($JobId -le 0) { throw 'job 需要正整数 -JobId' }
+  Call-Api 'GET' ('/api/verified-imports/jobs/' + $JobId) $null $session.access_token | ConvertTo-Json -Depth 100
+  exit
+}
+if ($Action -eq 'import' -and !$asyncAvailable) { throw '线上尚未发布异步导入接口；保留报告，更新服务器后再提交，不退回同步导入' }
 if (!$PayloadPath) { throw '缺少 -PayloadPath' }
 $payload = Get-Content -LiteralPath $PayloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if (@($payload.cases.title | Select-Object -Unique).Count -ne @($payload.cases).Count) { throw "同批用例标题须唯一" }
@@ -80,44 +86,21 @@ if ($Action -eq 'preview') {
   Call-Api 'POST' '/api/verified-imports/preview' $payload $session.access_token | ConvertTo-Json -Depth 100
   exit
 }
-function Canonical($Value) {
-  if ($null -eq $Value) { return 'null' }
-  if ($Value -is [string] -or $Value.GetType().IsPrimitive) { return (ConvertTo-Json -InputObject $Value -Compress) }
-  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [System.Collections.IDictionary]) {
-    $parts = @(); foreach($item in $Value) { $parts += Canonical $item }; return ('[' + ($parts -join ',') + ']')
-  }
-  $parts = @()
-  foreach($name in @($Value.PSObject.Properties.Name | Sort-Object)) {
-    $parts += ((ConvertTo-Json -InputObject $name -Compress) + ':' + (Canonical $Value.$name))
-  }
-  return ('{' + ($parts -join ',') + '}')
-}
-function Script-Canonical($Script) {
-  if ($Script -is [string]) { $Script = ConvertFrom-Json -InputObject $Script }
-  foreach($step in @($Script)) {
-    if (!$step.target) { $step | Add-Member -NotePropertyName target -NotePropertyValue ([pscustomobject]@{}) -Force }
-    if (!$step.args) { $step | Add-Member -NotePropertyName args -NotePropertyValue ([pscustomobject]@{}) -Force }
-  }
-  return (Canonical @($Script))
-}
-$receipt = Call-Api 'POST' '/api/verified-imports' $payload $session.access_token
-foreach ($record in $receipt.records) {
-  $saved = Call-Api 'GET' ('/api/ai/testcases/' + $record.case_id) $null $session.access_token
-  $source = @($payload.cases | Where-Object { $_.title -eq $record.title })
-  if ($source.Count -ne 1 -or $saved.project_id -ne $payload.project_id) { throw '导入后用例归属不一致' }
-  $actual = $saved
-  if ($record.disposition -in @('created','reused')) {
-    $run = Call-Api 'GET' ('/api/exec-queue/' + $record.run_id) $null $session.access_token
-    if ($run.project_id -ne $payload.project_id -or $run.test_case_id -ne $record.case_id -or $run.verdict -ne 'pass' -or (Canonical $run.report) -cne (Canonical $source[0].report)) {
-      throw '已提交，但执行报告读回复核不一致；保留原 external_id，请检查线上记录'
-    }
-    $actual = $run.payload
-    if ($actual -is [string]) { $actual = ConvertFrom-Json -InputObject $actual }
-  }
-  if ($actual.title -cne $source[0].title -or $actual.steps -cne $source[0].steps -or $actual.expected -cne $source[0].expected -or (Script-Canonical $actual.script) -cne (Script-Canonical $source[0].script)) {
-    throw '已提交，但线上读回复核不一致；保留相同 external_id，先检查现有记录，勿盲目重复创建'
+if (@($payload.cases).Count -lt 1 -or @($payload.cases).Count -gt 20) { throw '每批提交 1 至 20 条用例' }
+foreach ($case in $payload.cases) {
+  if ($case.resolution) { throw '疑似重复由平台导入任务页集中确认，不在当前任务处理' }
+  if ($case.verdict -ne 'pass' -or @($case.script).Count -eq 0 -or @($case.script).Count -ne @($case.report).Count) { throw '只提交完整实测通过的用例' }
+  if (!@($case.script | Where-Object { $_.action -like 'assert*' -or $_.action -eq 'judge' }).Count) { throw '用例必须包含业务断言' }
+  for ($i=0; $i -lt @($case.script).Count; $i++) {
+    $step=$case.script[$i]; $result=$case.report[$i]
+    if ($step.action -ne $result.action -or $result.ok -ne $true -or $result.check.pass -eq $false) { throw '脚本与实测报告不一致或存在失败' }
+    if ($step.action -like 'assert*' -and ($null -eq $result.check -or 'actual' -notin @($result.check.PSObject.Properties.Name) -or 'expected' -notin @($result.check.PSObject.Properties.Name))) { throw '断言缺少实际值或预期值' }
   }
 }
-$receipt | ConvertTo-Json -Depth 8
-Write-Output ($BaseUrl + '/case-library?project_id=' + $receipt.project_id)
-Write-Output ($BaseUrl + '/exec-results?project_id=' + $receipt.project_id + '&batch_id=' + $receipt.batch_id)
+$receipt = Call-Api 'POST' '/api/verified-imports/jobs' $payload $session.access_token
+if ($receipt.accepted -ne $true -or $receipt.job_id -le 0 -or $receipt.project_id -ne $payload.project_id -or $receipt.external_id -cne $payload.external_id -or $receipt.case_count -ne @($payload.cases).Count) {
+  throw '提交回执无法确认；保留原 external_id 和内容重试，勿生成新 ID；不宣称已经入库'
+}
+$receipt | ConvertTo-Json -Depth 12
+Write-Output '测试结果已提交，平台正在后台整理；无需等待。此回执不代表用例已入库。'
+Write-Output ($BaseUrl + '/verified-imports?project_id=' + $receipt.project_id + '&job_id=' + $receipt.job_id)

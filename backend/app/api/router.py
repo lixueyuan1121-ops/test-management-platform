@@ -52,3 +52,6 @@ api_router.include_router(modules.router)
 
 from app.api import verified_import
 api_router.include_router(verified_import.router)
+
+from app.api import verified_import_jobs
+api_router.include_router(verified_import_jobs.router)

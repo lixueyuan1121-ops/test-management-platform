@@ -13,7 +13,7 @@ export const navigationGroups = [
   { id: 'func', label: '功能测试', icon: 'MagicStick', items: [
     entry('/test-plans', '测试计划', 'Calendar'), entry('/tasks', '任务分配', 'List'),
     entry('/ai-testgen', 'AI 测试助手', 'MagicStick'), entry('/case-library', '功能用例库', 'Collection'),
-    entry('/adopted-cases', '已采纳用例', 'Select'), entry('/regression-cases', '回归用例库', 'RefreshRight'),
+    entry('/verified-imports', '导入任务', 'Upload'), entry('/adopted-cases', '已采纳用例', 'Select'), entry('/regression-cases', '回归用例库', 'RefreshRight'),
     entry('/exec-results', '执行结果', 'Finished'), entry('/issues', '遗留问题', 'Warning'),
   ] },
   { id: 'feedback', label: '反馈回归', icon: 'ChatLineSquare', items: [

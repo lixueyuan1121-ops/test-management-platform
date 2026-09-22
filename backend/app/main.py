@@ -142,6 +142,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup():
         init_db()
+        from app.services import verified_import_jobs
+        verified_import_jobs.start()
         # 收口僵尸 running:重启会打断内存里的综合评价/一条龙线程,库里残留的 running 再没人落
         # 终态,前端遂永久「生成中」——启动时统一收口为 failed(可重生成/换批重跑)。不影响主服务。
         try:
@@ -184,6 +186,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     def _shutdown():
+        from app.services import verified_import_jobs
+        verified_import_jobs.stop()
         from app.services import test_missions
         test_missions.stop()
         try:

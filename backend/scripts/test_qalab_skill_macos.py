@@ -30,21 +30,13 @@ class FakeApi:
         if path == '/api/auth/me': return {'user': {'username': 'tester'}}
         if path == '/api/projects': return [{'id': 1, 'name': 'PC'}]
         if path == '/api/devices': return [{'id': 2, 'runner_id': 'mac', 'token': 'never-display'}]
-        if path == '/openapi.json': return {'paths': {'/api/verified-imports': {'post': {}}, '/api/verified-imports/preview': {'post': {}}}} if self.interface else {}
+        if path == '/openapi.json': return {'paths': {'/api/verified-imports': {'post': {}}, '/api/verified-imports/preview': {'post': {}}, '/api/verified-imports/jobs': {'post': {}}}} if self.interface else {}
         if path == '/api/verified-imports/preview': return {'ready': False, 'cases': [{'match': 'ambiguous', 'candidates': [{'case_id': 9}]}]}
-        if path == '/api/verified-imports':
+        if path == '/api/verified-imports/jobs':
             self.payload = copy.deepcopy(body)
-            return {'project_id': 1, 'batch_id': 'batch', 'records': [{'case_id': 9, 'run_id': 10, 'title': 'Logo', **({'disposition': 'reused'} if self.v2 else {})}]}
-        if path == '/api/exec-queue/10':
-            case = copy.deepcopy(self.payload['cases'][0])
-            if self.tamper: case['script'][0]['target']['selector'] = '.wrong'
-            return {'project_id': 1, 'test_case_id': 9, 'verdict': 'pass', 'payload': case, 'report': case['report']}
-        if path == '/api/ai/testcases/9':
-            case = copy.deepcopy(self.payload['cases'][0]); case['project_id'] = 1
-            if self.tamper: case['script'][0]['target']['selector'] = '.wrong'
-            case['script'] = json.dumps(case['script'])
-            if self.v2: case['title'] = 'canonical original title'
-            return case
+            return {'accepted': not self.tamper, 'project_id': 1, 'job_id': 7, 'external_id': body['external_id'], 'case_count': len(body['cases']), 'status': 'pending'}
+        if path == '/api/verified-imports/jobs/7':
+            return {'job_id': 7, 'status': 'needs_confirmation', 'items': []}
         raise AssertionError(path)
 
 
@@ -68,20 +60,21 @@ class TestMacHelper(unittest.TestCase):
         self.assertEqual(self.store.value['refresh_token'], 'rotated')
     def test_status_does_not_expose_device_token(self):
         self.assertNotIn('never-display', json.dumps(self.client.status('a')))
-    def test_import_preserves_external_id_and_checks_complete_script(self):
+    def test_import_returns_after_acceptance_without_polling_or_preview(self):
         source = payload()
-        self.assertEqual(self.client.import_cases(source, 'a')['batch_id'], 'batch')
+        self.assertEqual(self.client.import_cases(source, 'a')['job_id'], 7)
         self.assertEqual(self.api.payload, source)
+        self.assertEqual(self.api.calls[-1][1], '/api/verified-imports/jobs')
+        self.assertFalse(any('/testcases/' in c[1] or '/exec-queue/' in c[1] or '/preview' in c[1] for c in self.api.calls))
         self.api.tamper = True
-        with self.assertRaisesRegex(RuntimeError, '读回复核'): self.client.import_cases(source, 'a')
-    def test_reused_case_checks_actual_execution_and_preview_does_not_import(self):
-        self.api.v2 = True
-        self.assertEqual(self.client.import_cases(payload(), 'a')['batch_id'], 'batch')
-        self.api.tamper = True
-        with self.assertRaisesRegex(RuntimeError, '读回复核'): self.client.import_cases(payload(), 'a')
-        self.api.calls.clear()
+        with self.assertRaisesRegex(RuntimeError, '回执无法确认'): self.client.import_cases(source, 'a')
+    def test_status_query_is_explicit_and_single_request(self):
+        self.assertEqual(self.client.job(7, 'a')['status'], 'needs_confirmation')
+        self.assertEqual(len(self.api.calls), 1)
+        with self.assertRaises(RuntimeError): self.client.job(0, 'a')
+    def test_preview_remains_explicit_only(self):
         self.assertFalse(self.client.preview(payload(), 'a')['ready'])
-        self.assertFalse(any(c[1] == '/api/verified-imports' for c in self.api.calls))
+        self.assertFalse(any(c[1] == '/api/verified-imports/jobs' for c in self.api.calls))
     def test_confirmation_conflict_is_actionable(self):
         api = qalab.Api(qalab.DEFAULT_ORIGIN)
         class Opener:
@@ -97,7 +90,7 @@ class TestMacHelper(unittest.TestCase):
         self.api.interface = True
         wrong = payload(); wrong['runner_device_id'] = 999
         with self.assertRaises(RuntimeError): self.client.import_cases(wrong, 'a')
-        self.assertFalse(any(c[1] == '/api/verified-imports' for c in self.api.calls))
+        self.assertFalse(any(c[1] in ('/api/verified-imports','/api/verified-imports/jobs') for c in self.api.calls))
     def test_failed_or_partial_report_never_posts(self):
         for mode in ['fail', 'partial', 'no_actual', 'failed_check']:
             source = payload()

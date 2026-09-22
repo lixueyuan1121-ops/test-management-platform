@@ -75,6 +75,8 @@ def validate_payload(payload):
     if len({c.get("title") for c in cases}) != len(cases):
         raise RuntimeError("同批用例标题须唯一")
     for case in cases:
+        if case.get("resolution"):
+            raise RuntimeError("疑似重复由平台导入任务页集中确认，不在当前任务处理")
         script, report = case.get("script"), case.get("report")
         if case.get("verdict") != "pass" or not isinstance(script, list) or not script or not isinstance(report, list) or len(script) != len(report):
             raise RuntimeError("只导入执行通过且逐步报告完整的用例")
@@ -124,6 +126,7 @@ class Client:
         return {"platform": self.api.origin, "user": me["user"]["username"], "projects": projects,
                 "devices": [{k: d.get(k) for k in fields} for d in devices],
                 "verified_import_available": "post" in schema.get("paths", {}).get("/api/verified-imports", {}),
+                "async_import_available": "post" in schema.get("paths", {}).get("/api/verified-imports/jobs", {}),
                 "dedup_available": "post" in schema.get("paths", {}).get("/api/verified-imports/preview", {})}
 
     def preview(self, payload, token):
@@ -133,52 +136,33 @@ class Client:
     def import_cases(self, payload, token):
         validate_payload(payload)
         status = self.status(token)
-        if not status["verified_import_available"]:
-            raise RuntimeError("线上缺少导入接口；保留待导入包，不会改写 localhost")
-        if not status["dedup_available"]:
-            raise RuntimeError("线上尚未发布平台查重接口；请先更新服务器，保留报告不盲目新增")
+        if not status["async_import_available"]:
+            raise RuntimeError("线上尚未发布异步导入接口；保留待导入包，请先更新服务器，不退回同步导入")
         if payload.get("project_id") not in {p["id"] for p in status["projects"]}:
             raise RuntimeError("无法访问导入包指定的线上项目")
         if payload.get("runner_device_id") not in {d["id"] for d in status["devices"]}:
             raise RuntimeError("须使用当前账号在同一线上平台登记的设备")
-        receipt = self.api("POST", "/api/verified-imports", payload, token)
-        try:
-            records = receipt["records"]
-            if len(records) != len(payload["cases"]) or receipt["project_id"] != payload["project_id"]:
-                raise ValueError("count/project")
-            expected = {c["title"]: c for c in payload["cases"]}
-            seen = set()
-            for record in records:
-                title = record["title"]
-                if title in seen: raise ValueError("duplicate")
-                seen.add(title)
-                source = expected[title]
-                saved = self.api("GET", "/api/ai/testcases/" + str(record["case_id"]), token=token)
-                if saved.get("project_id") != payload["project_id"]:
-                    raise ValueError("project")
-                if record.get("disposition") in ("created", "reused"):
-                    run = self.api("GET", "/api/exec-queue/" + str(record["run_id"]), token=token)
-                    snapshot = run["payload"]
-                    if isinstance(snapshot, str): snapshot = json.loads(snapshot)
-                    if (run.get("project_id") != payload["project_id"] or
-                        run.get("test_case_id") != record["case_id"] or run.get("verdict") != "pass" or
-                        any(snapshot.get(k) != source[k] for k in ("title", "steps", "expected")) or
-                        normalize_script(snapshot["script"]) != normalize_script(source["script"]) or
-                        run.get("report") != source["report"]):
-                        raise ValueError("execution readback")
-                elif (any(saved.get(k) != source[k] for k in ("title", "steps", "expected")) or
-                      normalize_script(saved["script"]) != normalize_script(source["script"])):
-                    raise ValueError("readback")
-        except (KeyError, TypeError, ValueError, RuntimeError):
-            raise RuntimeError("已提交，但读回复核未完成或不一致；保留原 external_id 和内容，勿重复新建，请检查线上记录") from None
+        receipt = self.api("POST", "/api/verified-imports/jobs", payload, token)
+        if (receipt.get("accepted") is not True or type(receipt.get("job_id")) is not int or receipt["job_id"] <= 0 or
+            receipt.get("project_id") != payload["project_id"] or receipt.get("external_id") != payload["external_id"] or
+            receipt.get("case_count") != len(payload["cases"])):
+            raise RuntimeError("提交回执无法确认；保留原 external_id 和内容重试，勿生成新 ID；不宣称已经入库")
+        # Acceptance is the end of this task: NEVER poll or wait for deduplication.
         return receipt
+
+    def job(self, job_id, token):
+        if not isinstance(job_id, int) or job_id <= 0:
+            raise RuntimeError("job 需要正整数 --job-id")
+        return self.api("GET", f"/api/verified-imports/jobs/{job_id}", token=token)
+
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("login", "status", "import", "logout", "doctor", "preview"))
+    parser.add_argument("action", choices=("login", "status", "import", "logout", "doctor", "preview", "job"))
     parser.add_argument("--base-url", default=DEFAULT_ORIGIN)
     parser.add_argument("--payload", type=Path)
+    parser.add_argument("--job-id", type=int)
     args = parser.parse_args(argv)
     origin = normalize_origin(args.base_url)
     if args.action == "doctor":
@@ -207,14 +191,17 @@ def main(argv=None):
         token = client.token()
     if args.action in ("login", "status"):
         print(json.dumps(client.status(token), ensure_ascii=False, indent=2)); return
+    if args.action == "job":
+        print(json.dumps(client.job(args.job_id, token), ensure_ascii=False, indent=2)); return
     if not args.payload: raise RuntimeError("import 需要 --payload <包.json>")
     payload = json.loads(args.payload.read_text(encoding="utf-8-sig"))
     if args.action == "preview":
         print(json.dumps(client.preview(payload, token), ensure_ascii=False, indent=2)); return
     receipt = client.import_cases(payload, token)
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
-    print(origin + "/case-library?project_id=" + str(receipt["project_id"]))
-    print(origin + "/exec-results?project_id=" + str(receipt["project_id"]) + "&batch_id=" + receipt["batch_id"])
+    print("测试结果已提交，平台正在后台整理；无需等待。此回执不代表用例已入库。")
+    print(origin + "/verified-imports?project_id=" + str(receipt["project_id"]) + "&job_id=" + str(receipt["job_id"]))
+
 
 
 if __name__ == "__main__":

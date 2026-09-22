@@ -70,6 +70,11 @@ def preview_verified(body: VerifiedImport, db: Session = Depends(get_db), user: 
 
 @router.post("")
 def import_verified(body: VerifiedImport, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return perform_import(body, db, user)
+
+
+def perform_import(body, db, user, *, commit=True):
+    """Shared transaction: queued imports commit the receipt and item outcome together."""
     device = _authorize_and_lock(body, db, user)
     marker = f"verified:{user.id}:{body.external_id}"
     sha = _request_digest(body)
@@ -82,14 +87,20 @@ def import_verified(body: VerifiedImport, db: Session = Depends(get_db), user: U
         return ok({**saved["receipt"], "reused": True})
     scripts, existing, plans = _prepare(body, db)
     if not all(p["ready"] for p in plans):
-        db.rollback()
+        if commit:
+            db.rollback()
         return JSONResponse(status_code=409, content={"code": 409, "msg": "存在疑似重复或候选已变化，请确认后导入",
                             "data": {"reason": "duplicate_confirmation_required", "cases": plans}})
     req = None
     if any(p["case_id"] is None for p in plans):
-        req = Requirement(project_id=body.project_id, title=body.requirement, created_by=user.id)
-        db.add(req)
-        db.flush()
+        # One shared import requirement per project. Current read under the project
+        # lock also prevents duplicate groups when different workers create cases.
+        req = (db.query(Requirement).filter_by(project_id=body.project_id, title="codex导入用例")
+               .order_by(Requirement.id).with_for_update().first())
+        if req is None:
+            req = Requirement(project_id=body.project_id, title="codex导入用例", created_by=user.id)
+            db.add(req)
+            db.flush()
     task = AiTask(project_id=body.project_id, user_id=user.id, kind="verified_import", provider="codex",
                   input_type="text", input_ref=marker, status="done", case_count=len(body.cases))
     db.add(task)
@@ -104,7 +115,7 @@ def import_verified(body: VerifiedImport, db: Session = Depends(get_db), user: U
                           provider="codex", sub_product=body.sub_product, title=case.title, category=case.category,
                           priority=case.priority, page=case.page, exec_kind=case.exec_kind, platform="web",
                           steps=case.steps, expected=case.expected, precondition=case.precondition or None,
-                          script=json.dumps(script, ensure_ascii=False), is_regression=True,
+                          script=json.dumps(script, ensure_ascii=False), is_regression=False,
                           review_status="pending", adopted=False,
                           kind_reason="外部实测导入；执行器、环境与验证范围见执行记录")
             db.add(tc)
@@ -133,5 +144,6 @@ def import_verified(body: VerifiedImport, db: Session = Depends(get_db), user: U
                "created_cases": sum(r["disposition"] == "created" for r in records),
                "reused_cases": sum(r["disposition"] == "reused" for r in records)}
     task.output_raw = json.dumps({"sha256": sha, "receipt": receipt}, ensure_ascii=False)
-    db.commit()
+    if commit:
+        db.commit()
     return ok({**receipt, "reused": False})
