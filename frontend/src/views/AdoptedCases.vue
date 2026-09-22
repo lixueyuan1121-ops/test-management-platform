@@ -55,13 +55,11 @@
       <div class="pager">
         <el-pagination
           v-model:current-page="page"
-          v-model:page-size="pageSize"
+          :page-size="pageSize"
           :total="total"
-          :page-sizes="[20, 50, 100, 200]"
-          layout="total, sizes, prev, pager, next, jumper"
+          layout="total, prev, pager, next, jumper"
           background
           @current-change="load"
-          @size-change="reload"
         />
       </div>
     </WorkspacePage>
@@ -108,7 +106,7 @@ const dispatching = ref(false)
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(20)
 const total = ref(0)
 
 // 展示行直接用后端返回的当前页(排序/筛选均已下推后端)
@@ -127,10 +125,15 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
+  ++listLoadVersion
+  const project = pid.value
+  rows.value = []; selected.value = []; total.value = 0; page.value = 1
   taskId.value = null
   if (!pid.value) { tasks.value = []; rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
-  tasks.value = await listTasks({ project_id: pid.value })
+  const nextTasks = await listTasks({ project_id: project })
+  if (pid.value !== project) return
+  tasks.value = nextTasks
   await reload()
 }
 
@@ -140,7 +143,9 @@ async function reload() {
   await load()
 }
 
+let listLoadVersion = 0
 async function load() {
+  const version = ++listLoadVersion
   if (!pid.value) return
   loading.value = true
   try {
@@ -153,9 +158,13 @@ async function load() {
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
     })
+    if (version !== listLoadVersion) return
     rows.value = items || []
     total.value = t || 0
-  } finally { loading.value = false }
+    selected.value = []
+    const lastPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+    if (page.value > lastPage) { page.value = lastPage; await load() }
+  } finally { if (version === listLoadVersion) loading.value = false }
 }
 
 function canDispatch(row) {
@@ -171,6 +180,7 @@ async function removeAdopt(row) {
     displayRows.value = displayRows.value.filter((r) => r.id !== row.id)
     total.value = Math.max(0, total.value - 1)
     ElMessage.success('已移除采纳(置回待定)')
+    await load()
   } catch { /* http 拦截器已提示 */ }
   finally { row._removing = false }
 }

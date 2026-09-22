@@ -3,7 +3,7 @@ export function execResultBatches(rows) {
   const map = new Map()
   const supersededIds = new Set(rows.map((r) => r.retry_of).filter(Boolean))
   for (const row of rows) {
-    const r = { ...row, _superseded: supersededIds.has(row.run_id ?? row.id) }
+    const r = { ...row, _superseded: row.superseded || supersededIds.has(row.run_id ?? row.id) }
     const key = r.batch_id || '__none__'
     if (!map.has(key)) map.set(key, [])
     map.get(key).push(r)

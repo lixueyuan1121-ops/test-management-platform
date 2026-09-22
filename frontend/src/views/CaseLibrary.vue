@@ -146,13 +146,11 @@
       <div class="pager">
         <el-pagination
           v-model:current-page="page"
-          v-model:page-size="pageSize"
+          :page-size="pageSize"
           :total="total"
-          :page-sizes="[20, 50, 100, 200]"
-          layout="total, sizes, prev, pager, next, jumper"
+          layout="total, prev, pager, next, jumper"
           background
           @current-change="load"
-          @size-change="reload"
         />
       </div>
     </WorkspacePage>
@@ -339,7 +337,7 @@ const platformFilter = ref(null)   // 平台筛选(null=全部):web/android/ios
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(20)
 const total = ref(0)
 
 // 展示行直接用后端返回的当前页(排序/筛选均已下推后端)
@@ -452,17 +450,23 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
+  ++listLoadVersion
+  const project = pid.value
+  rows.value = []; selected.value = []; total.value = 0; page.value = 1
   taskId.value = null
   pageFilter.value = null
   pageOptions.value = []
   if (!pid.value) { tasks.value = []; rows.value = []; total.value = 0; return }
   setLastProjectId(pid.value)
-  tasks.value = await listTasks({ project_id: pid.value })
+  const nextTasks = await listTasks({ project_id: project })
+  if (pid.value !== project) return
+  tasks.value = nextTasks
   // 页面候选:从项目选择器(共享域)派生 distinct page,失败不影响列表。
   try {
-    const data = await listSelectors(pid.value)
+    const data = await listSelectors(project)
+    if (pid.value !== project) return
     pageOptions.value = [...new Set((data.shared || []).map((k) => k.page).filter(Boolean))].sort()
-  } catch { pageOptions.value = [] }
+  } catch { if (pid.value !== project) return; pageOptions.value = [] }
   await reload()
 }
 
@@ -492,6 +496,9 @@ async function load() {
     if (version !== listLoadVersion) return
     rows.value = items || []
     total.value = t || 0
+    selected.value = []
+    const lastPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+    if (page.value > lastPage) { page.value = lastPage; await load() }
   } finally { if (version === listLoadVersion) loading.value = false }
 }
 

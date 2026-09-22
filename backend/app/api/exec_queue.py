@@ -735,6 +735,8 @@ def list_history(
     status_: str | None = Query(None, alias="status"),
     batch_id: str | None = Query(None),
     summary: bool = Query(False),
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(20, ge=1, le=20),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -754,20 +756,36 @@ def list_history(
         q = q.filter(ExecRun.status.in_((ExecStatus.pending, ExecStatus.running)))
     elif status_:
         q = q.filter(ExecRun.status == status_)
+    total = q.count() if page is not None else None
+    offset = (page - 1) * page_size if page is not None else 0
+    if page is not None:
+        limit = page_size
+        summary = True
+    def result(items):
+        if page is None:
+            return ok(items)
+        ids = [r["run_id"] for r in items]
+        superseded = {r[0] for r in db.query(ExecRun.retry_of).filter(
+            ExecRun.project_id == project_id, ExecRun.retry_of.in_(ids)).all()}
+        for item in items:
+            item["superseded"] = item["run_id"] in superseded
+        runners = [r[0] for r in db.query(ExecRun.runner).filter(
+            ExecRun.project_id == project_id, ExecRun.runner != "").distinct().order_by(ExecRun.runner).all()]
+        return ok({"items": items, "total": total, "page": page, "page_size": page_size, "runners": runners})
     if summary:
         # Do not load large selector snapshots or step reports into Python/the list.
         # Keep old active tasks in the limited result set, even after newer runs finish.
         q = q.options(defer(ExecRun.payload), defer(ExecRun.report)).outerjoin(TestCase, TestCase.id == ExecRun.test_case_id)
         q = q.add_columns(TestCase.title, ExecRun.report.notin_(("", "[]", "{}", "null")).label("has_report"))
-        rows = q.order_by(case((ExecRun.status.in_((ExecStatus.pending, ExecStatus.running)), 0), else_=1), ExecRun.id.desc()).limit(limit).all()
+        rows = q.order_by(case((ExecRun.status.in_((ExecStatus.pending, ExecStatus.running)), 0), else_=1), ExecRun.id.desc()).limit(limit).offset(offset).all()
         out = []
         for r, title, has_report in rows:
             d = _to_out(r, include_details=False)
             d.update(title=title, has_report=bool(has_report), enqueued_by=r.enqueued_by,
                      can_cancel=writable and r.status in (ExecStatus.pending, ExecStatus.running))
             out.append(d)
-        return ok(out)
-    rows = q.order_by(ExecRun.id.desc()).limit(limit).all()
+        return result(out)
+    rows = q.order_by(ExecRun.id.desc()).limit(limit).offset(offset).all()
     out = []
     for r in rows:
         d = _to_out(r)
@@ -775,7 +793,7 @@ def list_history(
         d["enqueued_by"] = r.enqueued_by
         d["can_cancel"] = writable and r.status in (ExecStatus.pending, ExecStatus.running)
         out.append(d)
-    return ok(out)
+    return result(out)
 
 
 @router.get("/{run_id}")

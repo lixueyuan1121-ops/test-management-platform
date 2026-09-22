@@ -1,13 +1,25 @@
 # 平台接入与脚本约定
 
 ## 准备
-Windows 需要 PowerShell 5.1+；登录脚本只使用内置能力。其他系统可以通过受支持的浏览器登录或使用正常获取的用户 bearer token 调用相同 API，不共享用户凭据。
+Windows 需要 PowerShell 5.1+；登录脚本只使用内置能力。macOS 使用 Python 3.9+ 和 scripts/qalab.py，无第三方 Python 依赖；会话通过 Security.framework 的 SecItem API 保存在登录钥匙串中，按平台源地址隔离，不通过命令行参数或明文文件传递令牌。doctor 执行独立临时条目的读写删除自检，不访问平台；login 隐藏输入密码，status 检查项目设备，import --payload 导入并读回复核，logout 删除该平台的会话。其他系统可通过受支持的浏览器或正常获取的用户 bearer token 调用 API，不共享用户凭据。
 线上项目、用户和执行机与 localhost 分离。GET /api/projects 查询有权访问的项目；GET /api/devices 查询自己的设备；GET /api/auth/me 验证身份。
 线上缺少 POST /api/verified-imports 时需要发布仓库配套接口（backend/app/api/verified_import.py、schemas/verified_import.py 及 router.py 注册）；不需要数据库迁移。
 
+## 已有用例查询
+
+使用当前用户会话请求 `GET /api/ai/cases?project_id=ID&keyword=URL编码关键词&limit=200&offset=0`，返回 `data.items` 与 `data.total`。按 total 翻页（offset 每次增加实际返回条数），不要只读第一页；关键词筛选是文本匹配，分别用入口、关键对象等宽关键词搜索，必要时按 page 或遍历项目全部用例检查同义场景。不要加 provider、review_status、is_regression 等会遗漏同事用例的过滤条件。
+列表不含 script，候选详情使用 `GET /api/ai/testcases/{id}`。注意列表路由是 `/api/ai/cases`，不是 `/api/ai/testcases`。比较实际场景和验收点，不自动把相似标题当作重复。平台执行已有用例时使用当前线上 OpenAPI/页面确认的入队参数与自己的设备，不复制其他人的设备 ID。
+`POST /api/verified-imports/preview` 接收同一完整实测包，返回 `data.ready` 与 `data.cases`。每项含 index/title/match（new/exact/ambiguous）、case_id、candidates（ID、正文、预期、revision）及 confirmation_token。预览无持久写入。
+明确一致的场景自动复用；相似场景须用户确认并为对应 case 增加 `resolution`：
+```json
+{"action":"reuse","case_id":2739,"token":"服务端返回的64位confirmation_token","reason":"用户比较入口、动作与验收点后确认同一场景"}
+```
+不同场景选择 `action: "create"`，不传 case_id，并说明差异。精确相同不允许强制新建。token 绑定提交内容和候选版本，不可伪造/替用户做决定。候选变化后重新 preview。提交冲突返回 HTTP 409、`data.reason=duplicate_confirmation_required`、完整 cases；整批不写入，保留 external_id 处理后重试。同一批的相同场景需拆成独立实测批次，不丢报告。不同人同时导入时在同一项目数据库锁内串行查重；不依赖单进程内存锁。
+复用的用例正文与评审状态保持原值；本次脚本/标题/步骤/预期写入 ExecRun.payload，实际报告仍写入 ExecRun.report，环境信息写入 payload.verified_import，保留来源用户与设备。验收读回 `GET /api/exec-queue/{run_id}` 比较本次快照及报告，不能要求原用例文字与当前提交完全相同。
+
 ## 导入契约
 POST /api/verified-imports，Authorization: Bearer 用户 access token。仅项目 admin/member 可写，runner_device_id 必须属于当前用户。JSON:
-- project_id, runner_device_id：线上真实 ID。
+- project_id, runner_device_id：线上真实 ID。sub_product 可选，默认空；查重与选择器验证限制在同一项目、子产品和平台。
 - external_id：此次验证的稳定唯一标识，8–100 位字母数字下划线或短横线。相同 ID+内容重复调用复用记录，内容不同返回 409。
 - requirement：需求标题，最多 512 字符。
 - cases：1–20 条通过的用例，每条字段：
@@ -20,7 +32,7 @@ POST /api/verified-imports，Authorization: Bearer 用户 access token。仅项�
   - environment：操作系统、应用地址/版本等，不放密码。
   - scope：实际验收范围与未覆盖项。
   - finished_at：真实结束时间，含时区 ISO8601；duration_ms：实际耗时。
-返回 data.project_id, requirement_id, batch_id, records[{case_id, run_id, title}], reused。
+返回 data.project_id, requirement_id（全复用时可空）, batch_id, records[{case_id, run_id, title（本次标题）, disposition（created/reused）}], created_cases, reused_cases, reused（整批幂等重试）。
 GET /api/ai/testcases/{id} 校验脚本及正文；GET /api/exec-queue/history?project_id=...&batch_id=... 可查看外部执行报告。
 链接：/case-library?project_id=ID；/exec-results?project_id=ID&batch_id=BATCH。
 仅登录用户提交的外部实测报告属于来源声明，平台不能独立证明客户端是否真实执行，因此记录显式标注“外部实测导入”，不伪装线上 Runner 领取执行。

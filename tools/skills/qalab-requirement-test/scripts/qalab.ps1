@@ -1,5 +1,5 @@
 ﻿param(
-  [ValidateSet('login','status','import','logout')][string]$Action = 'status',
+  [ValidateSet('login','status','import','logout','preview')][string]$Action = 'status',
   [string]$BaseUrl = 'https://qalab.claw.qihoo.net',
   [string]$PayloadPath
 )
@@ -18,7 +18,15 @@ function Call-Api([string]$Method, [string]$Path, $Body, [string]$Token) {
   if ($Token) { $headers.Authorization = 'Bearer ' + $Token }
   $params = @{Uri=($BaseUrl+$Path);Method=$Method;Headers=$headers;TimeoutSec=30;MaximumRedirection=0}
   if ($null -ne $Body) { $params.Body = [Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 100 -Compress)); $params.ContentType='application/json; charset=utf-8' }
-  $http = Invoke-WebRequest @params -UseBasicParsing
+  try { $http = Invoke-WebRequest @params -UseBasicParsing }
+  catch {
+    $conflict = $null
+    try { $conflict = $_.ErrorDetails.Message | ConvertFrom-Json } catch {}
+    if ($conflict.data.reason -eq 'duplicate_confirmation_required') {
+      throw ('需确认疑似重复用例；未写入本批数据：' + ($conflict.data | ConvertTo-Json -Depth 100))
+    }
+    throw
+  }
   $response = [Text.Encoding]::UTF8.GetString($http.RawContentStream.ToArray()) | ConvertFrom-Json
   if ($null -ne $response.code -and $response.code -ne 0) { throw ('平台拒绝请求: ' + $response.msg) }
   if ($null -ne $response.data) { return $response.data }
@@ -58,19 +66,55 @@ $projects = Call-Api 'GET' '/api/projects' $null $session.access_token
 $devices = Call-Api 'GET' '/api/devices' $null $session.access_token
 $schema = Call-Api 'GET' '/openapi.json' $null ''
 $available = $null -ne $schema.paths.'/api/verified-imports'.post
+$dedupAvailable = $null -ne $schema.paths.'/api/verified-imports/preview'.post
 if ($Action -eq 'status') {
-  @{platform=$BaseUrl;user=$me.user.username;projects=$projects;devices=@($devices | Select-Object id,runner_id,name,platform,active_kinds,last_seen_at);verified_import_available=$available} | ConvertTo-Json -Depth 8
+  @{platform=$BaseUrl;user=$me.user.username;projects=$projects;devices=@($devices | Select-Object id,runner_id,name,platform,active_kinds,last_seen_at);verified_import_available=$available;dedup_available=$dedupAvailable} | ConvertTo-Json -Depth 8
   exit
 }
 if (!$available) { throw '线上尚未发布 POST /api/verified-imports。待导入文件保留，不会写到 localhost。' }
+if (!$dedupAvailable) { throw '线上尚未发布平台查重接口；请先更新服务器，保留报告不盲目新增' }
 if (!$PayloadPath) { throw '缺少 -PayloadPath' }
 $payload = Get-Content -LiteralPath $PayloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if (@($payload.cases.title | Select-Object -Unique).Count -ne @($payload.cases).Count) { throw "同批用例标题须唯一" }
+if ($Action -eq 'preview') {
+  Call-Api 'POST' '/api/verified-imports/preview' $payload $session.access_token | ConvertTo-Json -Depth 100
+  exit
+}
+function Canonical($Value) {
+  if ($null -eq $Value) { return 'null' }
+  if ($Value -is [string] -or $Value.GetType().IsPrimitive) { return (ConvertTo-Json -InputObject $Value -Compress) }
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [System.Collections.IDictionary]) {
+    $parts = @(); foreach($item in $Value) { $parts += Canonical $item }; return ('[' + ($parts -join ',') + ']')
+  }
+  $parts = @()
+  foreach($name in @($Value.PSObject.Properties.Name | Sort-Object)) {
+    $parts += ((ConvertTo-Json -InputObject $name -Compress) + ':' + (Canonical $Value.$name))
+  }
+  return ('{' + ($parts -join ',') + '}')
+}
+function Script-Canonical($Script) {
+  if ($Script -is [string]) { $Script = ConvertFrom-Json -InputObject $Script }
+  foreach($step in @($Script)) {
+    if (!$step.target) { $step | Add-Member -NotePropertyName target -NotePropertyValue ([pscustomobject]@{}) -Force }
+    if (!$step.args) { $step | Add-Member -NotePropertyName args -NotePropertyValue ([pscustomobject]@{}) -Force }
+  }
+  return (Canonical @($Script))
+}
 $receipt = Call-Api 'POST' '/api/verified-imports' $payload $session.access_token
 foreach ($record in $receipt.records) {
   $saved = Call-Api 'GET' ('/api/ai/testcases/' + $record.case_id) $null $session.access_token
   $source = @($payload.cases | Where-Object { $_.title -eq $record.title })
-  if ($source.Count -ne 1 -or $saved.title -ne $source[0].title -or $saved.project_id -ne $payload.project_id -or $saved.steps -ne $source[0].steps -or $saved.expected -ne $source[0].expected -or @($saved.script).Count -ne @($source[0].script).Count) {
+  if ($source.Count -ne 1 -or $saved.project_id -ne $payload.project_id) { throw '导入后用例归属不一致' }
+  $actual = $saved
+  if ($record.disposition -in @('created','reused')) {
+    $run = Call-Api 'GET' ('/api/exec-queue/' + $record.run_id) $null $session.access_token
+    if ($run.project_id -ne $payload.project_id -or $run.test_case_id -ne $record.case_id -or $run.verdict -ne 'pass' -or (Canonical $run.report) -cne (Canonical $source[0].report)) {
+      throw '已提交，但执行报告读回复核不一致；保留原 external_id，请检查线上记录'
+    }
+    $actual = $run.payload
+    if ($actual -is [string]) { $actual = ConvertFrom-Json -InputObject $actual }
+  }
+  if ($actual.title -cne $source[0].title -or $actual.steps -cne $source[0].steps -or $actual.expected -cne $source[0].expected -or (Script-Canonical $actual.script) -cne (Script-Canonical $source[0].script)) {
     throw '已提交，但线上读回复核不一致；保留相同 external_id，先检查现有记录，勿盲目重复创建'
   }
 }

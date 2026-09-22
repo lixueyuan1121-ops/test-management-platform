@@ -4,8 +4,25 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+class ImportResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["reuse", "create"]
+    case_id: int | None = Field(default=None, gt=0)
+    token: str = Field(pattern=r"^[a-f0-9]{64}$")
+    reason: str = Field(min_length=5, max_length=1000)
+
+    @model_validator(mode="after")
+    def target(self):
+        if (self.action == "reuse") != (self.case_id is not None):
+            raise ValueError("reuse 须指定 case_id，create 不得指定 case_id")
+        if len(self.reason.strip()) < 5:
+            raise ValueError("请说明复用或独立建例的依据")
+        return self
+
+
 class VerifiedCase(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    resolution: ImportResolution | None = None
     title: str = Field(min_length=1, max_length=512)
     category: str = Field(default="功能", max_length=32)
     priority: Literal["P0", "P1", "P2", "P3"] = "P1"
@@ -48,6 +65,7 @@ class VerifiedImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: int = Field(gt=0)
     runner_device_id: int = Field(gt=0)
+    sub_product: str = Field(default="", max_length=32)
     external_id: str = Field(min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
     requirement: str = Field(min_length=1, max_length=512)
     cases: list[VerifiedCase] = Field(min_length=1, max_length=20)

@@ -9,24 +9,25 @@
             <el-button size="small" :loading="loading" :icon="Refresh" aria-label="刷新执行结果" title="刷新执行结果" @click="load" />
       </template>
       <template #filters>
-            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="任务" width="220px" @change="load" />
-            <el-select v-model="runner" placeholder="执行设备" size="small" clearable style="width:150px" @change="load">
+            <TaskPicker v-model="taskId" :tasks="tasks" placeholder="任务" width="220px" @change="reload" />
+            <el-select v-model="runner" placeholder="执行设备" size="small" clearable style="width:150px" @change="reload">
               <el-option v-for="rn in runners" :key="rn" :label="rn" :value="rn" />
             </el-select>
-            <el-select v-model="runStatus" placeholder="执行状态" size="small" clearable style="width:150px" @change="load">
+            <el-select v-model="runStatus" placeholder="执行状态" size="small" clearable style="width:150px" @change="reload">
               <el-option label="待执行 / 执行中" value="active" />
               <el-option label="待执行" value="pending" />
               <el-option label="执行中" value="running" />
             </el-select>
-            <el-select v-model="verdict" placeholder="结果" size="small" clearable style="width:110px" @change="load">
+            <el-select v-model="verdict" placeholder="结果" size="small" clearable style="width:110px" @change="reload">
               <el-option label="通过" value="pass" />
               <el-option label="失败" value="fail" />
               <el-option label="选择器阻塞" value="blocked" />
             </el-select>
       </template>
 
+      <el-tag v-if="batchFilter" closable @close="batchFilter = null; reload()" style="margin-bottom:12px">批次 {{ batchFilter }}</el-tag>
       <el-alert v-if="activeCount" type="info" :closable="false" style="margin-bottom:12px"
-        :title="`当前有 ${activeCount} 条待执行或运行中的任务，可在展开明细的操作列手动终止。状态变化后请点击右上角刷新。`" />
+        :title="`本页有 ${activeCount} 条待执行或运行中的任务，可在展开明细的操作列手动终止。状态变化后请点击右上角刷新。`" />
       <el-empty v-if="!batches.length" :description="loading ? '加载中…' : '暂无执行记录'" :image-size="70" />
 
       <!-- 按批次分组:每批一块,组头显汇总,展开看该批每条用例;单条点「报告」下钻逐步截图 -->
@@ -35,15 +36,15 @@
           <template #title>
             <div class="batch-head">
               <el-tag :type="b.failed ? 'danger' : (b.blocked ? 'warning' : (b.total > 0 && b.passed === b.total ? 'success' : 'info'))" size="small" effect="dark">
-                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : (b.total > 0 && b.passed === b.total ? '全部通过' : (b.cancelled === b.total ? '已终止' : '尚未全部判定'))) }}
+                {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : (b.total > 0 && b.passed === b.total ? '本页全部通过' : (b.cancelled === b.total ? '已终止' : '尚未全部判定'))) }}
               </el-tag>
               <span class="batch-id">{{ b.label }}</span>
               <span class="batch-stat">
-                共 {{ b.total }} · <b class="ok">{{ b.passed }} 过</b> · <b class="ng">{{ b.failed }} 失</b>
+                本页 {{ b.total }} · <b class="ok">{{ b.passed }} 过</b> · <b class="ng">{{ b.failed }} 失</b>
                 <template v-if="b.blocked"> · <b class="blk">{{ b.blocked }} 阻塞</b></template>
                 <template v-if="b.cancelled"> · {{ b.cancelled }} 已终止</template>
                 <template v-if="b.flaky"> · <b class="flk" title="重试后通过(不稳定)">{{ b.flaky }} 抖动</b></template>
-                · 功能通过率 {{ b.rate }}%
+                · 本页功能通过率 {{ b.rate }}%
               </span>
               <span class="batch-meta">{{ b.runner }} · {{ b.durationText }} · {{ fmtTime(b.time) }}</span>
             </div>
@@ -127,7 +128,9 @@
         </el-collapse-item>
       </el-collapse>
 
-      <div class="foot-hint">共 {{ rows.length }} 条 / {{ batches.length }} 个批次(每次执行都留痕,不覆盖;按批次与时间倒序)</div>
+      <div class="foot-hint">本页 {{ rows.length }} 条 / {{ batches.length }} 个批次；批次统计仅包含本页记录</div>
+      <el-pagination v-model:current-page="page" :page-size="20" :total="total"
+        layout="total, prev, pager, next, jumper" background @current-change="load" />
     </WorkspacePage>
 
     <!-- 单条执行的逐步报告(含截图) -->
@@ -283,6 +286,10 @@ const runner = ref(null)
 const verdict = ref(null)
 const runStatus = ref(null)
 const rows = ref([])
+const page = ref(1)
+const total = ref(0)
+const runners = ref([])
+const batchFilter = ref(route.query.batch_id || null)
 const loading = ref(false)
 const ev = ref({ visible: false, path: '' })
 const rep = ref({ visible: false, row: null, loading: false, error: false })
@@ -307,7 +314,7 @@ async function onStop(row) {
   finally { stopping.value.delete(row.run_id) }
 }
 
-const runners = computed(() => [...new Set(rows.value.map((r) => r.runner).filter(Boolean))])
+
 
 const hasReport = row => row.has_report ?? (Array.isArray(row.report) && row.report.length > 0)
 
@@ -334,13 +341,21 @@ onMounted(async () => {
 
 async function onProjectChange() {
   taskId.value = null; runner.value = null; verdict.value = null; runStatus.value = null
-  if (!pid.value) { tasks.value = []; rows.value = []; return }
+  page.value = 1
+  rows.value = []; total.value = 0; runners.value = []; ++listRequest
+  if (!pid.value) { tasks.value = []; loading.value = false; return }
+  if (Number(route.query.project_id) !== pid.value) batchFilter.value = null
   setLastProjectId(pid.value)
   const project = pid.value
   await Promise.all([
     listTasks({ project_id: project }).then(items => { if (pid.value === project) tasks.value = items }),
     load(),
   ])
+}
+
+async function reload() {
+  page.value = 1
+  await load()
 }
 
 async function load(silent = false) {
@@ -350,16 +365,23 @@ async function load(silent = false) {
   loading.value = true
   try {
     const queryProject = pid.value
-    const nextRows = await listExecHistory({
+    const result = await listExecHistory({
       project_id: pid.value,
       task_id: taskId.value || undefined,
       runner: runner.value || undefined,
       verdict: verdict.value || undefined,
       status: runStatus.value || undefined,
       summary: true,
+      page: page.value,
+      page_size: 20,
+      batch_id: batchFilter.value || undefined,
     })
     if (pid.value !== queryProject || request !== listRequest) return
-    rows.value = nextRows
+    rows.value = result.items || []
+    total.value = result.total || 0
+    runners.value = result.runners || []
+    const lastPage = Math.max(1, Math.ceil(total.value / 20))
+    if (page.value > lastPage) { page.value = lastPage; await load(); return }
     if (!silent) {
       const active = batches.value.filter(b => b.rows.some(isActive))
       activeBatches.value = (active.length ? active : batches.value.slice(0, 1)).map(b => b.id)
