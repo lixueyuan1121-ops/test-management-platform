@@ -13,7 +13,9 @@ export const navigationGroups = [
   { id: 'func', label: '功能测试', icon: 'MagicStick', items: [
     entry('/test-plans', '测试计划', 'Calendar'), entry('/tasks', '任务分配', 'List'),
     entry('/ai-testgen', 'AI 测试助手', 'MagicStick'), entry('/case-library', '功能用例库', 'Collection'),
-    entry('/verified-imports', '导入任务', 'Upload'), entry('/adopted-cases', '已采纳用例', 'Select'), entry('/regression-cases', '回归用例库', 'RefreshRight'),
+    entry('/verified-imports', '导入任务', 'UploadFilled'), entry('/adopted-cases', '已采纳用例', 'Select'),
+    entry('/regression-cases', '回归用例库', 'RefreshRight'), entry('/release-checklist', '上线 checklist', 'Checked'),
+    entry('/recorder', '录制脚本', 'VideoCamera', { automationTools: true }),
     entry('/exec-results', '执行结果', 'Finished'), entry('/issues', '遗留问题', 'Warning'),
   ] },
   { id: 'feedback', label: '反馈回归', icon: 'ChatLineSquare', items: [
@@ -25,7 +27,7 @@ export const navigationGroups = [
   ] },
   { id: 'quality', label: '质量与发布', icon: 'DataLine', items: [
     entry('/war-room', '作战大屏', 'DataBoard'), entry('/requirements', '需求覆盖', 'Link'),
-    entry('/release-checklist', '上线 checklist', 'Checked'), entry('/releases', '发版记录', 'Promotion'),
+    entry('/releases', '发版记录', 'Promotion'),
     entry('/stats', '日报统计', 'DataAnalysis'), entry('/workload', '工作量统计', 'TrendCharts'),
     entry('/ai-wall', 'AI 战绩墙', 'Trophy'), entry('/fail-clusters', '版本质量聚焦', 'Filter', { admin: true }),
     entry('/rts', '回归智选', 'Aim', { admin: true }),
@@ -36,7 +38,6 @@ export const navigationGroups = [
   { id: 'settings', label: '系统管理', icon: 'Setting', items: [
     entry('/projects', '项目管理', 'Files', { admin: true }), entry('/users', '用户管理', 'User', { admin: true }),
     entry('/selectors', '选择器管理', 'Aim', { automationTools: true }), entry('/api-env', 'API 环境', 'Connection', { admin: true }),
-    entry('/recorder', '录制脚本', 'VideoCamera', { automationTools: true }),
     entry('/tool-admin', '工具配置', 'Grid', { admin: true }),
   ] },
 ]
