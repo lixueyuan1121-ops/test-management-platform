@@ -1,4 +1,4 @@
 interface:
   display_name: "QA Lab 需求自动化测试"
-  short_description: "按需求优先验证主流程，真实执行自动化用例，成功结果异步提交，平台后台去重入库"
-  default_prompt: "使用 $qalab-requirement-test 根据我的需求和应用地址执行主流程测试，通过后异步提交 QA Lab 线上项目，收到接收回执即结束，无需等待后台入库。"
+  short_description: "快捷填写需求与应用地址，默认纳米Work PC端，实测通过后异步提交平台"
+  default_prompt: "使用 $qalab-requirement-test 开始一次需求测试。请先显示输入卡片，让我填写本次需求和应用地址，项目默认选中纳米Work PC端，增加可选的关联任务（默认codex导入用例，填写时用指定任务名）；发出卡片后保持等待，收到我的回复再继续，不要立即结束当前轮。"

@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timezone
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 class ImportResolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -61,6 +61,9 @@ class VerifiedCase(BaseModel):
                 raise ValueError(f"{name} 超过存储上限")
         return self
 
+DEFAULT_IMPORT_TASK = "codex导入用例"
+
+
 class VerifiedImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: int = Field(gt=0)
@@ -68,6 +71,15 @@ class VerifiedImport(BaseModel):
     sub_product: str = Field(default="", max_length=32)
     external_id: str = Field(min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
     requirement: str = Field(min_length=1, max_length=512)
+    task_name: str = Field(default=DEFAULT_IMPORT_TASK, min_length=1, max_length=255)
+
+    @field_validator("task_name", mode="before")
+    @classmethod
+    def normalize_task_name(cls, value):
+        if value is None:
+            return DEFAULT_IMPORT_TASK
+        return (value.strip() or DEFAULT_IMPORT_TASK) if isinstance(value, str) else value
+
     cases: list[VerifiedCase] = Field(min_length=1, max_length=20)
 
     @model_validator(mode="after")

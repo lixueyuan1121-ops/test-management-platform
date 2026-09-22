@@ -9,7 +9,7 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import Project, User, VerifiedImportJob, VerifiedImportItem
 from app.schemas.common import ok
-from app.schemas.verified_import import VerifiedImport, ImportResolution
+from app.schemas.verified_import import DEFAULT_IMPORT_TASK, VerifiedImport, ImportResolution
 from app.services.selector_device import owned_device
 from app.services.verified_dedup import digest
 
@@ -57,7 +57,11 @@ def submit(body: VerifiedImport, db: Session = Depends(get_db), user: User = Dep
     if any(c.resolution for c in body.cases):
         raise HTTPException(422, "异步提交无需查重确认；疑似重复由平台导入任务页处理")
     payload = body.model_dump(mode="json")
-    sha = digest(payload)
+    # Keep pre-task-name receipts retryable after upgrading.
+    hash_payload = dict(payload)
+    if hash_payload["task_name"] == DEFAULT_IMPORT_TASK:
+        del hash_payload["task_name"]
+    sha = digest(hash_payload)
     def existing():
         return db.query(VerifiedImportJob).filter_by(project_id=body.project_id, user_id=user.id, external_id=body.external_id).first()
     job = existing()

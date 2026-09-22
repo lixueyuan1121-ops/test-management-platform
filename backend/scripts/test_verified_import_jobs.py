@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from unittest.mock import patch
 from sqlalchemy.exc import OperationalError
-from app.models import User, ProjectMember, TestCase, ExecRun, Requirement, VerifiedImportJob, VerifiedImportItem
+from app.models import User, ProjectMember, TestCase, ExecRun, Requirement, Task, AiTask, VerifiedImportJob, VerifiedImportItem
 from app.core.enums import ProjectRole
 from app.api.verified_import_jobs import router
 from app.services.verified_import_jobs import process_one, drain_once
@@ -37,6 +37,7 @@ class AsyncTests(ApiTests):
         self.assertEqual(response.status_code,202,response.text)
         receipt=response.json()['data']; self.assertTrue(receipt['accepted']);jid=receipt['job_id']
         self.assertEqual(self.count(TestCase),0);self.assertEqual(self.count(ExecRun),0)
+        self.assertEqual(self.count(Task),0)
         self.assertNotIn('payload',receipt)
         self.assertEqual(self.submit(body).json()['data']['job_id'],jid)
         changed=copy.deepcopy(body);changed['requirement']='changed'
@@ -63,6 +64,7 @@ class AsyncTests(ApiTests):
         with ThreadPoolExecutor(max_workers=6) as pool:
             list(pool.map(lambda iid: process_one(iid,self.factory),ids*2))
         self.assertEqual(self.count(TestCase),1);self.assertEqual(self.count(ExecRun),6)
+        self.assertEqual(self.count(Task),1)
         with self.factory() as db:self.assertTrue(all(i.status=='done' for i in db.query(VerifiedImportItem).all()))
 
     def test_one_ambiguous_does_not_block_siblings_and_admin_confirms(self):
@@ -160,6 +162,7 @@ class AsyncTests(ApiTests):
         with self.factory() as db:
             cases=db.query(TestCase).all();self.assertEqual(len(cases),2)
             req=db.query(Requirement).one();self.assertEqual(req.title,'codex导入用例')
+            task=db.query(Task).one();self.assertTrue(all(c.task_id==task.id for c in cases))
             self.assertTrue(all(c.requirement_id==req.id and not c.is_regression for c in cases))
             actual={json.loads(r.payload)['verified_import']['requirement'] for r in db.query(ExecRun).all()}
             self.assertEqual(actual,{first['requirement'],second['requirement']})
@@ -174,6 +177,75 @@ class AsyncTests(ApiTests):
             original=db.get(TestCase,original_id)
             self.assertTrue(original.is_regression);self.assertEqual(original.requirement_id,manual_id)
             self.assertEqual(db.query(TestCase).count(),2);self.assertEqual(db.query(ExecRun).count(),3)
+
+    def test_task_defaults_custom_names_and_project_isolation(self):
+        for i, name in enumerate([None, "", "  ", "codex导入用例"]):
+            body=source(f'task-default-{i}');body['task_name']=name
+            response=self.submit(body);self.assertEqual(response.status_code,202,response.text)
+        drain_once(self.factory)
+        with self.factory() as db:
+            task=db.query(Task).one();self.assertEqual(task.title,'codex导入用例')
+            self.assertEqual(db.query(TestCase).one().task_id,task.id)
+            self.assertTrue(all(r.task_id==task.id for r in db.query(ExecRun)))
+            self.assertTrue(all(a.task_id==task.id for a in db.query(AiTask)))
+        body=source('custom-task-first');body['task_name']='  文档预览验收  '
+        body['cases'][0].update(title='预览文件',steps='点击文件',expected='文件打开')
+        body['cases'][0]['script'][0]['target']['selector']='#file'
+        body['cases'][0]['script'][1]['target']['selector']='#preview'
+        jid=self.submit(body).json()['data']['job_id'];drain_once(self.factory)
+        item=self.job(jid)['items'][0]['receipt'];self.assertEqual(item['task_name'],'文档预览验收')
+        listing=self.client.get('/api/ai/cases',params={'project_id':1,'task_id':item['task_id']})
+        self.assertEqual(listing.status_code,200,listing.text)
+        self.assertEqual(listing.json()['data']['items'][0]['task_title'],'文档预览验收')
+        # Same scenario under another task keeps the canonical case and its existing association.
+        body['external_id']='custom-task-second';body['task_name']='第二轮验收'
+        jid2=self.submit(body).json()['data']['job_id'];drain_once(self.factory)
+        receipt=self.job(jid2)['items'][0]['receipt']
+        self.assertEqual(receipt['case_id'],item['case_id']);self.assertEqual(receipt['case_task_id'],item['task_id'])
+        with self.factory() as db:
+            run=db.get(ExecRun,receipt['run_id'])
+            self.assertEqual(db.get(Task,run.task_id).title,'第二轮验收')
+            self.assertEqual(json.loads(run.payload)['verified_import']['task_name'],'第二轮验收')
+        # Task names are scoped to the project.
+        body['external_id']='other-project-task';body['project_id']=2
+        jid3=self.submit(body).json()['data']['job_id'];drain_once(self.factory)
+        with self.factory() as db:
+            task=db.get(Task,self.job(jid3)['items'][0]['receipt']['task_id'])
+            self.assertEqual(task.project_id,2);self.assertNotEqual(task.id,receipt['task_id'])
+
+    def test_task_reuses_existing_and_repairs_empty_case_association(self):
+        cid=self.baseline()
+        with self.factory() as db:
+            task=Task(project_id=1,title='已有任务',assigned_by=2,assigned_to=2,assigned_date=datetime.now().date())
+            db.add(task);db.flush();tid=task.id
+            db.get(TestCase,cid).task_id=None;db.commit()
+        body=source('existing-task-reuse');body['task_name']='已有任务'
+        jid=self.submit(body).json()['data']['job_id'];drain_once(self.factory)
+        receipt=self.job(jid)['items'][0]['receipt']
+        self.assertEqual(receipt['task_id'],tid);self.assertEqual(receipt['case_id'],cid)
+        with self.factory() as db:
+            self.assertEqual(db.get(TestCase,cid).task_id,tid)
+            self.assertEqual(db.get(Task,tid).assigned_to,2)
+            self.assertEqual(db.query(Task).filter_by(title='已有任务').count(),1)
+
+    def test_task_field_validation_and_legacy_job_retry(self):
+        for name in ['x'*256, {}, 123]:
+            body=source();body['task_name']=name
+            self.assertEqual(self.submit(body).status_code,422)
+        body=source('legacy-job-retry');jid=self.submit(body).json()['data']['job_id']
+        from app.services.verified_dedup import digest
+        with self.factory() as db:
+            job=db.get(VerifiedImportJob,jid);old=json.loads(job.payload);old.pop('task_name')
+            job.payload=json.dumps(old);job.digest=digest(old);db.commit()
+        self.assertEqual(self.submit(body).json()['data']['job_id'],jid)
+        body['task_name']='codex导入用例'
+        self.assertEqual(self.submit(body).json()['data']['job_id'],jid)
+        body['task_name']='修改关联任务'
+        self.assertEqual(self.submit(body).status_code,409)
+        drain_once(self.factory)
+        self.assertEqual(self.job(jid)['status'],'completed')
+        with self.factory() as db:
+            self.assertEqual(db.query(Task).one().title,'codex导入用例')
 
     def test_queue_pages_and_lightweight_responses(self):
         for i in range(21): self.submit(source(f'pages-{i:04}'))

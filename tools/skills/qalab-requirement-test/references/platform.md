@@ -23,6 +23,7 @@ POST /api/verified-imports/jobs，Authorization: Bearer 用户 access token。�
 - project_id, runner_device_id：线上真实 ID。sub_product 可选，默认空；查重与选择器验证限制在同一项目、子产品和平台。
 - external_id：此次验证的稳定唯一标识，8–100 位字母数字下划线或短横线。相同 ID+内容重复调用复用记录，内容不同返回 409。
 - requirement：用户真实需求标题，最多 512 字符；保留在导入任务和执行记录中供追溯，不决定正式用例的关联需求名称。新增用例统一关联“codex导入用例”，同项目复用该需求。已有用例的需求关联和回归标记不因追加执行结果而更改。
+- task_name：可选关联任务名称，最长 255 字符。去除首尾空白，未填、null、空字符串或全空白均使用“codex导入用例”。后台在当前项目按名称复用任务，不存在则创建（负责人为首次创建的提交者），多人并发导入复用同一任务。任务名称不参与场景判重；同一场景仍复用原用例，仅补齐空任务关联，已有任务关联不覆盖，本次执行记录关联本次指定任务。每条完成回执包含 task_id/task_name（本次执行任务）与 case_task_id（用例当前任务）。更改任务名称属于更改提交内容，不能沿用已接收批次的 external_id 重传。
 - cases：1–20 条通过的用例，每条字段：
   - title, category（功能/边界等）, priority（P0–P3）, page。
   - exec_kind（gui/e2e/api）, steps（步骤文本）, expected（预期文本）, precondition（可空）。
@@ -55,10 +56,8 @@ POST /api/verified-imports/jobs，Authorization: Bearer 用户 access token。�
 实际工具区域 .chat-inline-tool-event__detail.format-code 读取 writing-router/SKILL.md，随后返回 name: writing-router / 全能写作工作站。仅当需求为技能路由时以这些作为验收，生成文档需求还需验证交付物。
 writing-router 合理调用 huibao-writer 等下级写作技能不等于路由错误。选择器随版本变化，执行前须现场核实。
 
-## 示例调用
-`$qalab-requirement-test`
-需求：首页选择写文档快捷入口，发送 query 后应调用所选技能。
-应用：D:\Program Files\namiwork\Namiwork.exe
-项目：纳米Work桌面版
-回填：https://qalab.claw.qihoo.net/case-library
-优先主流程，少量相关边界。
+## 快捷调用
+
+直接发送 `$qalab-requirement-test`。支持输入卡片的宿主会按 SKILL.md 的快捷输入规则展示需求、应用地址、项目和可选关联任务；项目默认选中“纳米Work PC端”，关联任务默认“codex导入用例”，均可改填。需求和地址不要求固定格式；没有输入工具时在对话中补充即可。
+用户也可直接写自然语言，例如：“用 $qalab-requirement-test 测一下网页 https://example.test 中点击顶部 Logo 返回首页，回填到纳米Work PC端。”已提供的字段不再重复询问。
+此处地址仅为格式说明，不能当作用户真实待测应用。应用路径按用户本机填写，不给所有成员硬编码同一个 Windows 路径。
