@@ -37,7 +37,7 @@ try {
  if($status.user -ne 'test-user' -or !$status.verified_import_available -or $status.projects[0].name -ne '中文项目'){throw 'DPAPI session roundtrip failed'}
  $fixture=[IO.Path]::GetTempFileName()
  try {
-   @{project_id=1;runner_device_id=1;external_id='stable-test-id';cases=@(@{title='中文主流程';steps='测试步骤';expected='测试预期';verdict='pass';script=@(@{action='assert_visible'});report=@(@{action='assert_visible';ok=$true;check=@{actual=$true;expected=$true}})})} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $fixture -Encoding UTF8
+   @{project_id=1;runner_device_id=1;external_id='stable-test-id';cases=@(@{title='中文主流程';steps='测试步骤';expected='测试预期';verdict='pass';script=@(@{action='assert_visible';target=@{selector='.home'}});report=@(@{action='assert_visible';ok=$true;check=@{actual=$true;expected=$true}})})} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $fixture -Encoding UTF8
    $qalabTestRequests.Clear()
    $result=& $scriptPath -Action import -BaseUrl $base -PayloadPath $fixture | Out-String
    if(!$result.Contains('job_id=7') -or !$result.Contains('无需等待')){throw 'Async acceptance receipt missing'}

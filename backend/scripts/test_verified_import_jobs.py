@@ -30,6 +30,22 @@ class AsyncTests(ApiTests):
     def item(self, job_id, item_id):
         return self.client.get(f'/api/verified-imports/jobs/{job_id}/items/{item_id}').json()['data']
 
+    def test_bad_target_rejected_before_acceptance(self):
+        for step in [
+            {"action": "click", "selector": {"text": "自动化"}},
+            {"action": "wait_for_element", "selector": {"key": "automation-main-view"}},
+            {"action": "assert_visible", "selector": {"key": "automation-main-view", "check": {"actual": "visible", "expected": "visible"}}},
+        ]:
+            body = source()
+            body['cases'][0]['script'] = [step]
+            body['cases'][0]['report'] = [{"action": step['action'], "ok": True, "check": {"actual": True, "expected": True}}]
+            response = self.submit(body)
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertIn('第 1 步', response.text)
+        self.assertEqual(self.count(VerifiedImportJob), 0)
+        self.assertEqual(self.count(VerifiedImportItem), 0)
+        self.assertEqual(self.count(TestCase), 0)
+
     def test_accept_returns_without_matching_and_later_finishes(self):
         body=source()
         with patch('app.api.verified_import.plans_for', side_effect=AssertionError('must not match on submit')):
@@ -115,7 +131,8 @@ class AsyncTests(ApiTests):
     def test_failure_retry_permission_and_invalid_report(self):
         body=source();body['cases'][0]['report'][0]['ok']=False
         self.assertEqual(self.submit(body).status_code,422);self.assertEqual(self.count(VerifiedImportJob),0)
-        body=source();body['cases'][0]['script'][0]['action']='unsupported';body['cases'][0]['report'][0]['action']='unsupported'
+        body=source();body['cases'][0]['script'][0]['target']={'key':'not-registered-in-this-project'}
+        # Structural defects now fail at acceptance; registry lookup remains in the worker.
         jid=self.submit(body).json()['data']['job_id'];drain_once(self.factory)
         item=self.job(jid)['items'][0];self.assertEqual(item['status'],'failed')
         url=f"/api/verified-imports/jobs/{jid}/items/{item['id']}/retry"

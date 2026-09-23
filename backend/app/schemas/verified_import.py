@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.services.script_targets import validate_targets
+
 class ImportResolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["reuse", "create"]
@@ -42,6 +44,8 @@ class VerifiedCase(BaseModel):
 
     @model_validator(mode="after")
     def complete_evidence(self):
+        if self.exec_kind in ("gui", "e2e"):
+            validate_targets(self.script, self.title)
         if self.finished_at.tzinfo is None:
             raise ValueError("finished_at 必须包含时区")
         if self.finished_at.timestamp() > datetime.now(timezone.utc).timestamp() + 300:

@@ -67,6 +67,7 @@ description: 单独调用时通过输入卡片收集需求、应用地址和可�
 
 优先复用环境现有自动化 Runner / Playwright / 已连接的应用；检查工具是否可用，不假设所有人拥有同一安装路径或 CDP 端口。桌面 UI 交互使用当前可用且授权的电脑控制能力；若使用电脑控制 skill，先读取其指引。Electron 可复用项目既有 guiCore + StepExecutor，浏览器应用使用适用的 Playwright 执行器。
 先观察真实 DOM/可访问性树，再建立选择器。保留用户选择的技能等输入标签，追加输入不能用 fill 擦掉选中状态。
+生成脚本前读取 [平台 DSL 与提交前校验](references/platform.md#平台-dsl-与提交前校验)。文字步骤与 script 分开：click 等定位动作必须带对象 target，其中填写真实 target.selector 或目标项目已注册的 target.key。不能把自然语言、坐标操作、顶层 selector、Playwright 代码当作平台 DSL；不能用另一份脚本的成功报告回填。
 执行最终将回填的完整脚本，留存每步结果、实际断言值、执行时间、应用版本/环境和执行器。操作成功不能代替业务结果断言；模型自述也不能代替实际技能调用证据。验收范围由需求决定，未完成的业务结果必须明确标注。
 对明确的环境/定位故障最多修复重试两次，并保留原失败原因。真实业务失败不通过放宽断言“修复”；报告缺陷，失败和阻塞用例留作草稿，不混入成功回填。
 对首页发起的新会话用例，将“新建独立任务、确认没有旧消息和输入草稿”写进脚本。仅点击首页不保证清空会话；旧回复不能作为本轮断言证据。
@@ -76,7 +77,7 @@ description: 单独调用时通过输入卡片收集需求、应用地址和可�
 ## 提交实测结果并结束任务
 
 1. 按 [平台接口与执行约定](references/platform.md) 生成 verified-import JSON。逐步报告来自最终脚本的完整真实执行，不能编造缺失步骤。凭据、token 不放入包。
-2. Windows 运行 `scripts/qalab.ps1 -Action import -PayloadPath <包.json>`；macOS 运行 `python3 scripts/qalab.py import --payload <包.json>`。客户端调用异步接口并检查接收回执；不执行 preview、不读回用例或执行记录、不轮询后台完成。
+2. 先离线校验最终导入包：Windows 使用 `scripts/qalab.ps1 -Action validate -PayloadPath <包.json>`；macOS 使用 `python3 scripts/qalab.py validate --payload <包.json>`。校验失败时修正脚本并重新实测，不能沿用旧报告。校验通过仅代表导入结构满足本地检查，不能替代设备执行或服务端完整协议/选择器校验。Windows 运行 `scripts/qalab.ps1 -Action import -PayloadPath <包.json>`；macOS 运行 `python3 scripts/qalab.py import --payload <包.json>`。客户端调用异步接口并检查接收回执；不执行 preview、不读回用例或执行记录、不轮询后台完成。
 3. 收到有效 accepted 回执和 job_id 后立即结束本次任务。输出实际测试结果、主流程/边界/失败数量、验证范围，以及导入任务链接；表述为“测试通过，结果已提交，平台正在后台整理”。“已接收”不能表述为“用例已入库”或“线上队列重跑通过”。
 4. 平台后台独立处理：明确重复追加结果，新场景建例，疑似重复待管理员确认，可恢复故障自动重试。同批一条待确认不影响其他条目。新增用例关联当前项目统一的“codex导入用例”需求，不自动标记回归，仍待评审，不自动替用户采纳。提交包的 requirement 保留用户真实需求，供导入任务和执行记录追溯。关联任务按 `task_name` 在当前项目复用同名任务，不存在时由后台创建；不填默认“codex导入用例”。新用例和本次执行记录关联所选任务；复用用例仅补齐空任务关联，已有任务关联保留，本次执行仍按提交任务记录。复用用例保留原有需求关联及人工维护的回归标记。
 5. 仅当用户之后主动询问进度时，Windows 使用 `-Action job -JobId ID`，macOS 使用 `python3 scripts/qalab.py job --job-id ID` 单次查询，或打开任务链接。不要创建监控/定时任务，不为入库而保持当前 Codex 任务运行。

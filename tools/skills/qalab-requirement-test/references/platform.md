@@ -61,3 +61,26 @@ writing-router 合理调用 huibao-writer 等下级写作技能不等于路由�
 直接发送 `$qalab-requirement-test`。支持输入卡片的宿主会按 SKILL.md 的快捷输入规则展示需求、应用地址、项目和可选关联任务；项目默认选中“纳米Work PC端”，关联任务默认“codex导入用例”，均可改填。需求和地址不要求固定格式；没有输入工具时在对话中补充即可。
 用户也可直接写自然语言，例如：“用 $qalab-requirement-test 测一下网页 https://example.test 中点击顶部 Logo 返回首页，回填到纳米Work PC端。”已提供的字段不再重复询问。
 此处地址仅为格式说明，不能当作用户真实待测应用。应用路径按用户本机填写，不给所有成员硬编码同一个 Windows 路径。
+
+## 平台 DSL 与提交前校验
+
+`steps` 是给人看的文字，`script` 是 StepExecutor 实际执行的 JSON 数组。`click`、`hover`、`fill`、`type`、`set_checked`、`select_option`、`wait_for`、`get_text`、`assert_text`、`assert_visible`、`assert_absent` 必须有 `target.key` 或 `target.selector` 非空字符串；`press` 指定 target 时遵循同样约定。无目标的 connect、全局 press 等不能因此被强行添加虚假定位。
+
+以下只展示结构，示例选择器须由待测页面真实 DOM 核实，不能直接当成执行依据：
+
+```json
+{
+  "action": "click",
+  "target": {"selector": "[data-testid=\"observed-navigation-id\"]", "frame": "shell"},
+  "args": {},
+  "desc": "点击已观察到的侧栏入口"
+}
+```
+
+错误结构包括 `{"action":"click","selector":"..."}`、`{"action":"click","target":"..."}`、`{"action":"click","desc":"点击自动化"}`。描述不会被执行器自动转换成定位；只有坐标点击证据也不能据此制造可重跑的 selector。原始 CSS、XPath 或文本定位都放在 `target.selector`，业务 iframe 信息放在 `target.frame`；`target.key` 必须存在于目标线上项目的选择器注册表，不能借用其他设备的本地 key。
+
+在现场按最终 DSL 用 StepExecutor 执行完整脚本，成功后使用相同 script 与逐步 report 构造包。Windows：`scripts/qalab.ps1 -Action validate -PayloadPath <包.json>`；macOS：`python3 scripts/qalab.py validate --payload <包.json>`。校验命令离线运行、不读取登录会话，不查询用例库。import 也会先执行本地检查，错误含用例标题及步骤序号。新版平台接收接口提前拦截缺失定位，不必等后台去重；项目 key 存在性、完整 DSL 和场景去重仍在后台检查。
+
+已失败的旧导入任务，原包不因技能更新而自动修复。需要读取原始失败条目、依据当前 DOM 修复定位，再实际执行完整脚本取得新报告，按新的真实执行批次提交新 external_id；旧失败任务保留追溯。仅网络重传仍必须使用原 external_id 和原内容。不要编造 selector、把失败改成 pass，或只点击“重试”反复提交不变的坏脚本。
+
+`wait_for_element` 不是平台动作名，等待元素使用 `wait_for` + `target`。支持的 GUI/E2E 导入动作是 connect、click、hover、fill、type、set_checked、select_option、press、wait_for、wait_response、get_text、assert_text、assert_visible、assert_absent、screenshot、mock_route、unmock_route。执行器可能还有其他能力，不能据此假定导入接口同样支持。`check.actual/expected` 属于 report；脚本的 assert_text 预期放在 args.expected，assert_visible 不把实测结果塞入 target。

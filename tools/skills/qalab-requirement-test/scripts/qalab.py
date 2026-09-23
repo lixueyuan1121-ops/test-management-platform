@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 from mac_keychain import MacKeychain
+from script_targets import validate_targets
 
 DEFAULT_ORIGIN = "https://qalab.claw.qihoo.net"
 
@@ -80,6 +81,11 @@ def validate_payload(payload):
         script, report = case.get("script"), case.get("report")
         if case.get("verdict") != "pass" or not isinstance(script, list) or not script or not isinstance(report, list) or len(script) != len(report):
             raise RuntimeError("只导入执行通过且逐步报告完整的用例")
+        if case.get("exec_kind", "e2e") in ("gui", "e2e"):
+            try:
+                validate_targets(script, case.get("title", ""))
+            except ValueError as error:
+                raise RuntimeError(str(error)) from None
         if not any(str(step.get("action", "")).startswith("assert") or step.get("action") == "judge" for step in script):
             raise RuntimeError("用例必须包含业务断言")
         for step, result in zip(script, report):
@@ -159,11 +165,17 @@ class Client:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("login", "status", "import", "logout", "doctor", "preview", "job"))
+    parser.add_argument("action", choices=("login", "status", "import", "logout", "doctor", "preview", "job", "validate"))
     parser.add_argument("--base-url", default=DEFAULT_ORIGIN)
     parser.add_argument("--payload", type=Path)
     parser.add_argument("--job-id", type=int)
     args = parser.parse_args(argv)
+    if args.action in ("validate", "import", "preview"):
+        if not args.payload: raise RuntimeError("需要 --payload <包.json>")
+        validate_payload(json.loads(args.payload.read_text(encoding="utf-8-sig")))
+        if args.action == "validate":
+            print("本地导入结构校验通过；未连接平台，不代表设备实测通过。")
+            return
     origin = normalize_origin(args.base_url)
     if args.action == "doctor":
         store = MacKeychain(origin, suffix=":self-test-" + uuid.uuid4().hex)

@@ -1,10 +1,17 @@
 ﻿param(
-  [ValidateSet('login','status','import','logout','preview','job')][string]$Action = 'status',
+  [ValidateSet('login','status','import','logout','preview','job','validate')][string]$Action = 'status',
   [string]$BaseUrl = 'https://qalab.claw.qihoo.net',
   [string]$PayloadPath,
   [int]$JobId
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'validate-payload.ps1')
+if ($Action -in @('validate','import','preview')) {
+  if (!$PayloadPath) { throw '缺少 -PayloadPath' }
+  $payload = Get-Content -LiteralPath $PayloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Test-ImportPayload $payload
+  if ($Action -eq 'validate') { Write-Output '本地导入结构校验通过；未连接平台，不代表设备实测通过。'; exit }
+}
 $origin = [Uri]$BaseUrl
 if ($origin.Scheme -ne 'https' -or $origin.UserInfo -or $origin.AbsolutePath -ne '/' -or $origin.Query -or $origin.Fragment) {
   throw 'BaseUrl 必须是 HTTPS 平台源地址（不带路径、凭据或查询参数）'
@@ -85,17 +92,6 @@ if (@($payload.cases.title | Select-Object -Unique).Count -ne @($payload.cases).
 if ($Action -eq 'preview') {
   Call-Api 'POST' '/api/verified-imports/preview' $payload $session.access_token | ConvertTo-Json -Depth 100
   exit
-}
-if (@($payload.cases).Count -lt 1 -or @($payload.cases).Count -gt 20) { throw '每批提交 1 至 20 条用例' }
-foreach ($case in $payload.cases) {
-  if ($case.resolution) { throw '疑似重复由平台导入任务页集中确认，不在当前任务处理' }
-  if ($case.verdict -ne 'pass' -or @($case.script).Count -eq 0 -or @($case.script).Count -ne @($case.report).Count) { throw '只提交完整实测通过的用例' }
-  if (!@($case.script | Where-Object { $_.action -like 'assert*' -or $_.action -eq 'judge' }).Count) { throw '用例必须包含业务断言' }
-  for ($i=0; $i -lt @($case.script).Count; $i++) {
-    $step=$case.script[$i]; $result=$case.report[$i]
-    if ($step.action -ne $result.action -or $result.ok -ne $true -or $result.check.pass -eq $false) { throw '脚本与实测报告不一致或存在失败' }
-    if ($step.action -like 'assert*' -and ($null -eq $result.check -or 'actual' -notin @($result.check.PSObject.Properties.Name) -or 'expected' -notin @($result.check.PSObject.Properties.Name))) { throw '断言缺少实际值或预期值' }
-  }
 }
 $receipt = Call-Api 'POST' '/api/verified-imports/jobs' $payload $session.access_token
 if ($receipt.accepted -ne $true -or $receipt.job_id -le 0 -or $receipt.project_id -ne $payload.project_id -or $receipt.external_id -cne $payload.external_id -or $receipt.case_count -ne @($payload.cases).Count) {
