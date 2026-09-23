@@ -139,7 +139,7 @@ class DesktopPool {
     }
 
     // 3) CDP 连接
-    this.browser = await connectDesktopCDP(this.cdpUrl, { product: '纳米Work', logger: this.logger });
+    this.browser = await connectDesktopCDP(this.cdpUrl, { product: '纳米Work', logger: this.logger, matches: url => workFrame.isWorkMainPage(null, url) });
     // connectOverCDP 会把浏览器标记为「与 server 不同机」，导致 setInputFiles 走缓冲区传输并限 50MB
     // （大附件如真实代码 zip 直接报错）。但客户端其实就在本机、文件也在本机路径可直接读，故纠正该标记，
     // 让 setInputFiles 走本地路径上传、绕过 50MB 限制。私有字段，失败则忽略（退回受限行为，由上层 fail-closed 兜底）。

@@ -47,3 +47,19 @@ test('repair Windows comments and CRLF without overwriting private settings', ()
     assert.equal(repairWindowsLauncher(dir), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('legacy eval launcher repairs comments/echo/CRLF, preserves local configuration and fails on bad cwd', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'eval-launcher-repair-'));
+  const original = '@echo off\nREM 对话测评启动脚本\nset "RUNNER_ID=private-device"\nset "EVAL_DIR=%~dp0eval"\ncd /d "%EVAL_DIR%"\necho [run-eval] starting 对话测评 executor\nnode "%EVAL_DIR%\\bin\\ai-eval.js" platform %*\n';
+  try {
+    writeFileSync(join(dir, 'run-eval.cmd'), original);
+    assert.equal(repairWindowsLauncher(dir), true);
+    const repaired = readFileSync(join(dir, 'run-eval.cmd'), 'utf8');
+    assert.match(repaired, /set "RUNNER_ID=private-device"/);
+    assert.match(repaired, /cd \/d "%EVAL_DIR%" \|\| exit \/b 1\r\n/);
+    assert.match(repaired, /node "%EVAL_DIR%\\bin\\ai-eval.js" platform %\*/);
+    assert.doesNotMatch(repaired, /[^\x00-\x7f]/);
+    assert.equal(readFileSync(join(dir, 'run-eval.cmd.encoding-backup'), 'utf8'), original);
+    assert.equal(repairWindowsLauncher(dir), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

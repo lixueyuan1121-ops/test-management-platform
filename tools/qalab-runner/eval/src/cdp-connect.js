@@ -24,16 +24,20 @@ async function describeCDP(url) {
 
 // A listening debug port only proves HTTP/WebSocket readiness, not renderer readiness.
 // Retry attachment before sending any prompt. Never restart/close the user's client here.
-async function connectDesktopCDP(url, { product = '客户端', logger, timeout = 45000, retryDelay = 1500 } = {}) {
+async function connectDesktopCDP(url, { product = '客户端', logger, timeout = 45000, retryDelay = 1500, matches } = {}) {
   let diagnostic = '';
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       // Playwright >= 1.60: fallback skips context overrides that some embedded
       // Chromium builds don't answer (download/focus/media emulation commands).
+      if (matches) {
+        const { connectProductPages } = require('./cdp-target-connection');
+        return await connectProductPages(chromium, url, { matches, logger, timeout, noDefaults: attempt === 2 && compatibilitySupported });
+      }
       return await chromium.connectOverCDP(url, { timeout, ...(attempt === 2 && compatibilitySupported ? { noDefaults: true } : {}) });
     } catch (error) {
       if (!diagnostic) diagnostic = await describeCDP(url);
-      const retryable = error.name === 'TimeoutError' || /timeout|timed out|ECONNRESET|ECONNREFUSED|socket hang up|Target closed/i.test(error.message);
+      const retryable = error.name === 'TimeoutError' || /timeout|timed out|ECONNRESET|ECONNREFUSED|socket hang up|Target closed|未响应/i.test(error.message);
       if (attempt === 1 && retryable) {
         logger?.warn(`${product} CDP 初始化失败，稍后${compatibilitySupported ? '使用兼容连接' : ''}重试（2/2）：${error.message.split('\n')[0]}；${diagnostic}`);
         await pause(retryDelay);

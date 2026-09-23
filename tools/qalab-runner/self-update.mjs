@@ -52,19 +52,29 @@ async function extract(zipPath, dir) {
 // Old Windows launchers contain private settings, so repair encoding in place
 // instead of replacing them with repository placeholders. Preserve executable lines.
 export function repairWindowsLauncher(dir) {
-  const file = join(dir, 'run.cmd');
-  if (!existsSync(file)) return false;
-  const original = readFileSync(file, 'utf8');
-  if (original.includes('\uFFFD')) return false; // Unknown legacy encoding: leave intact.
-  const repaired = original.replace(/^\uFEFF/, '').split(/\r?\n/)
-    .map(line => /^\s*(?:REM(?:\s|$)|::)/i.test(line) && /[^\x00-\x7f]/.test(line)
-      ? 'REM Runner configuration is preserved. See README for instructions.' : line)
-    .join('\r\n');
-  if (repaired === original) return false;
-  const backup = join(dir, 'run.cmd.encoding-backup');
-  if (!existsSync(backup)) writeFileSync(backup, original);
-  writeFileSync(file, repaired);
-  return true;
+  let changed = false;
+  for (const name of ['run.cmd', 'run-eval.cmd']) {
+    const file = join(dir, name);
+    if (!existsSync(file)) continue;
+    const original = readFileSync(file, 'utf8');
+    if (original.includes('\uFFFD')) continue; // Unknown legacy encoding: preserve it.
+    const repaired = original.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => {
+      if (/^\s*(?:REM(?:\s|$)|::)/i.test(line) && /[^\x00-\x7f]/.test(line))
+        return 'REM Runner configuration is preserved. See README for instructions.';
+      if (name === 'run-eval.cmd' && /^\s*echo \[run-eval\]/i.test(line) && /[^\x00-\x7f]/.test(line))
+        return 'echo [run-eval] Evaluation runner uses settings from the runner .env file.';
+      // Known repository launchers must stop on a bad working directory.
+      if (name === 'run-eval.cmd' && /^cd \/d "%(?:EVAL_DIR%|~dp0eval)"$/i.test(line.trim()))
+        return line + ' || exit /b 1';
+      return line;
+    }).join('\r\n');
+    if (repaired === original) continue;
+    const backup = join(dir, name + '.encoding-backup');
+    if (!existsSync(backup)) writeFileSync(backup, original);
+    writeFileSync(file, repaired);
+    changed = true;
+  }
+  return changed;
 }
 
 // 主流程。返回 "updated" | "current" | "failed"(失败不抛,由调用方决定是否继续启动)。
@@ -80,7 +90,7 @@ export async function selfUpdate(options) {
 
 async function updateUnlocked({ baseUrl, token, dir, log = console.log }) {
   if (process.platform === 'win32' && repairWindowsLauncher(dir)) {
-    log('[update] 已修复 run.cmd 注释编码和换行，原配置保留；下次启动生效');
+    log('[update] 已修复 Windows 启动脚本编码和换行，原配置保留；下次启动生效');
   }
   const H = { Authorization: `Bearer ${token}` };
   let remote;

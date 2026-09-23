@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0eval"
+cd /d "%~dp0eval" || exit /b 1
 if not exist "node_modules" (
   echo [run-eval] Install dependencies first: cd eval then npm install
   exit /b 1
