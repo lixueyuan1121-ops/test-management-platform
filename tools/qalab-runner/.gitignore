@@ -5,3 +5,5 @@ evidence/
 *.log
 *.png
 .record-outbox/
+
+*.encoding-backup

@@ -95,7 +95,11 @@ class SameDeviceEnginesTest(unittest.TestCase):
                                          params={"runner": "dual"}).status_code, 409)
         # 同一个启用 WorkBuddy 的客户端能认领两种产品，任务目标引擎仍独立。
         for run in wb:
-            self.assertEqual(self.claim(run["run_id"], "workbuddy").status_code, 200)
+            response = self.claim(run["run_id"], "workbuddy")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.client.patch(f'/api/eval-queue/{run["run_id"]}',
+                params={"runner": "dual", "claim_token": response.json()["data"]["claim_token"]},
+                json={"status": "done", "answer": "completed"}).status_code, 200)
 
     def test_three_products_heartbeat_dispatch_claim_are_isolated(self):
         self.poll("workbuddy,qwork")
@@ -113,7 +117,11 @@ class SameDeviceEnginesTest(unittest.TestCase):
         run = next(r for r in all_runs if r["target_engine"] == "qwork")
         self.assertEqual(self.claim(run["run_id"], "workbuddy").status_code, 409)
         for row in all_runs:
-            self.assertEqual(self.claim(row["run_id"], "workbuddy,qwork").status_code, 200)
+            response = self.claim(row["run_id"], "workbuddy,qwork")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.client.patch(f'/api/eval-queue/{row["run_id"]}',
+                params={"runner": "dual", "claim_token": response.json()["data"]["claim_token"]},
+                json={"status": "done", "answer": "completed"}).status_code, 200)
 
     def test_old_runner_cannot_pick_qwork(self):
         self.poll("workbuddy")

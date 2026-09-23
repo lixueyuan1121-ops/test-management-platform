@@ -65,6 +65,16 @@ def current_kind(d: RunnerDevice, cutoff: datetime,
     return None
 
 
+def available_kinds(d, cutoff, exec_running, eval_running):
+    """Online consumers are capabilities; actual desktop access is serialized at claim."""
+    kinds = []
+    if (d.last_exec_at and d.last_exec_at >= cutoff) or d.runner_id in exec_running:
+        kinds.append("func")
+    if (d.last_eval_at and d.last_eval_at >= cutoff) or d.runner_id in eval_running:
+        kinds.append("eval")
+    return kinds
+
+
 def device_conflicts_kind(db: Session, runner_id: str, needed_kind: str) -> bool:
     """手动下发拦截判据:目标设备当前在跑的 runner 与 needed_kind 冲突(在跑另一类)。
 
@@ -79,9 +89,9 @@ def device_conflicts_kind(db: Session, runner_id: str, needed_kind: str) -> bool
         return False   # 未登记,不拦
     from app.api.devices import ONLINE_WINDOW_SEC
     cutoff = datetime.utcnow() - timedelta(seconds=ONLINE_WINDOW_SEC)
-    cur = current_kind(dev, cutoff, _exec_running_runners(db), _eval_running_runners(db))
+    kinds = available_kinds(dev, cutoff, _exec_running_runners(db), _eval_running_runners(db))
     want = "func" if needed_kind == "exec" else "eval"
-    return cur is not None and cur != want
+    return bool(kinds) and want not in kinds
 
 
 def touch_runner_heartbeat(db: Session, runner_id: str | None, kind: str | None = None,
@@ -145,7 +155,7 @@ def online_eval_runners(db: Session, engine: str | None = None) -> list[str]:
     engines = eval_engines_by_device(db, devices, cutoff) if engine is not None else {}
 
     online = [d.runner_id for d in devices
-              if current_kind(d, cutoff, exec_running, eval_running) == "eval"
+              if "eval" in available_kinds(d, cutoff, exec_running, eval_running)
               and (engine is None or engine in engines[d.id])]
     return sorted(set(online))
 
@@ -169,7 +179,7 @@ def _online_devices(db: Session, platform: str | None = None) -> list[RunnerDevi
     exec_running = _exec_running_runners(db)
     eval_running = _eval_running_runners(db)
     return [d for d in devices
-            if current_kind(d, cutoff, exec_running, eval_running) == "func"]
+            if "func" in available_kinds(d, cutoff, exec_running, eval_running)]
 
 
 def _load_of(db: Session, runner_ids: list[str]) -> dict[str, int]:

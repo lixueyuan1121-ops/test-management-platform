@@ -310,6 +310,10 @@ def claim(run_id: int, runner: str = Query(...), db: Session = Depends(get_db),
           ctx: RunnerCtx = Depends(require_runner_ctx)):
     if ctx.device is not None:
         runner = ctx.device.runner_id
+    from app.services.selector_device import lock_runner_device, assert_idle
+    device = lock_runner_device(db, ctx, runner)
+    if device:
+        assert_idle(db, device.id)
     r = db.get(EvalRun, run_id)
     if not r or r.status != EvalRunStatus.pending:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="该执行项不可认领")

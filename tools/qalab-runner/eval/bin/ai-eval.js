@@ -748,6 +748,7 @@ async function runWorkbuddyBatch(items, client, config, logger) {
   try {
     await wbPool.init();
   } catch (e) {
+    await wbPool.close().catch(() => {});
     logger.error(`[workbuddy] 客户端连接失败,整批 failed: ${e.message}`);
     for (const conv of groupIntoConversations(items)) {
       try {
@@ -882,8 +883,13 @@ program
 
     const runOnce = async () => {
       // Default to one complete conversation so idle desktops can help.
-      const pending = await client.fetchPending(parseInt(opts.limit, 10) || 1);
-      if (!pending || !pending.length) { logger.info('平台无待执行任务'); return 0; }
+      const fetched = await client.fetchPending(parseInt(opts.limit, 10) || 1);
+      if (!fetched || !fetched.length) { logger.info('平台无待执行任务'); return 0; }
+      // Reserve exactly one whole conversation BEFORE pool.init can launch/restart
+      // a desktop. Yield the local lease after it so both queues make progress.
+      const pending = groupIntoConversations(fetched)[0];
+      try { await client.claimGroup(pending); }
+      catch (e) { logger.info(`设备暂不可领取，等待重试: ${e.message}`); return 0; }
       logger.info(`拉到 ${pending.length} 条待执行`);
       // 按被测产品严格拆分：QWork、WorkBuddy各用独立执行器，namiwork/空走原纳米路径。
       // 同一 conversation_group 必然同引擎(后端整组同 target_engine)，故按 run 顶层字段直接分。
@@ -897,6 +903,7 @@ program
       if (!namiPending.length) { logger.info('本轮无纳米Work任务'); return 0; }
       // DesktopPool 构造签名：(desktopConfig, platformConfig=选择器段, logger)。init 后主 page 已挂纳米 gateway 采集器。
       const pool = new DesktopPool(config.desktop, config.platform, logger);
+      try {
       await pool.init();
       // Task7-Step1: 上报本机客户端设备(vm)列表,供平台前端下发时下拉选(失败不阻断执行)
       try {
@@ -1077,13 +1084,29 @@ program
           logger.error(`会话(首轮 run ${head.run_id})执行异常: ${e.message}`);
         }
       }
-      await pool.close();     // 断开 CDP（默认 keepClient，端口仍开着，下轮可直接连）
       return pending.length;
+      } finally { await pool.close(); }
+
     };
 
+    const { acquireDesktopLease } = require('../../desktop-lease.cjs');
     const runAndRelease = async () => {
+      const release = await acquireDesktopLease();
+      if (!release) {
+        await client.fetchPending(1); // Refresh presence only; never initialize a client.
+        logger.info('桌面正由另一 runner 使用，等待当前任务结束');
+        return 0;
+      }
       try { return await runOnce(); }
-      finally { client.stopHeartbeat(); }
+      finally {
+        // Exceptions/partial callbacks must not leave reserved future turns alive.
+        try {
+          for (const id of [...client.claims.keys()]) {
+            try { await client.report(id, { status: 'failed', reason: '会话执行中断或结果回写失败，请重试' }); }
+            catch (e) { logger.error(`中断收口 run ${id} 失败: ${e.message}`); }
+          }
+        } finally { client.stopHeartbeat(); await release(); }
+      }
     };
     if (opts.once) { await runAndRelease(); return; }
     logger.info('平台模式常驻轮询(Ctrl-C 退出)...');

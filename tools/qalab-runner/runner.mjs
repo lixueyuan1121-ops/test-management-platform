@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runInWorker } from "./execution-worker.mjs";
+import desktopLease from "./desktop-lease.cjs";
 import { createHash } from "node:crypto";
 import { createRecordingClient } from "./recording-client.mjs";
 import { createRecordingPump } from "./recording-pump.mjs";
@@ -746,14 +747,31 @@ async function main() {
   log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY}`);
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
+  let release;
   for (;;) {
-    if (await handleRecordings()) { await sleep(POLL_MS); continue; }
-    try { await tick(); } catch (e) { log("轮询异常:", e.message); }
-    // exec 轮询之后并列处理设备探测队列(独立 try,探测异常不影响下一轮 exec 轮询)。
-    try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
-    // 并列处理录制队列(独立 try)。
-    // 再并列处理 perf 采集队列(独立 try,采集异常不影响下一轮其他轮询)。
-    try { await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
+    release ||= await desktopLease.acquireDesktopLease();
+    if (!release) {
+      // Presence polling never touches the desktop or claims work.
+      try { await fetchPending(); } catch (e) { log("轮询异常:", e.message); }
+      log("桌面正由另一 runner 使用，等待当前任务结束");
+      await sleep(POLL_MS);
+      continue;
+    }
+    let recordingActive = false;
+    try {
+      recordingActive = await handleRecordings();
+      if (recordingActive) { await sleep(POLL_MS); continue; }
+      try { await tick(); } catch (e) { log("轮询异常:", e.message); }
+      try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
+      try { await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
+    } finally {
+      // Drop cached CDP handles before another executor can restart/switch clients.
+      // Recording spans polls: retain both the CDP connection and desktop lease.
+      if (!recordingActive) {
+        try { await guiCore.close?.(); }
+        finally { await release(); release = null; }
+      }
+    }
     await sleep(POLL_MS);
   }
 }

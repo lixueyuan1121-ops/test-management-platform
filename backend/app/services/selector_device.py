@@ -6,10 +6,6 @@ from app.models import RunnerDevice, RecordSession, ProbeRequest, ExecRun
 
 RECORD_LIVE = ("pending", "recording", "stopping")
 
-# 心跳超过该时长的 running exec_run 视为“执行机猝死残留锁”（runner 每 60s 发一次心跳，
-# 强关终端/断网即不再回写）。领取路径遇到即就地收口，使设备下次拉活自愈，
-# 不必干等 scheduler 的 2 小时全局兜底。
-EXEC_HEARTBEAT_STALE_MINUTES = 5
 
 
 def owned_device(db, user, runner, device_id=None):
@@ -40,54 +36,66 @@ def expire_recordings(db, device_id):
 def active_recording(db, device_id):
     expire_recordings(db, device_id)
     return db.query(RecordSession).filter(RecordSession.runner_device_id == device_id,
-        RecordSession.status.in_(RECORD_LIVE)).first()
+        RecordSession.status.in_(RECORD_LIVE)).with_for_update().first()
+
+
+def device_runs(db, model, device):
+    from sqlalchemy import and_, or_
+    # A legacy unbound name is safe only when it identifies exactly one device.
+    unique = db.query(RunnerDevice).filter(RunnerDevice.runner_id == device.runner_id).count() == 1
+    return or_(model.runner_device_id == device.id,
+               and_(model.runner_device_id.is_(None), model.runner == device.runner_id, unique))
 
 
 def reap_stale_exec_locks(db, device_id):
-    """就地收口该设备名下“心跳超时”的 running exec_run（runner 猝死残留锁）。
-
-    判定用 heartbeat_at，退化到 started_at/updated_at（从未发心跳的旧记录）。
-    收口为 failed + fail_kind=timeout，留痕原因。返回收口条数。领取路径判定占用前调用，
-    与 scheduler.reap_stale_exec_runs（2 小时全局兜底）同款归因、更早触发。
-    """
-    from sqlalchemy import or_, and_, func
+    """Recover interrupted functional AND evaluation work without releasing the row lock."""
+    from sqlalchemy import func
+    from app.models import EvalRun
+    from app.db.clock import db_now
+    from app.services.run_activity import expired_run_filter
     device = db.get(RunnerDevice, device_id)
     if device is None:
         return 0
-    cutoff = db.query(func.now()).scalar() - timedelta(minutes=EXEC_HEARTBEAT_STALE_MINUTES)
-    stale = db.query(ExecRun).filter(
-        or_(ExecRun.runner_device_id == device_id,
-            and_(ExecRun.runner_device_id.is_(None), ExecRun.runner == device.runner_id)),
-        ExecRun.status == "running",
-        func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff,
-    )
-    changed = stale.filter(ExecRun.fail_kind == "cancel_requested").update({
-        ExecRun.status: "blocked", ExecRun.verdict: "blocked", ExecRun.fail_kind: "cancelled",
-        ExecRun.finished_at: func.now(),
-        ExecRun.reason: "手动终止：执行机心跳已超时，已释放占用；旧执行机恢复后必须停止原任务",
-    }, synchronize_session="fetch")
-    changed += stale.update({ExecRun.status: "failed", ExecRun.verdict: "fail",
-        ExecRun.fail_kind: "timeout", ExecRun.finished_at: func.now(),
-        ExecRun.reason: "自动收口:执行机心跳超时(runner 猝死/强关未回写),标记失败",
-    }, synchronize_session="fetch")
-    if changed:
-        db.commit()
+    changed = 0
+    for model in (ExecRun, EvalRun):
+        values = {model.status: "failed", model.finished_at: func.now(),
+                  model.reason: "自动收口:执行机长时间无活动，执行已中断，请重试"}
+        stale = db.query(model).filter(device_runs(db, model, device),
+            expired_run_filter(model, db_now(db)))
+        if model is ExecRun:
+            changed += stale.filter(ExecRun.fail_kind == "cancel_requested").update({
+                ExecRun.status: "blocked", ExecRun.verdict: "blocked", ExecRun.fail_kind: "cancelled",
+                ExecRun.finished_at: func.now(),
+                ExecRun.reason: "手动终止：执行机心跳已超时，已释放占用；旧执行机恢复后必须停止原任务",
+            }, synchronize_session="fetch")
+            values[model.fail_kind] = "timeout"
+            values[model.verdict] = "fail"
+        changed += stale.update(values, synchronize_session="fetch")
     return changed
 
 
 def assert_idle(db, device_id, *, allow_record=False):
+    from app.models import EvalRun
+    reap_stale_exec_locks(db, device_id)
     if not allow_record and active_recording(db, device_id):
         raise HTTPException(409, detail="该设备正在录制，请停止并等待步骤上传完成")
     if db.query(ProbeRequest).filter(ProbeRequest.runner_device_id == device_id,
-                                    ProbeRequest.status == "running").first():
+                                    ProbeRequest.status == "running").with_for_update().first():
         raise HTTPException(409, detail="该设备正在探测，请稍后再试")
-    from sqlalchemy import or_, and_
-    reap_stale_exec_locks(db, device_id)   # 先清心跳超时的残留锁，再判占用（设备拉活即自愈）
     device = db.get(RunnerDevice, device_id)
-    if db.query(ExecRun).filter(or_(ExecRun.runner_device_id == device_id,
-                              and_(ExecRun.runner_device_id.is_(None), ExecRun.runner == device.runner_id)),
-                              ExecRun.status == "running").first():
-        raise HTTPException(409, detail="该设备正在执行用例，请执行结束后再试")
+    for model, label in ((ExecRun, "功能测试"), (EvalRun, "对话测评")):
+        if db.query(model).filter(device_runs(db, model, device), model.status == "running").with_for_update().first():
+            raise HTTPException(409, detail=f"该设备正在执行{label}，等待当前任务结束后再领取")
+
+
+def lock_runner_device(db, ctx, runner):
+    """Legacy shared tokens must use the same device lock, never bypass it."""
+    if ctx.device is not None:
+        return lock_device(db, ctx)
+    rows = db.query(RunnerDevice).filter(RunnerDevice.runner_id == runner).with_for_update().all()
+    if len(rows) > 1:
+        raise HTTPException(409, detail="设备标识重名，请使用设备专属 token")
+    return rows[0] if rows else None
 
 
 def assert_assigned(row, device):

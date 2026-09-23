@@ -56,7 +56,6 @@
 
           <!-- 标签独立换行，避免多产品/执行状态挤占设备名称。 -->
           <div class="device-tags">
-            <span v-for="k in runKinds(d)" :key="'kind-' + k" class="kind-tag" :class="'k-' + k">{{ KIND_LABEL[k] || k }}</span>
             <span v-for="c in devCaps(d)" :key="c" class="cap-tag" :class="'cap-' + c">{{ CAP_LABEL[c] || c }}</span>
             <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain">{{ d.platform.toUpperCase() }}</el-tag>
             <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('workbuddy')" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
@@ -95,6 +94,8 @@
             </div>
           </div>
           <div v-else class="idle">{{ d.stale_runs ? '执行状态待确认' : (d.online ? '空闲待命' : '离线') }}</div>
+          <el-button v-if="d.run_counts.pending > 0 && (auth.isPlatformAdmin || auth.user?.id === d.owner.id)"
+            link type="warning" :disabled="clearing !== null" :loading="clearing === d.id" @click="clearPending(d)">清理排队</el-button>
         </div>
       </div>
     </div>
@@ -107,8 +108,12 @@
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { getDeviceOverview } from '@/api'
+import { getDeviceOverview, clearDevicePending } from '@/api'
+import { useAuthStore } from '@/store/auth'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
+const auth = useAuthStore()
+const clearing = ref(null)
 const POLL_SEC = 5
 const ONLINE_STATE = { online_devices: 0, total_devices: 0, running_devices: 0, devices: [] }
 const ov = ref({ ...ONLINE_STATE })
@@ -126,16 +131,15 @@ let disposed = false
 
 // 执行类型标识:后端 active_runs[].kind → 展示文案(卡片头全称/明细行短标)。
 // 老数据无 kind 按 func 兜底;未知新类型直接显示原文,后端扩展类型时前端无需先行发版。
-const KIND_LABEL = { func: '功能测试', eval: '测评任务' }
 const KIND_SHORT = { func: '功能', eval: '测评' }
 const runKinds = (d) => [...new Set((d.active_runs || []).map((r) => r.kind || 'func'))]
 // 设备能力(逗号串 → 有序数组):这台机被允许承接的任务类型,缺省视为全能力(与后端 default 一致)
 const CAP_ORDER = ['func', 'eval']
-// 当前 runner 文案(与「我的设备」页对齐;独立于 KIND_LABEL——后者指正在执行的具体任务,eval 叫「测评任务」)
+// 当前 runner 文案与「我的设备」页一致；在线类型与执行类型合并去重。
 const CAP_LABEL = { func: '功能测试', eval: '对话测评' }
 // 设备当前在跑哪类 runner:后端 active_kinds(运行时感知,已是有序 func/eval 数组);做一层兜底过滤/排序
 const devCaps = (d) => {
-  const set = new Set((d.active_kinds || []).filter((x) => CAP_ORDER.includes(x)))
+  const set = new Set([...(d.active_kinds || []), ...runKinds(d)].filter((x) => CAP_ORDER.includes(x)))
   return CAP_ORDER.filter((c) => set.has(c))
 }
 
@@ -168,6 +172,19 @@ async function load() {
     fetching = false
     loading.value = false
   }
+}
+
+async function clearPending(device) {
+  if (clearing.value !== null) return
+  clearing.value = device.id
+  try {
+    await ElMessageBox.confirm(`清理「${device.name}」尚未开始的功能测试和对话测评？正在执行的任务会继续，历史记录保留。`, '清理排队', { type: 'warning', confirmButtonText: '清理排队', cancelButtonText: '取消' })
+    if (disposed) return
+    const result = await clearDevicePending(device.id)
+    ElMessage.success(`已清理功能测试 ${result.func} 项、对话测评 ${result.eval} 项`)
+    await load()
+  } catch { /* User cancellation or API interceptor handles errors. */ }
+  finally { clearing.value = null }
 }
 
 // 执行耗时:优先用后端算好的 elapsed_ms(服务端 UTC 同源相减,不受前后端时钟/时区差影响)

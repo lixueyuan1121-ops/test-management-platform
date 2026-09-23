@@ -85,3 +85,13 @@ test('launcher --check skips update entirely', () => {
   assert.deepEqual(result.calls, [{ kind: 'check', args: ['--check'] }]);
   assert.doesNotMatch(result.stdout, /checking runner update|starting qalab runner/);
 });
+
+
+test('Windows launchers are ASCII CRLF and do not override .env identity', () => {
+  for (const filename of ['run.cmd', 'run-eval.cmd']) {
+    const raw = readFileSync(join(dir, filename), 'utf8');
+    assert.doesNotMatch(raw, /[^\x00-\x7f]/);
+    assert.doesNotMatch(raw.replaceAll('\r\n', ''), /\n/);
+    assert.doesNotMatch(raw, /set "(?:RUNNER_TOKEN|RUNNER_ID|BASE_URL|CDP_PORT)=/i);
+  }
+});

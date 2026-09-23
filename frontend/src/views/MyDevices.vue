@@ -7,7 +7,7 @@
         在自己的电脑上部署 runner,把这里生成的 <b>专属 token</b> 填进 runner 的 <code>.env</code>(RUNNER_TOKEN)与
         <code>RUNNER_ID</code>(填设备的 runner_id)。之后在用例库/任务清单下发时选中该设备,用例就会到你这台机器上执行。
         <br>这台机<b>当前在跑哪类 runner</b>(功能 <code>run.sh</code> / 测评 <code>run-eval.sh</code>)由平台<b>自动感知</b>——
-        跑哪个就接哪类任务,无需手动配置(两套 runner 抢同一客户端,不能在一台机上同时跑)。
+        跑哪个就接哪类任务,无需手动配置。升级后的两套 runner 共用桌面锁，任务依次执行；等待期间不会操作客户端。
       </el-alert>
 
       <el-result v-if="loadError" icon="error" title="设备列表加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
@@ -33,10 +33,11 @@
         <el-table-column label="最近活跃" width="150">
           <template #default="{ row }">{{ fmtTime(row.last_seen_at) || '从未' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="210" align="center">
+        <el-table-column label="操作" width="290" align="center">
           <template #default="{ row }">
             <el-button link type="primary" size="small" :disabled="busy || dialog.saving" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" size="small" :disabled="busy || dialog.saving" @click="onReset(row)">重置 token</el-button>
+            <el-button link type="warning" size="small" :disabled="busy || dialog.saving" @click="onClearPending(row)">清理排队</el-button>
             <el-button link type="danger" size="small" :disabled="busy || dialog.saving" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -92,7 +93,7 @@ import '@/styles/workspace-overlays.css'
 import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, CopyDocument, Refresh } from '@element-plus/icons-vue'
-import { listMyDevices, registerDevice, updateDevice, resetDeviceToken, deleteDevice } from '@/api'
+import { listMyDevices, registerDevice, updateDevice, resetDeviceToken, deleteDevice, clearDevicePending } from '@/api'
 
 const PLATFORM_LABEL = { web: 'PC/Web', android: 'Android', ios: 'iOS' }
 const PLATFORM_TYPE = { web: '', android: 'success', ios: 'warning' }
@@ -170,6 +171,19 @@ async function onReset(row) {
     showToken(d.token)
     await load()
   } catch { /* 用户取消或请求拦截器已提示。 */ } finally { busy.value = false }
+}
+
+async function onClearPending(row) {
+  if (busy.value || dialog.saving) return
+  busy.value = true
+  try {
+    await ElMessageBox.confirm(`清理「${row.name}」尚未开始的功能测试和对话测评？正在执行的任务会继续，历史记录保留；需要执行的项目可重新下发。`, '清理排队', { type: 'warning', confirmButtonText: '清理排队', cancelButtonText: '取消' })
+    if (disposed) return
+    const result = await clearDevicePending(row.id)
+    ElMessage.success(`已清理功能测试 ${result.func} 项、对话测评 ${result.eval} 项`)
+    await load()
+  } catch { /* Cancellation or API error already handled. */ }
+  finally { busy.value = false }
 }
 
 async function onDelete(row) {

@@ -6,8 +6,9 @@
 // - 解压：零依赖方针下不手写 zip 解析——用系统命令(Mac/Linux unzip -o / Windows Expand-Archive)。
 // - 安全：只覆盖包内文件；本机 .env / node_modules / evidence 不在包内，天然不被触碰。
 // - 失败安全：网络更新失败 → 返回 "failed"，入口以 0 退出，继续使用当前版本。
+import desktopLease from "./desktop-lease.cjs";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, createWriteStream, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, createWriteStream, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -48,8 +49,39 @@ async function extract(zipPath, dir) {
   }
 }
 
+// Old Windows launchers contain private settings, so repair encoding in place
+// instead of replacing them with repository placeholders. Preserve executable lines.
+export function repairWindowsLauncher(dir) {
+  const file = join(dir, 'run.cmd');
+  if (!existsSync(file)) return false;
+  const original = readFileSync(file, 'utf8');
+  if (original.includes('\uFFFD')) return false; // Unknown legacy encoding: leave intact.
+  const repaired = original.replace(/^\uFEFF/, '').split(/\r?\n/)
+    .map(line => /^\s*(?:REM(?:\s|$)|::)/i.test(line) && /[^\x00-\x7f]/.test(line)
+      ? 'REM Runner configuration is preserved. See README for instructions.' : line)
+    .join('\r\n');
+  if (repaired === original) return false;
+  const backup = join(dir, 'run.cmd.encoding-backup');
+  if (!existsSync(backup)) writeFileSync(backup, original);
+  writeFileSync(file, repaired);
+  return true;
+}
+
 // 主流程。返回 "updated" | "current" | "failed"(失败不抛,由调用方决定是否继续启动)。
-export async function selfUpdate({ baseUrl, token, dir, log = console.log }) {
+export async function selfUpdate(options) {
+  const release = await desktopLease.acquireDesktopLease();
+  if (!release) {
+    (options.log || console.log)("[update] 另一 runner 正在使用桌面，延后更新");
+    return "current";
+  }
+  try { return await updateUnlocked(options); }
+  finally { await release(); }
+}
+
+async function updateUnlocked({ baseUrl, token, dir, log = console.log }) {
+  if (process.platform === 'win32' && repairWindowsLauncher(dir)) {
+    log('[update] 已修复 run.cmd 注释编码和换行，原配置保留；下次启动生效');
+  }
   const H = { Authorization: `Bearer ${token}` };
   let remote;
   try {

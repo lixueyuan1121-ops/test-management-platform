@@ -1,26 +1,12 @@
 @echo off
-REM 对话测评执行器启动脚本(ai-eval platform 模式)。与 run.cmd(功能测试点)共用同一套平台配置。
-REM 配置来源:上级 tools\qalab-runner\.env(eval 的 loadDotEnv 会读它)。本脚本【不】硬编码 token,
-REM 避免覆盖 .env 造成两处配置漂移(BASE_URL/RUNNER_TOKEN/RUNNER_ID/NAMICLAW_EXE/CDP_PORT 都在 .env 里)。
-REM 首次使用前:cd eval ^&^& npm install(装 playwright 等依赖,见 eval\README.md)。
-
 setlocal
-set "EVAL_DIR=%~dp0eval"
-if not exist "%EVAL_DIR%\bin\ai-eval.js" (
-  echo [run-eval] 找不到 "%EVAL_DIR%\bin\ai-eval.js"
-  echo [run-eval] 请确认在 tools\qalab-runner\ 下运行本脚本,且 eval\ 已就位。
-  exit /b 1
-)
-cd /d "%EVAL_DIR%"
+cd /d "%~dp0eval"
 if not exist "node_modules" (
-  echo [run-eval] 首次使用请先安装依赖: cd "%EVAL_DIR%" ^&^& npm install
+  echo [run-eval] Install dependencies first: cd eval then npm install
   exit /b 1
 )
-echo [run-eval] starting 对话测评 executor (config from ..\.env)
-REM 退出码 75 = 执行器自更新完成(平台 /api/runner/bundle 包已解压覆盖),循环重启进新代码
 :run_loop
-node "%EVAL_DIR%\bin\ai-eval.js" platform %*
-if %errorlevel%==75 (
-  echo [run-eval] executor updated, restarting
-  goto run_loop
-)
+node bin\ai-eval.js platform %*
+set "_code=%errorlevel%"
+if "%_code%"=="75" goto run_loop
+exit /b %_code%

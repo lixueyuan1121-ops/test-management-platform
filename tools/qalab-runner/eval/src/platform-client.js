@@ -41,6 +41,8 @@ class PlatformClient {
     return this._api('GET', `/api/eval-queue?runner=${encodeURIComponent(this.runnerId)}&limit=${limit}&engine=${encodeURIComponent(this.engine)}&dynamic=true`);
   }
   async claimGroup(conv) {
+    // Platform loop reserves before any pool initialization; batch runners reuse it.
+    if (conv.length && conv.every(it => this.claims.has(it.run_id))) return;
     const data = await this._api('POST', `/api/eval-queue/${conv[0].run_id}/claim?runner=${encodeURIComponent(this.runnerId)}&whole_group=true&engine=${encodeURIComponent(this.engine)}`);
     const ids = new Set(data && data.run_ids);
     if (!data || !data.claim_token || ids.size !== conv.length || conv.some(it => !ids.has(it.run_id))) {

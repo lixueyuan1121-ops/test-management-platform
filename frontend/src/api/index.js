@@ -595,3 +595,4 @@ export const testMissionMetrics = (params) => http.get('/test-missions/metrics',
 export const getMissionRunEvidence = (id, runId) => http.get(`/test-missions/${id}/runs/${runId}`)
 
 export const cancelExecRun = (id) => http.post(`/exec-queue/${id}/cancel`)
+export const clearDevicePending = (id) => http.post(`/devices/${id}/clear-pending`)

@@ -39,7 +39,7 @@ _EXCLUDE_FILES = {
     ".env", ".DS_Store", "selectors.json.bak", ".runner-version",
     "run.sh", "run.cmd", "run-eval.sh", "run-eval.cmd",
 }
-_EXCLUDE_SUFFIXES = (".test.mjs", ".zip", ".log")
+_EXCLUDE_SUFFIXES = (".test.mjs", ".zip", ".log", ".encoding-backup")
 
 
 def _ensure_runner_dir() -> None:

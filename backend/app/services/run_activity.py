@@ -16,3 +16,16 @@ def live_run_filter(model, now):
         and_(~uses_heartbeat,
              func.coalesce(model.started_at, model.updated_at) >= now - timedelta(hours=hours)),
     ))
+
+
+def expired_run_filter(model, now):
+    """Heartbeat clients expire after five minutes; preserve legacy long-run windows."""
+    hours = 2 if model.__tablename__ == "exec_run" else 6
+    uses_heartbeat = model.heartbeat_at.isnot(None)
+    if model.__tablename__ == "eval_run":
+        uses_heartbeat = and_(uses_heartbeat, model.claim_token.isnot(None))
+    return and_(model.status == "running", or_(
+        and_(uses_heartbeat, model.heartbeat_at < now - timedelta(minutes=5)),
+        and_(~uses_heartbeat,
+             func.coalesce(model.started_at, model.updated_at) < now - timedelta(hours=hours)),
+    ))

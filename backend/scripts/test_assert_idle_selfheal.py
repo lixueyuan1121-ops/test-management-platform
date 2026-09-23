@@ -63,7 +63,7 @@ class AssertIdleSelfHealTests(unittest.TestCase):
 
     def test_running_without_heartbeat_uses_started_at(self):
         """从未发过心跳（heartbeat_at 空）：用 started_at 判定，超时同样收口放行。"""
-        r = self._run("running", heartbeat_min_ago=None, started_min_ago=30)
+        r = self._run("running", heartbeat_min_ago=None, started_min_ago=130)
         selector_device.assert_idle(self.db, self.dev.id)
         self.db.refresh(r)
         self.assertEqual(r.status, "failed")

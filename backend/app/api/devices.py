@@ -35,17 +35,11 @@ ACTIVE_RUNS_LIMIT = 8
 
 def _active_kinds(d: RunnerDevice, utc_now: datetime,
                   exec_running: set | None = None, eval_running: set | None = None) -> list[str]:
-    """设备当前在跑哪类 runner:['func'] / ['eval'] / [](未启动任何 runner)。
-
-    复用 dispatcher.current_kind(单一类型;切换重叠期取更晚时间戳,执行期用 running 补偿),
-    使看板显示与派单/拦截口径完全一致。返回列表(前端 v-for 兼容),同时刻至多一个元素。
-    exec_running/eval_running:有 running 的 runner_id 集合(看板批量传入补偿心跳滞后);不传
-    (如「我的设备」列表)则空集,仅按 last_exec_at/last_eval_at 时间戳判断,够用。
-    """
-    from app.services.dispatcher import current_kind
+    """One tag per live consumer type, independent of which queue currently owns the desktop."""
+    from app.services.dispatcher import available_kinds
     cutoff = utc_now - timedelta(seconds=ONLINE_WINDOW_SEC)
-    cur = current_kind(d, cutoff, exec_running or set(), eval_running or set())
-    return [cur] if cur else []
+    return available_kinds(d, cutoff, exec_running or set(), eval_running or set())
+
 
 
 class DeviceIn(BaseModel):
@@ -160,6 +154,25 @@ def delete_device(device_id: int, db: Session = Depends(get_db), user: User = De
     db.delete(device)
     db.commit()
     return ok({"deleted": device_id})
+
+
+@router.post("/{device_id}/clear-pending")
+def clear_pending(device_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    device = db.query(RunnerDevice).filter(RunnerDevice.id == device_id).with_for_update().first()
+    if not device or (device.owner_id != user.id and not user.is_platform_admin):
+        raise HTTPException(404, detail="设备不存在或不属于你")
+    from app.services.selector_device import device_runs
+    from app.db.clock import db_now
+    counts = {}
+    for model, kind, terminal in ((ExecRun, "func", "blocked"), (EvalRun, "eval", "cancelled")):
+        values = {model.status: terminal, model.finished_at: db_now(db),
+                  model.reason: f"用户 {user.id} 清理设备排队，任务未执行"}
+        if model is ExecRun:
+            values[model.fail_kind] = "cancelled"
+        counts[kind] = db.query(model).filter(device_runs(db, model, device),
+            model.status == "pending").update(values, synchronize_session=False)
+    db.commit()
+    return ok(counts)
 
 
 # ---- 设备看板(只读聚合;平台管理员) ----

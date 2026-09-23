@@ -84,7 +84,7 @@ def run_regression_job(set_id: int) -> None:
 
 
 def reap_stale_eval_runs() -> None:
-    """周期收口:running 超 6 小时的对话测评 run 自动标记失败(模块级,供 job store 序列化)。
+    """周期收口:新 runner 心跳失联 5 分钟、旧 runner 无活动 6 小时后标记失败(模块级,供 job store 序列化)。
 
     执行器单条上限 5 小时(responseTimeout),超 6 小时仍 running 必是执行机中断/回写失败的
     僵尸条目——不收口则设备看板长期显示「执行中」(线上出现过卡 89h 的案例)、任务永远收不了口。
@@ -97,22 +97,20 @@ def reap_stale_eval_runs() -> None:
     from app.db.session import SessionLocal
     from app.models import EvalRun
     from sqlalchemy import func
+    from app.services.run_activity import expired_run_filter
 
     db = SessionLocal()
     try:
-        cutoff = _db_now(db) - timedelta(hours=6)
-        last_active = func.coalesce(EvalRun.heartbeat_at, EvalRun.started_at, EvalRun.updated_at)
         rows = (db.query(EvalRun)
-                .filter(EvalRun.status == EvalRunStatus.running, last_active < cutoff)
+                .filter(expired_run_filter(EvalRun, _db_now(db)))
                 .all())
         reaped = []
         for r in rows:
             changed = db.query(EvalRun).filter(
-                EvalRun.id == r.id, EvalRun.status == EvalRunStatus.running,
-                last_active < cutoff,
+                EvalRun.id == r.id, expired_run_filter(EvalRun, _db_now(db)),
             ).update({EvalRun.status: EvalRunStatus.failed,
                       EvalRun.finished_at: func.now(),
-                      EvalRun.reason: "自动收口:执行超 6 小时无活动(执行机中断),标记失败"},
+                      EvalRun.reason: "自动收口:执行机长时间无活动，测评已中断，请重试"},
                      synchronize_session=False)
             if changed:
                 reaped.append(r)
@@ -191,7 +189,7 @@ def run_eval_task_job(task_id: int) -> None:
 
 
 def reap_stale_exec_runs(session_factory=None) -> int:
-    """周期收口:running 超 2 小时的 exec_run 自动标记 failed(执行机中断兜底)。
+    """周期收口:新 runner 心跳失联 5 分钟、旧 runner 无活动 2 小时后标记 failed(执行机中断兜底)。
 
     与 reap_stale_eval_runs 同款收口——exec_run 是"执行机崩溃即永久 running"的重灾地:
     runner 中途死掉/网络断连不会回写,run 永远卡 running,既占设备看板"执行中"、又让
@@ -207,21 +205,19 @@ def reap_stale_exec_runs(session_factory=None) -> int:
     from sqlalchemy import func
     from app.db.session import SessionLocal
 
+    from app.services.run_activity import expired_run_filter
     sf = session_factory or SessionLocal
     db = sf()
-    cutoff = _db_now(db) - timedelta(hours=EXEC_STALE_HOURS)
     reaped = 0
     try:
         rows = (db.query(ExecRun)
-                .filter(ExecRun.status == ExecStatus.running,
-                        func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff)
+                .filter(expired_run_filter(ExecRun, _db_now(db)))
                 .all())
         for r in rows:
             cancelled = r.fail_kind == "cancel_requested"
             changed = db.query(ExecRun).filter(
-                ExecRun.id == r.id, ExecRun.status == ExecStatus.running,
+                ExecRun.id == r.id, expired_run_filter(ExecRun, _db_now(db)),
                 ExecRun.fail_kind == r.fail_kind,
-                func.coalesce(ExecRun.heartbeat_at, ExecRun.started_at, ExecRun.updated_at) < cutoff,
             ).update({ExecRun.status: ExecStatus.blocked if cancelled else ExecStatus.failed,
                       ExecRun.verdict: "blocked" if cancelled else r.verdict,
                       ExecRun.fail_kind: "cancelled" if cancelled else "timeout",
@@ -476,14 +472,14 @@ def start_scheduler() -> None:
     _scheduler.start()
     logger.info("定时回归调度器已启动")
 
-    # 固定周期 job:自动收口超龄 running 的测评 run(每 30 分钟;replace_existing 幂等,重启不重复)
+    # 固定周期 job:自动收口超龄 running 的测评 run(每分钟;replace_existing 幂等,重启不重复)
     _scheduler.add_job(
-        reap_stale_eval_runs, trigger=IntervalTrigger(minutes=30), id="evalrun-reaper",
+        reap_stale_eval_runs, trigger=IntervalTrigger(minutes=1), id="evalrun-reaper",
         replace_existing=True, misfire_grace_time=600,
     )
-    # 固定周期 job:自动收口超龄 running 的 exec_run(每 30 分钟,与 eval 同频)
+    # 固定周期 job:自动收口超龄 running 的 exec_run(每分钟,与 eval 同频)
     _scheduler.add_job(
-        reap_stale_exec_runs, trigger=IntervalTrigger(minutes=30), id="execrun-reaper",
+        reap_stale_exec_runs, trigger=IntervalTrigger(minutes=1), id="execrun-reaper",
         replace_existing=True, misfire_grace_time=600,
     )
     # 固定周期 job:自动收口滞留 running 的 ai_task(每 30 分钟;补全库唯独缺失的 reap,治「永久生成中」)
