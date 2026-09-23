@@ -713,9 +713,10 @@ def task_runs(task_id: int, batch_id: str | None = Query(None),
     rows = q.order_by(EvalRun.id).all()
     # 执行完批次自动收口任务状态(轻量:读接口顺带校正,不引入后台轮询)
     if bid == task.last_batch_id and task.status == EvalTaskStatus.running and rows and all(
-        getattr(r.status, "value", r.status) in ("done", "judged", "failed") for r in rows
+        getattr(r.status, "value", r.status) in ("done", "judged", "failed", "cancelled") for r in rows
     ):
-        task.status = EvalTaskStatus.done
+        task.status = (EvalTaskStatus.stopped if all(r.status == EvalRunStatus.cancelled for r in rows)
+                       else EvalTaskStatus.done)
         db.commit()
     dim_map = {}
     qids = [r.eval_query_id for r in rows if r.eval_query_id]

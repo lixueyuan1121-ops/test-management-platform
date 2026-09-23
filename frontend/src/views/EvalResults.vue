@@ -296,9 +296,11 @@
             <span v-if="!row.isGroup && !row.payload?.compare_group && !hasEngineCompare(row)" class="dim-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" align="center" fixed="right">
+        <el-table-column label="操作" width="170" align="center" fixed="right">
           <template #default="{ row }">
             <el-tooltip v-if="!row.isGroup" content="查看结果详情"><el-button text :icon="Document" :aria-label="`查看执行 ${row.run_id} 详情`" @click="openInspector(row)" /></el-tooltip>
+            <el-button v-if="canStop && row.status === 'running'" size="small" type="danger" text
+              :loading="stoppingIds.has(stopTarget(row)?.run_id)" @click="stopConversation(row)">停止</el-button>
             <el-popconfirm v-if="!row.isGroup && row.status === 'failed'"
               title="重跑该条？(复位回待执行，执行机将重新拉走)" width="240" @confirm="retryOne(row)">
               <template #reference><el-button size="small" type="warning" text>重跑</el-button></template>
@@ -415,6 +417,8 @@ import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, Que
 import EvalRunInspector from '@/components/EvalRunInspector.vue'
 import { listEvalRuns, judgeEvalRun, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
+import { useAuthStore } from '@/store/auth'
+import { stopEvalRun } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { groupEvalRuns } from '@/utils/evalRunGroups'
 import MarkdownIt from 'markdown-it'
@@ -454,8 +458,8 @@ const DIM_TAG_TYPE = {
   hallucination: 'warning', creativity: 'primary', consistency: 'success',
 }
 // eval_run 生命周期（EvalRunStatus）
-const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败' }
-const STATUS_TYPE = { pending: 'info', running: 'primary', done: 'primary', judging: 'primary', judged: 'info', failed: 'danger' }
+const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败', cancelled: '已停止' }
+const STATUS_TYPE = { pending: 'info', running: 'primary', done: 'primary', judging: 'primary', judged: 'info', failed: 'danger', cancelled: 'info' }
 // 总判定（EvalVerdict 值 pass/fail/error）：pass 绿 / fail 红 / error 灰
 const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '待复核' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
@@ -466,6 +470,28 @@ const REVIEW_ICON = { confirmed: '✓', false_positive: '误', false_negative: '
 const app = useAppStore()
 const projects = ref([])
 const pid = ref(null)
+const auth = useAuthStore()
+const canStop = computed(() => ['admin', 'member'].includes(auth.roleIn(pid.value)))
+const stoppingIds = ref(new Set())
+const stopTarget = row => row.isGroup ? row.children.find(r => r.status === 'running') : row
+async function stopConversation(row) {
+  const target = stopTarget(row)
+  if (!canStop.value || !target || stoppingIds.value.has(target.run_id)) return
+  stoppingIds.value.add(target.run_id)
+  try {
+    await ElMessageBox.confirm('停止这段测评对话？尚未完成的轮次将标记为已停止并释放平台占用，已完成结果保留。客户端正在生成的内容不会被强制关闭，后续回填将作废。', '停止测评对话', {
+      type: 'warning', confirmButtonText: '停止', cancelButtonText: '继续执行',
+    })
+    const res = await stopEvalRun(target.run_id)
+    for (const updated of res.runs) {
+      const current = rows.value.find(r => r.run_id === updated.run_id)
+      if (current) Object.assign(current, updated)
+    }
+    ElMessage.success(res.cancelled_count ? `已停止 ${res.cancelled_count} 条未完成执行` : '该对话已结束，无需停止')
+    await load()
+  } catch { /* 取消不操作；接口错误由拦截器提示。 */ }
+  finally { stoppingIds.value.delete(target.run_id) }
+}
 const rows = ref([])
 const searchText = ref('')
 const mobileToolsOpen = ref(false)
@@ -765,7 +791,8 @@ function groupTurnSummary(row) {
   const fail = n((t) => t.verdict === 'fail'); if (fail) parts.push(`${fail} 不通过`)
   const err = n((t) => t.verdict === 'error'); if (err) parts.push(`${err} 判定出错`)
   const failedExec = n((t) => t.status === 'failed'); if (failedExec) parts.push(`${failedExec} 执行失败`)
-  const waiting = n((t) => !t.verdict && t.status !== 'failed'); if (waiting) parts.push(`${waiting} 待判定/待执行`)
+  const stopped = n((t) => t.status === 'cancelled'); if (stopped) parts.push(`${stopped} 已停止`)
+  const waiting = n((t) => !t.verdict && !['failed', 'cancelled'].includes(t.status)); if (waiting) parts.push(`${waiting} 待判定/待执行`)
   return parts.join(' / ') || '—'
 }
 

@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, field_validator
 
 class EvalEnqueueIn(BaseModel):
     project_id: int
+    # 用例库下发时创建关联任务；旧 runner/API 调用不传则保持原行为。
+    task_name: str | None = Field(None, min_length=1, max_length=128)
     runner: str = Field("mac-01", max_length=64)
     target_engine: str = Field("namiwork", max_length=32)
     target_device: str | None = Field(None, max_length=64)
@@ -12,6 +14,13 @@ class EvalEnqueueIn(BaseModel):
     # 下发时统一指定的对话选项 {model?,chatMode?,thinkingDepth?}；None/空 = 用题面存量（通常为空=客户端默认）
     dialog_options: dict | None = None
     trial_count: int = Field(1, ge=1, le=5, strict=True)
+
+    @field_validator("task_name")
+    @classmethod
+    def validate_task_name(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("测评任务名称不能为空")
+        return value.strip() if value is not None else None
 
 
 class EvalRetryFailedIn(BaseModel):

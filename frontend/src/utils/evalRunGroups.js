@@ -13,7 +13,7 @@
 export function groupEvalRuns(rows, matchFilter = () => true) {
   const keyOf = (r) => {
     const g = r.payload?.conversation_group
-    return g ? JSON.stringify([r.batch_id || '', r.target_engine || '', r.payload?.compare_group || '', r.payload?.configuration_id || '', r.payload?.trial_index || 1, g]) : null
+    return g ? JSON.stringify([r.project_id || '', r.batch_id || '', r.target_engine || '', r.target_device || '', r.payload?.compare_group || '', r.payload?.configuration_id || '', r.payload?.trial_index || 1, g]) : null
   }
   const byGroup = new Map()
   for (const r of rows) {
@@ -41,6 +41,7 @@ function makeGroupRow(key, turns) {
   const share = turns.map((t) => t.share_link).find((u) => /^https?:\/\//i.test(u || '')) || null
   const st = turns.some((t) => t.status === 'running') ? 'running'
     : turns.some((t) => t.status === 'pending') ? 'pending'
+    : turns.some((t) => t.status === 'cancelled') ? 'cancelled'
     : turns.some((t) => t.status === 'failed') ? 'failed'
     : turns.every((t) => t.status === 'judged') ? 'judged' : 'done'
   const vs = turns.map((t) => t.verdict)

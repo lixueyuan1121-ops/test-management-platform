@@ -230,6 +230,16 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     conversation_groups = _dispatch_conversation_groups(qs)
+    task = None
+    if body.task_name is not None:
+        task = EvalTask(
+            project_id=body.project_id, name=body.task_name,
+            query_ids=json.dumps(ids), target_engines=json.dumps([body.target_engine]),
+            dialog_options=json.dumps({**(opts or {}), "trial_count": body.trial_count}, ensure_ascii=False),
+            status=EvalTaskStatus.running, last_batch_id=batch_id, created_by=user.id,
+        )
+        db.add(task)
+        db.flush()
     for qid, trial in [(qid, trial) for qid in ids for trial in range(1, body.trial_count + 1)]:
         q = found[qid]
         payload = _payload_of(q, opts)
@@ -240,6 +250,7 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
             payload["conversation_group"] = json.dumps(["trial", trial, payload["conversation_group"]], ensure_ascii=False)
         row = EvalRun(
             eval_query_id=q.id, project_id=q.project_id, batch_id=batch_id,
+            eval_task_id=task.id if task else None,
             runner=body.runner, target_engine=body.target_engine,
             target_device=body.target_device,
             device_kind=EvalDeviceKind.desktop,
@@ -250,7 +261,39 @@ def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Dep
     from app.services.eval_experiment import freeze
     freeze(db, body.project_id, batch_id, qs, created, body.trial_count)
     db.commit()
-    return ok({"run_ids": created, "batch_id": batch_id})
+    return ok({"run_ids": created, "batch_id": batch_id,
+               "eval_task_id": task.id if task else None, "task_name": task.name if task else None})
+
+
+@router.post("/{run_id}/stop")
+def stop_run(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """停止指定批次的一段对话，保留已完成轮次；也支持没有关联任务的历史执行。"""
+    run = db.get(EvalRun, run_id)
+    if run is None:
+        raise HTTPException(404, detail="执行项不存在")
+    assert_project_role(db, user, run.project_id, _WRITE_ROLES)
+    ids = [r.id for r in _group_rows(db, run)]
+    # 按固定顺序锁住整组，和认领/回写串行，避免迟到回写覆盖取消状态。
+    rows = (db.query(EvalRun).filter(EvalRun.id.in_(ids)).order_by(EvalRun.id)
+            .with_for_update().populate_existing().all())
+    cancelled = []
+    for row in rows:
+        if row.status in (EvalRunStatus.pending, EvalRunStatus.running):
+            row.status = EvalRunStatus.cancelled
+            row.reason = f"用户 {user.id} 停止测评对话"
+            row.finished_at = func.now()
+            row.claim_token = None
+            cancelled.append(row.id)
+    db.flush()
+    task = db.get(EvalTask, run.eval_task_id) if run.eval_task_id else None
+    if cancelled and task and task.last_batch_id == run.batch_id:
+        batch = db.query(EvalRun).filter(EvalRun.eval_task_id == task.id, EvalRun.batch_id == run.batch_id)
+        if not batch.filter(EvalRun.status.in_([EvalRunStatus.pending, EvalRunStatus.running])).count():
+            task.status = EvalTaskStatus.stopped if not batch.filter(
+                EvalRun.status != EvalRunStatus.cancelled).count() else EvalTaskStatus.done
+    db.commit()
+    return ok({"cancelled_count": len(cancelled), "run_ids": cancelled,
+               "runs": [_to_out(r) for r in rows]})
 
 
 @router.get("")

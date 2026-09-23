@@ -27,12 +27,15 @@
           :disabled="!selected.length || deletingId !== null || loading" :loading="batchDeleting"
           @click="removeSelectedQueries">批量删除</el-button>
         <el-button type="primary" size="small" :icon="Upload" :disabled="!pid" @click="openImport">导入用例</el-button>
-        <el-button type="primary" size="small" :disabled="!selected.length" @click="dispatchVisible = true">配置并下发</el-button>
+        <el-button type="primary" size="small" :disabled="!selected.length || !canDelete" @click="openDispatch">配置并下发</el-button>
       </div>
 
       <el-dialog v-model="dispatchVisible" title="下发测评用例" width="560px" :close-on-click-modal="!dispatching" :show-close="!dispatching">
       <div class="dispatch-fields">
         <span class="sel-info">已选 {{ selected.length }} 条</span>
+        <label>测评任务名称</label>
+        <el-input v-model="dispatchTaskName" aria-label="测评任务名称" maxlength="128" show-word-limit placeholder="填写本次测评任务名称" />
+        <span class="hint">下发后自动创建测评任务，可在“测评任务”中统一判定和生成总结。</span>
         <label>执行机</label>
         <el-select v-model="chosenRunner" aria-label="执行机" placeholder="选择执行机" @change="loadClientDevices">
           <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
@@ -64,7 +67,7 @@
       </div>
       <template #footer>
         <el-button :disabled="dispatching" @click="dispatchVisible = false">取消</el-button>
-        <el-button type="primary" :loading="dispatching" :disabled="!chosenRunner || !chosenEngine || !selected.length" @click="dispatch">
+        <el-button type="primary" :loading="dispatching" :disabled="!chosenRunner || !chosenEngine || !selected.length || !dispatchTaskName.trim()" @click="dispatch">
           确认下发
         </el-button>
       </template>
@@ -276,6 +279,11 @@ const queries = ref([])
 const loading = ref(false)
 const selected = ref([])
 const dispatchVisible = ref(false)
+const dispatchTaskName = ref('')
+function openDispatch() {
+  dispatchTaskName.value = `${(selected.value[0]?.title || '用例库测评').slice(0, 90)} · ${new Date().toLocaleString('zh-CN', { hour12: false })}`
+  dispatchVisible.value = true
+}
 const caseVisible = ref(false)
 const inspectedCase = ref(null)
 const artifactRules = ref([])
@@ -383,18 +391,19 @@ async function loadClientDevices() {
 }
 
 async function dispatch() {
-  if (!selected.value.length || !chosenRunner.value || !chosenEngine.value) return
+  if (dispatching.value || !selected.value.length || !chosenRunner.value || !chosenEngine.value || !dispatchTaskName.value.trim()) return
   dispatching.value = true
   try {
     const res = await enqueueEvalQueries({
       project_id: pid.value, runner: chosenRunner.value, target_engine: chosenEngine.value,
+      task_name: dispatchTaskName.value.trim(),
       target_device: chosenEngine.value === 'namiwork' ? (chosenDevice.value || null) : null, eval_query_ids: selected.value.map(q => q.id),
       dialog_options: buildDialogOptions({
         chatMode: chosenEngine.value === 'namiwork' ? chosenChatMode.value : '', model: chosenModel.value,
         thinkingDepth: chosenEngine.value === 'namiwork' ? chosenDepth.value : '',
       }) || {},
     })
-    ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
+    ElMessage.success(`已创建测评任务“${res.task_name}”（#${res.eval_task_id}），下发 ${res.run_ids.length} 条到 ${chosenRunner.value}。可前往“测评任务”查看。`)
     dispatchVisible.value = false
   } catch { /* 拦截器已提示 */ }
   finally { dispatching.value = false }
