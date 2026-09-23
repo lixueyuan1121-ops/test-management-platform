@@ -13,7 +13,7 @@
 //  1. 若目标调试端口已就绪（用户已手动带端口开着）→ 直接连，不动进程；
 //  2. 否则：关闭现有 namiwork 进程（单实例锁会让带端口的新实例把参数转发后退出，端口开不起来），
 //     再带 --remote-debugging-port 启动（沿用默认 userData=已登录态），等端口就绪后连接。
-const { chromium } = require('playwright');
+const { connectDesktopCDP } = require('./cdp-connect');
 const { spawn, execFileSync } = require('child_process');
 const http = require('http');
 const { attachNamiTrace } = require('./nami-trace');
@@ -139,7 +139,7 @@ class DesktopPool {
     }
 
     // 3) CDP 连接
-    this.browser = await chromium.connectOverCDP(this.cdpUrl);
+    this.browser = await connectDesktopCDP(this.cdpUrl, { product: '纳米Work', logger: this.logger });
     // connectOverCDP 会把浏览器标记为「与 server 不同机」，导致 setInputFiles 走缓冲区传输并限 50MB
     // （大附件如真实代码 zip 直接报错）。但客户端其实就在本机、文件也在本机路径可直接读，故纠正该标记，
     // 让 setInputFiles 走本地路径上传、绕过 50MB 限制。私有字段，失败则忽略（退回受限行为，由上层 fail-closed 兜底）。

@@ -119,6 +119,10 @@
               <el-select v-model="queryTaskFilter" clearable filterable placeholder="按任务筛选" aria-label="按任务筛选">
                 <el-option v-for="task in tasks" :key="task.id" :label="task.name" :value="task.id" />
               </el-select>
+              <el-select v-model="queryDimensionFilter" clearable filterable placeholder="按维度筛选" aria-label="按维度筛选">
+                <el-option v-for="d in queryDimensions" :key="d.k" :label="d.label" :value="d.k" />
+                <el-option label="未标注" value="__unlabeled__" />
+              </el-select>
               <el-input v-model="queryTitleFilter" clearable placeholder="搜索用例标题" aria-label="搜索用例标题" />
               <span v-if="!queriesLoading && !queryLoadError" class="muted">共 {{ filteredQueries.length }} 条</span>
             </div>
@@ -142,8 +146,11 @@
               </el-table-column>
               <el-table-column label="标题" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ row.title }}</template></el-table-column>
               <el-table-column label="提问" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.prompt }}</template></el-table-column>
-              <el-table-column label="来源" width="80" align="center">
-                <template #default="{ row }"><span class="muted">{{ row.ai_task_id ? 'AI' : '手工' }}</span></template>
+              <el-table-column label="对话组" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.conversation_group || '单轮' }}</template>
+              </el-table-column>
+              <el-table-column label="轮次" width="64" align="center">
+                <template #default="{ row }">{{ row.conversation_group ? `第 ${(row.turn_index ?? 0) + 1} 轮` : '—' }}</template>
               </el-table-column>
             </el-table>
           </div>
@@ -562,6 +569,12 @@ const missingSelectedQueryIds = computed(() => {
   return editForm.value.query_ids.filter(id => !available.has(id))
 })
 const queryTaskFilter = ref(null)
+const queryDimensionFilter = ref('')
+const queryDimensions = computed(() => {
+  const registered = new Set(DIMENSIONS.value.map(d => d.k))
+  return [...DIMENSIONS.value, ...[...new Set(allQueries.value.map(q => q.dimension).filter(Boolean))]
+    .filter(k => !registered.has(k)).map(k => ({ k, label: k }))]
+})
 const queryTitleFilter = ref('')
 const queryView = ref('all')
 const filteredQueries = computed(() => {
@@ -569,7 +582,9 @@ const filteredQueries = computed(() => {
   const ids = task ? new Set(task.query_ids) : null
   const title = queryTitleFilter.value.trim().toLocaleLowerCase()
   return allQueries.value.filter(q => (queryView.value !== 'selected' || editForm.value.query_ids.includes(q.id)) && (!ids || ids.has(q.id)) &&
+    (!queryDimensionFilter.value || (queryDimensionFilter.value === '__unlabeled__' ? !q.dimension : q.dimension === queryDimensionFilter.value)) &&
     (!title || (q.title || '').toLocaleLowerCase().includes(title)))
+    .sort((a, b) => String(a.conversation_group || '').localeCompare(String(b.conversation_group || '')) || (a.turn_index ?? 0) - (b.turn_index ?? 0))
 })
 const allFilteredSelected = computed(() => filteredQueries.value.length > 0 && filteredQueries.value.every(q => editForm.value.query_ids.includes(q.id)))
 const someFilteredSelected = computed(() => filteredQueries.value.some(q => editForm.value.query_ids.includes(q.id)))
@@ -717,6 +732,7 @@ async function load() {
 async function openEdit(row) {
   queryView.value = 'all'
   queryTaskFilter.value = null
+  queryDimensionFilter.value = ''
   queryTitleFilter.value = ''
   editing.value = row
   // 新建默认勾选全部已知产品(多产品横评是接入 WorkBuddy 的主用途);编辑回填任务已存的

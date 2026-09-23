@@ -37,6 +37,11 @@
         <el-select v-model="chosenRunner" aria-label="执行机" placeholder="选择执行机" @change="loadClientDevices">
           <el-option v-for="d in devices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
         </el-select>
+        <label>被测产品</label>
+        <el-select v-model="chosenEngine" aria-label="被测产品" placeholder="请选择被测产品" @change="onEngineChange">
+          <el-option v-for="e in engineList" :key="e.engine" :label="e.label" :value="e.engine" />
+        </el-select>
+        <template v-if="chosenEngine === 'namiwork'">
         <label>目标设备</label>
         <el-select v-model="chosenDevice" aria-label="目标设备" clearable
           :placeholder="clientDevices.length ? '选目标设备(可空)' : '该执行机未上报设备'">
@@ -47,16 +52,19 @@
         <el-select v-model="chosenChatMode" aria-label="对话模式" clearable placeholder="对话模式(默认)">
           <el-option v-for="m in CHAT_MODES" :key="m.value" :label="m.label" :value="m.value" />
         </el-select>
+        </template>
         <label>模型</label>
         <el-input v-model="chosenModel" aria-label="模型" clearable :placeholder="MODEL_PLACEHOLDER" />
+        <template v-if="chosenEngine === 'namiwork'">
         <label>思考深度</label>
         <el-select v-model="chosenDepth" aria-label="思考深度" clearable placeholder="思考深度(默认)">
           <el-option v-for="d in THINKING_DEPTHS" :key="d" :label="d" :value="d" />
         </el-select>
+        </template>
       </div>
       <template #footer>
         <el-button :disabled="dispatching" @click="dispatchVisible = false">取消</el-button>
-        <el-button type="primary" :loading="dispatching" :disabled="!chosenRunner || !selected.length" @click="dispatch">
+        <el-button type="primary" :loading="dispatching" :disabled="!chosenRunner || !chosenEngine || !selected.length" @click="dispatch">
           确认下发
         </el-button>
       </template>
@@ -202,7 +210,7 @@ import { updateEvalQuery } from '@/api'
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Collection, Upload, Delete } from '@element-plus/icons-vue'
-import { listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks, deleteEvalQuery, batchDeleteEvalQueries } from '@/api'
+import { listEvalEngines, listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks, deleteEvalQuery, batchDeleteEvalQueries } from '@/api'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -286,6 +294,8 @@ async function saveArtifactRules() {
 }
 const devices = ref([])
 const chosenRunner = ref('')
+const chosenEngine = ref('namiwork')
+const engineList = ref([{ engine: 'namiwork', label: '纳米Work' }, { engine: 'workbuddy', label: 'WorkBuddy' }, { engine: 'qwork', label: 'QWork' }])
 const clientDevices = ref([])
 const chosenDevice = ref('')
 const dispatching = ref(false)
@@ -320,7 +330,8 @@ const sorted = computed(() => [...queries.value].sort((a, b) =>
   String(a.conversation_group || '').localeCompare(String(b.conversation_group || '')) || (a.turn_index ?? 0) - (b.turn_index ?? 0)))
 
 onMounted(async () => {
-  const [projRes, devRes, dimRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices(), listEvalDimensions()])
+  const [projRes, devRes, dimRes, engRes] = await Promise.allSettled([app.fetchProjects(), listMyDevices(), listEvalDimensions(), listEvalEngines()])
+  if (engRes.status === 'fulfilled' && engRes.value?.length) engineList.value = engRes.value
   projects.value = projRes.status === 'fulfilled' ? (projRes.value || []) : []
   devices.value = devRes.status === 'fulfilled' ? (devRes.value || []) : []
   if (dimRes.status === 'fulfilled' && dimRes.value?.dimensions?.length) {
@@ -356,22 +367,32 @@ async function reload() {
   finally { loading.value = false }
 }
 
+function onEngineChange() {
+  chosenDevice.value = ''; chosenChatMode.value = ''; chosenModel.value = ''; chosenDepth.value = ''
+  loadClientDevices()
+}
+
 async function loadClientDevices() {
   chosenDevice.value = ''; clientDevices.value = []
-  if (!chosenRunner.value) return
-  try { clientDevices.value = await listEvalDevices(chosenRunner.value) || [] } catch { clientDevices.value = [] }
+  if (!chosenRunner.value || chosenEngine.value !== 'namiwork') return
+  const runner = chosenRunner.value
+  try {
+    const rows = await listEvalDevices(runner) || []
+    if (runner === chosenRunner.value && chosenEngine.value === 'namiwork') clientDevices.value = rows
+  } catch { /* 设备列表可选，失败时保持空列表。 */ }
 }
 
 async function dispatch() {
-  if (!selected.value.length || !chosenRunner.value) return
+  if (!selected.value.length || !chosenRunner.value || !chosenEngine.value) return
   dispatching.value = true
   try {
     const res = await enqueueEvalQueries({
-      project_id: pid.value, runner: chosenRunner.value, target_engine: 'namiwork',
-      target_device: chosenDevice.value || null, eval_query_ids: selected.value.map(q => q.id),
+      project_id: pid.value, runner: chosenRunner.value, target_engine: chosenEngine.value,
+      target_device: chosenEngine.value === 'namiwork' ? (chosenDevice.value || null) : null, eval_query_ids: selected.value.map(q => q.id),
       dialog_options: buildDialogOptions({
-        chatMode: chosenChatMode.value, model: chosenModel.value, thinkingDepth: chosenDepth.value,
-      }),
+        chatMode: chosenEngine.value === 'namiwork' ? chosenChatMode.value : '', model: chosenModel.value,
+        thinkingDepth: chosenEngine.value === 'namiwork' ? chosenDepth.value : '',
+      }) || {},
     })
     ElMessage.success(`已下发 ${res.run_ids.length} 条到 ${chosenRunner.value}(批次 ${res.batch_id})`)
     dispatchVisible.value = false

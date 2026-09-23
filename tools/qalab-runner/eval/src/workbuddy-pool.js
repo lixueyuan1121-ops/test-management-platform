@@ -3,7 +3,7 @@
 // WorkBuddy 单 page 单 frame（本地 asar React UI），无 work.n.cn iframe、无 clawDeviceService。
 const childProcess = require('child_process');
 const http = require('http');
-const { chromium } = require('playwright');
+const { connectDesktopCDP } = require('./cdp-connect');
 const { resolveExecutable } = require('./electron-executable');
 
 class WorkbuddyPool {
@@ -94,7 +94,7 @@ class WorkbuddyPool {
       this._log('   WorkBuddy 调试端口已就绪，直接 attach');
     }
     // 2) CDP 连接
-    this.browser = await chromium.connectOverCDP(this.cdpUrl);
+    this.browser = await connectDesktopCDP(this.cdpUrl, { product: 'WorkBuddy', logger: this.logger });
     // 与纳米同款：纠正 collocated 标记，让 setInputFiles 走本地路径（附件上传绕 50MB）。私有字段，失败忽略。
     try {
       const impl = this.browser._connection && this.browser._connection.toImpl(this.browser);

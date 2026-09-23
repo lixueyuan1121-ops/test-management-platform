@@ -2,7 +2,7 @@
 // 独立端口、独立进程、独立连接校验，不复用 WorkBuddy/纳米的启动策略。
 const childProcess = require('node:child_process');
 const http = require('node:http');
-const { chromium } = require('playwright');
+const { connectDesktopCDP } = require('./cdp-connect');
 const { resolveExecutable } = require('./electron-executable');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -44,7 +44,7 @@ class QworkPool {
         await pause(500);
       }
     }
-    this.browser = await chromium.connectOverCDP(this.cdpUrl);
+    this.browser = await connectDesktopCDP(this.cdpUrl, { product: 'QWork', logger: this.logger });
     const deadline = Date.now() + (this.config.readyTimeout || 30000);
     do {
       for (const context of this.browser.contexts()) for (const page of context.pages()) {

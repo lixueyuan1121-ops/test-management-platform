@@ -1097,12 +1097,16 @@ program
         logger.info('桌面正由另一 runner 使用，等待当前任务结束');
         return 0;
       }
+      let interruption = '会话执行中断或结果回写失败，请重试';
       try { return await runOnce(); }
-      finally {
+      catch (error) {
+        interruption = `测评执行失败：${error.message || String(error)}`;
+        throw error;
+      } finally {
         // Exceptions/partial callbacks must not leave reserved future turns alive.
         try {
           for (const id of [...client.claims.keys()]) {
-            try { await client.report(id, { status: 'failed', reason: '会话执行中断或结果回写失败，请重试' }); }
+            try { await client.report(id, { status: 'failed', reason: interruption }); }
             catch (e) { logger.error(`中断收口 run ${id} 失败: ${e.message}`); }
           }
         } finally { client.stopHeartbeat(); await release(); }

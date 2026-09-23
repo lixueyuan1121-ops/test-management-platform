@@ -206,6 +206,11 @@ def _to_out(r: EvalRun) -> dict:
 @router.post("/enqueue")
 def enqueue(body: EvalEnqueueIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    from app.services.eval_engines import is_valid_engine
+    if not is_valid_engine(body.target_engine):
+        raise HTTPException(400, detail="不支持的被测产品，请重新选择")
+    if body.target_device and body.target_engine != "namiwork":
+        raise HTTPException(400, detail="仅纳米Work支持指定目标设备")
     ids = list(dict.fromkeys(body.eval_query_ids))
     qs = db.query(EvalQuery).filter(EvalQuery.id.in_(ids)).all()
     found = {q.id: q for q in qs}
