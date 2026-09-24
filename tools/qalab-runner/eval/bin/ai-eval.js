@@ -952,6 +952,7 @@ program
       const reportRun = async (runId, result, ws) => {
         const trace = ws ? await ws.buildTrace(runId) : { ws_captured: false, tool_calls: [] };
         trace.execution_config = result.executionConfig || null;
+        trace.clarification_interactions = result.clarificationInteractions || [];
         const source = namiPending.find(item => item.run_id === runId);
         trace.runtime = { ...runnerMetadata(), user_agent: await curRunner.page.evaluate(() => navigator.userAgent).catch(() => null) };
         trace.input_files = inputDigests(source?._attachmentPaths);

@@ -109,7 +109,7 @@ class DesktopRunner {
       try {
         await this._clickNewTask(fl, newSel);
       } catch (e) {
-        if (e.message?.includes('[NAMI_PROTECTED_OPERATION]')) throw e;
+        if (/\[NAMI_(?:PROTECTED_OPERATION|ASK_FORM)\]/.test(e.message || '')) throw e;
       }
       await this._sleep(1800);
       // 校验：输入框可见 且 无历史用户气泡 = 干净新对话
@@ -133,7 +133,7 @@ class DesktopRunner {
       await this._sleep(400);
       return await this._isCleanConversation(previousSession);
     } catch (e) {
-      if (e.message?.includes('[NAMI_PROTECTED_OPERATION]')) throw e;
+      if (/\[NAMI_(?:PROTECTED_OPERATION|ASK_FORM)\]/.test(e.message || '')) throw e;
       this._warn(`   回 launcher 兜底也失败：${(e.message || '').split('\n')[0]}`);
       return false;
     }
@@ -194,7 +194,8 @@ class DesktopRunner {
     await this._focus(); // 前台化，确保输入/发送点击生效
     await this._assertSendContext(opts);
     // 基线：干净对话里回答组/footer 均为 0；供 waitForGenerationStart 判定「本轮新增」。
-    dr._beginTurn(await dr._captureBaseline());
+    dr._beginTurn(await dr._captureBaseline(), testCase);
+    testCase.clarificationInteractions = dr._askForm.history;
 
     const ctx = dr._ctx();
     // 附件（如有）：附件是测评题目的一部分，必须确认「附件卡片真的挂上」才继续；否则抛错让本条判失败，
@@ -450,6 +451,7 @@ class DesktopRunner {
       durationMs: (meta.endTime || Date.now()) - (meta.startTime || Date.now()),
       startTime: meta.startTime, endTime: meta.endTime,
       executionConfig: testCase.executionConfig || null,
+      clarificationInteractions: structuredClone(testCase.clarificationInteractions || []),
       errorCode: errorMsg?.startsWith('[CONFIG_ERROR]') ? 'CONFIG_ERROR' : null,
       errorMessage: errorMsg,
       success, incomplete, completeReason: meta.completeReason || 'unknown',
@@ -590,7 +592,7 @@ class DesktopRunner {
         const byFallback = Date.now() - (t.lastProbeAt || t.startTime) > fallbackMs;
         const byCurrent = await this._conversationKey() === t.sessionKey;
         const awaitingInteraction = t.turnState?.continuation?.pending || t.turnState?.continuation?.waitingSince != null ||
-          t.turnState?.protectedOperation?.pending;
+          t.turnState?.protectedOperation?.pending || t.turnState?.askForm?.pending;
         if (!byFlag && !byFallback && !byCurrent && !awaitingInteraction) continue;
         // 疑似完成 或 到 fallback：切过去 probeState 复查（顺带处理反问/确认弹窗让任务继续）
         const ok = await this._switchToTask(t);

@@ -1469,6 +1469,11 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         process_block = "\n【各阶段助手正文（按本轮顺序）】\n" + _clip_keep_ends(
             "\n\n".join(str(s) for s in (t.get("assistant_segments") or [])), 12000)
 
+    if t.get("clarification_interactions"):
+        process_block += "\n【执行器处理的反问交互（非用户原始需求）】\n" + _clip_keep_ends(
+            json.dumps(t["clarification_interactions"], ensure_ascii=False), 16000)
+        process_block += "\nsource=runner_default_assumption 表示执行器自动允许使用标注的示例假设，不是真实用户事实；不得据此补造原始需求或放宽期望。status=submitted 仅证明已点击，card_closed_or_advanced 仅证明界面关闭/换题，不证明任务完成。请单独判断助手反问是否合理及最终交付质量。\n"
+
     # 主考维度第四维:有 dimension 才注入(老数据/未标注题保持三维,输出解析兼容两种形态)
     dim_key = dimension if dimension in EVAL_DIMENSIONS else None
     focus_hint = EVAL_DIM_JUDGE_HINTS.get(dim_key, "该题主考能力是否达标(对照期望)") if dim_key else None

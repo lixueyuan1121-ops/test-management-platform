@@ -89,6 +89,21 @@ def cr_verdict(dims):
     return _verdict_of(dims)
 
 
+def test_runner_clarifications_remain_distinct_from_user_facts():
+    trace = _trace([])
+    baseline = cr.build_eval_judge_prompt(trace, expected="编写营销方案")
+    assert "【执行器处理的反问交互" not in baseline
+    trace["clarification_interactions"] = [{
+        "question": "核心营销问题？", "status": "card_closed_or_advanced",
+        "answers": [{"text": "缺失信息请标注为假设", "source": "runner_default_assumption"}],
+    }]
+    p = cr.build_eval_judge_prompt(trace, expected="编写营销方案", dimension="clarification")
+    assert "核心营销问题？" in p and "缺失信息请标注为假设" in p
+    assert "不是真实用户事实" in p and "不证明任务完成" in p
+    assert "不得据此补造原始需求或放宽期望" in p
+    print("OK 自动反问交互进入判定材料并与原始用户需求区分")
+
+
 def main():
     test_tool_block_aggregates_counts()
     test_single_call_not_flagged()
@@ -97,6 +112,7 @@ def main():
     test_no_tool_but_good_result_not_penalized()
     test_parse_verdict_dims()
     test_parse_verdict_optional_dim()
+    test_runner_clarifications_remain_distinct_from_user_facts()
     print("OK test_eval_judge_prompt")
 
 

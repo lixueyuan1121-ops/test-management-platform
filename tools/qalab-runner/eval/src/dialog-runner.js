@@ -4,6 +4,7 @@ const path = require('path');
 const workFrame = require('./work-frame');
 const { ensureAllSelected, shareSelectionState } = require('./share-select');
 const { pickShareUrl } = require('./share-url');
+const askForm = require('./nami-ask-form');
 
 // 分享链接经系统剪贴板传递，并发下多个标签会互相覆盖剪贴板，故这一步需串行化
 let _shareLock = Promise.resolve();
@@ -128,8 +129,9 @@ class DialogRunner {
   _baseFooters() { return (this._turnBaseline && this._turnBaseline.footerCount) || 0; }
 
   // 一条测评可以经「继续工作」追加多个产品轮次。原基线用于计费，阶段基线用于等待最终答案。
-  _beginTurn(baseline) {
+  _beginTurn(baseline, context = {}) {
     this._turnBaseline = baseline;
+    this._askForm = askForm.newState(context);
     this._workContinuation = { count: 0, pending: null, waitingSince: null,
       completionBaseline: null, costGroupIndexes: [] };
     this._beanCostAttempt = { deadline: null, reloaded: false, expectedTurn: '', warned: false };
@@ -143,7 +145,7 @@ class DialogRunner {
   // DesktopRunner 共用一个 DialogRunner；切换任务时必须同时切换基线和续作状态。
   _captureTurnState() {
     return { baseline: this._turnBaseline, continuation: this._workContinuation, beanCostAttempt: this._beanCostAttempt,
-      protectedOperation: this._protectedOperation };
+      protectedOperation: this._protectedOperation, askForm: this._askForm };
   }
 
   _restoreTurnState(state) {
@@ -152,6 +154,7 @@ class DialogRunner {
     this._workContinuation = state.continuation;
     this._beanCostAttempt = state.beanCostAttempt || null;
     this._protectedOperation = state.protectedOperation || { pending: null };
+    this._askForm = state.askForm || askForm.newState();
   }
 
   async _handleWorkContinuation() {
@@ -275,7 +278,7 @@ class DialogRunner {
         // 多轮基线：记录发送「本轮」前页面已有的 AI 回答组数 / 完成信号(footer)数。
         // 之后「启动确认 / 完成判定 / 正文抓取」只认「超出基线的新增」，
         // 避免 follow-up 轮把上一轮遗留的旧气泡/旧 footer 误判为本轮已启动或已完成（多轮核心正确性）。
-        this._beginTurn(await this._captureBaseline());
+        this._beginTurn(await this._captureBaseline(), { question, clarificationAnswers: opts.clarificationAnswers });
 
         if (attachmentPaths.length > 0 && this.platform.fileInputSelector) {
           const fileInput = ctx.locator(this.platform.fileInputSelector);
@@ -388,6 +391,7 @@ class DialogRunner {
       startTime,
       endTime,
       executionConfig: this.executionConfig || null,
+      clarificationInteractions: structuredClone(this._askForm?.history || []),
       errorCode: errorMsg?.startsWith('[CONFIG_ERROR]') ? 'CONFIG_ERROR' : null,
       errorMessage: errorMsg || null,
       success,
@@ -751,7 +755,7 @@ class DialogRunner {
     // 受保护操作固定选择第 1 项，必须先走专用处理；失败不可落回通用表单并误提交其他项。
     if (await this._handleProtectedOperation()) return true;
     // 先处理内联的「专家反问」选择题卡片（最常见，且不是 modal）
-    try { if (await this._handleAskForms()) return true; } catch (_) {}
+    if (await this._handleAskForms()) return true;
     // 再处理「工作流/工具确认」卡片（tool-confirm-modal，复杂任务规划 Workflow 时弹出）
     try { if (await this._handleToolConfirm()) return true; } catch (_) {}
     if (await this._dismissModalConfirmDialogs()) return true;
@@ -772,7 +776,7 @@ class DialogRunner {
       const options = card.locator('.ask-form__option');
       // 普通多选、填空、三项及以上反问继续使用原反问处理器。
       if (await groups.count() !== 1 || await groups.getAttribute('aria-multiselectable') === 'true' ||
-          await options.count() !== 2) continue;
+          await options.count() !== 2 || await card.locator(askForm.TEXT_FIELDS).count() > 0) continue;
       // questionKey 标识逻辑请求；旧组件无此属性时只用内容区分快照，不解释文案。
       const readKey = () => card.evaluate(el => el.questionKey || JSON.stringify([
         el.querySelector('.ask-form__title')?.textContent,
@@ -809,8 +813,8 @@ class DialogRunner {
 
   async waitForProtectedOperations() {
     const deadline = Date.now() + (this.execution.generationStartTimeout || 120000);
-    while (await this._handleProtectedOperation()) {
-      if (Date.now() >= deadline) throw new Error('[NAMI_PROTECTED_OPERATION] 浮层持续待处理，已阻止新建对话');
+    while (await this._handleProtectedOperation() || await this._handleAskForms()) {
+      if (Date.now() >= deadline) throw new Error('[NAMI_PROTECTED_OPERATION] 确认/反问浮层持续待处理，已阻止新建对话');
       await this.page.waitForTimeout(200);
     }
   }
@@ -847,33 +851,9 @@ class DialogRunner {
     } catch (_) { /* 弹窗探测/点击失败不影响主流程 */ return false; }
   }
 
-  // 处理「专家反问」内联选择题卡片：逐题各选一个选项（每题选第一个，已选则跳过），全部选完点“提交”。
-  // 只要卡片可见就返回 true（表示有反问待处理），让等待循环持续重试直到卡片消失（提交成功）。
+  // 填写、选择、提交作为同一临界区，避免巡检中途切换会话。
   async _handleAskForms() {
-    const cardSel = this.platform.askFormSelector || '.chat-ask-form-card, chat-question-form-card';
-    const ctx = this._ctx();
-    let visible = false;
-    try { visible = await ctx.locator(cardSel).last().isVisible(); } catch {}
-    if (!visible) return false;
-
-    // 逐题选一个（分组容器 .ask-form__options = 一道题）
-    const picked = await this._selectChoicesInDialog(cardSel, {
-      optionSel: this.platform.askFormOptionSelector || '.ask-form__option',
-      groupSel: this.platform.askFormOptionsGroupSelector || '.ask-form__options',
-      selectedHints: this.platform.askFormSelectedHints || ['is-selected']
-    });
-    if (this.logger && picked.clicked > 0) {
-      this.logger.info(`       ↳ [${this.label}] 专家反问：本轮已选 ${picked.clicked} 题（共 ${picked.groups} 题），准备提交`);
-    }
-    await this.page.waitForTimeout(400); // 选完后“提交”可能才由禁用变可用
-
-    const card = ctx.locator(cardSel).last();
-    const submitSel = this.platform.askFormSubmitSelector || '.ask-form__btn--ok';
-    const submitSelectors = [submitSel, ...(this.platform.submitButtonSelectors || [])];
-    const submitTexts = this.platform.submitButtonTexts || ['提交', '确定', '发送', '完成', '下一步'];
-    const ok = await this._clickDialogButton(card, submitSelectors, submitTexts, '专家反问提交');
-    if (ok && this.logger) this.logger.info(`       ↳ [${this.label}] 已提交专家反问，任务将继续执行`);
-    return true; // 卡片仍在=有反问待处理；提交成功后卡片消失，下一轮自然返回 false
+    return this._withCritical(() => askForm.handleAskForm(this));
   }
 
   // 处理「工作流/工具确认」卡片（tool-confirm-modal，如“确认要运行工作流完成该任务吗?”）：
@@ -1798,12 +1778,15 @@ class DialogRunner {
       // 首次执行的 init（打开页面+新对话）已并入 sendMessage 的发送段，在账号内串行化，
       // 保证“上一条发出去后再发下一条”。故此处不再单独 init。
 
-      const result = await this.sendMessage(testCase.question, testCase.attachmentPaths || [], { isLastTurn });
+      const result = await this.sendMessage(testCase.question, testCase.attachmentPaths || [], { isLastTurn, clarificationAnswers: testCase.clarificationAnswers });
       result.caseId = testCase.caseId;
       result.row = testCase.row;
       result.account = testCase.account;
       result.attempt = attempt + 1;
       lastResult = result;
+
+      // 反问提交失败/仍在途时保留原对话，不能由通用重试刷新页面并另起任务。
+      if (this._askForm?.pending || result.errorMessage?.startsWith('[NAMI_ASK_FORM]')) return result;
 
       // 完整 = 成功产出正文 且 无“关键字段”缺失。缺失但非关键（如耗时/算力豆）不强制重跑。
       const missingCritical = (result.missingFields || []).filter(f => rerunFields.includes(f));

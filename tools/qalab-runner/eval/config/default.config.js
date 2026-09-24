@@ -143,7 +143,8 @@ module.exports = {
     // —— 执行中「专家反问」的选择题卡片（work.n.cn 实测：内联渲染，不是 modal 弹窗）——
     // 平台把反问渲染成 chat-question-form-card：每个 .ask-form__options 是一道题，
     // 选项为 .ask-form__option（role=option，选中态 class 含 is-selected），提交按钮 .ask-form__btn--ok。
-    // 普通反问为每题选第一个选项（已选则跳过）后提交。
+    // 普通反问保留已选项，否则选第一项；文本框按原需求继续，缺失信息要求标注假设。
+    // 同一任务的多次/分页反问逐次处理并记录证据，提交未关闭时不重复点击。
     // 双选项单选浮层按位置选第 1 项再提交，不依赖标题/选项/按钮文案。
     protectedOperationSelector: '.chat-ask-form-floating .chat-ask-form-card, .chat-ask-form-floating chat-question-form-card',
     askFormSelector: '.chat-ask-form-card, chat-question-form-card',
