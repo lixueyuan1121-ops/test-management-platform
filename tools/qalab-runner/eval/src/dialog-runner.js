@@ -455,7 +455,18 @@ class DialogRunner {
     try {
       for (const [key, label, trigger, option] of fields) {
         if (opt[key]) this.executionConfig.observed[key] = await this._pickDropdownOption(label, trigger, option, opt[key]);
-        else this.executionConfig.observed[key] = trigger ? await readSelection(this._ctx().locator(trigger).first()).catch(() => []) : [];
+        else {
+          const visible = trigger ? this._ctx().locator(`:is(${trigger}):visible`) : null;
+          this.executionConfig.observed[key] = visible && await visible.count() === 1 ? await readSelection(visible).catch(() => []) : [];
+        }
+      }
+      // 模式/深度切换可能重置模型，发送前再核对完整配置，不能只凭中间状态宣布成功。
+      for (const [key, label, trigger] of fields) {
+        if (!opt[key]) continue;
+        try {
+          this.executionConfig.observed[key] = await verifySelection(
+            this.page, this._ctx().locator(`:is(${trigger}):visible`), opt[key]);
+        } catch (error) { throw configError(`最终核验${label}失败：${error.message.replace(/^\[CONFIG_ERROR\]\s*/, '')}`); }
       }
       this.executionConfig.status = Object.values(opt).some(Boolean) ? 'verified' : 'observed';
     } catch (error) {
@@ -465,75 +476,116 @@ class DialogRunner {
     }
   }
 
-  // 通用：展开某下拉(点 triggerSel) → 在展开项里按文本精确匹配点选 wanted。
-  // optionSel 为空则按可见文本匹配；最终以关闭菜单后的控件读回为准。
+  // 先找实际可点击的选项按钮；旧版仍支持文字选项。所有点击都保留 actionability 检查。
   async _pickDropdownOption(name, triggerSel, optionSel, wanted) {
     if (!triggerSel || !wanted) throw configError(`未配置${name}控件`);
     const ctx = this._ctx();
+    const deadline = Date.now() + (this.execution.dialogOptionTimeoutMs ?? 10000);
+    const diagnostic = { requested: wanted, stage: 'trigger', available: [] };
+    if (this.executionConfig) (this.executionConfig.controls ||= {})[name] = diagnostic;
+    // 即使设备沿用旧 config（.item-name），也识别新版覆盖在名称上方的 hit-area 按钮。
+    const actionSel = name === '模型'
+      ? (this.platform.modelOptionActionSelector || 'button[data-testid="model-selector-option"], button.item-hit-area') : null;
+    const triggers = ctx.locator(`:is(${triggerSel}):visible`);
+    const pause = () => this.page.waitForTimeout(Math.min(100, Math.max(0, deadline - Date.now())));
+    const budget = () => Math.max(1, Math.min(1200, deadline - Date.now()));
+    let opened = false, openedAt = 0, nativeFallback = false;
+    let trigger;
     try {
-      const trigger = ctx.locator(triggerSel).first();
-      if (await trigger.count().catch(() => 0) === 0) {
-        throw configError(`设置${name}失败：找不到触发控件(${triggerSel})`);
+      while (Date.now() < deadline) {
+        if (this.page.isClosed()) throw configError(`设置${name}失败：页面已关闭`);
+        if (await triggers.count() !== 1) {
+          diagnostic.stage = 'trigger';
+          diagnostic.trigger_count = await triggers.count();
+          await pause(); continue;
+        }
+        trigger = triggers;
+        if (!await trigger.isEnabled() || await trigger.getAttribute('aria-disabled') === 'true') {
+          diagnostic.stage = 'trigger_disabled';
+          await pause(); continue;
+        }
+        const candidates = await this._dropdownCandidates(optionSel, wanted, actionSel);
+        diagnostic.available = candidates.map(c => c.label).filter(Boolean).slice(0, 30);
+        const matching = candidates.filter(c => c.matches);
+        if (!opened && !candidates.length) {
+          const observed = await readSelection(trigger);
+          if (observed.some(v => this._normOptionText(v) === this._normOptionText(wanted))) {
+            diagnostic.stage = 'already_selected';
+            return observed;
+          }
+        }
+        if (matching.length > 1) throw configError(`设置${name}失败：有多个可见选项匹配「${wanted}」，未进行猜选`);
+        if (matching.length === 1) {
+          const option = matching[0].locator;
+          diagnostic.stage = 'option_disabled';
+          const disabled = await option.evaluate(el => !!el.closest(':disabled, [aria-disabled="true"], [inert]'));
+          if (disabled) { await pause(); continue; }
+          diagnostic.stage = 'option_click';
+          try {
+            await option.click({ timeout: budget() });
+          } catch (error) {
+            diagnostic.last_error = error.message;
+            await pause(); continue; // 重渲染/短暂遮挡后重新找选项，不缓存失效的 nth。
+          }
+          diagnostic.stage = 'readback';
+          await this.page.keyboard.press('Escape').catch(() => {});
+          const observed = await verifySelection(this.page, trigger, wanted);
+          diagnostic.stage = 'verified';
+          if (this.logger) this.logger.info(`       ↳ [${this.label}] 已验证${name} = ${wanted}`);
+          return observed;
+        }
+        if (!opened) {
+          diagnostic.stage = 'trigger_click';
+          try {
+            await trigger.click({ timeout: budget() });
+            opened = true; openedAt = Date.now();
+          } catch (error) { diagnostic.last_error = error.message; }
+        } else {
+          diagnostic.stage = candidates.length ? 'option_missing' : 'menu_wait';
+          // 某些旧版 Lit 模式/深度按钮需 DOM click；先 trial 验证没有遮挡，禁止穿透弹窗。
+          if (!actionSel && !candidates.length && !nativeFallback && Date.now() - openedAt >= 800) {
+            nativeFallback = true;
+            try {
+              await trigger.click({ trial: true, timeout: budget() });
+              await trigger.evaluate(el => el.click());
+            } catch (error) { diagnostic.last_error = error.message; }
+          }
+        }
+        await pause();
       }
-      await trigger.click({ timeout: 4000 }).catch(() => {});
-      await this.page.waitForTimeout(300);
-      // 对话模式/深度思考的触发是 lit Web Component 里 shadow 内的 button，Playwright 坐标点击常不触发展开；
-      // 用原生 el.click() 兜底（探测确认对这两个 button 有效）。展开状态用「选项是否出现」来判定。
-      let opened = false;
-      if (optionSel) opened = (await this._findOptionByText(optionSel, wanted)) != null;
-      if (!opened) opened = (await ctx.getByText(wanted, { exact: true }).count().catch(() => 0)) > 0;
-      if (!opened) {
-        await trigger.evaluate((el) => el.click()).catch(() => {});
-        await this.page.waitForTimeout(600);
-      }
-
-      // 用配置的选项选择器 + 宽松文本匹配（容忍全半角括号/空格/大小写差异，见 _findOptionByText）；
-      // optionSel 为空（如深度思考）或没命中时，退回纯文本匹配（getByText exact）。
-      let option = null;
-      if (optionSel) option = await this._findOptionByText(optionSel, wanted);
-      if (!option) option = ctx.getByText(wanted, { exact: true }).first();
-      if (await option.count().catch(() => 0) === 0) {
-        throw configError(`设置${name}失败：下拉里找不到「${wanted}」`);
-      }
-      await option.click({ timeout: 4000 });
-      await this.page.waitForTimeout(400);
-      await this.page.keyboard.press('Escape').catch(() => {});
-      const observed = await verifySelection(this.page, trigger, wanted);
-      if (this.logger) this.logger.info(`       ↳ [${this.label}] 已验证${name} = ${wanted}`);
-      return observed;
+      const reasons = {
+        trigger: '触发控件未就绪或存在多个可见入口', trigger_disabled: '触发控件不可用',
+        trigger_click: '触发控件被遮挡或尚未稳定', menu_wait: '菜单未展开或选项未加载',
+        option_missing: '菜单中没有精确匹配的选项', option_disabled: '目标选项不可用',
+        option_click: '目标选项被遮挡或尚未稳定',
+      };
+      throw configError(`设置${name}失败：${reasons[diagnostic.stage] || '切换超时'}；请求「${wanted}」` +
+        (diagnostic.available.length ? `；可见选项：${diagnostic.available.join(' / ')}` : ''));
     } catch (e) {
       await this.page.keyboard.press('Escape').catch(() => {});
-      throw e.message?.startsWith('[CONFIG_ERROR]') ? e : configError(`设置${name}失败：${e.message}`);
+      throw e.message?.startsWith('[CONFIG_ERROR]') ? e : configError(`设置${name}失败：请求「${wanted}」，阶段 ${diagnostic.stage}；${e.message}`);
     }
   }
 
-  // 归一化选项文本用于宽松匹配：去所有空白、全角括号→半角、大小写统一。
-  // 让 --model "豆包(seed-2.1)"、"豆包（seed-2.1）"、"豆包 (seed-2.1)" 都能命中页面上的
-  // 「豆包（seed-2.1）」（全角括号无空格）。仅用于匹配比较，点击的仍是页面原始选项。
   _normOptionText(s) {
-    return ('' + (s || ''))
-      .replace(/[\s　 ]/g, '') // 半角/全角/不断行空格全去掉
-      .replace(/[（【〔]/g, '(').replace(/[）】〕]/g, ')') // 常见全角括号→半角
-      .toLowerCase();
+    return ('' + (s || '')).replace(/[\s　 ]/g, '')
+      .replace(/[（【〔]/g, '(').replace(/[）】〕]/g, ')').toLowerCase();
   }
 
-  // 在 optionSel 命中的可见选项里，按归一化文本找与 wanted 相等的那个，返回其 locator（未命中返回 null）。
-  // 先归一化相等，再退化到「包含」（应对选项文本尾部带小标签等杂串）。
-  async _findOptionByText(optionSel, wanted) {
+  async _dropdownCandidates(optionSel, wanted, actionSel) {
     const ctx = this._ctx();
-    const want = this._normOptionText(wanted);
-    if (!want) return null;
-    const opts = ctx.locator(optionSel);
-    const n = await opts.count().catch(() => 0);
-    let contains = null;
-    for (let i = 0; i < n; i++) {
-      const raw = (await opts.nth(i).innerText().catch(() => '')) || '';
-      const t = this._normOptionText(raw);
-      if (!t) continue;
-      if (t === want) return opts.nth(i);          // 精确（归一化后）优先
-      if (contains == null && (t.includes(want) || want.includes(t))) contains = opts.nth(i);
+    // 新版按钮为唯一的点击目标，不能再回落到被按钮覆盖的 .item-name。
+    const actions = actionSel ? ctx.locator(`:is(${actionSel}):visible`) : null;
+    const options = actions && await actions.count() ? actions
+      : optionSel ? ctx.locator(`:is(${optionSel}):visible`) : ctx.getByText(wanted, { exact: true });
+    const result = [];
+    for (let i = 0; i < await options.count(); i++) {
+      const locator = options.nth(i);
+      if (!await locator.isVisible()) continue;
+      const label = (await locator.getAttribute('aria-label')) || (await locator.innerText()).trim();
+      result.push({ locator, label, matches: this._normOptionText(label) === this._normOptionText(wanted) });
     }
-    return contains; // 没有归一化精确项时，用包含匹配兜底
+    return result;
   }
 
   // 正文是否是“未完成中间态”（思考过程而非最终答案）：以配置的中间态标记词开头即算；空也算未完成。

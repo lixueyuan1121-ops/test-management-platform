@@ -182,9 +182,10 @@ module.exports = {
     expectedAgentName: '纳米Work',
 
     // —— 【对话选项】发送前设置：模型 / 对话模式 / 深度思考。均实测确认；选项统一用「文本匹配」点击。——
-    // 模型下拉（输入框左下「GLM-5.2 ▾」）：点 model-dropdown 展开，选项为 div.item-name（文本=模型名）。
+    // 新版选项按钮覆盖名称文字；优先点击带 aria-label 的 hit-area，旧版仍支持 .item-name。
     modelDropdownSelector: 'model-dropdown',                 // 触发（点它即展开）
-    modelOptionSelector: '.item-name',                       // 选项（文本匹配模型名）
+    modelOptionActionSelector: 'button[data-testid="model-selector-option"], button.item-hit-area',
+    modelOptionSelector: '.item-name',                       // 旧版选项（精确匹配模型名）
     // 对话模式（下方左「⚡标准模式 ▾」）：点该 button 展开，选项为 span.row-title（文本=模式名）。
     chatModeTriggerSelector: 'button.trigger[aria-haspopup="listbox"]',
     chatModeOptionSelector: '.row-title',
