@@ -81,6 +81,7 @@
         <el-table-column label="标题" min-width="180"><template #default="{ row }"><button class="case-title" @click="inspectedCase = row; caseVisible = true">{{ row.title }}</button></template></el-table-column>
         <el-table-column label="提问 prompt" min-width="240"><template #default="{ row }"><span class="multiline">{{ row.prompt || '—' }}</span></template></el-table-column>
         <el-table-column label="预期 expected" min-width="200"><template #default="{ row }"><span class="multiline">{{ row.expected || '—' }}</span></template></el-table-column>
+        <el-table-column label="附件" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ (row.attachments || []).map(a => a.name).join('、') || '—' }}</template></el-table-column>
         <el-table-column label="对话组" min-width="110"><template #default="{ row }"><span class="mono">{{ row.conversation_group || '—' }}</span></template></el-table-column>
         <el-table-column label="轮次" width="64" align="center"><template #default="{ row }"><span class="mono">{{ row.turn_index ?? 0 }}</span></template></el-table-column>
         <el-table-column label="生成时间" width="160"><template #default="{ row }"><span class="mono">{{ (row.created_at || '').replace('T',' ').slice(0,19) }}</span></template></el-table-column>
@@ -104,6 +105,9 @@
         <el-tag effect="plain">{{ dimLabel(inspectedCase.dimension) }}</el-tag>
         <section class="case-section"><h3>提问 Prompt</h3><div>{{ inspectedCase.prompt || '未填写' }}</div></section>
         <section class="case-section"><h3>预期 Expected</h3><div>{{ inspectedCase.expected || '未填写' }}</div></section>
+        <section v-if="inspectedCase.attachments?.length" class="case-section"><h3>附件</h3>
+          <div v-for="(attachment, index) in inspectedCase.attachments" :key="index">{{ attachment.name }}</div>
+        </section>
         <section class="case-section"><h3>产物检查</h3>
           <EvalArtifactRules v-model="artifactRules" :disabled="!canDelete" />
           <el-button v-if="canDelete" type="primary" size="small" :loading="savingRules" @click="saveArtifactRules">保存产物检查</el-button>
@@ -141,11 +145,12 @@
     </el-dialog>
 
     <!-- 模板导入:本地 CSV/TSV(粘贴/文件) 或 飞书文档链接 -->
-    <el-dialog v-model="importVisible" title="导入对话测评用例" width="680px" @closed="resetImport">
+    <el-dialog v-model="importVisible" title="导入对话测评用例" width="780px" :show-close="!importing" :close-on-click-modal="!importing" :close-on-press-escape="!importing" @closed="resetImport">
       <el-alert type="info" :closable="false" show-icon class="tpl-alert">
         <template #title>
-          模板为 CSV/TSV，首行表头：<b>标题, 维度, 提问prompt, 预期expected, 对话组, 轮次</b>。
+          模板为 CSV/TSV，首行表头：<b>标题, 维度, 提问prompt, 预期expected, 对话组, 轮次, 附件</b>。
           维度可填 key（如 tool_use）或中文（如 工具·MCP调用），留空亦可；对话组/轮次留空=单轮独立题，多轮同组名、轮次从 0 递增。
+          附件为可选列，可填 HTTP(S) 下载链接或下方所选文件的完整文件名，多个附件用分号分隔，每条用例最多 20 个。也支持 JSON 数组（如 [{"name":"资料.pdf","url":"https://example.com/资料.pdf"}]）。
         </template>
       </el-alert>
       <div class="tpl-actions">
@@ -153,30 +158,39 @@
         <el-button size="small" text type="primary" @click="downloadTemplate">下载模板.csv</el-button>
       </div>
 
-      <el-radio-group v-model="importMode" size="small" class="mode-radio">
+      <el-radio-group v-model="importMode" :disabled="importing" size="small" class="mode-radio">
         <el-radio-button value="local">本地（粘贴 / 文件）</el-radio-button>
         <el-radio-button value="feishu">飞书文档</el-radio-button>
       </el-radio-group>
 
       <template v-if="importMode === 'local'">
-        <el-input v-model="importText" type="textarea" :rows="8" :placeholder="TEMPLATE_EXAMPLE" />
+        <el-input v-model="importText" :disabled="importing" aria-label="用例模板内容" type="textarea" :rows="8" :placeholder="TEMPLATE_EXAMPLE" />
         <div class="upload-row">
-          <el-upload :auto-upload="false" :show-file-list="false" accept=".csv,.tsv,.md,.txt" :on-change="onFilePick">
+          <el-upload :disabled="importing" :auto-upload="false" :show-file-list="false" accept=".csv,.tsv,.md,.txt" :on-change="onFilePick">
             <el-button size="small" :icon="Upload">从文件读取</el-button>
           </el-upload>
           <span class="hint">支持 .csv / .tsv / .md / .txt，请存为 UTF-8；内容将填入上方文本框</span>
         </div>
       </template>
       <template v-else>
-        <el-input v-model="importUrl" placeholder="粘贴飞书电子表格/文档链接（需已共享给应用）">
+        <el-input v-model="importUrl" :disabled="importing" placeholder="粘贴飞书电子表格/文档链接（需已共享给应用）">
           <template #prepend>飞书链接</template>
         </el-input>
         <div class="hint" style="margin-top:6px">读取飞书『电子表格』最稳：一张表，首行表头，列与模板一致。</div>
       </template>
 
+      <div class="upload-row">
+        <el-upload v-model:file-list="importFiles" :auto-upload="false" multiple :limit="100"
+          :disabled="importing" :on-change="onAttachmentPick" :on-remove="invalidateImportPreview"
+          :on-exceed="() => ElMessage.warning('每次最多选择 100 个附件')">
+          <el-button size="small" :disabled="importing" :icon="Upload">选择用例附件</el-button>
+          <template #tip><div class="hint">单个文件不超过 20MB；在模板“附件”列填写文件名关联，同一个文件可用于多条用例。附件列留空的用例不带附件。</div></template>
+        </el-upload>
+      </div>
+
       <div class="attach-row">
         <span class="lbl">同时加入测评任务（可选）</span>
-        <el-select v-model="importTaskId" clearable placeholder="不加入" size="small" style="width:240px">
+        <el-select v-model="importTaskId" :disabled="importing" clearable placeholder="不加入" size="small" style="width:240px">
           <el-option v-for="t in tasks" :key="t.id" :label="t.name" :value="t.id" />
         </el-select>
       </div>
@@ -192,12 +206,13 @@
           <el-table-column label="标题" prop="title" min-width="140" show-overflow-tooltip />
           <el-table-column label="维度" width="120"><template #default="{ row }">{{ dimLabel(row.dimension) }}</template></el-table-column>
           <el-table-column label="提问 prompt" prop="prompt" min-width="220" show-overflow-tooltip />
+          <el-table-column label="附件" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ (row.attachments || []).map(a => a.name).join('、') || '—' }}</template></el-table-column>
         </el-table>
         <div v-if="importPreview.preview && importPreview.preview.length > 20" class="hint">仅预览前 20 条…</div>
       </div>
 
       <template #footer>
-        <el-button @click="importVisible = false">取消</el-button>
+        <el-button :disabled="importing" @click="importVisible = false">取消</el-button>
         <el-button :loading="importing" :disabled="!canImport" @click="doImport(true)">预览解析</el-button>
         <el-button type="primary" :loading="importing" :disabled="!canImport" @click="doImport(false)">
           确认导入{{ importPreview && importPreview.count ? ` ${importPreview.count} 条` : '' }}
@@ -213,7 +228,7 @@ import { updateEvalQuery } from '@/api'
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Collection, Upload, Delete } from '@element-plus/icons-vue'
-import { listEvalEngines, listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, listEvalTasks, deleteEvalQuery, batchDeleteEvalQueries } from '@/api'
+import { listEvalEngines, listEvalQueries, listMyDevices, listEvalDevices, enqueueEvalQueries, listEvalDimensions, expandEvalQuery, parameterizeEvalQuery, importEvalQueries, uploadEvalImportAttachment, listEvalTasks, deleteEvalQuery, batchDeleteEvalQueries } from '@/api'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -324,14 +339,17 @@ const importText = ref('')
 const importUrl = ref('')
 const importTaskId = ref(null)
 const importPreview = ref(null)     // dry_run 结果 {count, skipped, preview}
+const importFiles = ref([])
+const uploadedFiles = new Map()
 const importing = ref(false)
 const canImport = computed(() => importMode.value === 'feishu' ? !!importUrl.value.trim() : !!importText.value.trim())
 
 const TEMPLATE_EXAMPLE = [
-  '标题,维度,提问prompt,预期expected,对话组,轮次',
-  '查北京天气,tool_use,帮我查北京今天天气,应联网搜索给出温度,,0',
-  '推荐电影,multi_turn,推荐一部电影,应给出一部推荐,g1,0',
-  '推荐电影,multi_turn,换成喜剧的,基于上轮改推喜剧,g1,1',
+  '标题,维度,提问prompt,预期expected,对话组,轮次,附件',
+  '查北京天气,tool_use,帮我查北京今天天气,应联网搜索给出温度,,0,',
+  '推荐电影,multi_turn,推荐一部电影,应给出一部推荐,g1,0,',
+  '推荐电影,multi_turn,换成喜剧的,基于上轮改推喜剧,g1,1,',
+  '分析附件,thinking,总结附件中的要点,应结合附件内容给出总结,,0,资料.pdf;数据.csv',
 ].join('\n')
 
 const sorted = computed(() => [...queries.value].sort((a, b) =>
@@ -421,10 +439,23 @@ function resetImport() {
   importUrl.value = ''
   importTaskId.value = null
   importPreview.value = null
+  importFiles.value = []
+  uploadedFiles.clear()
 }
 
 // 文本/链接/模式变了 → 作废上次预览,避免拿旧预览对新内容"确认导入"
-watch([importText, importUrl, importMode], () => { importPreview.value = null })
+watch([importText, importUrl, importMode, importTaskId], invalidateImportPreview)
+
+function invalidateImportPreview() { importPreview.value = null }
+
+function onAttachmentPick(file) {
+  invalidateImportPreview()
+  const duplicate = importFiles.value.some(other => other.uid !== file.uid && other.name === file.name)
+  if (file.size > 20 * 1024 * 1024 || duplicate) {
+    importFiles.value = importFiles.value.filter(other => other.uid !== file.uid)
+    ElMessage.warning(duplicate ? `附件文件名重复：${file.name}` : '单个附件不能超过 20MB')
+  }
+}
 
 function onFilePick(uploadFile) {
   const raw = uploadFile?.raw || uploadFile
@@ -450,10 +481,17 @@ function downloadTemplate() {
 }
 
 async function doImport(dryRun) {
-  if (!canImport.value) return
+  if (!canImport.value || importing.value) return
   importing.value = true
   try {
     const payload = { project_id: pid.value, dry_run: dryRun }
+    payload.uploaded_files = {}
+    for (const file of importFiles.value) {
+      if (!uploadedFiles.has(file.uid)) {
+        uploadedFiles.set(file.uid, await uploadEvalImportAttachment(pid.value, file.raw))
+      }
+      payload.uploaded_files[file.name] = uploadedFiles.get(file.uid).url
+    }
     if (importTaskId.value) payload.eval_task_id = importTaskId.value
     if (importMode.value === 'feishu') payload.feishu_url = importUrl.value.trim()
     else payload.text = importText.value
@@ -461,6 +499,11 @@ async function doImport(dryRun) {
     if (dryRun) {
       importPreview.value = res
     } else {
+      if (!res.count) {
+        importPreview.value = { ...res, preview: [] }
+        ElMessage.warning('没有可导入的用例，请检查跳过原因')
+        return
+      }
       const parts = [`已导入 ${res.count} 条`]
       if (res.attached) parts.push(`加入任务 ${res.attached} 条`)
       if (res.skipped?.length) parts.push(`跳过 ${res.skipped.length} 行`)

@@ -153,6 +153,11 @@ export const parameterizeEvalQuery = (payload) => http.post('/ai/eval-queries/pa
 // 模板导入(CSV/TSV):{project_id, text?|feishu_url?, eval_task_id?, dry_run?}
 // dry_run=true 仅解析预览(返回 count/skipped/preview,不落库);false 落库返回 count/skipped/attached/queries
 export const importEvalQueries = (payload) => http.post('/ai/eval-queries/import', payload)
+export const uploadEvalImportAttachment = (projectId, file) => {
+  const data = new FormData()
+  data.append('file', file)
+  return http.post('/ai/eval-queries/import-attachment', data, { params: { project_id: projectId }, timeout: 120000 })
+}
 export const updateEvalQuery = (id, payload) => http.patch(`/ai/eval-queries/${id}`, payload)
 export const deleteEvalQuery = (id) => http.delete(`/ai/eval-queries/${id}`)
 export const batchDeleteEvalQueries = (payload) => http.post('/ai/eval-queries/batch-delete', payload)
