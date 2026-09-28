@@ -81,7 +81,7 @@ def upsert_report(
         ).first()
         if not m or ProjectRole(m.role.value) not in (ProjectRole.admin, ProjectRole.member):
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无日报提交权限")
-        if task.assigned_to != user.id and m.role.value != ProjectRole.admin.value:
+        if user.id not in task.assigned_to_ids and m.role.value != ProjectRole.admin.value:
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="只能为指派给自己的任务提交日报")
 
     rep = db.query(DailyReport).filter_by(

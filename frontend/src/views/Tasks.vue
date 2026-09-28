@@ -93,7 +93,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="priority" label="优先级" width="80" />
-        <el-table-column prop="assigned_to_name" label="指派给" width="100" />
+        <el-table-column prop="assigned_to_name" label="指派给" min-width="140" show-overflow-tooltip />
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
             <el-dropdown trigger="click" @command="(s) => changeStatus(row, s)">
@@ -146,7 +146,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="指派给" required>
-          <el-select v-model="form.assigned_to" filterable placeholder="选择项目成员" style="width:100%">
+          <el-select v-model="form.assigned_to_ids" multiple filterable placeholder="选择项目成员（可多选）" style="width:100%">
             <el-option v-for="m in members" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
         </el-form-item>
@@ -256,7 +256,7 @@ const filteredTasks = computed(() => tasks.value.filter(row =>
 const members = ref([])
 const loading = ref(false)
 const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: '', description: '', status: 'pending' })
+const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: '', description: '', status: 'pending' })
 
 onMounted(async () => {
   // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
@@ -337,14 +337,14 @@ function fmtExecAt(s) {
 function openCreate() {
   dialog.id = null
   // 新建入口仅 canManage(admin/member)可见,均可自由选指派人,默认不预填。
-  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to: null, assigned_date: date.value, description: '', status: 'pending' })
+  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: date.value, description: '', status: 'pending' })
   dialog.visible = true
 }
 function openEdit(row) {
   dialog.id = row.id
   Object.assign(form, {
     title: row.title, requirement_url: row.requirement_url || '', developer: row.developer || '',
-    module: row.module || '', priority: row.priority, assigned_to: row.assigned_to,
+    module: row.module || '', priority: row.priority, assigned_to_ids: [...(row.assigned_to_ids || [row.assigned_to])],
     assigned_date: row.assigned_date, description: row.description || '', status: row.status,
   })
   dialog.visible = true
@@ -358,15 +358,17 @@ function fmtDetailTime(s) {
   return String(s).replace('T', ' ').slice(0, 16)
 }
 async function submit() {
-  if (!form.title || !form.assigned_to || !form.assigned_date) { ElMessage.warning('任务名称/指派/日期必填'); return }
+  if (!form.title || !form.assigned_to_ids.length || !form.assigned_date) { ElMessage.warning('任务名称/指派/日期必填'); return }
   dialog.saving = true
   try {
     const payload = { ...form, project_id: pid.value }
     if (dialog.id) await updateTask(dialog.id, payload)
     else await createTask(payload)
     ElMessage.success('保存成功')
-        await load()
-  } finally { dialog.saving = false; dialog.visible = false }
+    dialog.visible = false
+    await load()
+  } catch { /* 请求拦截器提示错误，保留表单供重试。 */ }
+  finally { dialog.saving = false }
 }
 async function changeStatus(row, s) {
   if (s === row.status) return

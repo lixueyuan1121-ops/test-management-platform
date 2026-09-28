@@ -319,7 +319,8 @@ function renderChart() {
 async function reload() { page.value = 1; await load() }
 async function load() {
   const version = ++listVersion
-  listError.value = false; rows.value = []; total.value = 0; loading.value = false
+  // Keep total while loading: clearing it makes el-pagination clamp page 2 back to page 1.
+  listError.value = false; rows.value = []; loading.value = false
   if (!pid.value) { rows.value = []; total.value = 0; return }
   loading.value = true
   try {

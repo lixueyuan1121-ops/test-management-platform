@@ -303,7 +303,7 @@ def _now_sh() -> datetime:
 def remind_missing_reports() -> None:
     """日报缺交提醒:遍历有当日任务的项目,谁该交没交 → 每项目一张飞书卡。
 
-    统计口径与 /stats/daily 完全一致(应交=当日任务 assigned_to 去重,已交=当日有日报的 user),
+    统计口径与 /stats/daily 完全一致(应交=当日任务指派人去重,多人任务共享当日一份日报),
     重复实现一次而非调 API——定时 job 无用户上下文,且调外部接口绕一层反而脆。
     未配置 FEISHU_WEBHOOK_URL 或没到配置时刻时无副作用(到点才由 cron 调)。
     """
@@ -322,11 +322,12 @@ def remind_missing_reports() -> None:
                 Task.project_id == pid, Task.assigned_date == today).all()
             if not tasks:
                 continue
-            should = sorted({t.assigned_to for t in tasks if t.assigned_to})
+            should = sorted({uid for t in tasks for uid in t.assigned_to_ids if uid})
             task_ids = [t.id for t in tasks]
-            submitted = {r.user_id for r in db.query(DailyReport)
-                         .filter(DailyReport.task_id.in_(task_ids),
-                                 DailyReport.report_date == today).all() if r.user_id}
+            from app.services.task_assignments import reported_assignee_ids
+            reports = db.query(DailyReport).filter(
+                DailyReport.task_id.in_(task_ids), DailyReport.report_date == today).all()
+            submitted = reported_assignee_ids(tasks, reports)
             missing = [u for u in should if u not in submitted]
             if not missing:
                 continue

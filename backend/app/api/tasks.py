@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole, TaskStatus
 from app.db.session import get_db
-from app.models import Project, ProjectMember, Task, User
+from app.models import Project, ProjectMember, Task, TaskAssignee, User
 from app.schemas.common import ok
 from app.schemas.task import TaskCreate, TaskOut, TaskUpdate
 
@@ -39,7 +39,8 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "assigned_by": t.assigned_by,
         "assigned_by_name": nm(t.assigned_by),
         "assigned_to": t.assigned_to,
-        "assigned_to_name": nm(t.assigned_to),
+        "assigned_to_name": "、".join(nm(uid) for uid in t.assigned_to_ids),
+        "assigned_to_ids": t.assigned_to_ids,
         "title": t.title,
         "description": t.description,
         "module": t.module,
@@ -57,6 +58,27 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "close_note": t.close_note,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
+
+
+def _assignee_ids(db: Session, body):
+    supplied = body.assigned_to_ids
+    if supplied is None and body.assigned_to is None:
+        return None
+    ids = list(dict.fromkeys(supplied if supplied is not None else [body.assigned_to]))
+    if not ids or any(type(uid) is not int or uid <= 0 for uid in ids):
+        raise HTTPException(422, detail="至少选择一名有效指派人")
+    if supplied is not None and body.assigned_to is not None and body.assigned_to != ids[0]:
+        raise HTTPException(422, detail="单人指派字段与多人指派字段不一致")
+    existing = {uid for (uid,) in db.query(User.id).filter(User.id.in_(ids)).all()}
+    if set(ids) != existing:
+        raise HTTPException(404, detail="指派用户不存在")
+    return ids
+
+
+def _set_assignees(task: Task, ids):
+    task.assigned_to = ids[0]
+    existing = {a.user_id: a for a in task.assignees}
+    task.assignees = [existing.get(uid) or TaskAssignee(user_id=uid) for uid in ids[1:]]
 
 
 def _stamp_terminal(t: Task, new_status: TaskStatus) -> None:
@@ -96,9 +118,9 @@ def list_tasks(
             func.date(Task.closed_at) == date,
         ))
     if mine and not user.is_platform_admin:
-        q = q.filter(Task.assigned_to == user.id)
+        q = q.filter(or_(Task.assigned_to == user.id, Task.assignees.any(TaskAssignee.user_id == user.id)))
     rows = q.order_by(Task.assigned_date.desc(), Task.id.desc()).all()
-    names = _name_map(db, [uid for t in rows for uid in (t.assigned_by, t.assigned_to)])
+    names = _name_map(db, [uid for t in rows for uid in (t.assigned_by, *t.assigned_to_ids)])
     return ok([_to_out(db, t, on_date=date, names=names) for t in rows])
 
 
@@ -112,12 +134,11 @@ def create_task(
     assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    if not db.get(User, body.assigned_to):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="指派用户不存在")
+    ids = _assignee_ids(db, body)
     t = Task(
         project_id=body.project_id,
         assigned_by=user.id,
-        assigned_to=body.assigned_to,
+        assigned_to=ids[0],
         title=body.title,
         description=body.description,
         module=body.module,
@@ -127,20 +148,23 @@ def create_task(
         assigned_date=body.assigned_date,
         status=TaskStatus.pending,
     )
+    _set_assignees(t, ids)
     db.add(t)
     db.commit()
     db.refresh(t)
     # 任务指派通知：自己派给自己不发（常见自助加任务场景）
-    if t.assigned_to != t.assigned_by:
+    for uid in t.assigned_to_ids:
+        if uid == t.assigned_by:
+            continue
         try:
             from app.services.notify import notify_task_assigned
             proj = db.get(Project, t.project_id)
-            assignee = db.get(User, t.assigned_to)
+            assignee = db.get(User, uid)
             assigner = db.get(User, t.assigned_by)
             notify_task_assigned(
                 task_title=t.title,
                 project_name=proj.name if proj else f"项目#{t.project_id}",
-                assignee_name=assignee.name if assignee else f"用户#{t.assigned_to}",
+                assignee_name=assignee.name if assignee else f"用户#{uid}",
                 assigner_name=assigner.name if assigner else f"用户#{t.assigned_by}",
                 assigned_date=str(t.assigned_date),
                 priority=t.priority,
@@ -161,9 +185,14 @@ def update_task(
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
+    ids = _assignee_ids(db, body)
+    # Old forms resend the unchanged scalar assignee while editing other fields.
+    # Preserve co-assignees unless the assignment is actually changed.
+    if ids is not None and (body.assigned_to_ids is not None or body.assigned_to != t.assigned_to):
+        _set_assignees(t, ids)
     # 非 status 字段照常更新（派单同步与人工都可写）
     for f in ("title", "description", "module", "requirement_url", "developer",
-              "priority", "assigned_to", "assigned_date"):
+              "priority", "assigned_date"):
         v = getattr(body, f, None)
         if v is not None:
             setattr(t, f, v)
@@ -250,6 +279,7 @@ def copy_yesterday(
             assigned_date=target_date,
             status=TaskStatus.pending,
         )
+        _set_assignees(t, s.assigned_to_ids)
         db.add(t)
         created += 1
     db.commit()

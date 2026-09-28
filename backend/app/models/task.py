@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import String, Text, Date, DateTime, Enum, ForeignKey, Numeric, Boolean, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.enums import TaskStatus, TaskPriority
 from app.db.session import Base
@@ -44,3 +44,18 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+    # Keep the legacy primary assignee; additional assignees live in a join table.
+    assignees: Mapped[list["TaskAssignee"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin", order_by="TaskAssignee.user_id"
+    )
+
+    @property
+    def assigned_to_ids(self) -> list[int]:
+        return list(dict.fromkeys([self.assigned_to, *(a.user_id for a in self.assignees)]))
+
+
+class TaskAssignee(Base):
+    __tablename__ = "task_assignee"
+    task_id: Mapped[int] = mapped_column(ForeignKey("task.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), primary_key=True, index=True)

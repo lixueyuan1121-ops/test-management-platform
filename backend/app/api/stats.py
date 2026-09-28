@@ -155,14 +155,15 @@ def daily_stats(
         .all()
     )
     task_ids = [t.id for t in tasks]
-    should_submit_ids = sorted({t.assigned_to for t in tasks})
+    should_submit_ids = sorted({uid for t in tasks for uid in t.assigned_to_ids})
 
     submitted_rows = (
         db.query(DailyReport)
         .filter(DailyReport.task_id.in_(task_ids), DailyReport.report_date == date)
         .all() if task_ids else []
     )
-    submitted_ids = sorted({r.user_id for r in submitted_rows})
+    from app.services.task_assignments import reported_assignee_ids
+    submitted_ids = sorted(reported_assignee_ids(tasks, submitted_rows))
     not_submitted_ids = [u for u in should_submit_ids if u not in submitted_ids]
 
     # 一次预取本次涉及的所有用户名(应交 + 已交),消除 name() 的逐用户 N+1
@@ -233,7 +234,7 @@ def workload_stats(
 ):
     """工作量统计：按成员聚合任务数/上线数 + 每日趋势序列。
 
-    口径基于 task 派单（非日报）：工作量 = 任务数量（条），成员按 assigned_to 分组，
+    口径基于 task 派单（非日报）：工作量 = 任务数量（条），成员按全部指派人分组，
     上线数 = status==online 的任务数。对 task 现算聚合，不建统计表。
     """
     assert_project_role(db, user, project_id,
@@ -244,11 +245,17 @@ def workload_stats(
             Task.assigned_date >= from_date,
             Task.assigned_date <= to_date]
 
-    # 按成员聚合:任务数 + 上线数
+    # A shared task counts once for each assignee, but project/day totals count tasks once.
+    from app.models import TaskAssignee
+    assignments = db.query(Task.id.label('task_id'), Task.assigned_to.label('user_id')).filter(*base).union(
+        db.query(Task.id.label('task_id'), TaskAssignee.user_id.label('user_id'))
+        .join(TaskAssignee, TaskAssignee.task_id == Task.id).filter(*base)
+    ).subquery()
     member_rows = (
-        db.query(Task.assigned_to, func.count(Task.id), online_sum)
+        db.query(assignments.c.user_id, func.count(Task.id), online_sum)
+        .join(assignments, assignments.c.task_id == Task.id)
         .filter(*base)
-        .group_by(Task.assigned_to)
+        .group_by(assignments.c.user_id)
         .all()
     )
     # 按天聚合:任务数 + 上线数
@@ -273,8 +280,8 @@ def workload_stats(
                     for d, cnt, online in day_rows]
     daily_series.sort(key=lambda x: x["date"])
 
-    total_tasks = sum(m["task_cnt"] for m in members)
-    total_online = sum(m["online_cnt"] for m in members)
+    total_tasks = sum(d["task_cnt"] for d in daily_series)
+    total_online = sum(d["online_cnt"] for d in daily_series)
     return ok({
         "project_id": project_id,
         "from": str(from_date), "to": str(to_date),
