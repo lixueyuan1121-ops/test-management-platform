@@ -7,12 +7,15 @@
 import json
 import logging
 import re
+import secrets
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.deps import assert_project_role, get_current_user
+from app.core.config import settings
 from app.core.enums import AiTaskStatus, EvalRunStatus, ProjectRole
 from app.db.session import get_db
 from app.models import AiTask, EvalQuery, Project, User
@@ -288,6 +291,34 @@ class EvalQueryImportIn(BaseModel):
     feishu_url: str | None = None
     eval_task_id: int | None = None
     dry_run: bool = False
+    uploaded_files: dict[str, str] = Field(default_factory=dict, max_length=100)
+
+
+_INPUT_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "eval_inputs"
+_MAX_INPUT_BYTES = 20 * 1024 * 1024
+
+
+@router.post("/eval-queries/import-attachment")
+async def upload_import_attachment(request: Request, project_id: int,
+                                   file: UploadFile = File(...), db: Session = Depends(get_db),
+                                   user: User = Depends(get_current_user)):
+    assert_project_role(db, user, project_id, _WRITE_ROLES)
+    if not db.get(Project, project_id):
+        raise HTTPException(404, detail="项目不存在")
+    name = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name:
+        raise HTTPException(400, detail="附件文件名不能为空")
+    data = await file.read(_MAX_INPUT_BYTES + 1)
+    if len(data) > _MAX_INPUT_BYTES:
+        raise HTTPException(400, detail="单个附件不能超过 20MB")
+    # 随机地址与已有上传文件同样供执行机下载；使用 .bin 避免主动内容在平台域内执行。
+    folder = _INPUT_ROOT / str(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_hex(24) + ".bin"
+    (folder / key).write_bytes(data)
+    base_url = (settings.PLATFORM_BASE_URL or str(request.base_url)).rstrip("/")
+    url = base_url + f"/uploads/eval_inputs/{project_id}/{key}"
+    return ok({"name": name, "url": url, "size": len(data)})
 
 
 @router.post("/eval-queries/import")
@@ -323,7 +354,7 @@ def import_eval_queries(body: EvalQueryImportIn, db: Session = Depends(get_db), 
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     try:
-        rows, skipped = parse_eval_template(text)
+        rows, skipped = parse_eval_template(text, body.uploaded_files)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -338,6 +369,7 @@ def import_eval_queries(body: EvalQueryImportIn, db: Session = Depends(get_db), 
             prompt=r["prompt"],
             dimension=r["dimension"],
             expected=r["expected"],
+            attachments=json.dumps(r["attachments"], ensure_ascii=False) if r["attachments"] else None,
             conversation_group=r["conversation_group"],
             turn_index=r["turn_index"],
             provider="import",

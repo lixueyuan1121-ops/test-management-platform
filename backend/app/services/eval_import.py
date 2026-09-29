@@ -8,6 +8,9 @@
 """
 import csv
 import io
+import json
+import re
+from urllib.parse import unquote, urlsplit
 
 from app.services.claude_runner import EVAL_DIMENSIONS, EVAL_DIM_LABELS
 
@@ -19,6 +22,7 @@ _HEADER_ALIASES = {
     "expected": {"预期expected", "预期", "预期结果", "期望", "expected"},
     "conversation_group": {"对话组", "会话组", "组", "conversation_group", "group"},
     "turn_index": {"轮次", "轮", "turn_index", "turn"},
+    "attachments": {"附件", "附件链接", "附件地址", "attachments", "attachment"},
 }
 # 维度中文标签 → key(反查 EVAL_DIM_LABELS),供模板里填中文
 _LABEL_TO_KEY = {label: key for key, label in EVAL_DIM_LABELS.items()}
@@ -53,10 +57,58 @@ def _int0(v) -> int:
         return 0
 
 
-def parse_eval_template(text: str) -> tuple[list[dict], list[dict]]:
+def _parse_attachments(value: str, uploaded_files: dict[str, str]) -> list[dict]:
+    value = value.strip()
+    if not value:
+        return []
+    if value.startswith(("[", "{")):
+        try:
+            items = json.loads(value)
+        except ValueError:
+            raise ValueError("附件 JSON 格式错误")
+        if not isinstance(items, list):
+            raise ValueError("附件 JSON 必须是数组")
+    else:
+        items = [v.strip() for v in re.split(r"[;；\n]", value) if v.strip()]
+    if len(items) > 20:
+        raise ValueError("每条用例最多支持 20 个附件")
+    attachments = []
+    filenames = set()
+    for item in items:
+        if isinstance(item, str):
+            reference = item.strip()
+            url = uploaded_files.get(reference, reference)
+            name = reference if reference in uploaded_files else None
+        elif isinstance(item, dict) and isinstance(item.get("url"), str):
+            url = item["url"].strip()
+            name = item.get("name")
+            if name is not None and not isinstance(name, str):
+                raise ValueError("附件名称必须是文本")
+        else:
+            raise ValueError("附件须为文件名、下载链接或含 name/url 的对象")
+        try:
+            parsed = urlsplit(url)
+            valid = parsed.scheme in ("http", "https") and parsed.hostname and not re.search(r"\s", url)
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError(f"附件未上传或不是有效的 HTTP(S) 下载链接：{str(item)[:100]}")
+        name = (name or unquote(parsed.path.rsplit("/", 1)[-1]) or "attachment").strip()
+        if not name:
+            raise ValueError("附件名称不能为空")
+        # 执行机将附件下载到同一目录，拒绝会覆盖彼此的文件名。
+        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', re.split(r'[/\\]', name)[-1]).strip().casefold()
+        if not filename or filename in filenames:
+            raise ValueError("附件文件名为空或重复，请通过 JSON 的 name 为附件指定不同文件名")
+        filenames.add(filename)
+        attachments.append({"name": name, "url": url})
+    return attachments
+
+
+def parse_eval_template(text: str, uploaded_files: dict[str, str] | None = None) -> tuple[list[dict], list[dict]]:
     """解析模板文本 → (rows, skipped)。
 
-    rows: [{title, prompt, dimension, expected, conversation_group, turn_index}]
+    rows: [{title, prompt, dimension, expected, conversation_group, turn_index, attachments}]
     skipped: [{line, reason}]  line 为数据行序号(不含表头,从 1 起)。
     表头缺 标题/提问 列 → 抛 ValueError。
     """
@@ -93,6 +145,11 @@ def parse_eval_template(text: str) -> tuple[list[dict], list[dict]]:
         if not prompt:
             skipped.append({"line": row_no, "reason": "缺少提问prompt,整行跳过"})
             continue
+        try:
+            attachments = _parse_attachments(rec.get("attachments", ""), uploaded_files or {})
+        except ValueError as e:
+            skipped.append({"line": row_no, "reason": f"{e}，整行跳过"})
+            continue
         rows.append({
             "title": title[:512],
             "prompt": prompt,
@@ -100,5 +157,6 @@ def parse_eval_template(text: str) -> tuple[list[dict], list[dict]]:
             "expected": (rec.get("expected") or "").strip() or None,
             "conversation_group": (rec.get("conversation_group") or "").strip() or None,
             "turn_index": _int0(rec.get("turn_index")),
+            "attachments": attachments,
         })
     return rows, skipped

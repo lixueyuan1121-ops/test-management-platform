@@ -12,7 +12,9 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # 前端 SPA 反代 /api 到后端
 RUN printf 'server {\n\
   listen 80;\n\
+  client_max_body_size 21m;\n\
   location / { root /usr/share/nginx/html; index index.html; try_files $uri $uri/ /index.html; }\n\
-  location /api/ { proxy_pass http://backend:8000; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; }\n\
+  location /api/ { proxy_pass http://backend:8000; proxy_set_header Host $http_host; proxy_set_header X-Real-IP $remote_addr; }\n\
+  location /uploads/ { proxy_pass http://backend:8000; proxy_set_header Host $http_host; }\n\
 }\n' > /etc/nginx/conf.d/default.conf
 EXPOSE 80
