@@ -32,7 +32,7 @@ export async function runDomAudit(core, params, heartbeat = async () => ({})) {
         result.ready=true;
         result.frameAliases=out.frameAliases||{};
         result.complete=out.groups.length>0 && out.groups.every(g=>!g.error && (g.total??g.elements.length)<=g.elements.length);
-        result.elements=out.groups.flatMap(g=>(g.elements||[]).map(e=>({frame:g.frameMatch||g.frame,tag:e.tag,text:e.accessibleName||e.tooltipText||e.text,verified:e.verified||[],collections:e.collections||[],member_xpath:e.collections?.length ? e.uniqueXPath : undefined,observed:(e.candidates||[]).filter(c=>['testid','css'].includes(c.by))})));
+        result.elements=out.groups.flatMap(g=>(g.elements||[]).map(e=>({frame:g.frameMatch||g.frame,tag:e.tag,control_kind:e.control_kind,text:e.accessibleName||e.tooltipText||e.text,verified:e.verified||[],collections:e.collections||[],member_xpath:e.collections?.length ? e.uniqueXPath : undefined,observed:(e.candidates||[]).filter(c=>['testid','css'].includes(c.by))})));
         result.count=result.elements.length;
         if(!result.complete)result.error='部分 frame 未读取或元素被截断，本页不判废弃';
       }catch(e){check();result.error=e.message.slice(0,400)}

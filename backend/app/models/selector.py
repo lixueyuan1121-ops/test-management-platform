@@ -31,6 +31,8 @@ class SelectorKey(Base):
     desc: Mapped[str] = mapped_column(String(255), default="", server_default="")
     # Management metadata only; never included in runtime locators.
     change_status: Mapped[str] = mapped_column(String(16), default="new", server_default="")
+    screenshot_path: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    screenshot_source: Mapped[str] = mapped_column(String(16), default="", server_default="")
     candidates: Mapped[str] = mapped_column(Text, default="[]")  # JSON 字符串
     updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

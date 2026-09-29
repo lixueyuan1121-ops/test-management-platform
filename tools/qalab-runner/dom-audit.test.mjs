@@ -8,3 +8,15 @@ test('failed page stays uncovered and cancellation stops before clicks',async()=
  await assert.rejects(()=>runDomAudit(core,params),/首页.*missing/);assert.equal(calls.length,1);
  await assert.rejects(()=>runDomAudit(core,params,async()=>({cancel_requested:true})),/终止/);assert.equal(calls.length,1);
 });
+
+test('audit never captures or uploads images, including legacy callback callers',async()=>{
+ let uploads=0;
+ const core={pressEscapePage:async()=>{},waitFor:async()=>{},probe:async options=>{
+  assert.equal(options.screenshot,false);
+  return {groups:[{frame:'shell',elements:[{tag:'button',screenshotRect:{x:5,y:8,w:40,h:20},verified:[{by:'testid',value:'hello'}]}]}],pageSize:{w:800,h:600},screenshotBuffer:Buffer.from('old-image')};
+ }};
+ const params={version:1,screenshot:true,pages:[{id:'home',label:'首页',nav:[],ready:{by:'testid',value:'home'}}]};
+ const out=await runDomAudit(core,params,async()=>({}),async()=>{uploads++});
+ assert.equal(uploads,0);assert.equal(out.pages[0].complete,true);assert.equal(out.pages[0].elements[0].verified[0].value,'hello');
+ assert(!JSON.stringify(out).includes('screenshot'));assert(!JSON.stringify(out).includes('Buffer'));
+});

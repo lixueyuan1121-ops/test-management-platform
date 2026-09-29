@@ -434,6 +434,12 @@ def ensure_selector_change_status_column() -> None:
             conn.execute(text("ALTER TABLE selector_key ADD COLUMN change_status VARCHAR(16) NOT NULL DEFAULT ''"))
 
 
+    for column, length in (("screenshot_path", 512), ("screenshot_source", 16)):
+        if cols and column not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE selector_key ADD COLUMN {column} VARCHAR({length}) NOT NULL DEFAULT ''"))
+
+
 def ensure_selector_page_column() -> None:
     """selector_key 表补列 page（页面分组维度，纯组织用，不参与定位）。
 

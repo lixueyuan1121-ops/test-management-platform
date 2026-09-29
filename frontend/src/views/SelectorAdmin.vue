@@ -254,9 +254,13 @@
     <section v-show="activeView === 'registry'" class="registry-card">
         <div class="header registry-actions" role="toolbar" aria-label="选择器批量操作">
           <div class="filters">
+            <el-input v-model="registrySearch" aria-label="搜索选择器" placeholder="搜索 key、说明、页面或定位" clearable :disabled="contextLocked" style="width:260px" />
+            <el-select v-model="registryStatus" aria-label="筛选DOM状态" placeholder="全部状态" clearable :disabled="contextLocked" style="width:130px">
+              <el-option label="新增" value="new" /><el-option label="更新" value="updated" /><el-option label="废弃" value="retired" /><el-option label="未标记" value="unmarked" />
+            </el-select>
             <el-checkbox :model-value="allCurrentSelected" :indeterminate="someCurrentSelected"
-                         :disabled="loading || !rows.length || contextLocked" @change="toggleCurrentPageSelection">当前页全选</el-checkbox>
-            <span class="form-hint" aria-live="polite">已选 {{ selectedIds.length }} / {{ rows.length }}</span>
+                         :disabled="loading || !filteredRows.length || contextLocked" @change="toggleCurrentPageSelection">当前页全选</el-checkbox>
+            <span class="form-hint" aria-live="polite">已选 {{ selectedIds.length }} · 显示 {{ filteredRows.length }} / {{ rows.length }}</span>
             <el-button size="small" :disabled="loading || loadError || !rows.length" @click="exportAllSelectors"
                        title="导出当前项目和作用域的全部选择器，包含未勾选及折叠模块">全部导出</el-button>
             <el-button size="small" :disabled="!pid" @click="openImport">手动导入</el-button>
@@ -275,7 +279,7 @@
       <SelectorDomAudit :project-id="pid" :sub-product="subProduct" :devices="devices" :disabled="contextLocked" @synced="reload" />
 
       <el-result v-if="loadError" icon="error" title="注册表加载失败"><template #extra><el-button @click="reload">重试注册表</el-button></template></el-result>
-      <el-empty v-else-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
+      <el-empty v-else-if="!filteredRows.length" :description="loading ? '加载中…' : rows.length ? '没有匹配的选择器' : '该作用域暂无选择器 key'" :image-size="70" />
       <el-collapse v-else v-model="activePages" v-loading="loading">
         <el-collapse-item v-for="grp in groupedRows" :key="grp.name" :name="grp.name">
           <template #title>
@@ -637,6 +641,15 @@ const projects = ref([])
 const pid = ref(null)
 const subProduct = ref('')   // '' = 项目级共享
 const rows = ref([])
+const registrySearch = ref(''), registryStatus = ref('')
+const filteredRows = computed(() => {
+  const term = registrySearch.value.trim().toLocaleLowerCase()
+  return rows.value.filter(row => {
+    const status = row.change_status || 'unmarked'
+    if (registryStatus.value && status !== registryStatus.value) return false
+    return !term || [row.key,row.desc,row.page,row.frame,...(row.candidates || []).flatMap(c=>[c.value,c.name])].some(v=>String(v || '').toLocaleLowerCase().includes(term))
+  })
+})
 const effectiveRows = ref([])
 // 未查看的新 key 按用户保存在当前标签页，刷新或离开列表后仍可继续查看。
 const unreadStorageKey = `tp_selector_unread:${auth.user?.id || 'anonymous'}`
@@ -676,7 +689,7 @@ const selectedIds = computed(() => {
   return ids
 })
 const registryTables = new Map()
-const allCurrentSelected = computed(() => rows.value.length > 0 && selectedIds.value.length === rows.value.length)
+const allCurrentSelected = computed(() => filteredRows.value.length > 0 && selectedIds.value.length === filteredRows.value.length)
 const someCurrentSelected = computed(() => selectedIds.value.length > 0 && !allCurrentSelected.value)
 function setRegistryTable(name, table) {
   if (!table) { registryTables.delete(name); return }
@@ -728,7 +741,7 @@ const pageOptions = computed(() => {
 const UNGROUPED_NAME = '__ungrouped__'
 const groupedRows = computed(() => {
   const map = new Map()
-  for (const r of rows.value) {
+  for (const r of filteredRows.value) {
     const p = r.page || ''
     if (!map.has(p)) map.set(p, [])
     map.get(p).push(r)
@@ -742,6 +755,8 @@ const groupedRows = computed(() => {
     name: page || UNGROUPED_NAME, pageLabel: page || '（未分类）', keys,
   }))
 })
+
+watch([registrySearch,registryStatus], () => { clearSelection(); activePages.value=groupedRows.value.map(g=>g.name) })
 
 // 导入旧注册表仅项目 admin（后端 import-legacy 要求 admin）；平台管理员在任何项目都视为 admin。
 const canImport = computed(() => !!pid.value && auth.roleIn(pid.value) === 'admin')
@@ -1070,7 +1085,7 @@ async function onRenamePage(grp) {
   try { ({ value } = await ElMessageBox.prompt('修改分组标题及说明第二段，保留导航 Tab、场景和元素命名。', '重命名分组', { inputValue: grp.name === UNGROUPED_NAME ? '' : grp.name, inputPattern: /^[^\[\]]{1,64}$/, inputErrorMessage: '请输入 1–64 字的名称，不含方括号', confirmButtonText: '保存' })) } catch { return }
   renamingPage.value = true
   try {
-    await renameSelectorPage({ project_id: pid.value, sub_product: subProduct.value, old_page: grp.name === UNGROUPED_NAME ? '' : grp.name, new_page: value.trim(), expected_revisions: Object.fromEntries(grp.keys.map(r => [r.id, r.revision])) })
+    await renameSelectorPage({ project_id: pid.value, sub_product: subProduct.value, old_page: grp.name === UNGROUPED_NAME ? '' : grp.name, new_page: value.trim(), expected_revisions: Object.fromEntries(rows.value.filter(r => (r.page || UNGROUPED_NAME) === grp.name).map(r => [r.id, r.revision])) })
     clearSelection(); await reload()
     ElMessage.success('分组名称已更新')
   } catch (error) { ElMessage.error(error.message || '重命名失败') } finally { renamingPage.value = false }

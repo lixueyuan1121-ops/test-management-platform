@@ -70,6 +70,34 @@ class AuditTests(unittest.TestCase):
         self.report(self.start(),[self.element()]);self.db.expire_all()
         self.assertEqual(self.db.get(SelectorKey,key_id).desc,'[自定义导航]-[自定义页面]-[自定义场景]-[返回按钮]')
 
+    def test_audit_button_kind_upgrades_only_generated_description(self):
+        el={'frame':'shell','tag':'div','text':'新建任务','verified':[{'by':'testid','value':'new-task'}]}
+        self.report(self.start(),[el]);self.db.expire_all()
+        row=self.db.query(SelectorKey).one();key_id=row.id
+        self.assertEqual(row.desc,'[首页]-[首页]-[首页浏览]-[新建任务控件]')
+        el['control_kind']='button'
+        self.report(self.start(),[el]);self.db.expire_all()
+        row=self.db.get(SelectorKey,key_id)
+        self.assertEqual(row.desc,'[首页]-[首页]-[首页浏览]-[新建任务按钮]')
+        self.assertEqual(row.change_status,'updated')
+        self.assertEqual(self.db.query(SelectorKey).count(),1)
+        row.desc='[首页]-[首页]-[手工场景]-[自定义按钮]';self.db.commit()
+        self.report(self.start(),[el]);self.db.expire_all()
+        self.assertEqual(self.db.get(SelectorKey,key_id).desc,'[首页]-[首页]-[手工场景]-[自定义按钮]')
+
+    def test_removed_passive_wrapper_retires_after_two_complete_visits(self):
+        wrapper={'frame':'shell','tag':'header','text':'新建任务','verified':[{'by':'css','value':'.aside-panel__header'}]}
+        button={'frame':'shell','tag':'div','text':'新建任务','control_kind':'button','verified':[{'by':'testid','value':'new-task'}]}
+        self.report(self.start(),[wrapper,button]);self.db.expire_all()
+        wrapper_id=self.db.query(SelectorKey).filter(SelectorKey.desc.like('%新建任务控件%')).one().id
+        self.report(self.start(),[button],complete=False);self.report(self.start(),[button],complete=False)
+        self.db.expire_all();self.assertNotEqual(self.db.get(SelectorKey,wrapper_id).change_status,'retired')
+        self.report(self.start(),[button]);self.db.expire_all()
+        self.assertNotEqual(self.db.get(SelectorKey,wrapper_id).change_status,'retired')
+        self.report(self.start(),[button]);self.db.expire_all()
+        self.assertEqual(self.db.get(SelectorKey,wrapper_id).change_status,'retired')
+        self.assertEqual(self.db.query(SelectorKey).filter(SelectorKey.change_status!='retired').count(),1)
+
     def test_ambiguous_but_present_controls_are_not_retired(self):
         self.report(self.start(),[self.element()])
         element=self.element();element['observed']=element['verified'];element['verified']=[]

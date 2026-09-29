@@ -414,7 +414,7 @@ export function createGuiCore(opts = {}) {
         let frameBox = { x: 0, y: 0 };
         let approx = false;
         if (target !== main) {
-          try { const fe = await target.frameElement(); const b = await fe.boundingBox(); if (b) frameBox = { x: b.x, y: b.y }; else { approx = true; } }
+          try { const fe = await target.frameElement(); const b = await fe.boundingBox(); if (b) frameBox = { x: b.x, y: b.y, w: b.width, h: b.height }; else { approx = true; } }
           catch { approx = true; }
         }
         let els = [];
@@ -430,6 +430,11 @@ export function createGuiCore(opts = {}) {
         // 时标 absApprox=true(前端虚线提示位置近似)。这样列表里每个元素都有框,不再漏。
         for (const el of els) {
           if (el.rect) { el.absRect = { x: frameBox.x + el.rect.x + mainScroll.x, y: frameBox.y + el.rect.y + mainScroll.y, w: el.rect.w, h: el.rect.h }; if (approx) el.absApprox = true; }
+          if (audit && el.captureRect && !approx) {
+            const r=el.captureRect, x=frameBox.x+r.x, y=frameBox.y+r.y;
+            const w=Math.min(r.w, (frameBox.w ?? Infinity)-r.x), h=Math.min(r.h,(frameBox.h ?? Infinity)-r.y);
+            if(w>0 && h>0 && x>=0 && y>=0)el.screenshotRect={x:x+mainScroll.x,y:y+mainScroll.y,w,h};
+          }
         }
         // 框选:只留"大部分落在框内"的元素(insideRatio≥0.5)。any-overlap 会把盖住框的页面级大容器
         // (.shell/.chat-main 等,仅极小比例与框相交)全放进来,淹没目标小控件;按占比过滤精准得多。

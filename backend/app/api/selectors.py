@@ -13,7 +13,7 @@ import json
 import os
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,8 @@ from app.services.selector_description import normalize_description, replace_seg
 from app.services.selector_ranking import is_valid_candidate, candidate_identity, merge_candidates
 from app.services.claude_runner import _SELECTOR_FIX_MARK
 from app.api.release import SUB_PRODUCTS  # 复用子产品白名单
+
+from app.services.selector_images import image_revision, read_image, save_image, remove_image, MAX_BYTES
 
 router = APIRouter(prefix="/api/selectors", tags=["selectors"])
 _RW = (ProjectRole.admin, ProjectRole.member)
@@ -55,6 +57,9 @@ def _key_out(r: SelectorKey) -> dict:
             "platform": r.platform,
             "key": r.key, "frame": r.frame, "page": r.page, "desc": r.desc,
             "change_status": r.change_status or "",
+            "screenshot_url": f"/uploads/{r.screenshot_path}" if r.screenshot_path else None,
+            "screenshot_source": r.screenshot_source or "",
+            "screenshot_revision": image_revision(r),
             "candidates": json.loads(r.candidates or "[]"),
             "updated_by": r.updated_by,
             "revision": selector_revision(r),
@@ -749,3 +754,35 @@ def scan_branch_import(body: ScanBranchIn, db: Session = Depends(get_db),
 
     return ok({**res, "branch": branch, "head": head, "scanned": len(testids),
                "auto_desc": len(auto_keys), "restored": restored})
+
+
+@router.post('/{kid}/screenshot')
+async def upload_selector_screenshot(kid: int, file: UploadFile = File(...), expected_revision: str = Query(...),
+                                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.query(SelectorKey).filter_by(id=kid).with_for_update().first()
+    if not row: raise HTTPException(404, '选择器不存在')
+    assert_project_role(db, user, row.project_id, _RW)
+    if image_revision(row) != expected_revision: raise HTTPException(409, '截图已变化，请刷新后重试')
+    old_path = row.screenshot_path
+    image = read_image(await file.read(MAX_BYTES+1))
+    try: row.screenshot_path = save_image(image, row.id)
+    finally: image.close()
+    row.screenshot_source = 'upload'
+    db.commit(); db.refresh(row)
+    remove_image(old_path)
+    return ok(_key_out(row))
+
+
+@router.delete('/{kid}/screenshot')
+def delete_selector_screenshot(kid: int, expected_revision: str = Query(...),
+                               db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.query(SelectorKey).filter_by(id=kid).with_for_update().first()
+    if not row: raise HTTPException(404, '选择器不存在')
+    assert_project_role(db, user, row.project_id, _RW)
+    if image_revision(row) != expected_revision: raise HTTPException(409, '截图已变化，请刷新后重试')
+    old_path = row.screenshot_path
+    row.screenshot_path = ''
+    row.screenshot_source = 'deleted'  # A manual deletion must not be silently undone by a scheduled audit.
+    db.commit(); db.refresh(row)
+    remove_image(old_path)
+    return ok(_key_out(row))

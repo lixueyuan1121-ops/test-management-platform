@@ -181,6 +181,13 @@ def report_probe(
         r.error = body.error
         r.status = "failed"
     db.commit()
+    from app.services.selector_images import remove_image, audit_page_path
+    for old_path in db.info.pop('selector_image_gc',set()): remove_image(old_path)
+    if (_loads(r.params) or {}).get('mode') == 'dom_audit':
+        from app.services.selector_audit import pages
+        for spec in pages():
+            try: audit_page_path(r.id,spec['id']).unlink(missing_ok=True)
+            except OSError: pass
     db.refresh(r)
     return ok(_to_out(r))
 
@@ -239,6 +246,8 @@ async def upload_screenshot(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="探测请求不存在")
     device = lock_device(db, ctx)
     assert_assigned(r, device)
+    if (_loads(r.params) or {}).get('mode') == 'dom_audit':
+        raise HTTPException(410, 'DOM 巡检已关闭图片采集，请更新 Runner')
     data = await file.read()
     if len(data) > _MAX_SHOT_BYTES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"截图过大（>{_MAX_SHOT_BYTES // 1024 // 1024}MB）")
@@ -263,3 +272,13 @@ def heartbeat(probe_id:int,db:Session=Depends(get_db),ctx:RunnerCtx=Depends(requ
     if r.status!='running':raise HTTPException(409,'探测已结束')
     r.updated_at=datetime.utcnow();db.commit()
     return ok({'cancel_requested':bool((_loads(r.params) or {}).get('cancel_requested'))})
+
+
+@router.post('/{probe_id}/audit-screenshot')
+async def upload_audit_page(probe_id: int, page_id: str = Query(...), file: UploadFile = File(...),
+                            db: Session = Depends(get_db), ctx: RunnerCtx = Depends(require_runner_ctx)):
+    device = lock_device(db, ctx)
+    probe = db.get(ProbeRequest, probe_id)
+    if not probe: raise HTTPException(404, '探测不存在')
+    assert_assigned(probe, device)
+    raise HTTPException(410, 'DOM 巡检已关闭图片采集，请更新 Runner')

@@ -19,3 +19,27 @@ test('audit verifies CSS and XPath, groups list templates and isolates shadow ro
   assert.equal(scoped.length,1);assert.equal(scoped[0].text,'返回');
  }finally{await browser.close();}
 });
+
+test('audit keeps real same-name buttons but omits passive action wrappers',async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.setContent(`<style>.chat-button{cursor:pointer}</style>
+   <header class="aside-panel__header"><button aria-label="搜索任务"></button><div class="chat-button" data-testid="new-task"><span>新建任务</span></div></header>
+   <header class="other-panel__header"><div class="chat-button" data-testid="other-new-task"><span>新建任务</span></div></header>
+   <header class="named-panel__header" data-testid="named-panel"><button>新建任务</button></header>
+   <header class="title-panel__header"><span>任务分组</span><button>新建任务</button></header>
+   <h2>新建任务</h2><button>新建任务</button><button>新建任务</button>`);
+  const rows=await page.evaluate(DISCOVER_SCRIPT,{audit:true});
+  const values=rows.flatMap(r=>r.verified.map(c=>c.value));
+  assert(!values.includes('.aside-panel__header'));assert(!values.includes('.other-panel__header'));
+  assert(values.includes('new-task'));assert(values.includes('other-new-task'));
+  assert.equal(rows.find(r=>r.verified.some(c=>c.value==='new-task')).control_kind,'button');
+  assert.equal(rows.find(r=>r.verified.some(c=>c.value==='named-panel')).control_kind,'container');
+  assert(values.includes('.title-panel__header'));
+  assert.equal(rows.filter(r=>r.tag==='button'&&r.text==='新建任务').length,4);
+  assert.equal(rows.find(r=>r.tag==='h2').control_kind,'heading');
+  const normal=await page.evaluate(DISCOVER_SCRIPT,{});
+  assert(normal.some(r=>r.candidates.some(c=>c.value==='.aside-panel__header')));
+ }finally{await browser.close();}
+});

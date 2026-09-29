@@ -8,6 +8,34 @@ export const DISCOVER_SCRIPT = function ({ relax = false, audit = false, auditRo
   const isHash = (cls) => /[A-Za-z0-9]{6,}$/.test(cls) && !/[-_]/.test(cls.slice(-8));
   const controlSelector = 'button, a[href], input, textarea, select, [role=button], [role=tab], [role=menuitem], [contenteditable=true], [onclick]';
   const hasControls = el => !!el.querySelector(controlSelector);
+  const testAnchorSelector = '[data-testid], [data-test-id], [data-test]';
+  const auditActionable = el => el.matches(controlSelector) ||
+    (el.hasAttribute('tabindex') && el.tabIndex >= 0) ||
+    (getComputedStyle(el).cursor === 'pointer' && (!el.parentElement || getComputedStyle(el.parentElement).cursor !== 'pointer'));
+  // A passive header may only repeat the text of a real button underneath it.
+  // Keep independently named/anchored containers and headings; never dedupe by text alone.
+  const passiveActionWrapper = el => {
+    if (auditActionable(el) || el.matches(testAnchorSelector+', [id], [role], [aria-label], [aria-labelledby], h1, h2, h3')) return false;
+    const actions = [...el.querySelectorAll('*')].filter(n => isVisible(n) && auditActionable(n));
+    if (!actions.length) return false;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.textContent.trim() || !isVisible(node.parentElement)) continue;
+      if (!actions.some(action => action.contains(node))) return false;
+    }
+    return true;
+  };
+  const auditControlKind = el => {
+    const tag = el.tagName.toLowerCase(), role = el.getAttribute('role');
+    if (tag === 'button' || role === 'button' || (auditActionable(el) && [...el.classList].some(c => /(?:^|[-_])(button|btn)(?:$|[-_])/.test(c)))) return 'button';
+    if (role === 'tab') return 'tab';
+    if (el.matches('h1,h2,h3,[role=heading]')) return 'heading';
+    if (['input','textarea','select','a'].includes(tag)) return tag;
+    if (hasControls(el) || [...el.querySelectorAll('*')].some(auditActionable)) return 'container';
+    return tag;
+  };
+
   const accessibleName = el => {
     const labelled = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean).map(id => el.getRootNode().getElementById?.(id)?.textContent || '').join(' ').trim();
     return labelled || el.getAttribute('aria-label') || (el.labels?.length ? [...el.labels].map(label => label.textContent).join(' ').trim() : '') || (hasControls(el) ? '' : (el.innerText || '').trim()) || el.getAttribute('title') || '';
@@ -100,7 +128,7 @@ export const DISCOVER_SCRIPT = function ({ relax = false, audit = false, auditRo
       try { if (el.matches(sel) || getComputedStyle(el).cursor === "pointer") set.add(el); } catch { /* 忽略 */ }
     }
     elements = [...set].filter((el) => {
-      if (el.matches(controlSelector)) return true; // 独立按钮不可被同文本或空文本的父容器去掉。
+      if (el.matches(controlSelector) || (audit && (el.matches(testAnchorSelector) || auditActionable(el)))) return true; // 独立按钮不可被同文本或空文本的父容器去掉。
       const t = (el.innerText || "").trim();
       for (let p = el.parentElement; p; p = p.parentElement) {
         if (t && set.has(p) && !hasControls(p) && (p.innerText || "").trim() === t) return false;
@@ -112,6 +140,7 @@ export const DISCOVER_SCRIPT = function ({ relax = false, audit = false, auditRo
   const roots = [document, ...all.filter(el => el.shadowRoot).map(el => el.shadowRoot)];
   if(audit) elements=elements.filter(el=>el.matches(controlSelector+', [data-testid], [data-test-id], [data-test], [class*=btn], [class*=action], [class*=__title], [class*=__label], [class*=__header], h1,h2,h3,[role=heading]') ||
     (getComputedStyle(el).cursor==='pointer' && (!el.parentElement || getComputedStyle(el.parentElement).cursor!=='pointer')));
+  if (audit) elements = elements.filter(el => !passiveActionWrapper(el));
   const verifiedCache = new Map();
   const query = sel => {
     if (!verifiedCache.has(sel)) verifiedCache.set(sel, roots.flatMap(root => [...root.querySelectorAll(sel)]));
@@ -177,6 +206,16 @@ export const DISCOVER_SCRIPT = function ({ relax = false, audit = false, auditRo
     }
     return {verified, collections:[]};
   }
+  const captureRect = el => {
+    const r = el.getBoundingClientRect();
+    let left=Math.max(0,r.left), top=Math.max(0,r.top), right=Math.min(innerWidth,r.right), bottom=Math.min(innerHeight,r.bottom);
+    for (let p=el.parentElement;p;p=p.parentElement) {
+      const style=getComputedStyle(p), box=p.getBoundingClientRect();
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {left=Math.max(left,box.left);right=Math.min(right,box.right);}
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {top=Math.max(top,box.top);bottom=Math.min(bottom,box.bottom);}
+    }
+    return right>left && bottom>top ? {x:left,y:top,w:right-left,h:bottom-top} : null;
+  };
   const out = [];
   const epoch = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
   const refs = new Map();
@@ -193,7 +232,7 @@ export const DISCOVER_SCRIPT = function ({ relax = false, audit = false, auditRo
     const r = el.getBoundingClientRect();
     const element_ref = epoch + ':' + out.length;
     refs.set(element_ref, el);
-    out.push({ ...(audit ? auditLocators(el, candidates) : {}), element_ref, accessibleName: accessibleName(el), tooltipText: tooltipText(el), tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || (audit ? "" : el.value) || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 6), best: candidates[0], uniqueXPath: uniqueXPath(el) });
+    out.push({ ...(audit ? {...auditLocators(el, candidates), control_kind: auditControlKind(el), captureRect: captureRect(el)} : {}), element_ref, accessibleName: accessibleName(el), tooltipText: tooltipText(el), tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || (audit ? "" : el.value) || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 6), best: candidates[0], uniqueXPath: uniqueXPath(el) });
   }
   return out;
 };

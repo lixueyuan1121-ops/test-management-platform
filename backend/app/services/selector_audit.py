@@ -58,6 +58,16 @@ def enqueue(db, schedule, trigger='manual'):
     schedule.error = ''
     return r
 
+
+def element_description(spec, element, primary, collection, *, legacy=False):
+    kinds = {'button':'按钮','input':'输入框','textarea':'输入框','select':'选择框','a':'链接',
+             'tab':'选项卡','heading':'标题','container':'容器'}
+    kind = element.get('tag') if legacy else element.get('control_kind') or element.get('tag')
+    label = (primary['value'] if collection else element.get('text') or primary['value'])[:65]
+    label += kinds.get(kind, '控件') + ('（列表集合，多个）' if collection else '')
+    return compose_description([spec['tab'],spec['label'],spec['label']+'浏览',label])
+
+
 def reconcile(db, probe, result):
     run = db.query(SelectorAuditRun).filter_by(probe_id=probe.id).with_for_update().first()
     if not run:
@@ -128,9 +138,7 @@ def reconcile(db, probe, result):
                 scope = '' if global_identity else spec['id'] + ('/collection' if collection else '/single')
                 key = 'dom_' + re.sub(r'[^A-Za-z0-9_]', '_',primary['value'])[:40] + '_' + hashlib.sha256((scope+frame+candidate_identity(primary)).encode()).hexdigest()[:10]
                 if any(r.key==key for r in by_id.values()): counts['conflicts']+=1; continue
-                kind = {'button':'按钮','input':'输入框','textarea':'输入框','select':'选择框','a':'链接'}.get(el.get('tag'),'控件')
-                label = (primary['value'] if collection else el.get('text') or primary['value'])[:65] + kind + ('（列表集合，多个）' if collection else '')
-                desc = compose_description([spec['tab'],spec['label'],spec['label']+'浏览',label])
+                desc = element_description(spec, el, primary, collection)
                 row = SelectorKey(project_id=probe.project_id,sub_product=probe.sub_product,key=key,frame=frame,page=spec['label'],desc=desc,candidates='[]',change_status='new',updated_by=probe.created_by)
                 db.add(row);db.flush();by_id[row.id]=row;created=True
             existing=json.loads(row.candidates or '[]')
@@ -142,6 +150,10 @@ def reconcile(db, probe, result):
             if not split_description(desc):
                 desc = normalize_description(desc, row.page or spec['label'], row.key,
                     navigation=spec['tab'], scene=(row.page or spec['label'])+'浏览')
+            # Upgrade only an unchanged audit-generated label, not a user-authored description.
+            if (el.get('control_kind') and any(o.key_id==row.id and o.managed for o in observations.values())
+                    and desc == element_description(spec, el, primary, collection, legacy=True)):
+                desc = element_description(spec, el, primary, collection)
             description_changed = desc != row.desc
             if created or additions or description_changed or row.change_status=='retired':
                 if not created: remember(db,row,probe.created_by)
