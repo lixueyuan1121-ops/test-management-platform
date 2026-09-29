@@ -426,6 +426,14 @@ def ensure_ai_provider_columns() -> None:
         _ensure_index("test_case", "idx_testcase_provider", "provider")
 
 
+def ensure_selector_change_status_column() -> None:
+    """Independent management status; legacy records remain unmarked."""
+    cols = _columns("selector_key")
+    if cols and "change_status" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE selector_key ADD COLUMN change_status VARCHAR(16) NOT NULL DEFAULT ''"))
+
+
 def ensure_selector_page_column() -> None:
     """selector_key 表补列 page（页面分组维度，纯组织用，不参与定位）。
 

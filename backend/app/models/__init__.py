@@ -96,3 +96,5 @@ __all__ = [
 from .selector_revision import SelectorRevision
 
 from app.models.verified_import_job import VerifiedImportJob, VerifiedImportItem
+
+from .selector_audit import SelectorAuditSchedule, SelectorAuditRun, SelectorAuditObservation

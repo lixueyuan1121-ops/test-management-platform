@@ -57,6 +57,7 @@
       <el-table :data="displayRows" v-loading="loading" size="small" border stripe empty-text="没有符合条件的用例"
                 @selection-change="(s) => (selected = s)">
         <el-table-column type="selection" width="42" />
+        <el-table-column prop="id" label="用例编号" width="100" align="center" />
         <el-table-column label="维度" width="80" align="center">
           <template #default="{ row }">
             <el-tag :type="CAT_TYPE[row.category] || 'info'" effect="plain" size="small">{{ row.category || '—' }}</el-tag>

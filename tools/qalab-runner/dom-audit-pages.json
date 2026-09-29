@@ -1,0 +1,768 @@
+[
+  {
+    "id": "home",
+    "label": "首页",
+    "tab": "首页",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "home-main"
+    }
+  },
+  {
+    "id": "tasks",
+    "label": "任务列表",
+    "tab": "任务",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-history"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "history-page"
+    }
+  },
+  {
+    "id": "skills",
+    "label": "技能广场",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-skills"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "skills-view"
+    }
+  },
+  {
+    "id": "experts",
+    "label": "专家",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-agents"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "experts-create-btn"
+    }
+  },
+  {
+    "id": "projects",
+    "label": "项目",
+    "tab": "项目",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-projects"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "project-page"
+    }
+  },
+  {
+    "id": "files",
+    "label": "云盘",
+    "tab": "云盘",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-cloud-drive"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "cloud-drive-page"
+    }
+  },
+  {
+    "id": "automation",
+    "label": "自动化",
+    "tab": "自动化",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-automation"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "automation-page"
+    }
+  },
+  {
+    "id": "connectors",
+    "label": "连接器",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-links"
+      }
+    ],
+    "ready": {
+      "by": "testid",
+      "value": "skill-hub-links"
+    }
+  },
+  {
+    "id": "task-detail",
+    "label": "任务详情",
+    "tab": "任务",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-history"
+      },
+      {
+        "by": "testid",
+        "value": "history-card",
+        "nth": 0
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".chat-compose"
+    },
+    "root": ".chat-main, .chat-right-iterm",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "skill-detail",
+    "label": "技能详情",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-skills"
+      },
+      {
+        "by": "testid",
+        "value": "skills-card",
+        "nth": 0
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".skill-details-modal"
+    },
+    "root": ".skill-details-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".skill-details-header__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "skills-my",
+    "label": "我的技能",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-skills"
+      },
+      {
+        "by": "css",
+        "value": ".skills-view button.top-nav__category",
+        "has_text": "我的技能"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".skills-view"
+    },
+    "root": ".skills-view",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "skills-rank",
+    "label": "技能热门榜单",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-skills"
+      },
+      {
+        "by": "css",
+        "value": ".skills-view button.top-nav__category",
+        "has_text": "热门榜单"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".skills-view"
+    },
+    "root": ".skills-view",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "skill-create-menu",
+    "label": "技能创建菜单",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-skills"
+      },
+      {
+        "by": "testid",
+        "value": "skills-create-btn"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".top-nav__create-menu"
+    },
+    "root": ".top-nav__create-menu",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "project-detail",
+    "label": "项目详情",
+    "tab": "项目",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-projects"
+      },
+      {
+        "by": "testid",
+        "value": "project-card",
+        "nth": 0
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".project-page"
+    },
+    "root": ".project-page",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "project-create-dialog",
+    "label": "新建项目弹窗",
+    "tab": "项目",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-projects"
+      },
+      {
+        "by": "testid",
+        "value": "project-create-btn"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".project-modal-card"
+    },
+    "root": ".project-modal-card",
+    "close": [
+      {
+        "by": "css",
+        "value": ".create-project-modal__btn--cancel"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-general",
+    "label": "通用设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"general\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"general\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-memory",
+    "label": "记忆设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"memory\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"memory\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-models",
+    "label": "模型设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"models\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"models\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-links",
+    "label": "手机遥控电脑设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"links\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"links\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-security",
+    "label": "安全设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"security\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"security\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-about",
+    "label": "关于应用",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"about\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"about\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "experts-my",
+    "label": "我的专家",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-agents"
+      },
+      {
+        "by": "css",
+        "value": ".experts-view button.top-nav__category",
+        "has_text": "我的专家"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".experts-view"
+    },
+    "root": ".experts-view",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "experts-rank",
+    "label": "专家热门榜单",
+    "tab": "技能",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-skills"
+      },
+      {
+        "by": "css",
+        "value": "button.skills-create__back",
+        "if_visible": true
+      },
+      {
+        "by": "testid",
+        "value": "skill-hub-agents"
+      },
+      {
+        "by": "css",
+        "value": ".experts-view button.top-nav__category",
+        "has_text": "热门榜单"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".experts-view"
+    },
+    "root": ".experts-view",
+    "close": [],
+    "depth": 2
+  },
+  {
+    "id": "settings-coin",
+    "label": "算力豆设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"coin\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"coin\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-pet",
+    "label": "宠物设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"pet\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"pet\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-developerSet",
+    "label": "设备管理设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"developerSet\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"developerSet\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  },
+  {
+    "id": "settings-floatingBall",
+    "label": "桌面悬浮球设置",
+    "tab": "设置",
+    "nav": [
+      {
+        "by": "testid",
+        "value": "nav-home"
+      },
+      {
+        "by": "testid",
+        "value": "user-menu-avatar-entry"
+      },
+      {
+        "by": "css",
+        "value": "button.personal-menu-item:has(.personal-menu-item-label:text-is(\"设置\"))"
+      },
+      {
+        "by": "css",
+        "value": ".config-modal__tab:has([data-tab=\"floatingBall\"])"
+      }
+    ],
+    "ready": {
+      "by": "css",
+      "value": ".config-modal__tab--active:has([data-tab=\"floatingBall\"])"
+    },
+    "root": ".config-modal",
+    "close": [
+      {
+        "by": "css",
+        "value": ".config-modal__close"
+      }
+    ],
+    "depth": 2
+  }
+]

@@ -7,6 +7,20 @@ from scripts.test_requirement_analysis import draft
 class FocusedReviewTests(unittest.TestCase):
     def setUp(self):
         self.d = RequirementDraft.model_validate(draft())
+    def test_answer_completes_empty_expected_criteria_and_scene(self):
+        self.d.rules[0].expected='';self.d.rules[0].criteria=[];self.d.scenarios=[]
+        q=self.d.questions[0];q.rule_ids=[self.d.rules[0].id];q.answer='切换成功即可，目标页面可见'
+        apply_review_policy(self.d,[])
+        self.assertEqual(self.d.rules[0].status,'confirmed')
+        self.assertIn(q.answer,self.d.rules[0].expected)
+        self.assertEqual(len([s for s in self.d.scenarios if s.rule_id==self.d.rules[0].id]),1)
+        apply_review_policy(self.d,[])
+        self.assertEqual(len(self.d.rules[0].criteria),1)
+        q.answer=''
+        apply_review_policy(self.d,[])
+        self.assertEqual(self.d.rules[0].expected,'')
+        self.assertEqual(self.d.rules[0].status,'pending')
+
     def test_clear_rule_needs_no_scene_tick_but_inferred_stays_pending(self):
         apply_review_policy(self.d, [])
         self.assertEqual([r.status for r in self.d.rules], ['confirmed', 'pending'])

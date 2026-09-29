@@ -1,4 +1,4 @@
-export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
+export const DISCOVER_SCRIPT = function ({ relax = false, audit = false, auditRoot = "" } = {}) {
   const isVisible = (el) => {
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
@@ -108,18 +108,92 @@ export const DISCOVER_SCRIPT = function ({ relax = false } = {}) {
       return true;
     });
   }
+  // Resolve against every open shadow root, like Playwright CSS, not just el's root.
+  const roots = [document, ...all.filter(el => el.shadowRoot).map(el => el.shadowRoot)];
+  if(audit) elements=elements.filter(el=>el.matches(controlSelector+', [data-testid], [data-test-id], [data-test], [class*=btn], [class*=action], [class*=__title], [class*=__label], [class*=__header], h1,h2,h3,[role=heading]') ||
+    (getComputedStyle(el).cursor==='pointer' && (!el.parentElement || getComputedStyle(el.parentElement).cursor!=='pointer')));
+  const verifiedCache = new Map();
+  const query = sel => {
+    if (!verifiedCache.has(sel)) verifiedCache.set(sel, roots.flatMap(root => [...root.querySelectorAll(sel)]));
+    return verifiedCache.get(sel);
+  };
+  const dynamic = value => /(?:[0-9a-f]{16,}|\d{6,}|chat-sidebar-item-)/i.test(value);
+  const templateClass = c => /(?:^|[-_])(item|card|row|group|event|category|tab|option)(?:$|--|[-_]view$)/.test(c);
+  const templateSignature = n => n.tagName+':'+([...n.classList].find(templateClass)?.split('--')[0] || n.getAttribute('role') || n.tagName);
+  function repeatedItem(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      if (['LI','TR','ARTICLE'].includes(n.tagName) || ['listitem','row','option','tab'].includes(n.getAttribute('role')) || [...n.classList].some(templateClass)) return n;
+    }
+    return null;
+  }
+  function auditLocators(el, candidates) {
+    const verified = [], collections = [];
+    for (const raw of candidates) {
+      const c=['label','placeholder'].includes(raw.by) ? {...raw,by:'css',value:raw.sel} : raw;
+      if (!['testid','css'].includes(c.by) || dynamic(c.value)) continue;
+      const sel = c.by === 'testid' ? `[data-testid=${JSON.stringify(c.value)}]` : c.value;
+      try {
+        const nodes = query(sel);
+        if (nodes.length === 1 && nodes[0] === el) verified.push(c);
+        else if (nodes.length > 1 && nodes.includes(el)) {
+          const items = nodes.map(repeatedItem);
+          // A shared icon class in unrelated toolbars is not a list collection.
+          if (items.every(Boolean) && new Set(items).size === nodes.length && items.every(n => templateSignature(n) === templateSignature(items[0])))
+            collections.push({...c, src:'audit_collection', count:nodes.length});
+        }
+      } catch { /* Invalid candidate cannot be registered. */ }
+    }
+    // For a repeated template without a direct class/testid, build a path
+    // relative to the row, never a document-wide positional XPath per record.
+    if (!collections.length && !verified.some(c=>c.by==='testid')) {
+      const item=repeatedItem(el);
+      if(item) {
+        const anchor=genCandidates(item).find(c=>['testid','css'].includes(c.by) && !dynamic(c.value));
+        if(anchor) {
+          let selector=anchor.by==='testid' ? `[data-testid=${JSON.stringify(anchor.value)}]` : anchor.value;
+          const parts=[];
+          for(let n=el;n && n!==item;n=n.parentElement) {
+            const siblings=[...n.parentElement.children].filter(x=>x.tagName===n.tagName);
+            parts.unshift(`${n.tagName.toLowerCase()}:nth-of-type(${siblings.indexOf(n)+1})`);
+          }
+          if(parts.length)selector+=' > '+parts.join(' > ');
+          try {
+            const nodes=query(selector),items=nodes.map(repeatedItem);
+            if(nodes.length>1 && nodes.includes(el) && items.every(Boolean) && new Set(items).size===nodes.length && items.every(n=>templateSignature(n)===templateSignature(items[0])))
+              collections.push({by:'css',value:selector,src:'audit_collection',count:nodes.length});
+          }catch { /* Keep the verified unique fallback if template is ambiguous. */ }
+        }
+      }
+    }
+    if (collections.length && !verified.some(c => c.by === 'testid')) return {verified:[], collections:[collections[0]]};
+    if (!verified.length) {
+      const xpath = uniqueXPath(el);
+      try {
+        if (xpath) {
+          const found = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          if (found.snapshotLength === 1 && found.snapshotItem(0) === el) verified.push({by:'xpath',value:xpath,src:'audit_xpath'});
+        }
+      } catch { /* Invalid XPath is reported as unverified. */ }
+    }
+    return {verified, collections:[]};
+  }
   const out = [];
   const epoch = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
   const refs = new Map();
   window.__qalabProbeElements = refs; // 仅本次探测有效；下一次探测/导航后旧引用失效。
   for (const el of elements) {
     if (!isVisible(el)) continue;
+    if (audit && auditRoot) {
+      let n = el, inside = false;
+      while (n) { if (n.matches?.(auditRoot)) {inside=true;break;} n=n.parentElement || n.getRootNode?.().host; }
+      if (!inside) continue;
+    }
     const candidates = genCandidates(el);
-    if (!candidates.length) continue;
+    if (!candidates.length && !audit) continue;
     const r = el.getBoundingClientRect();
     const element_ref = epoch + ':' + out.length;
     refs.set(element_ref, el);
-    out.push({ element_ref, accessibleName: accessibleName(el), tooltipText: tooltipText(el), tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.value || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 6), best: candidates[0], uniqueXPath: uniqueXPath(el) });
+    out.push({ ...(audit ? auditLocators(el, candidates) : {}), element_ref, accessibleName: accessibleName(el), tooltipText: tooltipText(el), tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || (audit ? "" : el.value) || "").trim().slice(0, 40), rect: { x: r.left, y: r.top, w: r.width, h: r.height }, candidates: candidates.slice(0, 6), best: candidates[0], uniqueXPath: uniqueXPath(el) });
   }
   return out;
 };

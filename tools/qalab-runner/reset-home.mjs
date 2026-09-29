@@ -1,3 +1,4 @@
+import { homeRoleKeys } from './home-anchors.mjs';
 // 用例前硬复位的重试封装(与 runner 主循环解耦,便于单测)。
 // gui.resetHome() 失败重试至多 attempts 次;全失败返回 false(调用方判 fail,不空跑脏态用例)。
 export async function resetHomeWithRetry(gui, log = () => {}, attempts = 2) {
@@ -9,19 +10,15 @@ export async function resetHomeWithRetry(gui, log = () => {}, attempts = 2) {
 }
 
 
-// 首页「就绪锚点」候选 key:不同被测产品/注册表命名不一 —— 内置注册表用 homepageTitle,
-// 新版 home 用 homeGreetingTitle(线上导入的注册表)。按注册存在性过滤后任一可见即算首页停稳。
-// 新增命名时在此登记别名即可(单点)。
-const HOME_READY_KEYS = ["homepageTitle", "homeGreetingTitle"];
-// 登录弹窗锚点候选 key(掉登录检测)。
-const LOGIN_MODAL_KEYS = ["loginModal"];
+// 首页、导航和登录锚点由 home-anchors.mjs 统一识别：兼容旧语义 key 与巡检生成 key。
+// 只使用注册表中准确的对应定位；执行前仍验证首页唯一可见、无登录弹窗。
 // 复位自愈入口候选 key:首页 reload 后没停稳时,点侧栏「新建任务/新建对话」强制开一个干净会话回首页。
 // 对齐人工纠偏动作(卡在会话/详情里 → 点侧栏新建任务)。按注册存在性过滤,注册表没登记则跳过。
 const NEW_CONVERSATION_KEYS = ["newTask", "newChat"];
 // 复位自愈入口候选 key:点侧栏主导航「首页」切回首页 Tab(无副作用,不开新会话)。
 // 对齐人工纠偏动作(卡在会话/详情/其它 Tab 里 → 点侧栏『首页』导航)。reload 只重载同一 SPA 路由、
 // 关不掉时,显式导航回首页最贴合意图;按注册存在性过滤,注册表没登记则跳过。
-const NAV_HOME_KEYS = ["navHome"];
+
 
 // 从候选名里挑出「当前注册表确实登记了」的 key。
 // 关键:isKeyVisible 对**未注册的 key 也返回 false**,无法区分「注册表压根没这个锚点」与「注册了但
@@ -63,7 +60,7 @@ async function clickFirstAvailable(gui, keys, okLog, log) {
 
 // 点侧栏主导航「首页」切回首页 Tab(无副作用)。都不可用返回 null。
 async function clickNavHome(gui, log) {
-  return clickFirstAvailable(gui, NAV_HOME_KEYS, (k) => `  首页没停稳:已点主导航「${k}」切回首页,重探就绪`, log);
+  return clickFirstAvailable(gui, homeRoleKeys(gui.registry, "navigation"), (k) => `  首页没停稳:已点主导航「${k}」切回首页,重探就绪`, log);
 }
 
 // 点侧栏「新建任务/新建对话」开干净会话回首页(有副作用)。都不可用返回 null。
@@ -96,10 +93,10 @@ async function tryGuiHeal(gui, method, desc, log) {
 // Persistent business data is preserved; test-specific setup/cleanup belongs in
 // explicit fixture steps, not a blanket deletion of the signed-in client profile.
 export async function resetOrBlock(gui, log = () => {}, { readyTimeout = 8000, pollMs = 300, maxHealRounds = 3, restartClientFn } = {}) {
-  const loginKeys = registeredKeys(gui, LOGIN_MODAL_KEYS);
-  const homeKeys = registeredKeys(gui, HOME_READY_KEYS);
+  const loginKeys = homeRoleKeys(gui.registry, "login");
+  const homeKeys = homeRoleKeys(gui.registry, "ready");
   const blocked = (reason) => ({ ok: false, result: { verdict: "fail", fail_kind: "selector", reason, duration_ms: 1 } });
-  if (!homeKeys.length) return blocked("未配置首页就绪锚点，请登记 homepageTitle/homeGreetingTitle 后执行");
+  if (!homeKeys.length) return blocked("未配置首页就绪锚点：请巡检首页标题/主区域，或登记 homepageTitle/homeGreetingTitle；仅首页导航不能证明页面就绪");
   // 内部helper:调 restartClientFn 重启客户端,等 CDP 就绪后再尝试一次 resetHome。
   // 成功返回 true;无 restartClientFn / 重启失败 / 复位仍失败均返回 false。
   async function tryRestartAndReset(label) {

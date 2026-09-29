@@ -73,7 +73,7 @@
         <el-table v-if="visibleRules.length" :data="visibleRules" border size="small" row-key="id">
           <el-table-column prop="id" label="编号" width="90" />
           <el-table-column label="要测什么、应该看到什么" min-width="290">
-            <template #default="{ row }"><button class="rule-title" @click="editingRule = row">{{ row.title }}</button><p class="hint">{{ row.platform }} {{ row.module }} · {{ row.criteria.length }} 个验收条件</p><p><b>什么时候：</b>{{ row.condition || '还没说清楚' }}</p><p><b>做什么：</b>{{ row.action || '还没说清楚' }}</p><p><b>应该看到：</b>{{ row.expected || '还没说清楚' }}</p></template>
+            <template #default="{ row }"><button class="rule-title" @click="editingRule = draft.rules.find(r => r.id === row.id)">{{ row.title }}</button><p class="hint">{{ row.platform }} {{ row.module }} · {{ row.criteria.length }} 个验收条件</p><p><b>什么时候：</b>{{ row.condition || '还没说清楚' }}</p><p><b>做什么：</b>{{ row.action || '还没说清楚' }}</p><p><b>应该看到：</b>{{ row.expected || '还没说清楚' }}</p></template>
           </el-table-column>
           <el-table-column label="依据" width="110"><template #default="{ row }"><el-tag :type="row.source_type === 'explicit' ? 'info' : 'warning'" size="small">{{ row.source_type === 'explicit' ? '原文已说清楚' : '资料未说清楚' }}</el-tag></template></el-table-column>
           <el-table-column label="是否需要处理" width="200"><template #default="{ row }"><el-tag :type="stateOf(row) === 'confirmed' ? 'success' : stateOf(row) === 'excluded' ? 'info' : 'warning'">{{ {confirmed:'已明确，无需逐条确认',pending:'待确认',excluded:'本期不测'}[stateOf(row)] }}</el-tag><el-button v-if="stateOf(row) === 'pending'" link type="primary" @click="tab = 'questions'">去处理问题</el-button></template></el-table-column>
@@ -95,10 +95,10 @@
       <article v-for="item in pendingRows" :key="item.rule.id" class="question-card">
           <strong>{{ item.rule.title }}：{{ item.issues.length ? '还需要补充什么？' : '已补齐，保存后生效' }}</strong>
           <ul><li v-for="issue in item.issues" :key="issue">{{ issue }}</li></ul>
-          <el-input v-if="item.rule.source_type !== 'explicit' || visuals.some(v => item.rule.source_material_ids.includes(v.id) && v.status !== 'read')" v-model="item.rule.review_note" type="textarea" :disabled="disabled || working || saving" :aria-label="`${item.rule.id} 处理说明`" placeholder="请写清按什么理解测试，以及依据是什么。" />
-          <el-button link type="primary" @click="editingRule = item.rule">补充或修改规则</el-button>
+          <el-input v-if="item.rule.source_type !== 'explicit' || visuals.some(v => item.rule.source_material_ids.includes(v.id) && v.status !== 'read')" v-model="draft.rules.find(r => r.id === item.rule.id).review_note" type="textarea" :disabled="disabled || working || saving" :aria-label="`${item.rule.id} 处理说明`" placeholder="请写清按什么理解测试，以及依据是什么。" />
+          <el-button link type="primary" @click="editingRule = draft.rules.find(r => r.id === item.rule.id)">补充或修改规则</el-button>
           <el-button v-if="item.issues.some(x => x.includes('场景') || x.includes('操作示例'))" link type="primary" @click="tab = 'scenarios'">补充操作示例</el-button>
-          <el-button link @click="editingRule = item.rule">本期不测（原因选填）</el-button>
+          <el-button link @click="editingRule = draft.rules.find(r => r.id === item.rule.id)">本期不测（原因选填）</el-button>
         </article>
       </el-tab-pane>
       <el-tab-pane :label="`图片与图表（${visuals.length}）`" name="images">
@@ -113,6 +113,7 @@
     </el-tabs>
 
     <div v-if="draft" class="confirm-area">
+      <p class="hint">已填写的澄清结论会自动补入对应规则的预期结果和验收条件；勾选后确认本次生成范围。</p>
       <el-checkbox v-model="scopeReviewed" :disabled="disabled || working || saving">我同意用已明确的规则生成用例，待确认的内容暂不生成</el-checkbox>
       <el-input v-model="confirmationNote" type="textarea" :disabled="disabled || working || saving" :rows="2" placeholder="确认说明（选填）：可记录补充内容或本期不测的原因" aria-label="验收确认说明" />
       <ul v-if="blockers.length" class="blockers"><li v-for="message in blockers" :key="message">{{ message }}</li></ul>

@@ -5,6 +5,7 @@ from app.models.selector_revision import SelectorRevision
 
 def snapshot(row):
     return {"platform": row.platform, "frame": row.frame, "page": row.page, "desc": row.desc,
+            "change_status": row.change_status or "",
             "candidates": json.loads(row.candidates or "[]")}
 
 

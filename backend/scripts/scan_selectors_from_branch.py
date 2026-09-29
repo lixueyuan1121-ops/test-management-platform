@@ -71,12 +71,12 @@ _TAB_BY_PREFIX = [
     ("history-", ("任务", "任务页")),
     ("home-", ("首页", "技能引导首页")),
     ("automation-", ("自动化", "自动化页")), ("acm-", ("自动化", "自动化创建弹窗")),
-    ("expert-", ("专家", "专家广场")), ("creator-", ("专家", "专家创建页")),
-    ("swarm-", ("专家", "专家团面板")), ("skills-", ("专家", "技能广场")),
-    ("agent-", ("专家", "专家页")),
+    ("expert-", ("技能", "专家广场")), ("creator-", ("技能", "专家创建页")),
+    ("swarm-", ("技能", "专家团面板")), ("skills-", ("技能", "技能广场")),
+    ("agent-", ("技能", "专家页")),
     ("project-", ("项目", "项目页")),
     ("cloud-", ("文件", "文件页")), ("kb-", ("知识库", "知识库页")),
-    ("links-", ("连接器", "连接器页")), ("channel-", ("连接器", "连接器页")),
+    ("links-", ("技能", "连接器页")), ("channel-", ("技能", "连接器页")),
     ("usage-", ("设置", "用量页")), ("user-menu", ("设置", "头像菜单")),
     ("sessions-", ("会话", "会话列表页")), ("session-", ("会话", "会话列表页")),
     ("chat-", ("会话", "会话页")), ("compose-", ("会话", "聊天输入框")),
@@ -176,6 +176,8 @@ def build_registry(testids: list[str], known_map: dict) -> tuple[dict, list[str]
             page = desc.split("]-[")[1] if "]-[" in desc else ""
             frame = "vm"
             auto_keys.append(key)
+        if desc.startswith("[专家]-"):
+            desc = "[技能]-" + desc[len("[专家]-"):]
         registry[key] = {"frame": frame, "page": page, "desc": desc,
                          "candidates": [{"by": "testid", "value": tid}]}
     return registry, auto_keys

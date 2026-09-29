@@ -6,3 +6,10 @@ test('明确内容无需逐条确认，筛选显示空待确认列表',()=>{cons
 test('冲突回答清楚后自动解除待确认',()=>{const d=fixture();d.questions=[{blocking:true,answer:'',rule_ids:['R1']}];assert.equal(reviewRows(d)[0].status,'pending');d.questions[0].answer='按原文打开面板';assert.equal(reviewRows(d)[0].status,'confirmed')})
 test('备注不能代替缺失预期或未回答的问题',()=>{const d=fixture();d.rules[0].expected='';d.rules[0].review_note='按此测试';assert.equal(reviewRows(d)[0].status,'pending')})
 test('本期排除不被自动纳入，场景不因未勾选被阻断',()=>{const d=fixture();d.scenarios=[{rule_id:'R1',criterion_ids:['C1'],actor:'用户',given:'已登录',when:'点击分享',then:'显示面板',reviewed:false}];assert.equal(reviewRows(d)[0].status,'confirmed');d.rules[0].status='excluded';assert.equal(filterRules(reviewRows(d),'excluded').length,1)})
+
+test('已回答结论补全预期、条件和场景，并随撤回答案重新阻断',()=>{
+ const rule={id:'R9',title:'进入任务列表',condition:'已进入首页',action:'点击任务',expected:'',criteria:[],status:'pending',source_type:'explicit',source_material_ids:[]};
+ const draft={rules:[rule],scenarios:[],scenario_review_required:true,questions:[{id:'Q9',rule_ids:['R9'],blocking:true,answer:'切换成功认定成功'}]};
+ let row=reviewRows(draft)[0];assert.equal(row.status,'confirmed');assert(row.rule.expected.includes('切换成功认定成功'));assert.equal(rule.expected,'');
+ draft.questions[0].answer='';assert.equal(reviewRows(draft)[0].status,'pending');
+});

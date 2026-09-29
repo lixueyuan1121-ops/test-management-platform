@@ -17,7 +17,7 @@
       <el-table :data="rows" v-loading="loading" border empty-text="暂无导入任务">
         <el-table-column prop="job_id" label="任务编号" width="100" />
         <el-table-column prop="requirement" label="需求" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="user_id" label="提交人 ID" width="100" />
+        <el-table-column prop="executor_name" label="执行人" min-width="130" show-overflow-tooltip />
         <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag :type="typeOf(row.status)">{{ labels[row.status] }}</el-tag></template></el-table-column>
         <el-table-column label="处理进度" min-width="280"><template #default="{ row }">新增 {{ row.created_cases }} · 复用 {{ row.reused_cases }} · 待处理 {{ row.counts.pending }} · 待确认 {{ row.counts.needs_confirmation }} · 失败 {{ row.counts.failed }}</template></el-table-column>
         <el-table-column prop="created_at" label="提交时间" width="190" />
@@ -28,7 +28,7 @@
     <el-drawer v-model="drawer" title="导入任务详情" size="75%" @closed="closeJob">
       <div v-loading="detailLoading">
         <template v-if="job">
-          <p>{{ job.requirement }} · 任务 #{{ job.job_id }}</p>
+          <p>{{ job.requirement }} · 任务 #{{ job.job_id }} · 执行人：{{ job.executor_name }}</p>
           <el-alert v-if="!job.can_manage" type="info" title="疑似重复确认与失败重试由项目管理员处理" :closable="false" />
           <el-button @click="openJob(job.job_id)">刷新任务</el-button>
           <el-table :data="job.items" border>

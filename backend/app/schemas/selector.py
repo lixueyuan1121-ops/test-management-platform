@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -24,6 +24,7 @@ def _validate_platform(v: str) -> str:
 
 
 class SelectorKeyIn(BaseModel):
+    change_status: Literal["", "new", "updated", "retired"] = "new"
     project_id: int
     sub_product: str = ""
     # platform: web(PC端) / android / ios；默认 web 保持向后兼容。
@@ -51,6 +52,7 @@ class SelectorKeyIn(BaseModel):
 
 
 class SelectorKeyPatch(BaseModel):
+    change_status: Literal["", "new", "updated", "retired"] | None = None
     expected_revision: str | None = None
     platform: str | None = None
     frame: str | None = Field(default=None, max_length=2048)
@@ -82,9 +84,26 @@ class SelectorBatchDeleteIn(BaseModel):
 
 
 class SelectorBatchPageIn(BaseModel):
-    """批量设置选择器 key 的 page（页面分组，逗号分隔多页）；空串=清空为未分类。"""
+    """批量修改说明的第一段（导航 Tab），保留页面分组及其余三段。"""
     ids: list[int] = Field(min_length=1)
-    page: str = ""
+    page: str = Field(min_length=1, max_length=64)
+
+
+class SelectorBatchDescriptionIn(BaseModel):
+    ids: list[int] = Field(min_length=1)
+    navigation: str | None = Field(default=None, max_length=255)
+    page: str | None = Field(default=None, max_length=255)
+    scene: str | None = Field(default=None, max_length=255)
+    element: str | None = Field(default=None, max_length=255)
+    expected_revisions: dict[int, str]
+
+
+class SelectorPageRenameIn(BaseModel):
+    project_id: int
+    sub_product: str = ""
+    old_page: str = Field(max_length=64)
+    new_page: str = Field(min_length=1, max_length=64)
+    expected_revisions: dict[int, str]
 
 
 class SelectorImportIn(BaseModel):

@@ -1,4 +1,4 @@
-const { chromium } = require('../../tools/qalab-runner/eval/node_modules/playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_PATH || '../../tools/qalab-runner/gui-mcp/node_modules/playwright-core');
 const assert = require('node:assert/strict');
 (async () => {
   const browser = await chromium.launch({ headless: true });
@@ -54,24 +54,25 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '重试注册表', exact: true }).click();
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '编辑 key', exact: true });
-    await dialog.getByLabel('说明', { exact: true }).fill('修改说明');
+    await dialog.getByRole('textbox', { name: '元素命名及类型', exact: true }).fill('修改说明');
     const failed = page.waitForResponse(r => r.url().endsWith('/api/selectors/11') && r.status() === 500);
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await failed;
-    assert.equal(await dialog.getByLabel('说明', { exact: true }).inputValue(), '修改说明');
+    assert.equal(await dialog.getByRole('textbox', { name: '元素命名及类型', exact: true }).inputValue(), '修改说明');
     failSave = false;
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
-    assert.deepEqual(writes.filter(w => w.path === '/api/selectors/11').at(-1).body, { platform: 'web', frame: 'auto', page: '登录页', desc: '修改说明', candidates: [{ by: 'text', value: '登录' }] });
+    assert.deepEqual(writes.filter(w => w.path === '/api/selectors/11').at(-1).body, { change_status: 'updated', platform: 'web', frame: 'auto', page: '登录页', desc: '[登录页]-[登录页]-[页面操作]-[修改说明]', candidates: [{ by: 'text', value: '登录' }] });
     await page.getByRole('tab', { name: '设备探测', exact: true }).click();
     await page.locator('.el-select').filter({ hasText: '选择在线设备' }).click();
     await page.getByRole('option', { name: '测试机（mock-runner）', exact: true }).click();
+    const probeSubmitted = page.waitForResponse(r => r.url().endsWith('/api/probe') && r.request().method() === 'POST');
     await page.getByRole('button', { name: '探测(扫当前页)', exact: true }).click();
-    await page.waitForResponse(r => r.url().endsWith('/api/probe') && r.request().method() === 'POST');
+    await probeSubmitted;
     await page.clock.runFor(63000);
     await page.getByText('探测超时（60s）：请确认设备 runner 在线且停留在目标页面', { exact: true }).waitFor();
     assert(await page.getByRole('button', { name: '探测(扫当前页)', exact: true }).isEnabled());
-    assert.deepEqual(writes.filter(w => w.path === '/api/probe').at(-1).body, { project_id: 1, sub_product: '', runner: 'mock-runner', params: { contains: '' } });
+    assert.deepEqual(writes.filter(w => w.path === '/api/probe').at(-1).body, { project_id: 1, sub_product: '', runner: 'mock-runner', runner_device_id: 1, params: { contains: '' } });
     assert.deepEqual(errors, []);
     console.log('PASS selector independent read retries, review cancel/approve/reject, edit retry/payload and probe timeout after repeated read failures');
   } finally { await browser.close(); }

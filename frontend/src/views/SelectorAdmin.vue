@@ -251,76 +251,28 @@
       </template>
     </section>
 
-    <el-card v-if="pid" class="module-card">
-      <template #header>
-        <div class="header"><span>模块入口（从首页确定性到达各模块）</span>
-          <el-button size="small" type="primary" @click="openModuleEdit(null)">新增模块入口</el-button></div>
-      </template>
-      <el-table :data="modules" size="small" border empty-text="尚未配置模块入口（配置后执行时会先确定性导航到该模块再跑用例）">
-        <el-table-column prop="page" label="模块(page)" width="140" />
-        <el-table-column label="入口导航 key(依次点)" min-width="200">
-          <template #default="{ row }"><el-tag v-for="k in row.nav_keys" :key="k" size="small" class="nav-key-tag">{{ k }}</el-tag>
-            <span v-if="!row.nav_keys.length" class="form-hint">（未设）</span></template>
-        </el-table-column>
-        <el-table-column prop="ready_key" label="就绪锚点 key" width="180" show-overflow-tooltip />
-        <el-table-column prop="key_count" label="该模块 key 数" width="110" align="center" />
-        <el-table-column label="操作" width="240" align="center">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openModuleEdit(row)">编辑</el-button>
-            <el-button link type="warning" size="small" @click="refreshModule(row)">刷新选择器</el-button>
-            <el-button link type="danger" size="small" @click="onDeleteModule(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <el-dialog v-model="moduleDlg.visible" title="模块入口" width="520px">
-      <el-form label-width="120px">
-        <el-form-item label="模块(page)">
-          <el-select v-model="moduleDlg.page" filterable allow-create default-first-option
-                     placeholder="选或输入模块名，须与选择器 page 一致" style="width:100%">
-            <el-option v-for="p in pageOptions" :key="p" :label="p" :value="p" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="入口导航 key"><el-input v-model="moduleDlg.navText" placeholder="逗号分隔，依次点，如 navAutomation" /></el-form-item>
-        <el-form-item label="就绪锚点 key"><el-input v-model="moduleDlg.readyKey" placeholder="导航后等它可见=到达，如 automationPageTitle" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="moduleDlg.visible = false">取消</el-button>
-        <el-button type="primary" :loading="moduleDlg.saving" @click="submitModule">保存</el-button>
-      </template>
-    </el-dialog>
-
     <section v-show="activeView === 'registry'" class="registry-card">
-        <div class="header">
+        <div class="header registry-actions" role="toolbar" aria-label="选择器批量操作">
           <div class="filters">
+            <el-checkbox :model-value="allCurrentSelected" :indeterminate="someCurrentSelected"
+                         :disabled="loading || !rows.length || contextLocked" @change="toggleCurrentPageSelection">当前页全选</el-checkbox>
+            <span class="form-hint" aria-live="polite">已选 {{ selectedIds.length }} / {{ rows.length }}</span>
+            <el-button size="small" :disabled="loading || loadError || !rows.length" @click="exportAllSelectors"
+                       title="导出当前项目和作用域的全部选择器，包含未勾选及折叠模块">全部导出</el-button>
             <el-button size="small" :disabled="!pid" @click="openImport">手动导入</el-button>
             <el-button
               v-if="selectedIds.length" type="danger" size="small" :loading="batchDeleting" @click="onBatchDelete"
             >批量删除（{{ selectedIds.length }}）</el-button>
             <el-button
               v-if="selectedIds.length" size="small" :loading="batchPaging" @click="onBatchSetPage"
-            >批量设页面（{{ selectedIds.length }}）</el-button>
+            >批量改说明（{{ selectedIds.length }}）</el-button>
             <el-button
               v-if="canImport" size="small" :disabled="!pid || contextLocked" :loading="importing" @click="onImport"
             >导入内置纳米Work注册表</el-button>
           </div>
         </div>
 
-      <!-- 主动探测:配置扫描分支(本地脚本据此拉代码扫 testid)。分支存在平台,脚本发给别人也能用、免配凭据。 -->
-      <div v-if="pid" class="scan-bar">
-        <span class="scan-label">扫描分支</span>
-        <el-input
-          v-model="scanBranch" size="small" style="width:280px" clearable
-          placeholder="如 feature-add-testid_20260903（当前作用域）"
-        />
-        <el-button size="small" type="primary" plain :loading="savingBranch" @click="saveScanBranch">保存分支</el-button>
-        <el-button size="small" type="success" :loading="scanning" :disabled="!scanBranch.trim()" @click="runScanBranch">扫描并导入</el-button>
-        <span class="form-hint">
-          「扫描并导入」由<b>平台所在机器</b>拉此分支代码扫 data-testid 直接入库（须该机有 openclaw360-web 副本 + git；未配置会提示）。
-          也可本机 backend 目录手动跑：<code>python -m scripts.scan_selectors_from_branch --project {{ pid }} --repo &lt;openclaw360-web 路径&gt; --import</code>
-        </span>
-      </div>
+      <SelectorDomAudit :project-id="pid" :sub-product="subProduct" :devices="devices" :disabled="contextLocked" @synced="reload" />
 
       <el-result v-if="loadError" icon="error" title="注册表加载失败"><template #extra><el-button @click="reload">重试注册表</el-button></template></el-result>
       <el-empty v-else-if="!rows.length" :description="loading ? '加载中…' : '该作用域暂无选择器 key'" :image-size="70" />
@@ -329,8 +281,9 @@
           <template #title>
             <span class="page-title">{{ grp.pageLabel }}</span>
             <el-tag size="small" type="info" effect="plain" class="page-count">{{ grp.keys.length }}</el-tag>
+            <el-button link type="primary" size="small" class="rename-page" :aria-label="`重命名分组 ${grp.pageLabel}`" :disabled="contextLocked || renamingPage" @click.stop="onRenamePage(grp)" @keydown.stop>重命名</el-button>
           </template>
-          <el-table :data="grp.keys" size="small" border stripe @row-click="markSelectorSeen" @selection-change="(sel) => onGroupSelect(grp.name, sel)">
+          <el-table :ref="table => setRegistryTable(grp.name, table)" :data="grp.keys" row-key="id" size="small" border stripe @row-click="markSelectorSeen" @selection-change="(sel) => onGroupSelect(grp.name, sel)">
             <el-table-column type="selection" width="40" />
             <el-table-column prop="key" label="key" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">
@@ -348,8 +301,11 @@
             <el-table-column prop="desc" label="说明" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">{{ row.desc || '—' }}</template>
             </el-table-column>
-            <el-table-column label="候选数" width="80" align="center">
-              <template #default="{ row }">{{ (row.candidates || []).length }}</template>
+            <el-table-column label="状态" width="80" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="selectorStatuses[row.change_status]" size="small" :type="selectorStatuses[row.change_status].type">{{ selectorStatuses[row.change_status].label }}</el-tag>
+                <span v-else>—</span>
+              </template>
             </el-table-column>
             <el-table-column label="更新时间" width="150">
               <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
@@ -365,6 +321,21 @@
         </el-collapse-item>
       </el-collapse>
     </section>
+
+    <el-dialog v-model="batchDescription.visible" title="批量修改四段式说明" width="580px"
+               :show-close="!batchPaging" :close-on-click-modal="!batchPaging" :close-on-press-escape="!batchPaging">
+      <p>已选择 {{ batchDescription.ids.length }} 个 key。填写哪一段就修改哪一段，留空保留各自原值。</p>
+      <el-form label-width="130px" :disabled="batchPaging">
+        <el-form-item v-for="(label, index) in descriptionLabels" :key="label" :label="label">
+          <el-input v-model="batchDescription.values[index]" :aria-label="label" maxlength="255" clearable placeholder="留空不修改" />
+        </el-form-item>
+      </el-form>
+      <div class="form-hint">只修改说明，不改变页面分组、key 或定位候选。分组名称可在列表标题旁重命名。</div>
+      <template #footer>
+        <el-button :disabled="batchPaging" @click="batchDescription.visible = false">取消</el-button>
+        <el-button type="primary" :loading="batchPaging" :disabled="!batchDescription.values.some(value => value.trim())" @click="submitBatchDescription">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 新增 / 编辑弹窗 -->
     <el-dialog v-model="dialog.visible" :show-close="!dialog.saving" :close-on-click-modal="!dialog.saving" :close-on-press-escape="!dialog.saving" :title="dialog.id ? '编辑 key' : '新增 key'" width="600px">
@@ -389,7 +360,15 @@
           </el-select>
         </el-form-item>
         <el-form-item label="说明">
-          <el-input v-model="dialog.desc" type="textarea" :rows="2" placeholder="这个 key 找的是什么元素" />
+          <div class="description-segments">
+            <el-input v-for="(label, index) in descriptionLabels" :key="label" v-model="dialog.descParts[index]" :aria-label="label" :placeholder="label" />
+            <div class="form-hint">{{ composedDialogDesc }}</div>
+          </div>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="dialog.change_status" clearable placeholder="未标记">
+            <el-option v-for="(item, value) in selectorStatuses" :key="value" :label="item.label" :value="value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="候选">
           <el-input
@@ -621,6 +600,7 @@
 </template>
 
 <script setup>
+import SelectorDomAudit from '@/components/SelectorDomAudit.vue'
 import { createProbeScreenshotLoader } from '@/utils/probe-screenshot'
 import { configuredCandidates } from '@/utils/locator-config'
 import { createElementStatusMatcher, suggestKey, sameFrameDomain } from '@/utils/probe-batch'
@@ -633,10 +613,9 @@ import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
 import {
   listSelectors, createSelector, patchSelector, deleteSelector, importLegacySelectors,
-  batchDeleteSelectors, importSelectors, setSelectorScope, batchSetSelectorPage, scanBranchImport,
+  batchDeleteSelectors, importSelectors, batchSetSelectorDescription, renameSelectorPage,
   selectorUsage, backfillTestcases, enqueueCases, getTestcase, getSelectorHistory, restoreSelector, remapCaseSelector,
   listMyDevices, startProbe, getProbe,
-  listModules, saveModule, deleteModule,
   listLearnedSelectors, reviewLearnedSelector,
 } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
@@ -646,7 +625,6 @@ import { rankElements } from '@/utils/selector-match'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
 import { selectorTargetNotes } from '@/utils/selector-target-description'
 import { matchElementsToKeys } from '@/utils/bulk-fix-selectors'
-import { keysOfModule, staleKeysFromVerify } from '@/utils/module-refresh'
 import { useRoute } from 'vue-router'
 
 // 子产品固定枚举，须与后端 api/release.py 的 SUB_PRODUCTS 一致（选择器按 (项目, 子产品) 分域）。
@@ -685,9 +663,7 @@ const devices = ref([])   // 我的在线设备（探测目标）
 const activePages = ref([])   // 管理页展开的分组(page name 列表)
 
 // ---- 主动探测：扫描分支配置（当前作用域）----
-const scanBranch = ref('')          // 输入框绑定的扫描分支
 const scopeVmIframe = ref('')       // 当前作用域的 vm_iframe（保存分支时一并回传，避免被清空）
-const savingBranch = ref(false)
 
 // ---- 批量删除：跨分组收集选中行 ----
 const selectedByPage = reactive({})   // 分组名 → 该组选中的 row 数组
@@ -699,8 +675,47 @@ const selectedIds = computed(() => {
   }
   return ids
 })
+const registryTables = new Map()
+const allCurrentSelected = computed(() => rows.value.length > 0 && selectedIds.value.length === rows.value.length)
+const someCurrentSelected = computed(() => selectedIds.value.length > 0 && !allCurrentSelected.value)
+function setRegistryTable(name, table) {
+  if (!table) { registryTables.delete(name); return }
+  if (registryTables.get(name) === table) return
+  registryTables.set(name, table)
+  for (const row of selectedByPage[name] || []) table.toggleRowSelection(row, true)
+}
 function onGroupSelect(name, sel) { selectedByPage[name] = sel }
-function clearSelection() { for (const k of Object.keys(selectedByPage)) delete selectedByPage[k] }
+function clearSelection() {
+  for (const table of registryTables.values()) table.clearSelection()
+  for (const k of Object.keys(selectedByPage)) delete selectedByPage[k]
+}
+function toggleCurrentPageSelection(selected) {
+  for (const group of groupedRows.value) {
+    const table = registryTables.get(group.name)
+    table?.clearSelection()
+    if (selected) table?.toggleAllSelection()
+    selectedByPage[group.name] = selected ? [...group.keys] : []
+  }
+}
+function exportAllSelectors() {
+  if (loading.value || loadError.value || !rows.value.length) return
+  const registry = Object.fromEntries(rows.value.map(row => [row.key, {
+    frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
+    platform: row.platform || 'web', change_status: row.change_status || '', candidates: row.candidates || [],
+  }]))
+  const payload = { version: 1, project_id: pid.value, project_name: projects.value.find(p => p.id === pid.value)?.name || '',
+    sub_product: subProduct.value, vmIframe: scopeVmIframe.value, registry }
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  const scope = (subProduct.value || 'shared').replace(/[^a-zA-Z0-9_\u4e00-\u9fff-]/g, '_')
+  link.download = `selectors-project-${pid.value}-${scope}-${new Date().toISOString().slice(0, 10)}.json`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  ElMessage.success(`已导出当前作用域全部 ${rows.value.length} 个选择器`)
+}
 
 // 页面历史建议:当前作用域 rows 的非空 page 去重(供新增/编辑/探测/加 key 的下拉建议)。
 const pageOptions = computed(() => {
@@ -803,62 +818,10 @@ async function reload() {
     const registeredKeys = new Set(effectiveRows.value.map(row => row.key))
     for (const [uid, key] of savedProbeKeys) if (!registeredKeys.has(key)) savedProbeKeys.delete(uid)
     // 回显当前作用域的扫描分支 / vm_iframe（保存分支时回传 vm_iframe，避免被清）
-    scanBranch.value = data.scope?.scan_branch || ''
     scopeVmIframe.value = data.scope?.vm_iframe || ''
     activePages.value = groupedRows.value.map((g) => g.name)   // 默认全部展开
   } catch { if (!disposed && version === listVersion) loadError.value = true }
   finally { if (!disposed && version === listVersion) loading.value = false }
-  if (!disposed && version === listVersion) await loadModules()
-}
-
-// ---- 模块入口：登记每个模块从首页确定性到达的导航链 ----
-const modules = ref([])
-const moduleDlg = reactive({ visible: false, page: '', navText: '', readyKey: '', saving: false })
-
-async function loadModules() {
-  if (!pid.value) { modules.value = []; return }
-  try { modules.value = await listModules(pid.value, subProduct.value) } catch { modules.value = [] }
-}
-function openModuleEdit(row) {
-  Object.assign(moduleDlg, {
-    visible: true, saving: false,
-    page: row?.page || '', navText: (row?.nav_keys || []).join(','), readyKey: row?.ready_key || '',
-  })
-}
-async function submitModule() {
-  if (!moduleDlg.page.trim()) { ElMessage.warning('模块(page) 不能为空'); return }
-  moduleDlg.saving = true
-  try {
-    await saveModule({
-      project_id: pid.value, sub_product: subProduct.value, page: moduleDlg.page.trim(),
-      nav_keys: moduleDlg.navText.split(',').map((s) => s.trim()).filter(Boolean),
-      ready_key: moduleDlg.readyKey.trim(),
-    })
-    ElMessage.success('已保存模块入口'); moduleDlg.visible = false; await loadModules()
-  } catch { /* 拦截器已提示 */ } finally { moduleDlg.saving = false }
-}
-async function onDeleteModule(row) {
-  try { await ElMessageBox.confirm(`删除模块入口「${row.page}」？`, '删除', { type: 'warning' }) } catch { return }
-  try { await deleteModule(row.id); ElMessage.success('已删除'); await loadModules() } catch { /* 已提示 */ }
-}
-
-// 按模块刷新:verify 该模块所有 key,失效的列出并提示去重探更新。需先选在线设备+客户端停在该模块页。
-// runProbe 为轮询式(启动即返回,结果异步落 probe.result),故用一次性 watch 等 probe.running 归 false 再按本模块筛失效——
-// 直接在 runProbe 后同步读 probe.result 会拿到 null。后端认不认 keys 参数都对:staleKeysFromVerify 在客户端按本模块 key 筛。
-function refreshModule(row) {
-  if (!probe.runner) { ElMessage.warning('先选在线设备，并让客户端停在该模块页面'); return }
-  const mkeys = keysOfModule(rows.value, row.page)
-  if (!mkeys.length) { ElMessage.info(`模块「${row.page}」下暂无 key`); return }
-  runProbe('verify', { mode: 'verify', keys: mkeys.map((r) => r.key) })
-  const stop = watch(() => probe.running, (running) => {
-    if (running) return
-    stop()
-    if (probe.mode !== 'verify' || !probe.result) return   // 探测失败/超时,已由 runProbe 提示
-    const stale = staleKeysFromVerify(probe.result.verify, mkeys)
-    if (!stale.length) ElMessage.success(`模块「${row.page}」的 ${mkeys.length} 个 key 均有效`)
-    else ElMessage.warning(`模块「${row.page}」有 ${stale.length} 个 key 失效：${stale.join('、')}。点下方失效行「重新探测更新」逐个刷新`)
-  })
-
 }
 
 // ---- 运行时自学习候选评审 ----
@@ -919,12 +882,23 @@ async function restoreHistory(item) {
 }
 
 // ---- 新增 / 编辑 ----
-const dialog = reactive({ visible: false, id: null, key: '', frame: '', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false })
+const selectorStatuses = { updated: { label: '更新', type: 'warning' }, new: { label: '新增', type: 'success' }, retired: { label: '废弃', type: 'info' } }
+const descriptionLabels = ['导航Tab', '页面', '场景', '元素命名及类型']
+function descriptionParts(desc, page = '') {
+  const match = (desc || '').match(/^\[([^\[\]]*)\]-\[([^\[\]]*)\]-\[([^\[\]]*)\]-\[([^\[\]]*)\]$/)
+  return match ? match.slice(1) : [page, page, '页面操作', desc || '']
+}
+const dialog = reactive({ visible: false, descParts: ['', '', '', ''], change_status: 'new', id: null, key: '', frame: '', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false })
 
+const composedDialogDesc = computed(() => dialog.descParts.map(s => `[${(s || '').trim()}]`).join('-'))
 function openCreate() {
+  dialog.descParts = ['', '', '', '']
+  dialog.change_status = 'new'
   Object.assign(dialog, { id: null, key: '', frame: 'auto', page: '', desc: '', candidatesText: '[]', platform: 'web', saving: false, visible: true })
 }
 function openEdit(row) {
+  dialog.descParts = descriptionParts(row.desc, row.page)
+  dialog.change_status = row.change_status === 'retired' ? 'retired' : 'updated'
   markSelectorSeen(row)
   Object.assign(dialog, {
     id: row.id, revision: row.revision, key: row.key, frame: row.frame || 'auto', page: row.page || '', desc: row.desc || '',
@@ -945,13 +919,17 @@ async function submit() {
   if (!dialog.id && !dialog.key.trim()) { ElMessage.warning('key 不能为空'); return }
   const candidates = parseCandidates()
   if (candidates === null) return
+  if (dialog.descParts.some(s => !s.trim() || /[\[\]]/.test(s))) { ElMessage.warning('请填写说明的四个部分，内容不要包含方括号'); return }
+  if (composedDialogDesc.value.length > 255) { ElMessage.warning('四段式说明不能超过 255 个字符'); return }
+  dialog.desc = composedDialogDesc.value
   dialog.saving = true
   try {
     if (dialog.id) {
-      await patchSelector(dialog.id, { expected_revision: dialog.revision, platform: dialog.platform, frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
+      await patchSelector(dialog.id, { expected_revision: dialog.revision, change_status: dialog.change_status || '', platform: dialog.platform, frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates })
     } else {
       await createSelector({
         project_id: pid.value, sub_product: subProduct.value, platform: dialog.platform, key: dialog.key.trim(),
+        change_status: dialog.change_status || '',
         frame: dialog.frame || 'auto', page: dialog.page || '', desc: dialog.desc || '', candidates,
       })
     }
@@ -1041,50 +1019,6 @@ async function onImport() {
 // 单个 key 候选链上限：脆弱候选在尾，超出上限时 slice 自然丢弃最不稳的，防链膨胀/优先级倒置。
 const MAX_CANDIDATES = 6
 
-// ---- 保存扫描分支（当前作用域）----
-async function saveScanBranch() {
-  if (!pid.value) return
-  savingBranch.value = true
-  try {
-    // 回传 scopeVmIframe，避免只存分支把已配的 vm_iframe 清掉。
-    await setSelectorScope({
-      project_id: pid.value, sub_product: subProduct.value,
-      vm_iframe: scopeVmIframe.value, scan_branch: scanBranch.value.trim(),
-    })
-    ElMessage.success('已保存扫描分支')
-  } catch { /* 拦截器已提示 */ } finally { savingBranch.value = false }
-}
-
-// ---- 扫描并导入(平台机器本机拉分支代码扫 testid 入库)----
-const scanning = ref(false)
-async function runScanBranch() {
-  if (!pid.value || scanning.value) return
-  const branch = scanBranch.value.trim()
-  if (!branch) { ElMessage.warning('请先填写扫描分支'); return }
-  // 先确保分支已存(用户可能填了没点保存),再扫;同名 key 默认跳过,可选覆盖。
-  let overwrite = false
-  try {
-    await ElMessageBox.confirm(
-      `将由平台机器拉取分支「${branch}」的代码，扫 data-testid 导入到作用域「${subProduct.value || '项目级共享'}」。\n同名 key 默认跳过；如需以分支为准覆盖，请选「覆盖同名」。`,
-      '扫描并导入', { confirmButtonText: '开始扫描（跳过同名）', cancelButtonText: '覆盖同名', distinguishCancelAndClose: true, type: 'info' })
-  } catch (act) {
-    if (act !== 'cancel') return   // 关闭/ESC=取消;取消按钮=覆盖
-    overwrite = true
-  }
-  scanning.value = true
-  try {
-    await saveScanBranch()   // 幂等保存,保证后端读到的分支与输入一致
-    const r = await scanBranchImport({ project_id: pid.value, sub_product: subProduct.value, overwrite })
-    ElMessage.success(
-      `分支「${r.branch}」${r.head ? '@' + r.head : ''} 扫到 ${r.scanned} 个 testid：`
-      + `新增 ${r.imported}、覆盖 ${r.updated}、跳过 ${r.skipped}`
-      + `${r.auto_desc ? `（其中 ${r.auto_desc} 个 desc 自动生成、建议复核）` : ''}`
-      + `${r.restored ? `；联动回填 ${r.restored} 条待补用例` : ''}`)
-    await reload()
-  } catch { /* 未配分支/找不到副本/没装 git/git失败 → 后端已返回中文提示,拦截器弹出 */ }
-  finally { scanning.value = false }
-}
-
 // ---- 批量删除选中的 key ----
 async function onBatchDelete() {
   const ids = selectedIds.value
@@ -1105,24 +1039,41 @@ async function onBatchDelete() {
   } catch { /* 已提示 */ } finally { batchDeleting.value = false }
 }
 
-// ---- 批量设置选中 key 的页面（page 分组）----
+// 空白字段表示保留每条记录的原段落，选择范围和版本在打开时固定。
 const batchPaging = ref(false)
-async function onBatchSetPage() {
-  const ids = selectedIds.value
-  if (!ids.length) return
-  let value
-  try {
-    ({ value } = await ElMessageBox.prompt(
-      `把选中的 ${ids.length} 个选择器 key「页面」整体设为(逗号分隔多页；留空=清空为未分类)：`, '批量设页面',
-      { inputPlaceholder: '如 会话', inputValue: '', confirmButtonText: '保存' }))
-  } catch { return }
+const batchDescription = reactive({ visible: false, ids: [], revisions: {}, values: ['', '', '', ''] })
+function onBatchSetPage() {
+  if (batchPaging.value || !selectedIds.value.length) return
+  const ids = [...selectedIds.value]
+  Object.assign(batchDescription, { visible: true, ids, values: ['', '', '', ''],
+    revisions: Object.fromEntries(rows.value.filter(row => ids.includes(row.id)).map(row => [row.id, row.revision])) })
+}
+async function submitBatchDescription() {
+  if (batchPaging.value) return
+  const values = batchDescription.values.map(value => value.trim())
+  if (!values.some(Boolean)) { ElMessage.warning('请至少填写一段'); return }
+  if (values.some(value => /[\[\]]/.test(value))) { ElMessage.warning('内容不能包含方括号'); return }
   batchPaging.value = true
   try {
-    const res = await batchSetSelectorPage(ids, (value || '').trim())
-    ElMessage.success(`已更新 ${res?.updated ?? ids.length} 个 key 的页面`)
+    const res = await batchSetSelectorDescription({ ids: batchDescription.ids, expected_revisions: batchDescription.revisions,
+      navigation: values[0], page: values[1], scene: values[2], element: values[3] })
+    ElMessage.success(`已更新 ${res.updated} 个 key 的说明${res.unchanged ? `，${res.unchanged} 个无需修改` : ''}`)
+    batchDescription.visible = false
     clearSelection()
     await reload()
-  } catch { /* 已提示 */ } finally { batchPaging.value = false }
+  } catch (error) { ElMessage.error(error.message || '批量修改失败，输入已保留') }
+  finally { batchPaging.value = false }
+}
+const renamingPage = ref(false)
+async function onRenamePage(grp) {
+  let value
+  try { ({ value } = await ElMessageBox.prompt('修改分组标题及说明第二段，保留导航 Tab、场景和元素命名。', '重命名分组', { inputValue: grp.name === UNGROUPED_NAME ? '' : grp.name, inputPattern: /^[^\[\]]{1,64}$/, inputErrorMessage: '请输入 1–64 字的名称，不含方括号', confirmButtonText: '保存' })) } catch { return }
+  renamingPage.value = true
+  try {
+    await renameSelectorPage({ project_id: pid.value, sub_product: subProduct.value, old_page: grp.name === UNGROUPED_NAME ? '' : grp.name, new_page: value.trim(), expected_revisions: Object.fromEntries(grp.keys.map(r => [r.id, r.revision])) })
+    clearSelection(); await reload()
+    ElMessage.success('分组名称已更新')
+  } catch (error) { ElMessage.error(error.message || '重命名失败') } finally { renamingPage.value = false }
 }
 const imp = reactive({ visible: false, text: '', overwrite: false, saving: false })
 
@@ -2066,6 +2017,10 @@ async function saveProbeBatch() {
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .form-hint { color: #90a4ae; font-size: 12px; }
 .registry-card { margin-top: 16px; }
+.registry-actions { position: sticky; top: 0; z-index: 30; padding: 12px 0; background: var(--tech-bg, #f5f7fa); box-shadow: 0 2px 4px #00000012; }
+.rename-page { margin-left: 12px; }
+.description-segments { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+.description-segments .form-hint { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .scan-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 10px; background: #f5f7fa; border-radius: 4px; }
 .scan-label { font-size: 13px; color: #606266; font-weight: 600; }
 .imp-toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; }

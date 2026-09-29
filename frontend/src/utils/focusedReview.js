@@ -1,3 +1,22 @@
+// Keep in sync with the server: only copy answers attached to this rule, never invent outcomes.
+export function completedRule(draft, original) {
+  const rule = JSON.parse(JSON.stringify(original))
+  if (rule.status === 'excluded') return rule
+  const old = rule.review_completion || {}
+  if (old.expected === rule.expected) rule.expected = ''
+  if (old.criteria === JSON.stringify(rule.criteria)) rule.criteria = []
+  rule.review_completion = {}
+  const answers = (draft.questions || []).filter(q => q.answer?.trim() && q.rule_ids?.includes(rule.id))
+  if (!rule.expected && answers.length) {
+    const text = '操作：' + rule.action + '。验收按已填写的处理结论：\n' + answers.map(q => q.id + '：' + q.answer).join('\n')
+    if (text.length <= 2000) { rule.expected = text; rule.review_completion.expected = text }
+  }
+  if (rule.expected && !rule.criteria?.length && rule.expected.length <= 2000) {
+    rule.criteria = [{id: rule.id + '-AC', text: rule.expected}]
+    rule.review_completion.criteria = JSON.stringify(rule.criteria)
+  }
+  return rule
+}
 const filled = value => typeof value === 'string' && !!value.trim()
 export function ruleIssues(draft, rule, visuals = []) {
   if (rule.status === 'excluded') return []
@@ -15,8 +34,13 @@ export function ruleIssues(draft, rule, visuals = []) {
   return issues
 }
 export function reviewRows(draft, visuals = []) {
-  return (draft?.rules || []).map(rule => {
-    const issues = ruleIssues(draft, rule, visuals)
+  return (draft?.rules || []).map(original => {
+    const rule = completedRule(draft, original)
+    let scenes = (draft.scenarios || []).filter(s => JSON.stringify(s) !== original.review_completion?.scene)
+    if (Object.keys(rule.review_completion || {}).length && rule.condition && rule.action && rule.expected && !scenes.some(s => s.rule_id === rule.id)) {
+      scenes = [...scenes, {id:rule.id+'-AS',rule_id:rule.id,criterion_ids:rule.criteria.map(c=>c.id),actor:'执行该操作的用户',given:rule.condition,when:rule.action,then:rule.expected}]
+    }
+    const issues = ruleIssues({...draft,scenarios:scenes}, rule, visuals)
     return {rule, issues, status: rule.status === 'excluded' ? 'excluded' : issues.length ? 'pending' : 'confirmed'}
   })
 }

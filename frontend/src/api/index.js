@@ -334,6 +334,8 @@ export const deleteSelector = (id) => http.delete(`/selectors/${id}`)
 // 批量删除选择器 key（逐个联动降级引用它的可执行用例）。返回 { deleted, downgraded, missing }
 export const batchDeleteSelectors = (ids) => http.post('/selectors/batch-delete', { ids })
 // 批量设置选择器 key 的 page（页面分组，逗号分隔多页；空串=清空）。返回 { updated, page, missing }
+export const batchSetSelectorDescription = (data) => http.post('/selectors/batch-description', data)
+export const renameSelectorPage = (data) => http.post('/selectors/rename-page', data)
 export const batchSetSelectorPage = (ids, page) => http.post('/selectors/batch-page', { ids, page })
 // 手动/脚本导入注册表到 (project_id, sub_product) 作用域。body: { project_id, sub_product, registry, vm_iframe?, overwrite? }
 // 返回 { imported, updated, skipped, invalid }
@@ -597,3 +599,8 @@ export const getMissionRunEvidence = (id, runId) => http.get(`/test-missions/${i
 
 export const cancelExecRun = (id) => http.post(`/exec-queue/${id}/cancel`)
 export const clearDevicePending = (id) => http.post(`/devices/${id}/clear-pending`)
+
+export const getSelectorAudit = params => http.get('/selector-audits', {params})
+export const saveSelectorAuditSchedule = body => http.put('/selector-audits/schedule', body)
+export const runSelectorAudit = body => http.post('/selector-audits/run', body)
+export const cancelSelectorAudit = id => http.post(`/selector-audits/${id}/cancel`)

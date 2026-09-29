@@ -55,3 +55,6 @@ api_router.include_router(verified_import.router)
 
 from app.api import verified_import_jobs
 api_router.include_router(verified_import_jobs.router)
+
+from app.api import selector_audit
+api_router.include_router(selector_audit.router)

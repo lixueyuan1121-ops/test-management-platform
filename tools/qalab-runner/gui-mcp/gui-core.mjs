@@ -1,3 +1,4 @@
+import { homeRoleKeys } from '../home-anchors.mjs';
 // gui-core —— 纳米Work GUI 自动化的**纯核心**(无 MCP、无进程),供两方复用:
 //   1) gui-mcp/server.mjs:包成 MCP 工具给 claude 用(judge 步/无 script 兜底);
 //   2) runner 的 StepExecutor:直接函数调用,按 script 确定性执行 gui 步骤(P3)。
@@ -210,17 +211,18 @@ export function createGuiCore(opts = {}) {
   // reload 回不到首页,必须应用内导航(点 navHome)才回得去。navHome 定位不到/点不上就跳过(尽力而为,
   // 交上层 resetOrBlock 多轮自愈兜底);首页锚点探不到不抛错(不阻断复位)。
   async function ensureOnHome(readyKeyCandidates, readyTimeout) {
-    const homeKeys = [...new Set(readyKeyCandidates)].filter((k) => k && REGISTRY[k]);
+    const homeKeys = homeRoleKeys(REGISTRY, "ready", readyKeyCandidates);
     if (!homeKeys.length) return;                        // 注册表无首页锚点,无从判断,不折腾
     const onHome = async () => {
       for (const k of homeKeys) if (await isKeyVisible(k)) return true;
       return false;
     };
     if (await onHome()) return;                          // reload 后已在首页,无需导航
-    if (REGISTRY.navHome) {                               // 不在首页:点侧栏『首页』导航回去
+    for (const navKey of homeRoleKeys(REGISTRY, "navigation")) {
       try {
-        const { loc } = await resolveKey("navHome", { timeout: 3000, requireVisible: true });
+        const { loc } = await resolveKey(navKey, { timeout: 3000, requireVisible: true });
         await loc.click({ timeout: DEFAULT_TIMEOUT });
+        break;
       } catch { /* navHome 定位不到/点不上,跳过,交上层自愈 */ }
     }
     const end = Date.now() + readyTimeout;               // 等首页锚点就绪(尽力,不抛)
@@ -372,7 +374,7 @@ export function createGuiCore(opts = {}) {
       }
       return { validation: results, locator_features: ['has_text', 'nth', 'primary', 'require_identity'], checked_at: new Date().toISOString() };
     },
-    async probe({ contains = "", bbox = null, limit = 0, screenshot = false } = {}) {
+    async probe({ contains = "", bbox = null, limit = 0, screenshot = false, audit = false, auditRoot = "" } = {}) {
       const relax = !!bbox;               // 框选：放宽采集(穿透+不过滤白名单/去重)
       // 每 frame 返回上限。默认放大到 1000：真实复杂应用(如 namiclaw vm iframe)单帧可交互元素
       // 常达数百个(聊天消息+导航+输入区),旧默认 40 会按 DOM 顺序把靠底部的输入区控件(如「边想边做」
@@ -417,7 +419,7 @@ export function createGuiCore(opts = {}) {
         }
         let els = [];
         try {
-          els = await target.evaluate(DISCOVER_SCRIPT, { relax });
+          els = await target.evaluate(DISCOVER_SCRIPT, { relax, audit, auditRoot });
         } catch (e) {
           // 跨域/已卸载的 frame evaluate 会抛错;记为一组错误、跳过,不中断其它 frame。
           groups.push({ frame, frameMatch: fmatch, url: target.url(), error: e.message, elements: [] });
@@ -478,19 +480,20 @@ export function createGuiCore(opts = {}) {
       runtime.resetResponse();
       // Prefer the same navigation a user performs. Reload is recovery, not a prerequisite
       // of every case: reloading reinitializes cloud capability flags and websocket state.
-      if (!hard && REGISTRY.navHome) {
+      const homeKeys = homeRoleKeys(REGISTRY, "ready", [readyKey]);
+      for (const navKey of (hard ? [] : homeRoleKeys(REGISTRY, "navigation"))) {
         try {
           await page.keyboard.press("Escape");
-          await runtime.click({ key: "navHome", timeout_ms: 4000 });
-          await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);
-          for (const key of [readyKey, "homeGreetingTitle"].filter(k => REGISTRY[k])) {
+          await runtime.click({ key: navKey, timeout_ms: 4000 });
+          await ensureOnHome(homeKeys, readyTimeout);
+          for (const key of homeKeys) {
             if (await isKeyVisible(key)) return { reset: true, mode: "navigation", url: page.url() };
           }
         } catch { /* blocked navigation: fall back to the existing hard reset */ }
       }
       await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       await waitForContentFrame();
-      await ensureOnHome([readyKey, "homeGreetingTitle"], readyTimeout);
+      await ensureOnHome(homeKeys, readyTimeout);
       return { reset: true, url: page.url() };
     },
     click: (args) => operate("click", args),

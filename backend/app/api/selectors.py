@@ -20,14 +20,15 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ProjectRole
 from app.db.session import get_db
-from app.models import SelectorKey, SelectorScope, TestCase, User
+from app.models import SelectorKey, SelectorScope, TestCase, User, SelectorAuditObservation
 from app.schemas.common import ok
 from app.schemas.selector import (
     SelectorKeyIn, SelectorKeyPatch, SelectorScopeIn,
-    SelectorBatchDeleteIn, SelectorBatchPageIn, SelectorImportIn,
+    SelectorBatchDeleteIn, SelectorBatchPageIn, SelectorImportIn, SelectorPageRenameIn, SelectorBatchDescriptionIn,
 )
 from app.services.selectors import resolved_registry, scoped_key_rows
 from app.services.selector_history import revision as selector_revision, remember as remember_selector
+from app.services.selector_description import normalize_description, replace_segment, split_description, compose_description
 from app.services.selector_ranking import is_valid_candidate, candidate_identity, merge_candidates
 from app.services.claude_runner import _SELECTOR_FIX_MARK
 from app.api.release import SUB_PRODUCTS  # 复用子产品白名单
@@ -42,10 +43,18 @@ def _valid_sub(v: str) -> str:
     return v or ""
 
 
+def _description(desc, page, key):
+    try:
+        return normalize_description(desc, page, key)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+
+
 def _key_out(r: SelectorKey) -> dict:
     return {"id": r.id, "project_id": r.project_id, "sub_product": r.sub_product,
             "platform": r.platform,
             "key": r.key, "frame": r.frame, "page": r.page, "desc": r.desc,
+            "change_status": r.change_status or "",
             "candidates": json.loads(r.candidates or "[]"),
             "updated_by": r.updated_by,
             "revision": selector_revision(r),
@@ -81,8 +90,8 @@ def create_key(body: SelectorKeyIn, db: Session = Depends(get_db),
     if exists:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=f"该作用域下 key「{body.key}」已存在")
     r = SelectorKey(project_id=body.project_id, sub_product=sub, key=body.key.strip(),
-                    platform=body.platform,
-                    frame=body.frame or "auto", page=body.page or "", desc=body.desc or "",
+                    platform=body.platform, change_status=body.change_status,
+                    frame=body.frame or "auto", page=body.page or "", desc=_description(body.desc, body.page, body.key),
                     candidates=json.dumps(body.candidates, ensure_ascii=False),
                     updated_by=user.id, updated_at=datetime.utcnow())
     db.add(r); db.commit(); db.refresh(r)
@@ -231,6 +240,7 @@ def review_learned(lid: int, body: dict, db: Session = Depends(get_db),
         # 清理历史试用副本；明确批准的候选可以进入有效链。
         kept = [c for c in cands if candidate_identity(c) != identity]
         sk.candidates = json.dumps(merge_candidates([approved], kept), ensure_ascii=False)
+        sk.change_status = "updated"
         sk.updated_at = datetime.utcnow()
     else:
         row.status = "rejected"
@@ -240,6 +250,7 @@ def review_learned(lid: int, body: dict, db: Session = Depends(get_db),
                 remember_selector(db, sk, user.id)
                 sk.updated_by = user.id
                 sk.candidates = json.dumps(kept, ensure_ascii=False)
+                sk.change_status = "updated"
                 sk.updated_at = datetime.utcnow()
     row.reviewed_by = user.id
     row.reviewed_at = datetime.utcnow()
@@ -262,8 +273,9 @@ def patch_key(kid: int, body: SelectorKeyPatch, db: Session = Depends(get_db),
     if body.platform is not None: r.platform = body.platform
     if body.frame is not None: r.frame = body.frame
     if body.page is not None: r.page = body.page
-    if body.desc is not None: r.desc = body.desc
+    if body.desc is not None: r.desc = _description(body.desc, r.page, r.key)
     if body.candidates is not None: r.candidates = json.dumps(body.candidates, ensure_ascii=False)
+    r.change_status = body.change_status if body.change_status is not None else "updated"
     r.updated_by = user.id; r.updated_at = datetime.utcnow()
     db.commit(); db.refresh(r)
     return ok(_key_out(r))
@@ -316,6 +328,7 @@ def delete_key(kid: int, db: Session = Depends(get_db),
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key 不存在")
     assert_project_role(db, user, r.project_id, _RW)
     downgraded = _downgrade_cases_for_key(db, r)
+    db.query(SelectorAuditObservation).filter_by(key_id=r.id).delete(synchronize_session=False)
     db.delete(r); db.commit()
     return ok({"deleted": kid, "downgraded": downgraded})
 
@@ -335,6 +348,7 @@ def batch_delete(body: SelectorBatchDeleteIn, db: Session = Depends(get_db),
             missing.append(kid); continue
         assert_project_role(db, user, r.project_id, _RW)
         downgraded += _downgrade_cases_for_key(db, r)
+        db.query(SelectorAuditObservation).filter_by(key_id=r.id).delete(synchronize_session=False)
         db.delete(r)
         db.flush()
         deleted += 1
@@ -345,8 +359,10 @@ def batch_delete(body: SelectorBatchDeleteIn, db: Session = Depends(get_db),
 @router.post("/batch-page")
 def batch_set_page(body: SelectorBatchPageIn, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
-    """批量设置选择器 key 的 page（页面分组）；空串→清空为未分类。按各自项目校验权限。"""
-    page = (body.page or "").strip()[:64]
+    """批量设置说明第一段，不修改页面分组。"""
+    page = body.page.strip()
+    if not page or any(c in page for c in "[]"):
+        raise HTTPException(422, detail="导航 Tab 不能为空或包含方括号")
     updated, missing = 0, []
     for kid in dict.fromkeys(body.ids):
         r = db.get(SelectorKey, kid)
@@ -354,12 +370,79 @@ def batch_set_page(body: SelectorBatchPageIn, db: Session = Depends(get_db),
             missing.append(kid); continue
         assert_project_role(db, user, r.project_id, _RW)
         remember_selector(db, r, user.id)
-        r.page = page
+        try:
+            r.desc = replace_segment(r.desc, 0, page, r.page, r.key)
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        r.change_status = "updated"
         r.updated_by = user.id
         r.updated_at = datetime.utcnow()
         updated += 1
     db.commit()
     return ok({"updated": updated, "page": page, "missing": missing})
+
+
+@router.post("/batch-description")
+def batch_set_description(body: SelectorBatchDescriptionIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Only nonblank segments are changed; grouping and locators stay untouched."""
+    values = [(value or "").strip() for value in (body.navigation, body.page, body.scene, body.element)]
+    if not any(values) or any("[" in value or "]" in value for value in values):
+        raise HTTPException(422, detail="请至少填写一段，内容不能包含方括号；留空的段保留原值")
+    ids = list(dict.fromkeys(body.ids))
+    rows = db.query(SelectorKey).filter(SelectorKey.id.in_(ids)).populate_existing().with_for_update().all()
+    if len(rows) != len(ids):
+        raise HTTPException(409, detail="部分选择器已删除，请刷新后重新选择")
+    changes = []
+    for row in rows:
+        assert_project_role(db, user, row.project_id, _RW)
+        if body.expected_revisions.get(row.id) != selector_revision(row):
+            raise HTTPException(409, detail="选择器已被其他操作更新，请刷新后重新选择")
+        try:
+            parts = split_description(normalize_description(row.desc, row.page, row.key))
+            desc = compose_description([value or parts[i] for i, value in enumerate(values)])
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        if desc != row.desc:
+            changes.append((row, desc))
+    for row, desc in changes:
+        remember_selector(db, row, user.id)
+        row.desc, row.change_status = desc, "updated"
+        row.updated_by, row.updated_at = user.id, datetime.utcnow()
+    db.commit()
+    return ok({"updated": len(changes), "unchanged": len(rows) - len(changes)})
+
+
+@router.post("/rename-page")
+def rename_page(body: SelectorPageRenameIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.models.module_entry import ModuleEntry
+    assert_project_role(db, user, body.project_id, _RW)
+    sub = _valid_sub(body.sub_product)
+    name = body.new_page.strip()
+    if not name or any(c in name for c in "[]"):
+        raise HTTPException(422, detail="分组名称不能为空或包含方括号")
+    scope = db.query(SelectorKey).filter(SelectorKey.project_id == body.project_id, SelectorKey.sub_product == sub)
+    rows = scope.filter(SelectorKey.page == body.old_page).populate_existing().with_for_update().all()
+    if not rows or {r.id: selector_revision(r) for r in rows} != body.expected_revisions:
+        raise HTTPException(409, detail="分组内容已变化，请刷新后重试")
+    if name == body.old_page:
+        return ok({"updated": 0, "page": name})
+    modules = db.query(ModuleEntry).filter(ModuleEntry.project_id == body.project_id, ModuleEntry.sub_product == sub)
+    if scope.filter(SelectorKey.page == name).first() or modules.filter(ModuleEntry.page == name).first():
+        raise HTTPException(409, detail="目标分组已存在，请使用其他名称")
+    for r in rows:
+        remember_selector(db, r, user.id)
+        try:
+            r.desc = replace_segment(r.desc, 1, name, r.page, r.key)
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        r.page = name
+        r.change_status = "updated"
+        r.updated_by, r.updated_at = user.id, datetime.utcnow()
+    module = modules.filter(ModuleEntry.page == body.old_page).with_for_update().first()
+    if module:
+        module.page = name
+    db.commit()
+    return ok({"updated": len(rows), "page": name})
 
 
 def _cases_using_key(db: Session, project_id: int, key: str) -> list[TestCase]:
@@ -464,7 +547,7 @@ def import_legacy(project_id: int = Query(...), db: Session = Depends(get_db),
         if k in have:
             skipped += 1; continue
         db.add(SelectorKey(project_id=project_id, sub_product="", key=k,
-                           frame=v.get("frame", "auto"), desc=v.get("desc", ""),
+                           frame=v.get("frame", "auto"), desc=_description(v.get("desc"), "", k),
                            candidates=json.dumps(v.get("candidates", []), ensure_ascii=False),
                            updated_by=user.id, updated_at=datetime.utcnow()))
         imported += 1
@@ -538,7 +621,7 @@ def _apply_import(db: Session, user: User, project_id: int, sub: str,
         plat = v.get("platform", "web")
         plat = plat if plat in ("web", "android", "ios") else "web"
         payload = dict(frame=v.get("frame") or "auto", page=v.get("page") or "",
-                       desc=v.get("desc") or "", platform=plat,
+                       desc=_description(v.get("desc"), v.get("page"), key), platform=plat,
                        candidates=json.dumps(cands, ensure_ascii=False))
         existing = have.get(key)
         if existing:
@@ -549,6 +632,7 @@ def _apply_import(db: Session, user: User, project_id: int, sub: str,
             existing.frame, existing.page = payload["frame"], payload["page"]
             existing.desc, existing.platform = payload["desc"], payload["platform"]
             existing.candidates = payload["candidates"]
+            existing.change_status = "updated"
             existing.updated_by, existing.updated_at = user.id, datetime.utcnow()
             updated += 1
         else:

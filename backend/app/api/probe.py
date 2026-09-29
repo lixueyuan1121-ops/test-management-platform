@@ -92,6 +92,8 @@ def start_probe(
 def list_pending(
     runner: str = Query("mac-01"),
     limit: int = Query(5, le=20),
+    audit_version: int = Query(0),
+    audit_only: bool = Query(False),
     db: Session = Depends(get_db),
     ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
@@ -108,8 +110,14 @@ def list_pending(
         db.commit()
         return ok([])
     assert_idle(db, device.id)
+    from app.models import SelectorAuditRun
+    query = db.query(ProbeRequest)
+    if audit_only:
+        query = query.filter(ProbeRequest.id.in_(db.query(SelectorAuditRun.probe_id)))
+    if audit_version < 1:
+        query = query.filter(~ProbeRequest.id.in_(db.query(SelectorAuditRun.probe_id)))
     rows = (
-        db.query(ProbeRequest)
+        query
         .filter(ProbeRequest.status == "pending", ProbeRequest.runner_device_id == device.id)
         .order_by(ProbeRequest.id)
         .limit(1)
@@ -160,6 +168,11 @@ def report_probe(
             return ok(_to_out(r))
         raise HTTPException(409, detail="探测已结束或尚未领取，请重新发起探测")
 
+    if (_loads(r.params) or {}).get('mode') == 'dom_audit' and body.result is not None:
+        if (_loads(r.params) or {}).get('cancel_requested'):
+            raise HTTPException(409, '巡检已请求取消，禁止同步结果')
+        from app.services.selector_audit import reconcile
+        reconcile(db, r, body.result)
     if body.result is not None:
         r.result = json.dumps(body.result, ensure_ascii=False)
         r.error = None
@@ -239,3 +252,14 @@ async def upload_screenshot(
     db.commit()
     _cleanup_old_shots()   # 顺手清理过期旧截图(惰性:只在有新探测时触发)
     return ok({"screenshot_url": f"/uploads/{rel}"})
+
+
+@router.post('/{probe_id}/heartbeat')
+def heartbeat(probe_id:int,db:Session=Depends(get_db),ctx:RunnerCtx=Depends(require_runner_ctx)):
+    device=lock_device(db,ctx)
+    r=db.query(ProbeRequest).filter_by(id=probe_id).with_for_update().first()
+    if not r:raise HTTPException(404,'探测不存在')
+    assert_assigned(r,device)
+    if r.status!='running':raise HTTPException(409,'探测已结束')
+    r.updated_at=datetime.utcnow();db.commit()
+    return ok({'cancel_requested':bool((_loads(r.params) or {}).get('cancel_requested'))})

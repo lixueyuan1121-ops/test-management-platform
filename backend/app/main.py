@@ -64,6 +64,8 @@ def init_db() -> None:
     ensure_ai_provider_columns()
     ensure_selector_tables()
     ensure_selector_page_column()
+    from app.db.migrate import ensure_selector_change_status_column
+    ensure_selector_change_status_column()
     ensure_selector_frame_width()
     ensure_probe_screenshot_column()
     ensure_probe_result_longtext()
@@ -135,6 +137,11 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_router)
 
+    @app.on_event("shutdown")
+    def stop_selector_audit():
+        from app.services import selector_audit
+        selector_audit.stop()
+
     @app.get("/api/health", tags=["meta"])
     def health():
         return {"code": 0, "msg": "ok", "data": {"status": "up", "version": "0.1.0"}}
@@ -142,6 +149,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup():
         init_db()
+        from app.services import selector_audit
+        selector_audit.start()
         from app.services import verified_import_jobs
         verified_import_jobs.start()
         # 收口僵尸 running:重启会打断内存里的综合评价/一条龙线程,库里残留的 running 再没人落
@@ -242,7 +251,7 @@ def _mount_frontend(app: FastAPI) -> None:
 
     @app.get("/", include_in_schema=False)
     def _index():
-        return FileResponse(index_file)
+        return FileResponse(index_file, headers={"Cache-Control": "no-store"})
 
     # SPA 回退：非 /api、非已知静态文件的路径都返回 index.html，交给前端路由。
     # 防目录穿越：先 realpath 解析（含符号链接），再确认仍在 dist 内，
@@ -257,8 +266,8 @@ def _mount_frontend(app: FastAPI) -> None:
             and (candidate == dist_real or candidate.startswith(dist_real + os.sep))
             and os.path.isfile(candidate)
         ):
-            return FileResponse(candidate)
-        return FileResponse(index_file)
+            return FileResponse(candidate, headers={"Cache-Control": "no-store"} if candidate == os.path.realpath(index_file) else None)
+        return FileResponse(index_file, headers={"Cache-Control": "no-store"})
 
 
 app = create_app()

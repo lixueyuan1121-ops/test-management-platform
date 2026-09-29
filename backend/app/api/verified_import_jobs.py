@@ -34,12 +34,13 @@ def item_summary(item):
             "receipt": json.loads(item.receipt) if item.receipt else None}
 
 
-def summary(job, items):
+def summary(job, items, execution_user=None):
     counts = {key: sum(i.status == key for i in items) for key in ("pending", "needs_confirmation", "done", "failed")}
     state = next((key for key in ("pending", "needs_confirmation", "failed") if counts[key]), "completed")
     receipts = [json.loads(i.receipt) for i in items if i.receipt]
     return {"job_id": job.id, "project_id": job.project_id, "external_id": job.external_id,
             "requirement": job.requirement, "user_id": job.user_id, "created_at": job.created_at,
+            "executor_name": ((execution_user.name or "").strip() or execution_user.username) if execution_user else "账号已删除",
             "status": state, "counts": counts, "case_count": len(items),
             "created_cases": sum(r["disposition"] == "created" for r in receipts),
             "reused_cases": sum(r["disposition"] == "reused" for r in receipts),
@@ -83,7 +84,8 @@ def submit(body: VerifiedImport, db: Session = Depends(get_db), user: User = Dep
     if job.digest != sha:
         raise HTTPException(409, "相同 external_id 已提交不同内容，请保留原始包核对")
     items = db.query(VerifiedImportItem).filter_by(job_id=job.id).all()
-    return ok({**summary(job, items), "accepted": True, "reused": reused,
+    execution_user = db.query(User.id, User.name, User.username).filter(User.id == job.user_id).first()
+    return ok({**summary(job, items, execution_user), "accepted": True, "reused": reused,
                "message": "已接收，平台后台整理；无需等待，最终结果请在导入任务查看"})
 
 
@@ -99,7 +101,10 @@ def listing(project_id: int, page: int = Query(1, ge=1), status: str = "",
     total = query.count()
     jobs = query.order_by(VerifiedImportJob.id.desc()).offset((page-1)*20).limit(20).all()
     items = db.query(VerifiedImportItem).filter(VerifiedImportItem.job_id.in_([j.id for j in jobs])).all() if jobs else []
-    return ok({"items": [summary(j, [i for i in items if i.job_id == j.id]) for j in jobs], "total": total, "page": page, "page_size": 20})
+    # Import submission validates device ownership: job.user_id is the execution account.
+    # Fetch display fields once per page; keep large scripts/reports deferred.
+    users = {u.id: u for u in db.query(User.id, User.name, User.username).filter(User.id.in_({j.user_id for j in jobs})).all()} if jobs else {}
+    return ok({"items": [summary(j, [i for i in items if i.job_id == j.id], users.get(j.user_id)) for j in jobs], "total": total, "page": page, "page_size": 20})
 
 
 @router.get("/{job_id}")
@@ -107,7 +112,8 @@ def detail(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_
     job = get_job(db, user, job_id)
     role = authorize(db, user, job.project_id)
     items = db.query(VerifiedImportItem).filter_by(job_id=job.id).order_by(VerifiedImportItem.position).all()
-    return ok({**summary(job, items), "can_manage": role.role == ProjectRole.admin,
+    execution_user = db.query(User.id, User.name, User.username).filter(User.id == job.user_id).first()
+    return ok({**summary(job, items, execution_user), "can_manage": role.role == ProjectRole.admin,
                "items": [item_summary(i) for i in items]})
 
 

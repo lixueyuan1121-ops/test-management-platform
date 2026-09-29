@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runDomAudit } from './dom-audit.mjs';
 import { runInWorker } from "./execution-worker.mjs";
 import desktopLease from "./desktop-lease.cjs";
 import { createHash } from "node:crypto";
@@ -55,6 +56,7 @@ import { runWithTrace } from "./exec-trace.mjs";
 const IS_WIN = process.platform === "win32";
 
 const BASE_URL     = (process.env.BASE_URL     || "https://qalab.claw.qihoo.net").replace(/\/$/, "");
+const AUDIT_ONLY = process.argv.includes("--dom-audit-only");
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN  || "";
 const RUNNER_ID    = process.env.RUNNER_ID     || "win-01";
 const POLL_MS      = Number(process.env.POLL_MS || 5000);
@@ -104,7 +106,7 @@ const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${enc
 // ---- 设备探测队列(与 exec 队列并列,同一 runner token/契约)----
 // GET /api/probe/pending?runner= 拉本机 pending 探测(平台侧拉取即置 running);
 // PATCH /api/probe/{id}?runner= 回写 {result} 或 {error}。镜像上面的 exec 封装。
-const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}`);
+const fetchProbes  = () => api("GET", `/api/probe/pending?runner=${encodeURIComponent(RUNNER_ID)}&audit_version=1&audit_only=${AUDIT_ONLY ? "true" : "false"}`);
 const reportProbe  = (id, r) => api("PATCH", `/api/probe/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
 // 录制会话(与 exec/probe 队列并列):拉本机待录/录制中会话,增量上报捕获步骤。
 const { consumerId: RECORD_CONSUMER, fetchRecords, reportRecordEvents } = createRecordingClient(api, RUNNER_ID);
@@ -539,7 +541,13 @@ async function handleProbes() {
       await guiCore.connect();
       const reg = await fetchRegistry(p.project_id, p.sub_product || "");
       guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
-      if ((p.params || {}).mode === "validate_selection") {
+      if ((p.params || {}).mode === "dom_audit") {
+        const result = await runDomAudit(guiCore,p.params,async () => {
+          const res=await api('POST',`/api/probe/${p.id}/heartbeat`,{});
+          return res?.data || res;
+        });
+        await reportProbe(p.id,{result});
+      } else if ((p.params || {}).mode === "validate_selection") {
         await reportProbe(p.id, { result: await guiCore.validateSelection(p.params) });
       } else if ((p.params || {}).mode === "verify") {
         // verify:校验 key 是否还命中当前页。core=true 巡检核心 key 集(失效即在 failed 里告警)。
@@ -752,18 +760,18 @@ async function main() {
     release ||= await desktopLease.acquireDesktopLease();
     if (!release) {
       // Presence polling never touches the desktop or claims work.
-      try { await fetchPending(); } catch (e) { log("轮询异常:", e.message); }
+      try { if (!AUDIT_ONLY) await fetchPending(); } catch (e) { log("轮询异常:", e.message); }
       log("桌面正由另一 runner 使用，等待当前任务结束");
       await sleep(POLL_MS);
       continue;
     }
     let recordingActive = false;
     try {
-      recordingActive = await handleRecordings();
+      recordingActive = !AUDIT_ONLY && await handleRecordings();
       if (recordingActive) { await sleep(POLL_MS); continue; }
-      try { await tick(); } catch (e) { log("轮询异常:", e.message); }
+      try { if (!AUDIT_ONLY) await tick(); } catch (e) { log("轮询异常:", e.message); }
       try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
-      try { await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
+      try { if (!AUDIT_ONLY) await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
     } finally {
       // Drop cached CDP handles before another executor can restart/switch clients.
       // Recording spans polls: retain both the CDP connection and desktop lease.

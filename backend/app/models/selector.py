@@ -29,6 +29,8 @@ class SelectorKey(Base):
     frame: Mapped[str] = mapped_column(String(2048), default="auto", server_default="auto")
     page: Mapped[str] = mapped_column(String(64), default="", server_default="")
     desc: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    # Management metadata only; never included in runtime locators.
+    change_status: Mapped[str] = mapped_column(String(16), default="new", server_default="")
     candidates: Mapped[str] = mapped_column(Text, default="[]")  # JSON 字符串
     updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

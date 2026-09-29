@@ -15,6 +15,8 @@ class AcceptanceCriterion(ReviewModel):
 
 
 class AcceptanceRule(ReviewModel):
+    review_completion: dict[str, str] = Field(default_factory=dict, max_length=4)
+
     id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,48}$")
     title: str = Field(min_length=1, max_length=300)
     module: str = Field(default="", max_length=200)
