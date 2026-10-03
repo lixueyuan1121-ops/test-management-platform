@@ -106,12 +106,15 @@ class DesktopRunner {
     await this._focus(); // 前台化，确保「新建任务」点击生效
     for (let attempt = 0; attempt < 4; attempt++) {
       const fl = this._fl();
+      let clickError = '';
       try {
         await this._clickNewTask(fl, newSel);
       } catch (e) {
         if (/\[NAMI_(?:PROTECTED_OPERATION|ASK_FORM)\]/.test(e.message || '')) throw e;
+        clickError = (e.message || '').split('\n')[0];
       }
       await this._sleep(1800);
+      await this._ensureCtx(); // 首页导航可能替换 iframe，不能沿用上一个对话的形态。
       // 校验：输入框可见 且 无历史用户气泡 = 干净新对话
       try {
         await this._fl().locator(inputSel).first().waitFor({ state: 'visible', timeout: 8000 });
@@ -121,7 +124,7 @@ class DesktopRunner {
           if (await this._isCleanConversation(previousSession)) { this.dr.frame = this._fl(); return true; }
         }
       } catch {}
-      this._warn(`   新建对话第 ${attempt + 1} 次未干净（仍有历史气泡/输入框未就绪），重试...`);
+      this._warn(`   新建对话第 ${attempt + 1} 次未干净（仍有历史气泡/输入框未就绪）${clickError ? `：${clickError}` : ''}，重试...`);
     }
     // 兜底：回 launcher 强制干净（整页重载较重，仅在按钮反复失败时用）
     await this.dr.waitForProtectedOperations();
@@ -144,9 +147,26 @@ class DesktopRunner {
     // 连发间隔中可能刚出现确认卡；必须等提交完成，不能带着待确认切去下一条。
     // 放在点击入口，覆盖正常新建、重试和 launcher 兜底路径。
     await this.dr.waitForProtectedOperations();
-    const buttons = ctx.locator(selector);
-    for (let i = 0; i < await buttons.count(); i++) {
-      if (await buttons.nth(i).isVisible()) { await buttons.nth(i).click({ timeout: 5000 }); return; }
+    // 已安装 Runner 会保留用户的旧配置，不能只更新默认配置。
+    // 侧栏在窄窗口/全屏预览中会隐藏；顶栏和一级首页导航是客户端的真实备用入口。
+    const selectors = [...new Set([selector, '[data-testid="aside-new-task-btn"]',
+      '.aside-panel__chat-button', '.topbar-chat-actions__newchat', '[data-testid="nav-home"]',
+      '.sidebar-nav__item:has(.sidebar-nav__icon use[href^="#icon-sidebar-home-"])'].filter(Boolean))];
+    for (const candidate of selectors) {
+      for (const scope of ctx === this.page ? [ctx] : [ctx, this.page]) {
+        const buttons = scope.locator(candidate);
+        for (let i = 0; i < await buttons.count(); i++) {
+          const button = buttons.nth(i);
+          if (!await button.isVisible()) continue;
+          try {
+            await button.click({ timeout: 5000 });
+            if (candidate !== selector) this._log(`   新建对话使用备用入口：${candidate}`);
+            return;
+          } catch (e) {
+            this._warn(`   新建任务入口点击失败(${candidate})：${(e.message || '').split('\n')[0]}`);
+          }
+        }
+      }
     }
     throw new Error('未找到可见的新建任务入口');
   }
@@ -179,9 +199,13 @@ class DesktopRunner {
     }
   }
   async _openCleanConversationOnce() {
+    // Launcher 可能直接落在空白首页，不一定渲染二级侧栏的新建按钮。
+    // 仍用同一隔离校验，旧 sid、历史气泡和加载中的会话均不能通过。
+    if (await this._isCleanConversation(this._newConversationPreviousSession)) return;
     const fl = this._fl();
     await this._clickNewTask(fl, this.platform.newTaskSelector || '.aside-panel__chat-button');
     await this._sleep(1500);
+    await this._ensureCtx();
     await this._fl().locator(this.platform.inputSelector).first().waitFor({ state: 'visible', timeout: 10000 });
   }
 

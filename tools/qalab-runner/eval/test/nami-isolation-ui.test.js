@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const DialogRunner = require('../src/dialog-runner');
 const DesktopRunner = require('../src/desktop-runner');
+const DesktopPool = require('../src/desktop-pool');
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
 after(async () => { await browser?.close(); });
@@ -87,6 +88,69 @@ test('two independent cases each open a different task using the visible entry',
   assert.deepEqual(await page.evaluate(() => window.sent), [{ text: '问题1', sid: 'new-1' }, { text: '问题2', sid: 'new-2' }]);
 });
 
+for (const entry of ['topbar', 'home-testid', 'home-icon']) {
+  test(`second case opens an independent task through ${entry} after the sidebar disappears`, async t => {
+    const { d, page } = await desktopFixture(t);
+    assert.equal(await d._openCleanConversation(), true);
+    await d._sendOne({ caseId: 'RUN-4283', question: '第一条问题' });
+    await page.evaluate(entry => {
+      const newTask = document.querySelector('#new');
+      newTask.hidden = true;
+      const host = document.createElement('sidebar-nav'); document.body.prepend(host);
+      const root = host.attachShadow({ mode: 'open' });
+      root.innerHTML = entry === 'topbar'
+        ? '<div class="topbar-chat-actions__newchat">新建任务</div>'
+        : entry === 'home-testid'
+          ? '<li data-testid="nav-home">首页</li>'
+          : '<li class="sidebar-nav__item"><div class="sidebar-nav__icon"><svg><use href="#icon-sidebar-home-active"></use></svg></div>首页</li>';
+      root.firstElementChild.onclick = newTask.onclick;
+    }, entry);
+    assert.equal(await d._openCleanConversation(), true);
+    await d._sendOne({ caseId: 'RUN-4284', question: '第二条问题' });
+    assert.equal(await page.locator('.chat-group.user').count(), 1);
+    assert.deepEqual(await page.evaluate(() => window.sent), [
+      { text: '第一条问题', sid: 'new-1' }, { text: '第二条问题', sid: 'new-2' },
+    ]);
+  });
+}
+
+test('home navigation outside the conversation iframe replaces it and refreshes the compose context', async t => {
+  const { d, page } = await desktopFixture(t);
+  await page.route('https://embedded.work.n.cn/**', route => route.fulfill({ contentType: 'text/html', body:
+    '<div class="chat-group user">历史</div><div id="input" contenteditable></div>' }));
+  await page.setContent('<button data-testid="nav-home">首页</button><iframe src="https://embedded.work.n.cn/chat?sid=old"></iframe>');
+  await page.frameLocator('iframe').locator('#input').waitFor();
+  await page.locator('[data-testid="nav-home"]').evaluate(el => el.onclick = () => {
+    document.querySelector('iframe').remove();
+    document.body.insertAdjacentHTML('beforeend', '<div id="input" contenteditable></div>');
+    history.replaceState({}, '', '/home');
+  });
+  assert.equal(await d._openCleanConversation(), true);
+  assert.equal(d._ctxKind, 'main');
+  assert.equal(d.dr.frame, page);
+});
+
+test('launcher recovery accepts a verified empty home without any new-task button', async t => {
+  const { d, page } = await desktopFixture(t);
+  await page.locator('#new').evaluate(el => el.onclick = () => {});
+  d.platform.chatUrl = 'https://fixture.work.n.cn/launcher';
+  await page.route(d.platform.chatUrl, route => route.fulfill({ contentType: 'text/html', body:
+    '<openclaw-app></openclaw-app><div id="input" contenteditable></div>' }));
+  assert.equal(await d._openCleanConversation(), true);
+  assert.equal(page.url(), d.platform.chatUrl);
+});
+
+test('a visible home navigation that leaves the old session unchanged cannot authorize sending', async t => {
+  const { d, page } = await desktopFixture(t);
+  await page.locator('#new').evaluate(el => el.remove());
+  await page.locator('body').evaluate(el => el.insertAdjacentHTML('beforeend', '<button data-testid="nav-home">首页</button>'));
+  d.platform.chatUrl = 'https://fixture.work.n.cn/launcher';
+  await page.route(d.platform.chatUrl, route => route.fulfill({ contentType: 'text/html', body:
+    '<div id="input" contenteditable></div><div class="chat-group user">历史</div><button data-testid="nav-home">首页</button>' }));
+  assert.equal(await d._openCleanConversation(), false);
+  await assert.rejects(d._assertSendContext(), /NAMI_NEW_CONVERSATION/);
+});
+
 test('explicit follow-up stays in its own conversation and a changed session blocks sending', async t => {
   const { d, page } = await desktopFixture(t);
   assert.equal(await d._openCleanConversation(), true);
@@ -130,4 +194,48 @@ for (const stage of ['options', 'typing']) test(`restored history during ${stage
   else d.dr._typeQuestion = async (input, text) => { await input.fill(text); await restore(); };
   await assert.rejects(d._sendOne({ question: '不能追加' }), /NAMI_NEW_CONVERSATION/);
   assert.equal(await page.evaluate(() => window.sent.length), 0);
+});
+
+async function poolFixture(t, { embedded = false } = {}) {
+  const context = await browser.newContext(); t.after(() => context.close());
+  await context.route('https://*.work.n.cn/**', route => {
+    const host = new URL(route.request().url()).hostname;
+    const body = host === 'stale.work.n.cn' ? '<main>残留离线页面</main>'
+      : embedded && host === 'ready.work.n.cn'
+        ? '<iframe src="https://embedded.work.n.cn/chat"></iframe>'
+        : '<div id="input" contenteditable></div>';
+    return route.fulfill({ contentType: 'text/html', body });
+  });
+  const stale = await context.newPage(); await stale.goto('https://stale.work.n.cn/chat?status=offline');
+  const ready = await context.newPage(); await ready.goto('https://ready.work.n.cn/home');
+  const pool = new DesktopPool({}, platform);
+  pool.context = context; pool._sleep = () => new Promise(r => setTimeout(r, 5));
+  const traced = [];
+  pool._attachMainPageTrace = async page => traced.push(page);
+  return { pool, stale, ready, traced };
+}
+
+for (const embedded of [false, true]) test(`pool skips a stale first renderer and selects the ready ${embedded ? 'iframe' : 'main document'}`, async t => {
+  const { pool, ready, traced } = await poolFixture(t, { embedded });
+  assert.equal(await pool._resolveMainPage(3000), ready);
+  assert.deepEqual(traced, [ready], 'trace is attached only to the selected usable renderer');
+});
+
+test('pool fails before sending when all renderers lack a visible input', async t => {
+  const { pool, ready, traced } = await poolFixture(t);
+  await ready.locator('#input').evaluate(el => el.hidden = true);
+  await assert.rejects(pool._resolveMainPage(50), /主页面未就绪.*未发送测评提问/);
+  assert.deepEqual(traced, []);
+});
+
+test('explicit device switching cannot fall back to a different ready renderer', async t => {
+  const { pool, stale, traced } = await poolFixture(t);
+  await assert.rejects(pool._resolveMainPage(50, stale), /主页面未就绪/);
+  assert.deepEqual(traced, []);
+});
+
+test('pool reports trace initialization failure without mislabeling a ready renderer', async t => {
+  const { pool } = await poolFixture(t);
+  pool._attachMainPageTrace = async () => { throw new Error('trace attach failed'); };
+  await assert.rejects(pool._resolveMainPage(3000), /trace attach failed/);
 });

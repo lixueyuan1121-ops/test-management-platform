@@ -164,7 +164,7 @@ class DesktopPool {
   // 登录态前置预检：轮询中若持续只见登录二维码页(qrcode/im.live.360.cn/passport)而不见 work.n.cn，
   // 给 8s 缓冲（已登录客户端启动可能短暂闪 360 SSO 域名再重定向到 work.n.cn）后即提前判定「未登录」并抛错，
   // 不等 readyTimeout 跑满——未登录时多等无益，对方扫码后重跑即可。缓冲后仍只见登录页=会话失效，非慢加载。
-  async _resolveMainPage(timeoutMs) {
+  async _resolveMainPage(timeoutMs, preferredPage = null) {
     const iframeSel = this.platform.iframeSelector || workFrame.DEFAULT_IFRAME_SEL;
     const inputSel = this.platform.inputSelector || '.chat-compose-rich__content';
     const loginRe = this.platform.loginUrlPattern
@@ -180,42 +180,50 @@ class DesktopPool {
     while (Date.now() < deadline) {
       const pages = this.context.pages();
       const urls = pages.map(p => p.url());
-      page = pages.find(p => workFrame.isWorkMainPage(p, p.url())) || null;
-      if (!page && urls.some(u => loginRe.test(u))) {
+      const candidates = pages.filter(p => workFrame.isWorkMainPage(p, p.url()) &&
+        (!preferredPage || p === preferredPage));
+      page = candidates[0] || null;
+      if (!candidates.length && urls.some(u => loginRe.test(u))) {
         // 持续只见登录页：缓冲 8s 仍无 work.n.cn → 提前判定未登录，省掉跑满 readyTimeout 的空等
         if (!firstLoginAt) firstLoginAt = Date.now();
         else if (Date.now() - firstLoginAt > 8000) throw loginError(urls);
       } else {
         firstLoginAt = 0; // 见到 work.n.cn 或非登录页：重置（已登录客户端正常加载路径）
       }
-      if (page) {
-        // 遇到原生弹窗直接放行，避免卡住主窗口
-        page.on('dialog', async (dg) => { try { await dg.accept(); } catch { try { await dg.dismiss(); } catch {} } });
-        // 纳米 Work 独立采集器：当前 gateway 消息（包含 Electron 桥接）+ 浏览器 WS 兼容。
-        // 直接监听已有连接，避免依赖 reload 重建一个并不存在于 CDP 的 WebSocket。
-        if (!this._wsTrace || this._tracePage !== page) {
-          await this._wsTrace?.dispose();
-          this._wsTrace = await attachNamiTrace(page);
-          this._tracePage = page;
-          this._log('   已挂载纳米 Work gateway 过程采集（兼容浏览器 WebSocket）');
-        }
+      // Electron 可留下多个同域 renderer。能响应 CDP 不代表对话 UI 已就绪，
+      // 必须检查每个候选，不能一直等待 pages.find() 返回的残留/离线页面。
+      for (const candidate of candidates) {
         try {
           // 自适应:有 work.n.cn iframe 走 frameLocator,否则主文档 page(不同设备对话 UI 挂载位置不同)。
-          const hasIframe = await workFrame.hasWorkIframe(page, iframeSel);
-          const ctx = workFrame.pickCtx(page, iframeSel, hasIframe);
-          await ctx.locator(inputSel).first().waitFor({ state: 'visible', timeout: 3000 });
-          return page; // 对话界面就绪(iframe 或主文档)
-        } catch { /* 还没就绪，继续轮询 */ }
+          const hasIframe = await workFrame.hasWorkIframe(candidate, iframeSel);
+          const ctx = workFrame.pickCtx(candidate, iframeSel, hasIframe);
+          await ctx.locator(inputSel).first().waitFor({ state: 'visible', timeout: 1000 });
+        } catch { continue; /* 还没就绪，继续检查其他页面 */ }
+        // 采集初始化错误应直接上报，不能吞掉后误报成输入框未就绪。
+        await this._attachMainPageTrace(candidate);
+        if (candidates.length > 1) this._log(`   主页面就绪检查：从 ${candidates.length} 个候选中选中第 ${candidates.indexOf(candidate) + 1} 个可输入页面`);
+        return candidate; // 对话界面就绪(iframe 或主文档)
       }
       await this._sleep(1000);
     }
-    if (page) return page; // 拿到了 page 但输入框迟迟没就绪：交给上层，DesktopRunner 会再等/新建对话
+    if (page) throw new Error(`纳米Work主页面未就绪：候选页面均未找到可见对话输入框(${inputSel})，未发送测评提问。请确认客户端已进入可输入的主界面。`);
     const finalUrls = this.context.pages().map(p => p.url());
     if (finalUrls.some(u => loginRe.test(u))) throw loginError(finalUrls);
     throw new Error(
       `未找到 work.n.cn 主窗口（客户端可能未加载或停在非主页）。请确认桌面客户端已打开并切到主对话窗口后重跑。` +
       `已连接的页面：${finalUrls.join(', ')}`
     );
+  }
+
+  async _attachMainPageTrace(page) {
+    // 采集器只绑定最终选中的可用页面，不挂在被跳过的残留 renderer 上。
+    page.on('dialog', async (dg) => { try { await dg.accept(); } catch { try { await dg.dismiss(); } catch {} } });
+    if (!this._wsTrace || this._tracePage !== page) {
+      await this._wsTrace?.dispose();
+      this._wsTrace = await attachNamiTrace(page);
+      this._tracePage = page;
+      this._log('   已挂载纳米 Work gateway 过程采集（兼容浏览器 WebSocket）');
+    }
   }
 
   getContext() { return this.context; }
@@ -321,7 +329,7 @@ class DesktopPool {
     await this._wsTrace?.dispose();
     this._wsTrace = null;      // 允许重挂(挂在新导航的 page 上)
     this._tracePage = null;
-    this.mainPage = await this._resolveMainPage(this.readyTimeout);
+    this.mainPage = await this._resolveMainPage(this.readyTimeout, this.mainPage);
     // 确认当前 vm 就是目标 + 输入框可用
     const nowVm = await this.currentVmId();
     if (nowVm !== vmId) throw new Error(`切换后当前设备 ${nowVm} != 目标 ${vmId}`);
