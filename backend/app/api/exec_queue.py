@@ -817,6 +817,14 @@ def get_run_detail(run_id: int, db: Session = Depends(get_db), user: User = Depe
     d = _to_out(r)
     d["title"] = d["payload"].get("title")
     d['execution_evidence'] = d['payload'].get('execution_evidence')
+    d['execution_timings'] = dict(d['payload'].get('execution_timings') or {})
+    if not d['payload'].get('verified_import'):
+        # Server timestamps avoid cross-machine clock skew. Do not manufacture
+        # queue time for externally imported runs which never entered this queue.
+        if r.started_at and r.created_at:
+            d['execution_timings']['queue_ms'] = max(0, round((r.started_at - r.created_at).total_seconds() * 1000))
+        if r.finished_at and r.started_at:
+            d['execution_timings']['server_wall_ms'] = max(0, round((r.finished_at - r.started_at).total_seconds() * 1000))
     tc = db.get(TestCase, r.test_case_id) if r.test_case_id else None
     if tc and _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
         from app.services.execution_evidence import case_readiness
@@ -1007,6 +1015,9 @@ def report(
                                 for st, rp in zip(steps, reports)))
             if not complete: raise HTTPException(422, '严格回归通过必须包含最终脚本的完整逐步报告与实际断言证据')
         payload['execution_evidence'] = ev
+        r.payload = json.dumps(payload, ensure_ascii=False)
+    if body.execution_timings is not None:
+        payload['execution_timings'] = body.execution_timings.model_dump(exclude_none=True)
         r.payload = json.dumps(payload, ensure_ascii=False)
     is_pass = body.verdict == "pass"
     # L2 失败分类:fail_kind=selector(选择器/环境阻塞)记 blocked,不计入功能失败率;

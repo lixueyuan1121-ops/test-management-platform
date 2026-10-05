@@ -75,6 +75,9 @@ export async function runInWorker({ file, item, heartbeat, log = () => {}, args 
       if (failures >= heartbeatFailures) return terminate("执行机与平台失联，已停止当前用例");
     }
   }
+  // An AI CLI can exit while its MCP children remain. The owned POSIX group is
+  // still addressable after the worker exits; clear it before releasing desktop.
+  if (process.platform !== 'win32') await killTree(child);
   if (error) throw error;
   return result;
 }

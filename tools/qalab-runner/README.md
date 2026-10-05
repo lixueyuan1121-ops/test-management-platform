@@ -14,7 +14,7 @@ qalab 平台(FastAPI)          runner.mjs(node,每 5s 轮询三条队列)
    │  ③PATCH 回写 {verdict, fail_kind, reason, evidence, report}
    ▼
   gui/e2e/api:有结构化 script → 确定性执行器(step-executor/api-executor,不经 LLM)
-              无 script → Claude Code(headless)兜底:GUI 用 mcp__gui__*(CDP :9222)、api/cli 用 Bash
+              无 script → GUI 使用配置的 Claude/Codex + GUI MCP(CDP :9222)，api/cli 使用 Claude + Bash
   cli:始终 Claude + Bash 起进程/验退出码
 ```
 
@@ -45,6 +45,10 @@ cd gui-mcp && npm install && cd ..
 
 # 2) 确认 Claude Code 已登录且能 headless 无交互运行(claude -p "echo hi")
 ```
+
+GUI/E2E 的 AI 导航、主观判定和无脚本兜底也可使用 Codex：安装并登录官方 Codex CLI，在设备 `.env` 设置 `GUI_AI_ENGINE=codex`，设备空闲时重启 Runner。完整结构化脚本仍由确定性执行器直接运行；API/CLI 类型保持原路径。`CODEX_BIN` 可指定 CLI 路径，安装与兼容要求见[功能回归执行说明](../../docs/functional-replay-performance-2026-10-05.md)。
+
+要减少重复的 AI 导航，用例编辑支持将现场验证过的前置步骤并入 script，本地回填草稿支持 `setup_script`。保存后重新验证，不能只删除文字前置条件。新执行报告会展示准备、复位、导航、步骤、上传等阶段耗时，便于比较同一用例切换引擎前后的效果。
 
 ## 分阶段验证(强烈建议按序)
 > 平台侧 4 接口**已并入后端**(`backend/app/api/exec_queue.py`),无需再并入;直接从握手开始。逐步 SOP 见 `操作手册.md`。

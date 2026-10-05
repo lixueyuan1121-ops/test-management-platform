@@ -21,8 +21,8 @@ function harness(payload = { script, strict_replay: true }) {
     scriptRun: async () => { events.push('script'); return { verdict: 'pass', report }; },
     agentRun: async () => { events.push('agent'); return { verdict: 'pass' }; } } };
 }
-test('local/queue pipeline resets and navigates before script; records actual execution mode', async () => {
-  const { events, options } = harness({ script, precondition: '打开记录', strict_replay: true });
+test('legacy queue pipeline resets and navigates before script; records actual execution mode', async () => {
+  const { events, options } = harness({ script, precondition: '打开记录' });
   const result = await executeGui(options);
   assert.deepEqual(events, ['reset','navigate','script']);
   assert.equal(result.execution.mode, 'claude_precondition');

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from 
 import { resolve, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { executionContract, fingerprint, normalizeScript } from './execution-evidence.mjs';
+import { compileReplayDraft } from './replay-draft.mjs';
 
 export function saveLocalReport(report, directory) {
   return report.map((step, i) => {
@@ -21,6 +22,7 @@ export async function verifyImport({ input, output, execute, fetchRegistry, acqu
   const draft = JSON.parse(readFileSync(input, 'utf8').replace(/^\uFEFF/, ''));
   if (!Number.isInteger(draft.project_id) || draft.project_id < 1 || !Number.isInteger(draft.runner_device_id) || draft.runner_device_id < 1) throw new Error('草稿需要真实 project_id 和 runner_device_id');
   if (!draft.requirement?.trim() || !Array.isArray(draft.cases) || !draft.cases.length || draft.cases.length > 20) throw new Error('草稿需要 requirement 和 1–20 条用例');
+  draft.cases = draft.cases.map(compileReplayDraft);
   for (const c of draft.cases) {
     if (!['gui', 'e2e'].includes(c.exec_kind || 'e2e')) throw new Error('同路径验证入口当前支持 GUI/E2E；API 用例继续使用 API 执行器');
     for (const field of ['title', 'steps', 'expected', 'environment', 'scope']) if (!c[field]?.trim()) throw new Error(`用例缺少 ${field}`);

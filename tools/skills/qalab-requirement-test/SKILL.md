@@ -68,6 +68,7 @@ description: 单独调用时通过输入卡片收集需求、应用地址和可�
 优先复用环境现有自动化 Runner / Playwright / 已连接的应用；检查工具是否可用，不假设所有人拥有同一安装路径或 CDP 端口。桌面 UI 交互使用当前可用且授权的电脑控制能力；若使用电脑控制 skill，先读取其指引。Electron 可复用项目既有 guiCore + StepExecutor，浏览器应用使用适用的 Playwright 执行器。
 先观察真实 DOM/可访问性树，再建立选择器。保留用户选择的技能等输入标签，追加输入不能用 fill 擦掉选中状态。
 生成脚本前读取 [平台 DSL 与提交前校验](references/platform.md#平台-dsl-与提交前校验)。文字步骤与 script 分开：click 等定位动作必须带对象 target，其中填写真实 target.selector 或目标项目已注册的 target.key。不能把自然语言、坐标操作、顶层 selector、Playwright 代码当作平台 DSL；不能用另一份脚本的成功报告回填。
+回归脚本应覆盖从初始状态开始的前置操作及业务断言。Namiwork 的验证草稿可用 setup_script 提供现场确认过的前置步骤和到位断言，由 Runner 合入最终 script；环境备注放 environment。不要遗漏前置操作来清空 precondition，也不要把 AI judge 留在纯脚本回归中。
 执行最终将回填的完整脚本，留存每步结果、实际断言值、执行时间、应用版本/环境和执行器。操作成功不能代替业务结果断言；模型自述也不能代替实际技能调用证据。验收范围由需求决定，未完成的业务结果必须明确标注。
 对已有 QA Lab Runner 的 Namiwork GUI/E2E 测试，最终验证使用 Runner 的 `--verify-import` 入口，自动执行两次并生成原始回填包，详见 [同队列流程验证](references/platform.md#同队列流程验证)。探索时的电脑操作或另一份 Playwright 脚本不能代替这一步；验证后不重新整理或改写 script/report。旧 Runner 不支持该入口时保留草稿并说明需要升级，不能声称完成新版回归认证。此规则不限制其他应用或 API 使用其适用的执行器。
 对明确的环境/定位故障最多修复重试两次，并保留原失败原因。真实业务失败不通过放宽断言“修复”；报告缺陷，失败和阻塞用例留作草稿，不混入成功回填。

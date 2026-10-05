@@ -103,6 +103,7 @@ class RunnerDistributionTests(unittest.TestCase):
             names = archive.namelist()
             self.assertEqual(len(names), len(set(names)))
             for rel in ('runner.mjs', 'step-executor.mjs', 'self-update.mjs',
+                        'codex-engine.mjs', 'execution-timing.mjs', 'replay-draft.mjs',
                         'gui-mcp/runtime-loader.mjs', 'gui-mcp/selectors.json',
                         'eval/src/workbuddy-runner.js', 'eval/src/desktop-runner.js',
                         'eval/src/qwork-runner.js', 'eval/src/qwork-pool.js', 'eval/src/qwork-batch.js',

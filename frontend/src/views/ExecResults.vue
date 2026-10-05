@@ -150,6 +150,10 @@
         <p v-if="rep.row.reason" class="rep-reason">{{ rep.row.reason }}</p>
         <el-alert v-if="selectorDiagnosis(rep.row)" type="warning" :closable="false" :title="selectorDiagnosis(rep.row).detail" />
         <p class="rep-meta">执行方式：{{ executionMode(rep.row) }}</p>
+        <el-descriptions v-if="timingRows(rep.row).length" title="耗时分布" :column="2" size="small" border>
+          <el-descriptions-item v-for="stage in timingRows(rep.row)" :key="stage.key" :label="stage.label">{{ stage.seconds }}s</el-descriptions-item>
+        </el-descriptions>
+        <p v-if="!rep.row.execution_timings?.runner_total_ms && rep.row.execution_timings?.runner_total_ms !== 0" class="rep-meta">旧 Runner 未记录分阶段耗时；原耗时可能仅包含脚本或 AI 执行。</p>
         <template v-if="rep.row.execution_evidence">
           <p class="rep-meta">脚本版本：<code>{{ rep.row.execution_evidence.script_sha256.slice(0, 12) }}</code> · 执行器版本：<code>{{ rep.row.execution_evidence.runtime_sha256.slice(0, 12) }}</code></p>
           <p v-if="rep.row.payload?.verified_import" class="rep-meta">来源：外部实测导入。已核对脚本与报告指纹，平台队列回归需单独验证。</p>
@@ -160,6 +164,7 @@
 
         <ol class="steps">
           <li v-for="(s, i) in (rep.row.report || [])" :key="i" class="step">
+            <span v-if="s.duration_ms != null" class="rep-meta">步骤耗时 {{ (s.duration_ms / 1000).toFixed(1) }}s</span>
             <div class="step-line">
               <el-icon v-if="s.ok" class="ok"><CircleCheck /></el-icon>
               <el-icon v-else class="ng"><CircleClose /></el-icon>
@@ -273,7 +278,7 @@ import http from '@/api/http'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 import ReplayReadiness from '@/components/ReplayReadiness.vue'
-import { executionMode, selectorDiagnosis } from '@/utils/executionEvidence'
+import { executionMode, selectorDiagnosis, timingRows } from '@/utils/executionEvidence'
 
 const router = useRouter()
 const route = useRoute()

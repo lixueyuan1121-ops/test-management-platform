@@ -246,9 +246,17 @@
           </template>
         </div>
         <pre v-if="!scriptEdit.on" class="d-pre">{{ detail.loading ? '加载中…' : prettyScript(detail.row.script) }}</pre>
-        <template v-else>
-          <el-input v-model="scriptEdit.text" type="textarea" :rows="14" spellcheck="false" style="font-family:monospace" />
+        <el-alert v-if="detail.row.precondition && ['gui', 'e2e'].includes(detail.row.exec_kind)" type="info" :closable="false" title="当前前置条件需要 AI 导航；可在脚本编辑中补齐前置步骤，保存后验证纯脚本回归。" />
+        <template v-if="scriptEdit.on">
+          <el-input v-model="scriptEdit.text" aria-label="用例脚本" type="textarea" :rows="14" spellcheck="false" style="font-family:monospace" />
           <span class="edit-hint">直接编辑结构化步骤数组(JSON)。保存时按用例类型校验:gui/e2e 需 action 合法+定位步带 key/selector+至少一个断言,且 key 须已在选择器管理注册;api 校验请求-断言-提取。</span>
+          <template v-if="detail.row.precondition && ['gui', 'e2e'].includes(detail.row.exec_kind)">
+            <el-checkbox v-model="scriptEdit.foldSetup">将前置操作合入脚本</el-checkbox>
+            <template v-if="scriptEdit.foldSetup">
+              <p class="edit-hint">原前置要求：{{ detail.row.precondition }}。填写现场确认过的导航步骤及到位断言；保存后会添加到脚本开头，并停止重复调用 AI 导航。</p>
+              <el-input v-model="scriptEdit.setup" aria-label="前置步骤 JSON" type="textarea" :rows="6" placeholder="填写前置步骤数组，包含 assert_visible 或 assert_text 等到位断言" />
+            </template>
+          </template>
         </template>
       </div>
     </el-drawer>
@@ -293,6 +301,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter, useRoute } from 'vue-router'
 import { useAppStore } from '@/store/app'
 import { listTasks, listCases, getTestcase, setCaseExecKind, attachChecklist, enqueueExec, enqueueCases, listMyDevices, reviewTestcase, updateTestcase, deleteTestcase, genTestcaseScript, listSelectors, bulkSetRegression, listPrereqs, addPrereq, removePrereq } from '@/api'
+import { replaySetupUpdate } from '@/utils/replaySetup'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
@@ -691,7 +700,7 @@ async function doEditAndRegen() {
 // 列表行已瘦身不含 script,打开详情时按 id 单取完整用例补上 script。
 const detail = reactive({ visible: false, row: null, loading: false })
 // script 直编态:on=编辑中,text=编辑区 JSON 文本,saving=保存中。
-const scriptEdit = reactive({ on: false, text: '', saving: false })
+const scriptEdit = reactive({ on: false, text: '', saving: false, foldSetup: false, setup: '[]' })
 // 关联前置用例:list=已挂前置;pick* = 挑选弹窗
 const prereq = reactive({ loading: false, list: [], pickVisible: false, pickLoading: false, candidates: [], pickKeyword: '' })
 const prereqCandidates = computed(() => {
@@ -747,7 +756,7 @@ async function delPrereq(p) {
   } catch { /* http 拦截器已提示 */ }
 }
 function prettyScript(s) {
-  if (!s) return '(无 script,该用例由 claude 兜底执行或非结构化)'
+  if (!s) return '(无 script,该用例由设备配置的 AI 引擎执行或非结构化)'
   try { return JSON.stringify(typeof s === 'string' ? JSON.parse(s) : s, null, 2) } catch { return String(s) }
 }
 // 仅 gui/e2e/api 用例支持编辑 script(manual/cli 无结构化 script)。
@@ -758,6 +767,8 @@ function startScriptEdit() {
   // 用当前 script 预填编辑区(格式化);空 script 给个空数组模板。
   const s = detail.row?.script
   scriptEdit.text = s ? prettyScript(s) : '[]'
+  scriptEdit.foldSetup = false
+  scriptEdit.setup = '[]'
   scriptEdit.on = true
 }
 async function saveScript() {
@@ -769,9 +780,17 @@ async function saveScript() {
     return
   }
   if (!Array.isArray(parsed)) { ElMessage.error('script 必须是步骤数组(以 [ 开头)'); return }
+  let update = { script: parsed }
+  if (scriptEdit.foldSetup) {
+    try { update = replaySetupUpdate(detail.row, parsed, JSON.parse(scriptEdit.setup)) }
+    catch (error) { ElMessage.error(error.message); return }
+    try {
+      await ElMessageBox.confirm('将前置步骤加入脚本开头，并改为直接执行。原前置要求会保留在步骤说明中；保存后请下发两次回归验证。', '保存完整回归脚本', { confirmButtonText: '保存脚本', cancelButtonText: '取消' })
+    } catch { return }
+  }
   scriptEdit.saving = true
   try {
-    const updated = await updateTestcase(detail.row.id, { script: parsed })   // 后端按 kind 校验;不合法弹 msg
+    const updated = await updateTestcase(detail.row.id, update)   // 后端按 kind 校验;不合法弹 msg
     detail.row = { ...updated, replay_readiness: { state: 'pending', label: '脚本已保存，待重新验证', consecutive_passes: 0, required_passes: 2 } }
     scriptEdit.on = false
     ElMessage.success('script 已保存')

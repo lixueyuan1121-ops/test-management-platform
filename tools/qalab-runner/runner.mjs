@@ -35,6 +35,8 @@ import { runWithTrace } from "./exec-trace.mjs";
 import { executeGui } from './gui-execution.mjs';
 import { makeEvidence, runtimeFingerprint } from './execution-evidence.mjs';
 import { verifyImport, saveLocalReport } from './verify-import.mjs';
+import { createExecutionTimer } from './execution-timing.mjs';
+import { runCodex } from './codex-engine.mjs';
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -64,6 +66,8 @@ const RUNNER_TOKEN = process.env.RUNNER_TOKEN  || "";
 const RUNNER_ID    = process.env.RUNNER_ID     || "win-01";
 const POLL_MS      = Number(process.env.POLL_MS || 5000);
 const CLAUDE_BIN   = process.env.CLAUDE_BIN    || "claude";
+const GUI_AI_ENGINE = process.env.GUI_AI_ENGINE || 'claude';
+if (!['claude', 'codex'].includes(GUI_AI_ENGINE)) throw new Error('GUI_AI_ENGINE 仅支持 claude 或 codex');
 // NAMICLAW_EXE 不设默认值:空=这台机器没有被测客户端,不该跑 gui 用例(而非兜底成某个
 // 平台的固定路径,否则在没有该客户端的机器上会去 spawn 不存在的路径而崩溃)。
 const NAMICLAW_EXE = process.env.NAMICLAW_EXE  || "";
@@ -392,6 +396,46 @@ async function runClaudePrecondition(payload, log) {
   return { ...nav, duration_ms };
 }
 
+async function callCodex(prompt, systemPrompt, { gui = true, timeoutMs = Number(process.env.CODEX_TIMEOUT_MS || 240000) } = {}) {
+  return runCodex({ prompt, systemPrompt, gui, timeoutMs, log,
+    cdpUrl: `http://127.0.0.1:${CDP_PORT}`,
+    registry: { registry: guiCore.registry, vmIframe: guiCore.vmIframe, coreKeys: guiCore.coreKeys } });
+}
+function codexFailure(raw) {
+  if (raw.spawnError) return raw.spawnError;
+  if (raw.timedOut) return 'Codex 执行超时，已停止';
+  if (/required MCP servers failed|MCP server startup failed/.test(raw.err || '')) return 'Codex GUI 工具启动失败，请检查 gui-mcp 的 npm 依赖和 Node 路径';
+  if (raw.code !== 0 || raw.failed) return 'Codex 执行失败，请检查执行机日志、登录状态或额度';
+  return null;
+}
+async function navigateWithEngine(payload, log) {
+  if (GUI_AI_ENGINE === 'claude') return runClaudePrecondition(payload, log);
+  const raw = await callCodex(JSON.stringify({ title: payload.title, precondition: payload.precondition }), NAV_SYSTEM_PROMPT);
+  const reason = codexFailure(raw), nav = reason ? null : parseNavOk(raw.text);
+  if (!nav || (nav.ok && !raw.observed.some(s => s.ok))) return { ok: false, reason: reason || 'Codex 未返回有效导航工具证据', duration_ms: raw.duration_ms };
+  return { ...nav, duration_ms: raw.duration_ms };
+}
+async function executeWithEngine(payload, kind) {
+  if (GUI_AI_ENGINE === 'claude' || !['gui', 'e2e'].includes(kind)) return runClaude(payload, kind);
+  const raw = await callCodex(JSON.stringify(payload), SYSTEM_PROMPT + '\n必须用真实 GUI 断言工具验证预期；无法定位或准备失败属于 selector 阻塞。禁止删除或覆盖已有数据，禁止改变预期或跳过步骤。');
+  // Capture final state through the Runner, without giving the model an
+  // arbitrary filesystem path or treating a screenshot as assertion evidence.
+  try {
+    const shotBuf = await guiCore.shotBuffer();
+    if (shotBuf?.length) raw.observed.push({ no: raw.observed.length + 1, action: 'diagnostics', desc: 'AI 执行结束时的页面', ok: true, shotBuf });
+  } catch (error) { log(`Codex 最终截图失败：${error.message}`); }
+  const error = codexFailure(raw), verdict = error ? null : parseVerdict(raw.text);
+  if (!verdict || (verdict.verdict === 'pass' && !raw.observed.some(s => s.ok && s.check?.pass === true)))
+    return { verdict: 'fail', fail_kind: 'selector', reason: error || 'Codex 未返回可验证的结论与实际断言证据', report: raw.observed, duration_ms: raw.duration_ms };
+  return { ...verdict, report: raw.observed, duration_ms: raw.duration_ms };
+}
+async function judgeWithEngine(question, context) {
+  if (GUI_AI_ENGINE === 'claude') return judgeWithClaude(question, context);
+  const raw = await callCodex(JSON.stringify({ question, context }), '仅依据问题和提供的上下文判定，不使用工具。最后输出 JSON：{"verdict":"pass 或 fail","reason":"依据"}。无法确定时 fail。', { gui: false, timeoutMs: 90000 });
+  const error = codexFailure(raw), verdict = error ? null : parseVerdict(raw.text);
+  return verdict ? { pass: verdict.verdict === 'pass', reason: verdict.reason } : { pass: false, reason: error || 'Codex judge 未返回有效结论' };
+}
+
 async function runClaude(payload, kind) {
   const started = Date.now();
   const calls = new Map();
@@ -615,7 +659,9 @@ async function handlePerf() {
 
 // ---- 主循环 ----
 async function executeItem(item, { localEvidenceDir = null } = {}) {
+      const timer = createExecutionTimer(undefined, log);
       let result;
+      try {
       if (DRY) {
         result = { verdict: "pass", reason: "dry-run 握手验证", duration_ms: 1 };
       } else if (item.kind === "manual") {
@@ -623,12 +669,15 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
         // 直接判 fail 说明,绝不塞给 claude 当 GUI 跑(否则空耗 + 误导)。
         result = { verdict: "fail", reason: "该用例为人工/不可自动化(manual),不应下发到执行机;请在平台改判类型或取消下发", duration_ms: 1 };
       } else if (item.kind === "gui" || item.kind === "e2e") {
-        await ensureNamiclaw();                          // GUI/E2E:先确保客户端带 CDP 在跑
-        // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则按当前项目回落缓存或内置文件，清除上个项目配置。
-        const reg = item.payload?.selector_registry ? registrySnapshot(item.payload.selector_registry)
-          : await fetchRegistry(item.payload?.project_id, item.payload?.sub_product || "");
+        const reg = await timer.measure('prepare_ms', async () => {
+          await ensureNamiclaw();                        // GUI/E2E:先确保客户端带 CDP 在跑
+          // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则按当前项目回落缓存或内置文件，清除上个项目配置。
+          return item.payload?.selector_registry ? registrySnapshot(item.payload.selector_registry)
+            : await fetchRegistry(item.payload?.project_id, item.payload?.sub_product || "");
+        });
         item.payload.selector_registry = reg;
         guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
+        await timer.measure('prepare_ms', () => guiCore.ensureConnected());
         result = await runWithTrace(guiCore, async () => {
           let result;
           // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
@@ -643,14 +692,14 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
             }
             throw new Error("重启后 CDP 超时,9222 未就绪");
           };
-          result = await executeGui({ payload: item.payload, log,
+          result = await executeGui({ payload: item.payload, log, engine: GUI_AI_ENGINE, measure: timer.measure,
             reset: async () => RESET_BETWEEN_CASES ? { ...await resetOrBlock(guiCore, log, { restartClientFn }), reset: true } : { ok: true, reset: false },
-            navigate: payload => runClaudePrecondition(payload, log),
-            scriptRun: script => runScript(guiCore, script, log, judgeWithClaude),
-            agentRun: payload => runClaude(payload, item.kind),
+            navigate: payload => navigateWithEngine(payload, log),
+            scriptRun: script => runScript(guiCore, script, log, judgeWithEngine),
+            agentRun: payload => executeWithEngine(payload, item.kind),
           });
           return result;
-        }, { runId: item.run_id, directory: localEvidenceDir || join(__rdir, "evidence"), mode: localEvidenceDir ? 'all' : (process.env.GUI_TRACE || "failures") });
+        }, { runId: item.run_id, directory: localEvidenceDir || join(__rdir, "evidence"), mode: localEvidenceDir ? 'all' : (process.env.GUI_TRACE || "failures"), measure: timer.measure });
       } else if (item.kind === "api") {
         // api:有结构化 script → 确定性执行器(不经 LLM);无/降级 → claude(+Bash)兜底。
         const script = item.payload?.script;
@@ -668,16 +717,19 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
         result = { verdict: "fail", reason: `未知执行类型 kind=${item.kind},runner 不支持`, duration_ms: 1 };
       }
 
+      } catch (error) {
+        result = { verdict: 'fail', fail_kind: 'selector', reason: `执行异常：${error.message}`, report: [] };
+      }
       if (result.tracePath && !localEvidenceDir) {
         result.report ||= [];
         if (!result.report.length) result.report.push({ action: "diagnostics", desc: "执行追踪", ok: result.verdict === "pass" });
-        try { result.report.at(-1).trace_url = await uploadExecTrace(item.run_id, result.tracePath); }
+        try { result.report.at(-1).trace_url = await timer.measure('upload_ms', () => uploadExecTrace(item.run_id, result.tracePath)); }
         catch (e) { result.report.at(-1).trace_error = `${e.message}；文件保留在执行机 ${result.tracePath}`; }
       }
       // 有逐步报告(gui/e2e StepExecutor 产)→ 先把每步截图 Buffer 上传换成 URL,随回写落库。
       let reportJson = null;
       if (Array.isArray(result.report) && result.report.length) {
-        try { reportJson = localEvidenceDir ? saveLocalReport(result.report, localEvidenceDir) : await uploadReportShots(item.run_id, result.report); }
+        try { reportJson = await timer.measure(localEvidenceDir ? 'evidence_ms' : 'upload_ms', () => localEvidenceDir ? saveLocalReport(result.report, localEvidenceDir) : uploadReportShots(item.run_id, result.report)); }
         catch (e) { log(`  报告截图处理失败 run_id=${item.run_id}: ${e.message}`); }
       }
 
@@ -696,7 +748,8 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
 
   const execution_evidence = ['gui', 'e2e'].includes(item.kind) && item.payload?.script?.length && result.execution
     ? makeEvidence(item.payload, reportJson || [], RUNTIME_FINGERPRINT, result.execution) : null;
-  return { ...result, report: reportJson, execution_evidence };
+  const execution_timings = timer.snapshot();
+  return { ...result, report: reportJson, execution_evidence, execution_timings, duration_ms: execution_timings.runner_total_ms };
 }
 
 async function tick() {
@@ -725,6 +778,7 @@ async function tick() {
         duration_ms: result.duration_ms ?? null,
         report: result.report,
         execution_evidence: result.execution_evidence,
+        execution_timings: result.execution_timings,
       });
       // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
       const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";
@@ -745,7 +799,7 @@ async function tick() {
 }
 
 async function main() {
-  log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY}`);
+  log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY} gui_ai_engine=${GUI_AI_ENGINE}`);
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
   let release;

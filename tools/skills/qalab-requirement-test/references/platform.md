@@ -40,12 +40,16 @@ POST /api/verified-imports/jobs，Authorization: Bearer 用户 access token。�
 
 ## 平台 Runner
 仓库工具 tools/qalab-runner/runner.mjs 使用 Node.js，GUI/E2E 由 step-executor.mjs 调用 gui-mcp/gui-core.mjs，通过 Playwright 连接应用。
-含非空 precondition 时先调用 Claude Code 导航；含 judge 或不支持的步骤可能调用模型。确定性脚本不应为无必要的环境文字引入 Claude 依赖。
+普通队列执行含非空 precondition 时，会调用设备配置的 AI 引擎（默认 Claude，可选 Codex）导航；含 judge 或不支持的步骤也可能调用模型。纯脚本验证不允许这些隐式依赖。应用版本、登录账号角色等环境说明放 environment，不要仅为备注填入文字前置导航。
 用例库执行/重试需线上设备 Runner 在线。重试读取最新用例，新增执行记录。外部回填不等价于已验证这一完整链路。
 
 ## 同队列流程验证
 
-Namiwork GUI/E2E 最终验证使用已配置的 Runner 目录，先确认该设备没有正在执行的任务。准备 `draft.json`：顶层包含真实 project_id、runner_device_id、requirement、可选 task_name/sub_product；cases 内填写 title、steps、expected、script、environment、scope、可选 exec_kind/precondition。environment 写明应用版本、账号角色和地址，不含凭据。不要填写编造的 report/verdict。
+Namiwork GUI/E2E 最终验证使用已配置的 Runner 目录，先确认该设备没有正在执行的任务。准备 `draft.json`：顶层包含真实 project_id、runner_device_id、requirement、可选 task_name/sub_product；cases 内填写 title、steps、expected、script、environment、scope、可选 exec_kind。environment 写明应用版本、账号角色和地址，不含凭据。不要填写编造的 report/verdict。
+
+需要导航、准备测试数据等前置操作时，先现场确定目标与动作，把前置操作写成草稿中的 `setup_script` 数组，包含至少一个确认起始状态的 assert_visible/assert_text 等断言。原始前置要求可保留在草稿的 precondition；Runner 会把 setup_script 放到主 script 前，原前置文字保留到 steps，清空会触发 AI 的 precondition，然后连续实测这份合并脚本两次。最终导入包只有普通 script，兼容原有平台 DSL。主脚本仍须包含独立业务断言，前置到位断言不能代替功能验证。禁止自动把文字前置条件视作已经满足，禁止只清空文字而遗漏实际前置操作。
+
+若前置操作已经写在完整 script 中，则不再提供 setup_script，precondition 留空。严格验证在接触客户端之前拒绝剩余文字前置条件或 judge；失败草稿保留并修正，不能退回另一种引擎伪造通过包。
 
 ```sh
 node runner.mjs --verify-import draft.json --output verified.json

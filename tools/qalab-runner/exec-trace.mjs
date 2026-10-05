@@ -3,10 +3,10 @@ import { join } from "node:path";
 
 // Capture the reset gate and the test together. Recording failures are explicit
 // diagnostics and do not replace an otherwise valid business verdict.
-export async function runWithTrace(gui, execute, { runId, directory, mode = "failures" } = {}) {
+export async function runWithTrace(gui, execute, { runId, directory, mode = "failures", measure = async (_, work) => work() } = {}) {
   let recording = false, traceError = null, result;
   if (mode !== "off") {
-    try { await gui.startTrace(); recording = true; }
+    try { await measure('trace_ms', () => gui.startTrace()); recording = true; }
     catch (e) { traceError = e.message; }
   }
   try { result = await execute(); }
@@ -18,7 +18,7 @@ export async function runWithTrace(gui, execute, { runId, directory, mode = "fai
         await mkdir(directory, { recursive: true });
         path = join(directory, `trace-${String(runId).replace(/[^a-zA-Z0-9_-]/g, "_")}.zip`);
       }
-      await gui.stopTrace(path);
+      await measure('trace_ms', () => gui.stopTrace(path));
       if (path) result.tracePath = path;
     } catch (e) {
       traceError = e.message;

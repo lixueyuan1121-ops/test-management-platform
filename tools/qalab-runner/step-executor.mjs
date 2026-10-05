@@ -115,6 +115,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     const { action, target = {}, args = {}, desc = "" } = st;
     let operationArgs;
     const tag = `step${i + 1}/${script.length} ${action}${desc ? "(" + desc + ")" : ""}`;
+    const stepStarted = performance.now();
     log(`  [+${sec()}s] ▶ ${tag}`);
     try {
       operationArgs = { ...target, ...textCaptures.argsFor(args) };
@@ -209,6 +210,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
       // 定位/操作抛错(元素找不到、超时等)→ 整条 fail,带诊断 + 失败现场截图
       return await failAt(i, action, desc, `step${i + 1}「${action}」执行出错:${e.message}`, 'selector', undefined,
         { code: e.code || 'ACTION_ERROR', target, ...e.diagnostic });
+    } finally {
+      const current = report.find(r => r.no === i + 1);
+      if (current) current.duration_ms = Math.max(0, Math.round(performance.now() - stepStarted));
     }
   }
   // 所有步骤(含断言/judge)通过

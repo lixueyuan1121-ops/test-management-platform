@@ -106,4 +106,25 @@ class EvidenceTests(unittest.TestCase):
         valid=subprocess.run(['node',str(ROOT/'tools/skills/qalab-requirement-test/scripts/validate-evidence.mjs')],input=json.dumps(self.packet,ensure_ascii=False),text=True,capture_output=True)
         self.assertEqual(valid.returncode,0,valid.stderr)
 
+    def test_timings_and_codex_modes_persist_without_certifying_ai_execution(self):
+        record=self.import_case();tc=self.db.get(TestCase,record['case_id']);payload=exec_queue._payload_of(tc,self.db)
+        from datetime import timedelta
+        started=datetime.now(timezone.utc).replace(tzinfo=None)-timedelta(seconds=2)
+        self.db.add(ExecRun(id=100,project_id=1,test_case_id=tc.id,kind='gui',runner='fixture',runner_device_id=1,status='running',payload=json.dumps(payload),created_at=started-timedelta(seconds=3),started_at=started));self.db.commit()
+        ev=evidence(payload);ev['mode']='codex_judge';ev['strict_replay']=False
+        timings=dict(runner_total_ms=1200,prepare_ms=100,reset_ms=200,script_ms=600,upload_ms=300)
+        bad=self.client.patch('/api/exec-queue/100?runner=fixture',json=dict(verdict='pass',report=REPORT,execution_evidence=ev,execution_timings={**timings,'upload_ms':-1}))
+        self.assertEqual(bad.status_code,422)
+        r=self.client.patch('/api/exec-queue/100?runner=fixture',json=dict(verdict='pass',report=REPORT,execution_evidence=ev,execution_timings=timings,duration_ms=1200))
+        self.assertEqual(r.status_code,200,r.text)
+        detail=self.client.get('/api/exec-queue/100').json()['data']
+        self.assertEqual(detail['execution_evidence']['mode'],'codex_judge')
+        self.assertEqual(detail['execution_timings']['queue_ms'],3000)
+        self.assertGreaterEqual(detail['execution_timings']['server_wall_ms'],1000)
+        self.assertEqual(detail['execution_timings']['upload_ms'],300)
+        self.assertNotIn('navigation_ms',detail['execution_timings'])
+        self.assertEqual(detail['replay_readiness']['state'],'pending')
+        imported=self.client.get(f"/api/exec-queue/{record['run_id']}").json()['data']
+        self.assertNotIn('queue_ms',imported['execution_timings'])
+
 if __name__=='__main__': unittest.main()
