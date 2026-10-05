@@ -166,9 +166,9 @@ onBeforeUnmount(() => { disposed = true; ++requestVersion })
 .dispatch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
 .dispatch-bar .el-select { max-width: 100%; flex-shrink: 0; }
 .dispatch-bar .el-button { margin-left: 0; }
-.sel-info { font-weight: 600; color: #e6a23c; }
-.sel-hint { font-size: 12px; color: #909399; }
+.sel-info { font-weight: 600; color: var(--tech-warn); }
+.sel-hint { font-size: 12px; color: var(--tech-muted); }
 .page-tag { margin: 0 2px; }
-.none { color: #c0c4cc; }
-.foot { margin-top: 10px; font-size: 12px; color: #909399; text-align: right; }
+.none { color: var(--tech-muted); }
+.foot { margin-top: 10px; font-size: 12px; color: var(--tech-muted); text-align: right; }
 </style>

@@ -32,6 +32,8 @@
 </template>
 
 <script setup>
+import { withChartTheme, themeColor, useChartTheme } from '@/utils/theme'
+
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import { ref, reactive, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts/core'
@@ -97,29 +99,31 @@ async function load() {
 function render() {
   if (!barChart || !lineChart) return
   const members = data.members || []
-  barChart.setOption({
+  barChart.setOption(withChartTheme({
     tooltip: { trigger: 'axis' },
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: members.map((m) => m.name), axisLabel: { interval: 0 } },
     yAxis: [{ type: 'value', name: '任务数' }],
     series: [
-      { name: '任务数', type: 'bar', data: members.map((m) => m.task_cnt), itemStyle: { color: '#00b386' }, barMaxWidth: 40 },
-      { name: '上线数', type: 'bar', data: members.map((m) => m.online_cnt), itemStyle: { color: '#67c23a' }, barMaxWidth: 40 },
+      { name: '任务数', type: 'bar', data: members.map((m) => m.task_cnt), itemStyle: { color: themeColor('--tech-chart-green') }, barMaxWidth: 40 },
+      { name: '上线数', type: 'bar', data: members.map((m) => m.online_cnt), itemStyle: { color: themeColor('--tech-chart-blue') }, barMaxWidth: 40 },
     ],
-  })
+  }))
   const daily = data.daily || []
-  lineChart.setOption({
+  lineChart.setOption(withChartTheme({
     tooltip: { trigger: 'axis' },
     legend: { data: ['任务数', '当日上线'] },
     grid: { left: 50, right: 20, top: 40, bottom: 30 },
     xAxis: { type: 'category', data: daily.map((d) => d.date), boundaryGap: false },
     yAxis: [{ type: 'value', name: '任务数' }, { type: 'value', name: '上线数' }],
     series: [
-      { name: '任务数', type: 'line', smooth: true, data: daily.map((d) => d.task_cnt), areaStyle: { opacity: 0.15 }, itemStyle: { color: '#00b386' } },
-      { name: '当日上线', type: 'line', yAxisIndex: 1, data: daily.map((d) => d.online_cnt), itemStyle: { color: '#67c23a' } },
+      { name: '任务数', type: 'line', smooth: true, data: daily.map((d) => d.task_cnt), areaStyle: { opacity: 0.15 }, itemStyle: { color: themeColor('--tech-chart-green') } },
+      { name: '当日上线', type: 'line', yAxisIndex: 1, data: daily.map((d) => d.online_cnt), itemStyle: { color: themeColor('--tech-chart-blue') } },
     ],
-  })
+  }))
 }
+
+useChartTheme(render)
 </script>
 
 <style scoped>
@@ -129,7 +133,7 @@ function render() {
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .stat { text-align: center; padding: 8px 0; }
-.stat .num { font-size: 22px; font-weight: 600; color: #1f2d3d; }
-.stat .num.green { color: #67c23a; }
-.stat .lbl { color: #999; font-size: 12px; margin-top: 4px; }
+.stat .num { font-size: 22px; font-weight: 600; color: var(--tech-fg); }
+.stat .num.green { color: var(--tech-success); }
+.stat .lbl { color: var(--tech-muted); font-size: 12px; margin-top: 4px; }
 </style>

@@ -26,5 +26,5 @@ const labels={unsupported_expected:'预期缺少依据',missing_branch:'遗漏�
 const fields=['precondition','steps','expected'],fieldLabels={precondition:'前提',steps:'步骤',expected:'预期'}
 </script>
 <style scoped>
-.quality-review{background:var(--el-fill-color-light);padding:16px;border-radius:10px;margin:16px 0}.finding{border-top:1px solid var(--el-border-color);padding:12px 0;white-space:pre-wrap;overflow-wrap:anywhere}.diff{display:grid;grid-template-columns:1fr 1fr;gap:14px}.diff>div{background:var(--el-bg-color);padding:12px}.hint,small{font-size:12px;color:var(--el-text-color-secondary)}@media(max-width:650px){.diff{grid-template-columns:1fr}}
+.quality-review{background:var(--el-fill-color-light);padding:16px;border-radius:var(--tech-radius);margin:16px 0}.finding{border-top:1px solid var(--el-border-color);padding:12px 0;white-space:pre-wrap;overflow-wrap:anywhere}.diff{display:grid;grid-template-columns:1fr 1fr;gap:14px}.diff>div{background:var(--el-bg-color);padding:12px}.hint,small{font-size:12px;color:var(--el-text-color-secondary)}@media(max-width:650px){.diff{grid-template-columns:1fr}}
 </style>

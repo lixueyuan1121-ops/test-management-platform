@@ -327,11 +327,11 @@ async function doToIssue() {
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
-.tip { color: #999; font-size: 12px; margin-left: 8px; }
+.tip { color: var(--tech-muted); font-size: 12px; margin-left: 8px; }
 .issue-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .cl-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.cl-sum { font-size: 12px; color: var(--tech-muted, #6b7280); }
-.cl-dim { color: var(--tech-dim, #9aa3b2); }
+.cl-sum { font-size: 12px; color: var(--tech-muted, var(--tech-muted)); }
+.cl-dim { color: var(--tech-dim, var(--tech-muted)); }
 .attach-row { padding: 4px 0; }
-.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; }
+.multiline { white-space: pre-line; color: var(--tech-muted); font-size: 13px; }
 </style>

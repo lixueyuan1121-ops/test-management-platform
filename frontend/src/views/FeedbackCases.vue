@@ -276,17 +276,17 @@ onMounted(() => { reload(); loadAux() })
 .dispatch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-top: 1px solid var(--el-border-color); }
 .dispatch-bar .el-select { flex-shrink: 0; max-width: 100%; }
 .dispatch-bar .el-button { margin-left: 0; }
-.sel-info { font-weight: 600; color: #67c23a; }
-.sel-hint { font-size: 12px; color: #909399; }
-.req-line { font-size: 13px; color: #303133; }
-.pt-line { font-size: 11px; color: #909399; }
-.none { color: #c0c4cc; }
-.link { color: #409eff; word-break: break-all; }
+.sel-info { font-weight: 600; color: var(--tech-success); }
+.sel-hint { font-size: 12px; color: var(--tech-muted); }
+.req-line { font-size: 13px; color: var(--tech-fg); }
+.pt-line { font-size: 11px; color: var(--tech-muted); }
+.none { color: var(--tech-muted); }
+.link { color: var(--tech-signal); word-break: break-all; }
 .pre { white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; }
 .edit-form { margin-top: 14px; }
 .script-box { margin-top: 8px; }
 .script-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-.script-pre { background: #1f2d3d; color: #a6e3c0; padding: 10px; border-radius: 6px; font-size: 11px; max-height: 240px; overflow: auto; }
+.script-pre { background: var(--tech-code-bg); color: var(--tech-success); padding: 10px; border-radius: 6px; font-size: 11px; max-height: 240px; overflow: auto; }
 .drawer-foot { margin-top: 16px; text-align: right; }
-.dlg-hint { font-size: 12px; color: #909399; }
+.dlg-hint { font-size: 12px; color: var(--tech-muted); }
 </style>

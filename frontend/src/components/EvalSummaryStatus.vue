@@ -24,16 +24,16 @@ const state = computed(() => evalSummaryState(props.task, props.submitting))
 </script>
 
 <style scoped>
-.summary-status { padding: 16px; margin: 12px 0; border: 1px solid #dce5f0; border-radius: 8px; background: #f5f8fc; }
-.summary-status--warning { background: #fffbf2; border-color: #f0dfb7; }
-.summary-status--danger { background: #fff5f5; border-color: #f5caca; }
-.summary-status--success { background: #f2faf5; border-color: #c9e6d3; }
+.summary-status { padding: 16px; margin: 12px 0; border: 1px solid var(--tech-line); border-radius: var(--tech-radius); background: var(--tech-panel-2); }
+.summary-status--warning { background: var(--tech-panel-2); border-color: var(--tech-warn); }
+.summary-status--danger { background: var(--tech-panel-2); border-color: var(--tech-line); }
+.summary-status--success { background: var(--tech-panel-2); border-color: var(--tech-line); }
 .status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.status-meta { font-size: 12px; color: #606266; }
+.status-meta { font-size: 12px; color: var(--tech-muted); }
 p { margin: 10px 0 0; font-size: 13px; line-height: 1.6; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, monospace; margin: 10px 0 0; }
-.status-error { color: #b42318; overflow-wrap: anywhere; }
-.connection-error { color: #9a6700; }
+.status-error { color: var(--tech-danger); overflow-wrap: anywhere; }
+.connection-error { color: var(--tech-warn); }
 details { margin-top: 10px; font-size: 12px; }
-summary { cursor: pointer; color: #606266; }
+summary { cursor: pointer; color: var(--tech-muted); }
 </style>

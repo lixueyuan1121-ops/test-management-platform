@@ -2021,7 +2021,7 @@ async function saveProbeBatch() {
 .probe-toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
 
 .registry-key { display: inline-flex; align-items: center; gap: 6px; }
-.new-selector-dot { flex: 0 0 8px; width: 8px; height: 8px; padding: 0; border: 0; border-radius: 50%; background: var(--el-color-danger, #f56c6c); cursor: pointer; }
+.new-selector-dot { flex: 0 0 8px; width: 8px; height: 8px; padding: 0; border: 0; border-radius: 50%; background: var(--el-color-danger, var(--tech-danger-bg)); cursor: pointer; }
 .new-selector-dot:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; }
 .header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .header > span { flex-shrink: 0; }
@@ -2030,28 +2030,28 @@ async function saveProbeBatch() {
 .page-title { font-weight: 600; margin-right: 8px; }
 .page-count { vertical-align: middle; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.form-hint { color: #90a4ae; font-size: 12px; }
+.form-hint { color: var(--tech-muted); font-size: 12px; }
 .registry-card { margin-top: 16px; }
-.registry-actions { position: sticky; top: 0; z-index: 30; padding: 12px 0; background: var(--tech-bg, #f5f7fa); box-shadow: 0 2px 4px #00000012; }
+.registry-actions { position: sticky; top: 0; z-index: 30; padding: 12px 0; background: var(--tech-bg); box-shadow: 0 2px 4px #00000012; }
 .rename-page { margin-left: 12px; }
 .description-segments { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
 .description-segments .form-hint { grid-column: 1 / -1; overflow-wrap: anywhere; }
-.scan-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 10px; background: #f5f7fa; border-radius: 4px; }
-.scan-label { font-size: 13px; color: #606266; font-weight: 600; }
+.scan-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 10px; background: var(--tech-panel-2); border-radius: 4px; }
+.scan-label { font-size: 13px; color: var(--tech-muted); font-weight: 600; }
 .imp-toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; }
-.probe-scope { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; color: #607d8b; font-size: 13px; }
+.probe-scope { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; color: var(--tech-muted); font-size: 13px; }
 .probe-group { margin-bottom: 14px; }
 .probe-group-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
-.probe-group-url { color: #607d8b; font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.probe-group-url { color: var(--tech-muted); font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .probe-el-text { margin-left: 6px; }
-.add-preview { background: #f5f7fa; border-radius: 4px; padding: 10px 12px; }
+.add-preview { background: var(--tech-panel-2); border-radius: 4px; padding: 10px 12px; }
 .add-cand { margin-top: 6px; }
 .add-cands { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .cand-chip { font-family: var(--tech-mono, monospace); }
 .seg-row { display: flex; align-items: center; gap: 4px; width: 100%; }
-.seg-sep { color: #909399; }
+.seg-sep { color: var(--tech-muted); }
 .xpath-alert { margin-bottom: 8px; }
-.xpath-suggest { cursor: pointer; color: #409eff; word-break: break-all; }
+.xpath-suggest { cursor: pointer; color: var(--tech-signal); word-break: break-all; }
 .add-status { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
 .add-deep-hint { margin-top: 8px; line-height: 1.5; }
 .match-key { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
@@ -2060,7 +2060,7 @@ async function saveProbeBatch() {
 .shot-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
 .shot-zoom { display: flex; align-items: center; gap: 8px; }
 .zoom-val { min-width: 40px; text-align: right; }
-.shot-viewport { max-height: 60vh; overflow: auto; border: 1px solid #e4e7ed; border-radius: 4px; background: #fafafa; }
+.shot-viewport { max-height: 60vh; overflow: auto; border: 1px solid var(--tech-line); border-radius: 4px; background: var(--tech-panel-2); }
 .shot-wrap { position: relative; }
 .shot-img { display: block; width: 100%; height: auto; }
 .shot-overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -2072,7 +2072,7 @@ async function saveProbeBatch() {
 /* 批量补选择器:待补 key 匹配到的元素框——橙色实线醒目框 + 左上角编号角标,与上方 chip 编号/联动一致 */
 .el-box.box-fix { border: 2px solid #e6a23c; background: rgba(230,162,60,.14); box-shadow: 0 0 0 1px rgba(230,162,60,.4); z-index: 3; }
 .el-box.box-fix.active { background: rgba(230,162,60,.3); box-shadow: 0 0 0 3px rgba(230,162,60,.55); z-index: 4; }
-.box-fix-no { position: absolute; top: -9px; left: -9px; min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box; background: #e6a23c; color: #fff; font-size: 11px; line-height: 16px; text-align: center; border-radius: 8px; font-weight: 700; pointer-events: none; }
+.box-fix-no { position: absolute; top: -9px; left: -9px; min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box; background: #e6a23c; color: #fff; font-size: 11px; line-height: 16px; text-align: center; border-radius: var(--tech-radius); font-weight: 700; pointer-events: none; }
 /* 框选模式:overlay 接管鼠标(盖住元素框),十字光标;拖拽出的矩形 */
 .shot-overlay.box-selecting { pointer-events: auto; cursor: crosshair; }
 .shot-overlay.box-selecting .el-box { pointer-events: none; }
@@ -2080,12 +2080,12 @@ async function saveProbeBatch() {
 /* 框选提交区标注:聚光灯高亮"你选的这块"(overflow:hidden 把外扩遮罩裁在截图内)。z-index:0 垫底,
    命中的元素框(el-box,DOM 在其后)叠加显示在上层,一眼看清"选了这里 → 识别到这几个元素" */
 .box-selected-region { position: absolute; box-sizing: border-box; border: 2px solid #409eff; background: rgba(64,158,255,.08); box-shadow: 0 0 0 9999px rgba(0,0,0,.14); border-radius: 3px; z-index: 0; pointer-events: none; }
-:deep(.el-table .row-hi) { background: #ecf5ff; }
-:deep(.el-table .row-match) { background: #fdf6ec; }
+:deep(.el-table .row-hi) { background: var(--tech-panel-2); }
+:deep(.el-table .row-match) { background: var(--tech-panel-2); }
 :deep(.el-table .row-match td:first-child) { box-shadow: inset 3px 0 0 0 #e6a23c; }
 .fix-bar { margin: 8px 0; }
 .fix-bar-in { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.fix-bar-hint { font-size: 12px; color: #7a5b00; }
+.fix-bar-hint { font-size: 12px; color: var(--tech-warn); }
 .fix-keys-chips { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
 .chip-tid { opacity: .75; font-family: var(--tech-mono, monospace); }
 .chip-hover { box-shadow: 0 0 0 2px rgba(230,162,60,.6); }
@@ -2095,12 +2095,12 @@ async function saveProbeBatch() {
 .cand-preview-title { font-weight: 600; margin-bottom: 4px; }
 .cand-list { margin: 4px 0 8px; padding-left: 18px; }
 .cand-list li { line-height: 1.7; }
-.cand-list.merged { background: #f5f7fa; border-radius: 4px; padding: 6px 6px 6px 22px; }
-.cand-preview-best { border-top: 1px dashed #dcdfe6; padding-top: 6px; }
-.hint-ok { color: #67c23a; }
-.hint-warn { color: #e6a23c; }
-.add-compare { margin-top: 10px; border-top: 1px dashed #dcdfe6; padding-top: 8px; }
-code { background: #f0f2f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.cand-list.merged { background: var(--tech-panel-2); border-radius: 4px; padding: 6px 6px 6px 22px; }
+.cand-preview-best { border-top: 1px dashed var(--tech-line); padding-top: 6px; }
+.hint-ok { color: var(--tech-success); }
+.hint-warn { color: var(--tech-warn); }
+.add-compare { margin-top: 10px; border-top: 1px dashed var(--tech-line); padding-top: 8px; }
+code { background: var(--tech-panel-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 .learned-card { margin-top: 16px; }
 .learned-badge { margin-left: 6px; }
 .learned-intro { margin-bottom: 12px; }

@@ -161,14 +161,14 @@ onMounted(() => { loadDevices(); loadSets(); loadRuns() })
 
 <style scoped>
 .tip { margin-bottom: 14px; }
-.tip code { background: rgba(0, 0, 0, .06); padding: 0 4px; border-radius: 3px; }
+.tip code { background: var(--tech-code-bg); padding: 0 4px; border-radius: 3px; }
 .set-card { margin-bottom: 14px; }
 .set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
 .set-row .el-select { max-width: 100%; }
 .perf-dispatch :deep(.el-dialog .el-form-item__content > .el-input), .perf-dispatch :deep(.el-dialog .el-form-item__content > .el-select) { width: 100% !important; }
 .set-row .lbl { font-weight: 600; }
-.set-row .hint { font-size: 12px; color: #909399; margin-left: 6px; }
+.set-row .hint { font-size: 12px; color: var(--tech-muted); margin-left: 6px; }
 .form-card { margin-bottom: 16px; }
-.warn { font-size: 12px; color: #e6a23c; margin-top: 4px; }
+.warn { font-size: 12px; color: var(--tech-warn); margin-top: 4px; }
 .head { display: flex; justify-content: space-between; align-items: center; }
 </style>

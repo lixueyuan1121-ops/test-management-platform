@@ -282,7 +282,7 @@ async function onSave() {
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rec-tip { margin-bottom: 4px; }
 .el-text { margin-right: 8px; }
-.cand { background: #f0f2f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
-.muted { color: #90a4ae; font-size: 12px; }
+.cand { background: var(--tech-panel-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.muted { color: var(--tech-muted); font-size: 12px; }
 .save-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 </style>

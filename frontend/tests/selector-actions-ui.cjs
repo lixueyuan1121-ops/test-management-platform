@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [], writes = [];
-    let failUsage = true;
+    let failUsage = true, validationItems = null;
     page.on('pageerror', e => errors.push(e.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'mock-local-only'));
     await page.route(url => url.pathname.startsWith('/api/'), async route => {
@@ -23,9 +23,11 @@ const assert = require('node:assert/strict');
         writes.push({ path, method: req.method(), project: url.searchParams.get('project_id'), body: req.postData() ? req.postDataJSON() : null });
         if (path === '/api/selectors/import-legacy') data = { imported: 1, skipped: 2 };
         if (path === '/api/selectors/11' && req.method() === 'DELETE') data = { downgraded: 1 };
-        if (path === '/api/probe') data = { id: 31 };
+        if (path === '/api/probe') { data = { id: 31 }; validationItems = req.postDataJSON().params?.mode === 'validate_selection' ? req.postDataJSON().params.items : null; }
       }
-      if (path === '/api/probe/31') data = { status: 'done', result: { groups: [{ frame: 'shell', elements: [{ tag: 'button', text: '新按钮', best: { by: 'css', value: '#new' }, candidates: [{ by: 'css', value: '#new' }] }] }] } };
+      if (path === '/api/probe/31') data = validationItems
+        ? { status: 'done', result: { validation: validationItems.map(item => ({ key: item.key, ok: true })) } }
+        : { status: 'done', result: { groups: [{ frame: 'shell', elements: [{ element_ref: 'mock-new-button', tag: 'button', text: '新按钮', best: { by: 'css', value: '#new' }, candidates: [{ by: 'css', value: '#new' }] }] }] } };
       await route.fulfill({ json: { code: 0, data } });
     });
     await page.goto(`${process.env.UI_BASE_URL || 'http://127.0.0.1:5189'}/selectors`);
@@ -56,17 +58,20 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '加为 key', exact: true }).click();
     let dialog = page.getByRole('dialog', { name: '加为 key', exact: true });
     await dialog.getByLabel('key 名', { exact: true }).fill('new_button');
-    await dialog.getByLabel('说明', { exact: true }).fill('新按钮');
+    await dialog.getByPlaceholder('导航Tab，如 自动化').fill('自动化');
+    await dialog.getByPlaceholder('场景，如 新建任务').fill('新按钮');
+    await dialog.getByPlaceholder('控件类型，如 输入框/下拉列表/按钮').fill('按钮');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
-    assert.deepEqual(writes.filter(w => w.path === '/api/selectors').at(-1).body, { project_id: 1, sub_product: '', platform: 'web', key: 'new_button', frame: 'shell', page: '', desc: '新按钮', candidates: [{ by: 'css', value: '#new' }] });
+    assert.deepEqual(writes.filter(w => w.path === '/api/selectors').at(-1).body, { project_id: 1, sub_product: '', platform: 'web', key: 'new_button', frame: 'shell', page: '', desc: '[自动化]-[]-[新按钮]-[按钮]', candidates: [{ by: 'xpath', value: "//button[normalize-space(.)='新按钮']", primary: true }] });
+    assert.equal(writes.filter(w => w.path === '/api/probe').at(-1).body.params.items[0].element_ref, 'mock-new-button');
     await page.getByRole('button', { name: '加为 key', exact: true }).click();
     await dialog.getByText('更新已有 key', { exact: true }).click();
     await dialog.locator('.el-select').click();
     await page.getByRole('option', { name: 'login（1 候选）', exact: true }).click();
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
-    assert.deepEqual(writes.filter(w => w.path === '/api/selectors/11' && w.method === 'PATCH').at(-1).body, { candidates: [{ by: 'css', value: '#new' }, { by: 'text', value: '登录' }] });
+    assert.deepEqual(writes.filter(w => w.path === '/api/selectors/11' && w.method === 'PATCH').at(-1).body, { candidates: [{ by: 'xpath', value: "//button[normalize-space(.)='新按钮']", primary: true }] });
     assert.deepEqual(errors, []);
     console.log('PASS selector usage failure blocks deletion, impact confirmation/cancel, legacy import and discovered key create/update candidate payloads');
   } finally { await browser.close(); }

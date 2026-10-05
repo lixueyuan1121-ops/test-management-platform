@@ -15,7 +15,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE);const assert=require('no
  if(/^\/api\/selectors\/\d+$/.test(p)&&route.request().method()==='PATCH'){data={...rows[Number(p.split('/').pop())-1],...route.request().postDataJSON()};saves.push(data);}
  await route.fulfill({json:{code:0,data}});});
  await page.route('**/probe-fixture.svg',r=>r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="180" height="80"><text x="20" y="40">MIC</text><text x="80" y="40">SEND</text></svg>'}));
- await page.goto('http://127.0.0.1:5197/tests/fixtures/selector-targets.html');await page.waitForFunction(()=>!!window.fixtureRouter);
+ await page.goto((process.env.UI_BASE_URL || 'http://127.0.0.1:5197') + '/tests/fixtures/selector-targets.html');await page.waitForFunction(()=>!!window.fixtureRouter);
  await page.evaluate(()=>window.fixtureRouter.push({name:'selectors',query:{project_id:'2',fix_keys:'unused',bulk:'1'}}));
  await page.getByRole('button',{name:'退出批量',exact:true}).click();await page.getByRole('button',{name:'探测(扫当前页)',exact:true}).click();
  await page.locator('.probe-group .el-table__row').filter({hasText:'语音'}).getByRole('button',{name:'加为 key',exact:true}).click();

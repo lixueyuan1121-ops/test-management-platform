@@ -20,15 +20,15 @@ const app = useAppStore()
   position: fixed; inset: 0; z-index: 3000;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 18px;
-  background: linear-gradient(135deg, #1c2440, #243b6b, #3b2a6b, #1c2440);
+  background: var(--tech-bg);
   background-size: 300% 300%;
   animation: gradientShift 16s ease infinite;
 }
 .scene-box { animation: floatY 2.6s ease-in-out infinite; }
-.ld-text { color: #c8d4f5; font-size: 14px; letter-spacing: 2px; display: flex; align-items: center; }
+.ld-text { color: var(--tech-muted); font-size: 14px; letter-spacing: 2px; display: flex; align-items: center; }
 .dots { display: inline-flex; gap: 3px; margin-left: 4px; }
 .dots i {
-  width: 5px; height: 5px; border-radius: 50%; background: #9db4ff; display: inline-block;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--tech-signal-weak); display: inline-block;
   animation: dotPulse 1.2s ease-in-out infinite;
 }
 .dots i:nth-child(2) { animation-delay: 0.2s; }

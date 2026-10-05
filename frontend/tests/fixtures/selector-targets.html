@@ -1,4 +1,5 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><div id="app"></div><script type="module">
+import '/src/styles/anim.css';import '/src/styles/theme.css';import {initializeTheme} from '/src/utils/theme.js';initializeTheme();
 import {createApp,h} from 'vue';import {createPinia} from 'pinia';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';
 import {createRouter,createMemoryHistory,RouterView} from 'vue-router';
 import {useAuthStore} from '/src/store/auth.js';

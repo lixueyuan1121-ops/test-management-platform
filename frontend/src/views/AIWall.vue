@@ -1,5 +1,5 @@
 <template>
-  <WorkspacePage title="AI 战绩墙" class="viz-root" data-theme="light">
+  <WorkspacePage title="AI 战绩墙" class="viz-root">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新战绩" title="刷新战绩" :loading="loading" @click="refreshAll" />
     </template>
@@ -28,7 +28,7 @@
         />
       </div>
 
-    <div v-loading="loading" element-loading-background="rgba(255,255,255,0.6)" class="viz-body">
+    <div v-loading="loading" element-loading-background="var(--tech-loading)" class="viz-body">
       <!-- 空态：所选区间无 AI 生成数据 -->
       <el-result v-if="loadError" icon="error" title="战绩数据加载失败" sub-title="请重试，当前不展示统计结果。">
         <template #extra><el-button type="primary" @click="load">重新加载</el-button></template>
@@ -233,7 +233,7 @@
               </div>
               <div class="prio-title">// 采纳测试点的优先级分布</div>
               <div class="prio-bar">
-                <div v-for="seg in prioView" :key="seg.p" class="prio-seg"
+                <div v-for="seg in prioView" :key="seg.p" class="prio-seg" :data-priority="seg.p"
                      :style="{ flex: seg.n || 0.001, background: seg.color }" :title="`${seg.p}: ${seg.n}`">
                   {{ seg.label }}
                 </div>
@@ -374,12 +374,12 @@ const savedDays = computed(() => Math.round(savedHours.value / 8))
 const adoptRatePct = computed(() => ((stats.value?.adopt_rate || 0) * 100).toFixed(1))
 
 // 引擎对比:把后端 by_provider 转成带配色与百分比的展示行
-const PROVIDER_COLOR = { claude: '#f59e0b', deepseek: '#3b82f6' }
+const PROVIDER_COLOR = { claude: 'var(--tech-warn)', deepseek: 'var(--tech-signal)' }
 const providerView = computed(() =>
   (stats.value?.by_provider || []).map((p) => ({
     ...p,
     adoptPct: ((p.adopt_rate || 0) * 100).toFixed(1),
-    color: PROVIDER_COLOR[p.provider] || '#94a3b8',
+    color: PROVIDER_COLOR[p.provider] || 'var(--tech-muted)',
   }))
 )
 const costPerRun = computed(() => {
@@ -482,29 +482,29 @@ const tv = computed(() => {
 
 <style scoped>
 .viz-root {
-  color-scheme: light;
+  color-scheme: inherit;
   /* —— 平台科技风 chrome（取自 theme.css / Dashboard.vue）—— */
-  --bg:            #f4f6f9;
-  --surface-1:     #ffffff;
-  --surface-2:     #f7f9fc;
-  --line:          #e3e8ef;
-  --line-strong:   #d0d7e2;
-  --text-primary:  #1a1d21;
-  --text-secondary:#52514e;
-  --muted:         #6b7280;
-  --dim:           #9aa3b2;
+  --bg:            var(--tech-bg);
+  --surface-1:     var(--tech-panel);
+  --surface-2:     var(--tech-panel-2);
+  --line:          var(--tech-line);
+  --line-strong:   var(--tech-line);
+  --text-primary:  var(--tech-fg);
+  --text-secondary:var(--tech-fg);
+  --muted:         var(--tech-muted);
+  --dim:           var(--tech-muted);
   --signal:        var(--el-color-primary);
-  --signal-weak:   rgba(0,179,134,0.10);
+  --signal-weak:   var(--tech-signal-weak);
   --mono: 'JetBrains Mono','SFMono-Regular',ui-monospace,'Menlo',monospace;
   --sans: system-ui,-apple-system,'Segoe UI',sans-serif;
 
   /* —— dataviz 校验过的数据色 —— */
-  --series-gen:    #2a78d6;      /* categorical slot1 blue —— 生成 */
-  --series-adopt:  #1baf7a;      /* categorical slot2 aqua —— 采纳 */
-  --seq-100:#cde2fb; --seq-250:#86b6ef; --seq-350:#5598e7; --seq-450:#2a78d6; --seq-600:#184f95;
-  --ord-p0:#184f95; --ord-p1:#2a78d6; --ord-p2:#5598e7; --ord-p3:#86b6ef; /* 优先级 ordinal（深=P0 高） */
-  --status-good:#0ca30c; --status-warn:#fab219; --status-critical:#d03b3b;
-  --grid: #e8ecf2;
+  --series-gen:    var(--tech-chart-blue);      /* categorical slot1 blue —— 生成 */
+  --series-adopt:  var(--tech-chart-green);      /* categorical slot2 aqua —— 采纳 */
+  --seq-100:var(--tech-seq-1); --seq-250:var(--tech-seq-2); --seq-350:var(--tech-seq-3); --seq-450:var(--tech-seq-4); --seq-600:var(--tech-seq-5);
+  --ord-p0:var(--tech-seq-5); --ord-p1:var(--tech-seq-4); --ord-p2:var(--tech-seq-3); --ord-p3:var(--tech-seq-2); /* 优先级 ordinal（深=P0 高） */
+  --status-good:var(--tech-success); --status-warn:var(--tech-warn); --status-critical:var(--tech-danger);
+  --grid: var(--tech-line);
 
   /* 铺满内容区底色：抵消 el-main 的 20px padding（对齐 Dashboard）。
      不设 min-height——高度随内容自然收缩，避免比 el-main 可用区高出而无端触发纵向滚动条。 */
@@ -513,35 +513,9 @@ const tv = computed(() => {
   min-width: 0;
   box-sizing: border-box;
 }
-/* dark 值声明两份：媒体查询覆盖 OS 深色偏好；data-theme 属性覆盖手动切换（双向生效）。
-   平台目前仅亮色，故页内不提供明暗切换按钮；dark 变量块保留以备将来接入全站暗色。 */
-:root[data-theme="dark"] .viz-root,
-.viz-root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg:#0d0d0d; --surface-1:#1a1a19; --surface-2:#222220; --line:#2c2c2a; --line-strong:#383835;
-  --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781; --dim:#6d6c66;
-  --signal-weak:rgba(0,179,134,0.14);
-  --series-gen:#3987e5; --series-adopt:#199e70;
-  --seq-100:#184f95; --seq-250:#1c5cab; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#6da7ec;
-  --ord-p0:#184f95; --ord-p1:#3987e5; --ord-p2:#6da7ec; --ord-p3:#9ec5f4;
-  --grid:#2c2c2a;
-}
-@media (prefers-color-scheme: dark) {
-  .viz-root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --bg:#0d0d0d; --surface-1:#1a1a19; --surface-2:#222220; --line:#2c2c2a; --line-strong:#383835;
-    --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781; --dim:#6d6c66;
-    --signal-weak:rgba(0,179,134,0.14);
-    --series-gen:#3987e5; --series-adopt:#199e70;
-    --seq-100:#184f95; --seq-250:#1c5cab; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#6da7ec;
-    --ord-p0:#184f95; --ord-p1:#3987e5; --ord-p2:#6da7ec; --ord-p3:#9ec5f4;
-    --grid:#2c2c2a;
-  }
-}
-
 /* panel 通用（对齐 Dashboard .panel） */
 .panel { position: relative; background: var(--surface-1); border: 1px solid var(--line);
-  border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  border-radius: var(--tech-radius); overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
 .grid-bg { position:absolute; inset:0; pointer-events:none; opacity:.55;
   background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
   background-size:40px 40px;
@@ -628,7 +602,9 @@ const tv = computed(() => {
 .prio-title { font-size:12px; color:var(--muted); font-family:var(--mono); letter-spacing:.5px; margin-bottom:10px; }
 .prio-bar { display:flex; height:26px; border-radius:4px; overflow:hidden; gap:2px; background:var(--surface-1); }
 .prio-seg { display:flex; align-items:center; justify-content:center; font-size:11px; font-family:var(--mono);
-  color:#fff; min-width:28px; }
+  color:var(--tech-on-status); min-width:28px; }
+.prio-seg[data-priority='P2'] { color:var(--tech-chart-mid-label); }
+.prio-seg[data-priority='P3'] { color:var(--tech-fg); }
 .prio-legend { display:flex; gap:14px; margin-top:10px; font-family:var(--mono); font-size:11px; color:var(--muted); flex-wrap:wrap; }
 .prio-legend span { display:inline-flex; align-items:center; gap:5px; }
 .prio-legend i { width:9px; height:9px; border-radius:2px; }
@@ -639,15 +615,15 @@ const tv = computed(() => {
 .fp-body { display:grid; grid-template-columns: 1fr 220px; gap:20px; align-items:center; }
 .fp-steps { display:flex; flex-direction:column; gap:6px; min-width:0; }
 .fp-step { position:relative; min-height:46px; border-radius:6px; padding:6px 14px;
-  box-sizing:border-box; max-width:100%; display:flex; flex-wrap:wrap; align-items:center; gap:12px; color:#fff;
+  box-sizing:border-box; max-width:100%; display:flex; flex-wrap:wrap; align-items:center; gap:12px; color:var(--tech-on-solid);
   clip-path: polygon(0 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
   transition: width .5s cubic-bezier(.22,1,.36,1); }
 .fp-num { font-family:var(--mono); font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1; }
 .fp-lbl { font-size:12px; opacity:.92; display:flex; flex-wrap:wrap; align-items:center; gap:8px; overflow-wrap:anywhere; }
-.fp-rate { font-family:var(--mono); font-size:11px; background:rgba(255,255,255,.22); border-radius:4px; padding:1px 6px; }
-.fp-runs { font-family:var(--mono); font-size:11px; color:rgba(255,255,255,.82); letter-spacing:.2px; }
+.fp-rate { font-family:var(--mono); font-size:11px; background:var(--tech-panel); border-radius:4px; padding:1px 6px; }
+.fp-runs { font-family:var(--mono); font-size:11px; color:var(--tech-on-solid); letter-spacing:.2px; }
 .fp-side { display:flex; flex-direction:column; gap:10px; }
-.fp-card { background:var(--surface-2); border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
+.fp-card { background:var(--surface-2); border:1px solid var(--line); border-radius:var(--tech-radius); padding:12px 16px; }
 .fp-n { font-family:var(--mono); font-size:26px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
 .fp-n.bug { color:var(--status-critical); }
 .fp-n.pend { color:var(--status-warn); }
@@ -674,7 +650,7 @@ const tv = computed(() => {
 /* 空态卡（仿 Dashboard） */
 .empty-state { min-height:420px; display:flex; align-items:center; justify-content:center; padding:40px 24px; }
 .es-inner { position:relative; z-index:2; display:flex; flex-direction:column; align-items:center; text-align:center; }
-.es-mark { --tm-line:#cbd5e1; --tm-dim:#94a3b8; --tm-signal:var(--signal);
+.es-mark { --tm-line:var(--tech-line); --tm-dim:var(--tech-muted); --tm-signal:var(--signal);
   filter:drop-shadow(0 0 10px rgba(0,179,134,.25)); margin-bottom:22px; }
 .es-eyebrow { font-family:var(--mono); font-size:12px; letter-spacing:3px; color:var(--signal); }
 .es-title { font-size:22px; font-weight:700; letter-spacing:.5px; margin-top:12px; color:var(--text-primary); }

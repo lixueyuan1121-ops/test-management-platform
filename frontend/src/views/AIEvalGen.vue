@@ -211,10 +211,10 @@ const dimLabel = (k) => DIM_LABEL_MAP.value[k] || k || '—'
 const dimTagType = (k) => DIM_TYPE_MAP[k] || 'info'
 // 生成引擎 → 选择器友好名 + 圆点色(与 AITestGen 口径一致)；未知引擎回落 id + 灰点
 const ENGINE_META = {
-  claude: { label: 'Claude', dot: '#f59e0b' },
-  deepseek: { label: 'DeepSeek', dot: '#3b82f6' },
+  claude: { label: 'Claude', dot: 'var(--tech-warn)' },
+  deepseek: { label: 'DeepSeek', dot: 'var(--tech-signal)' },
 }
-const engineMeta = (id) => ENGINE_META[id] || { label: id, dot: '#94a3b8' }
+const engineMeta = (id) => ENGINE_META[id] || { label: id, dot: 'var(--tech-muted)' }
 const PHASES = ['正在拆解需求要点…', '按维度设计对话意图…', '补充多轮追问与预期…', '整理成稿…']
 const DEMO = `纳米 AI 搜索助手：
 1. 用户可就一个话题连续追问，助手需保持上下文连贯。
@@ -405,28 +405,28 @@ async function dispatchSelected() {
 .card-head { display: flex; align-items: center; justify-content: space-between; }
 .title-wrap { display: flex; align-items: center; gap: 12px; }
 .title-icon {
-  font-size: 26px; color: #00b386;
+  font-size: 26px; color: var(--tech-success);
   filter: drop-shadow(0 0 6px rgba(0, 179, 134, 0.35));
 }
-.title { font-size: 16px; font-weight: 600; color: #1f2d3d; }
-.subtitle { font-size: 12px; color: #8a94a6; margin-top: 2px; }
+.title { font-size: 16px; font-weight: 600; color: var(--tech-fg); }
+.subtitle { font-size: 12px; color: var(--tech-muted); margin-top: 2px; }
 
 /* 生成引擎分段切换 */
 .engine-picker { display: flex; align-items: center; gap: 10px; }
-.engine-label { font-size: 12px; color: #8a94a6; white-space: nowrap; }
+.engine-label { font-size: 12px; color: var(--tech-muted); white-space: nowrap; }
 .eng-opt { display: inline-flex; align-items: center; gap: 6px; }
 .eng-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none;
   box-shadow: 0 0 0 2px rgba(255,255,255,.6); }
 .engine-seg :deep(.el-radio-button__inner) {
-  border: none; background: transparent; color: #5b6472; font-weight: 500;
+  border: none; background: transparent; color: var(--tech-muted); font-weight: 500;
   padding: 5px 14px; box-shadow: none; transition: all .15s ease;
 }
-.engine-seg { background: #f0f2f5; border: 1px solid #e3e8ef; border-radius: 6px; padding: 2px; }
+.engine-seg { background: var(--tech-panel-2); border: 1px solid var(--tech-line); border-radius: 6px; padding: 2px; }
 .engine-seg :deep(.el-radio-button:first-child .el-radio-button__inner),
 .engine-seg :deep(.el-radio-button:last-child .el-radio-button__inner) { border-radius: 4px; }
-.engine-seg :deep(.el-radio-button__inner:hover) { color: #1f2d3d; }
+.engine-seg :deep(.el-radio-button__inner:hover) { color: var(--tech-fg); }
 .engine-seg :deep(.el-radio-button.is-active .el-radio-button__inner) {
-  background: var(--el-color-primary); color: #fff; border-radius: 4px;
+  background: var(--tech-action); color: var(--tech-on-solid); border-radius: 4px;
   box-shadow: none;
 }
 .engine-seg :deep(.el-radio-button.is-active .eng-dot) { box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
@@ -437,13 +437,13 @@ async function dispatchSelected() {
 
 /* 维度多选 */
 .dim-head { display: flex; flex-wrap:wrap; align-items: baseline; gap: 10px; margin-bottom: 8px; }
-.dim-label { font-size: 13px; font-weight: 600; color: #1a1d21; }
-.dim-sub { font-size: 12px; color: #a0a8b3; }
+.dim-label { font-size: 13px; font-weight: 600; color: var(--tech-fg); }
+.dim-sub { font-size: 12px; color: var(--tech-muted); }
 .dim-group { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
 .dim-group :deep(.el-checkbox) { margin-right: 0; }
 
 .req-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.req-label { font-size: 13px; font-weight: 600; color: #1a1d21; }
+.req-label { font-size: 13px; font-weight: 600; color: var(--tech-fg); }
 .req-input { font-size: 14px; }
 .actions { margin-top: 14px; display: flex; gap: 12px; }
 .btn-icon { margin-right: 4px; }
@@ -451,10 +451,10 @@ async function dispatchSelected() {
 /* 生成过程 */
 .stream-card :deep(.el-card__body) { padding: 16px 20px; }
 .running-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.running-text { font-size: 14px; color: #303133; flex: 1; }
-.elapsed { font-size: 13px; color: #00926e; }
+.running-text { font-size: 14px; color: var(--tech-fg); flex: 1; }
+.elapsed { font-size: 13px; color: var(--tech-cyan); }
 .pulse-dot {
-  width: 10px; height: 10px; border-radius: 50%; background: #00b386;
+  width: 10px; height: 10px; border-radius: 50%; background: var(--tech-success-bg);
   box-shadow: 0 0 0 0 rgba(0, 179, 134, 0.6); animation: pulse 1.4s infinite;
 }
 @keyframes pulse {
@@ -464,27 +464,27 @@ async function dispatchSelected() {
 }
 .raw-stream {
   margin-top: 12px; max-height: 220px; overflow: auto;
-  background: #0f1c2e; color: #7fe7c4; border-radius: 6px; padding: 12px;
+  background: var(--tech-code-bg); color: var(--tech-success); border-radius: 6px; padding: 12px;
   font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;
   white-space: pre-wrap; word-break: break-all;
 }
-.raw-hint { margin-top: 10px; font-size: 13px; color: #909399; }
+.raw-hint { margin-top: 10px; font-size: 13px; color: var(--tech-muted); }
 
 /* 战绩统计条 */
 .stat-strip { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .stat {
   flex: 1; min-width: 96px; text-align: center;
-  padding: 12px 8px; border-radius: 8px;
-  background: #fff;
+  padding: 12px 8px; border-radius: var(--tech-radius);
+  background: var(--tech-panel);
   border: 1px solid var(--el-border-color-light);
 }
 .stat-num { font-size: 22px; font-weight: 700; color: var(--el-text-color-primary); font-family: 'JetBrains Mono', ui-monospace, monospace; overflow-wrap:anywhere; }
-.stat-label { font-size: 12px; color: #8a94a6; margin-top: 4px; }
+.stat-label { font-size: 12px; color: var(--tech-muted); margin-top: 4px; }
 
-.result-title { font-weight: 600; color: #1f2d3d; }
+.result-title { font-weight: 600; color: var(--tech-fg); }
 .dispatch-bar { display: flex; align-items: center; gap: 10px; }
-.sel-info { font-weight: 600; color: #00926e; font-size: 13px; }
-.multiline { white-space: pre-line; color: #5a6b7b; font-size: 13px; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-.cg { font-size: 12px; color: #5a6b7b; }
+.sel-info { font-weight: 600; color: var(--tech-cyan); font-size: 13px; }
+.multiline { white-space: pre-line; color: var(--tech-muted); font-size: 13px; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.cg { font-size: 12px; color: var(--tech-muted); }
 .case-table { margin-top: 4px; }
 </style>

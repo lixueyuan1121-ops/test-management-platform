@@ -133,6 +133,7 @@ const assert = require('node:assert/strict');
     await page.getByRole('button', { name: '新增 key', exact: true }).click();
     const selector = page.getByRole('dialog', { name: '新增 key', exact: true });
     await selector.getByPlaceholder('语义 key，如 login_button').fill('test_key');
+    for (const [index, input] of (await selector.locator('.description-segments input').all()).entries()) await input.fill(['自动化','登录页','登录验证','按钮'][index]);
     await selector.getByRole('button', { name: '保存', exact: true }).click();
     await selector.waitFor({ state: 'hidden' });
     assert.equal(writes.find(w => w.path === '/api/selectors').body.key, 'test_key');

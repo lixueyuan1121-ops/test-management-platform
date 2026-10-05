@@ -407,17 +407,17 @@ async function onCopy() {
 .filters { display: flex; gap: 8px; align-items: center; }
 .status-trigger { cursor: pointer; }
 .cl-prog { display: flex; align-items: center; gap: 8px; }
-.cl-nums { font-family: var(--tech-mono, monospace); font-size: 12px; color: var(--tech-fg, #1a1d21); }
-.cl-dim { color: var(--tech-dim, #9aa3b2); }
+.cl-nums { font-family: var(--tech-mono, monospace); font-size: 12px; color: var(--tech-fg, var(--tech-fg)); }
+.cl-dim { color: var(--tech-dim, var(--tech-muted)); }
 .cl-expand { padding: 8px 16px; }
-.cl-empty { color: var(--tech-dim, #9aa3b2); font-size: 13px; padding: 4px 0; }
+.cl-empty { color: var(--tech-dim, var(--tech-muted)); font-size: 13px; padding: 4px 0; }
 .cl-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cl-hint { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
+.cl-hint { color: var(--tech-dim, var(--tech-muted)); font-size: 12px; }
 .exec-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.exec-meta { color: var(--tech-dim, #9aa3b2); font-size: 12px; }
+.exec-meta { color: var(--tech-dim, var(--tech-muted)); font-size: 12px; }
 .exec-reason { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; max-height: 240px; overflow: auto; }
-.detail { font-size: 13px; color: #334; }
+.detail { font-size: 13px; color: var(--tech-fg); }
 .detail .d-row { margin: 8px 0 2px; display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
-.detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; flex-shrink: 0; }
-.detail .d-pre { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 220px; overflow: auto; margin: 2px 0 0; }
+.detail .d-k { display: inline-block; min-width: 72px; color: var(--tech-muted); flex-shrink: 0; }
+.detail .d-pre { background: var(--tech-panel-2); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 220px; overflow: auto; margin: 2px 0 0; }
 </style>

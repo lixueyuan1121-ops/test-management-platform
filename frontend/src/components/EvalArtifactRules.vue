@@ -27,7 +27,7 @@ function set(index, field, value) {
 </script>
 <style scoped>
 .artifact-rules { width: 100%; }
-.hint { color: #737a86; font-size: 12px; line-height: 1.6; }
-.rule-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; border-bottom: 1px solid #ebeef5; }
+.hint { color: var(--tech-muted); font-size: 12px; line-height: 1.6; }
+.rule-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--tech-line); }
 .rule-row :deep(.el-input), .rule-row :deep(.el-select) { width: 190px; }
 </style>

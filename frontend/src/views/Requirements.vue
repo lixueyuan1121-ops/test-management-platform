@@ -326,13 +326,13 @@ onMounted(async () => {
 .actions { display: flex; gap: 8px; align-items: center; }
 .intro { margin-bottom: 12px; }
 .cov-summary { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-.cov-pill { font-size: 12px; padding: 3px 10px; border-radius: 4px; background: #f4f4f5; color: #666; }
-.cov-pill.passed { background: rgba(0,179,134,.1); color: #00926e; }
-.cov-pill.failing { background: rgba(229,86,95,.1); color: #c45656; }
-.cov-pill.partial, .cov-pill.notrun { background: rgba(230,162,60,.12); color: #b88230; }
-.req-link { color: #2b7de9; text-decoration: none; }
+.cov-pill { font-size: 12px; padding: 3px 10px; border-radius: 4px; background: var(--tech-panel-2); color: var(--tech-muted); }
+.cov-pill.passed { background: var(--tech-success-bg); color: var(--tech-cyan); }
+.cov-pill.failing { background: var(--tech-danger-bg); color: var(--tech-danger); }
+.cov-pill.partial, .cov-pill.notrun { background: var(--tech-warn-bg); color: var(--tech-warn); }
+.req-link { color: var(--tech-signal); text-decoration: none; }
 .req-link:hover { text-decoration: underline; }
-.hint { font-size: 11px; color: #909399; margin-left: 4px; }
-.none { color: #c0c4cc; }
+.hint { font-size: 11px; color: var(--tech-muted); margin-left: 4px; }
+.none { color: var(--tech-muted); }
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
 </style>

@@ -1,4 +1,4 @@
-const { chromium } = require('../../tools/qalab-runner/gui-mcp/node_modules/playwright-core');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '../../tools/qalab-runner/gui-mcp/node_modules/playwright-core');
 const assert = require('node:assert/strict');
 (async()=>{
 const browser=await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_TEST_EXECUTABLE});
@@ -15,7 +15,7 @@ await page.route(u=>u.pathname.startsWith('/api/'),async route=>{
 const req=route.request(),path=new URL(req.url()).pathname;let data=[];
 if(path==='/api/auth/me') data={user:{id:1,name:'测试员'},is_platform_admin:false,memberships:[{project_id:1,role:reader?'guest':'member'}]};
 if(path==='/api/projects') data=[{id:1,name:'测试项目'}];
-if(path==='/api/exec-queue/history') { historyReads++; assert.equal(new URL(req.url()).searchParams.get('summary'),'true'); data=rows; }
+if(path==='/api/exec-queue/history') { historyReads++; assert.equal(new URL(req.url()).searchParams.get('summary'),'true'); data={items:rows,total:rows.length,runners:['test']}; }
 if(path.startsWith('/api/ai/testcases/')) caseReads++;
 if(path==='/api/exec-queue/103') { detailReads++; data={...rows[2],report:[{action:'assert_text',desc:'按需加载的报告',ok:true}]}; }
 if(path.endsWith('/cancel')){

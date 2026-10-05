@@ -221,9 +221,9 @@ function fmtTime(s) {
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
 .intro { margin-bottom: 12px; }
-.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #5a6b7b; }
-.token-box { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #f5f7fa; border-radius: 6px; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: var(--tech-muted); }
+.token-box { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--tech-panel-2); border-radius: 6px; }
 .token-text { word-break: break-all; flex: 1; }
-.form-hint { font-size: 12px; color: #909399; margin-top: 4px; }
-.idle { color: #a8b0bb; }
+.form-hint { font-size: 12px; color: var(--tech-muted); margin-top: 4px; }
+.idle { color: var(--tech-muted); }
 </style>

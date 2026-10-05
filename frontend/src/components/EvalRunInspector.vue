@@ -259,32 +259,32 @@ onBeforeUnmount(() => { controller?.abort(); historyRequest++; judgmentRequest++
 <style scoped>
 .inspector-heading { display: flex; align-items: flex-start; gap: 16px; width: 100%; }
 .inspector-heading > div { flex: 1; min-width: 0; }
-.eyebrow { color: #68717d; font-size: 12px; }
-h2 { font-size: 19px; line-height: 1.5; margin: 6px 0 0; color: #202329; overflow-wrap: anywhere; }
-h3 { font-size: 14px; margin: 0 0 14px; color: #202329; }
+.eyebrow { color: var(--tech-muted); font-size: 12px; }
+h2 { font-size: 19px; line-height: 1.5; margin: 6px 0 0; color: var(--tech-fg); overflow-wrap: anywhere; }
+h3 { font-size: 14px; margin: 0 0 14px; color: var(--tech-fg); }
 h4 { font-size: 13px; margin: 0; }
-.run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: #68717d; font-size: 12px; margin-bottom: 16px; }
-.evidence-section { padding: 18px 0; border-bottom: 1px solid #e7ebef; }
+.run-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--tech-muted); font-size: 12px; margin-bottom: 16px; }
+.evidence-section { padding: 18px 0; border-bottom: 1px solid var(--tech-line); }
 .evidence-section:last-child { border-bottom: 0; }
-.dimension-result { padding: 14px 0; border-bottom: 1px solid #eff1f4; }
+.dimension-result { padding: 14px 0; border-bottom: 1px solid var(--tech-line); }
 .dimension-result:last-child { border: 0; }
 .dimension-title { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.dimension-title > span { margin-left: auto; font-size: 12px; color: #68717d; }
-.passed { color: var(--el-color-success); } .failed { color: var(--el-color-danger); } .unknown { color: #68717d; }
-.prose { color: #414b58; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.dimension-title > span { margin-left: auto; font-size: 12px; color: var(--tech-muted); }
+.passed { color: var(--el-color-success); } .failed { color: var(--el-color-danger); } .unknown { color: var(--tech-muted); }
+.prose { color: var(--tech-fg); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
 .prose :deep(p) { margin: 0 0 10px; }
 .prose :deep(img) { max-width: 100%; }
 .prose :deep(table) { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
-.prose :deep(td), .prose :deep(th) { border: 1px solid #e7ebef; padding: 6px 10px; }
-.prose :deep(pre), pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; background: #f5f7f9; padding: 12px; border-radius: 4px; font-size: 12px; line-height: 1.6; }
-blockquote { margin: 12px 0 0; padding: 8px 12px; border-left: 2px solid #cbd5e1; font-size: 13px; color: #68717d; overflow-wrap: anywhere; }
-.trace-state { font-size: 13px; color: #68717d; padding: 16px 0; }
-.count { font-weight: 400; color: #68717d; margin-left: 6px; }
+.prose :deep(td), .prose :deep(th) { border: 1px solid var(--tech-line); padding: 6px 10px; }
+.prose :deep(pre), pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; background: var(--tech-panel-2); padding: 12px; border-radius: 4px; font-size: 12px; line-height: 1.6; }
+blockquote { margin: 12px 0 0; padding: 8px 12px; border-left: 2px solid var(--tech-line); font-size: 13px; color: var(--tech-muted); overflow-wrap: anywhere; }
+.trace-state { font-size: 13px; color: var(--tech-muted); padding: 16px 0; }
+.count { font-weight: 400; color: var(--tech-muted); margin-left: 6px; }
 .inspector-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 </style>
 
 <style>
-.run-inspector .el-drawer__header { margin-bottom: 0; padding-bottom: 16px; border-bottom: 1px solid #e7ebef; }
-.run-inspector .el-drawer__footer { border-top: 1px solid #e7ebef; }
+.run-inspector .el-drawer__header { margin-bottom: 0; padding-bottom: 16px; border-bottom: 1px solid var(--tech-line); }
+.run-inspector .el-drawer__footer { border-top: 1px solid var(--tech-line); }
 .run-inspector .el-collapse-item__header { height: auto; min-height: 48px; line-height: 1.6; padding: 10px 0; overflow-wrap: anywhere; }
 </style>

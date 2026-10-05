@@ -135,6 +135,6 @@ async function onRemove(row) {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
-small { color: #999; }
-.hint { color: #b0b0b0; font-size: 12px; margin-left: 6px; }
+small { color: var(--tech-muted); }
+.hint { color: var(--tech-muted); font-size: 12px; margin-left: 6px; }
 </style>

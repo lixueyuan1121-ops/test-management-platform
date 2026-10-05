@@ -29,7 +29,7 @@
           </div>
           <div class="rq-mid">
             <svg viewBox="0 0 44 44" class="rq-ring">
-              <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="4"/>
+              <circle cx="22" cy="22" r="18" fill="none" stroke="var(--tech-line)" stroke-width="4"/>
               <circle v-if="q.pass_rate != null" cx="22" cy="22" r="18" fill="none"
                       :stroke="rqRateColor(q.pass_rate)" stroke-width="4" stroke-linecap="round"
                       :stroke-dasharray="`${(q.pass_rate * 1.131).toFixed(1)} 113.1`" transform="rotate(-90 22 22)"/>
@@ -166,6 +166,8 @@
 </template>
 
 <script setup>
+import { withChartTheme, themeColor, useChartTheme } from '@/utils/theme'
+
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
@@ -293,27 +295,27 @@ async function loadStats() {
 
 // 版本质量档案(红黄绿记分卡)
 const quality = ref([])
-function rqRateColor(r) { return r >= 90 ? '#00e5a0' : r >= 70 ? '#e8a23d' : '#ff5c6c' }
+function rqRateColor(r) { return r >= 90 ? themeColor('--tech-success') : r >= 70 ? themeColor('--tech-warn') : themeColor('--tech-danger') }
 
 function renderChart() {
   if (!chart) return
   const months = stats.trend.map((t) => t.month.slice(2))
-  chart.setOption({
+  chart.setOption(withChartTheme({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['版本数', '需求数'], textStyle: { color: '#5a6b7b' }, top: 0 },
+    legend: { data: ['版本数', '需求数'], textStyle: { color: themeColor('--tech-muted') }, top: 0 },
     grid: { left: 40, right: 40, top: 30, bottom: 30 },
-    xAxis: { type: 'category', data: months, axisLabel: { color: '#90a4ae' } },
+    xAxis: { type: 'category', data: months, axisLabel: { color: themeColor('--tech-muted') } },
     yAxis: [
-      { type: 'value', name: '版本', axisLabel: { color: '#90a4ae' }, splitLine: { lineStyle: { color: '#eef1f5' } } },
-      { type: 'value', name: '需求', axisLabel: { color: '#90a4ae' }, splitLine: { show: false } },
+      { type: 'value', name: '版本', axisLabel: { color: themeColor('--tech-muted') }, splitLine: { lineStyle: { color: themeColor('--tech-line') } } },
+      { type: 'value', name: '需求', axisLabel: { color: themeColor('--tech-muted') }, splitLine: { show: false } },
     ],
     series: [
       { name: '版本数', type: 'bar', data: stats.trend.map((t) => t.releases), barWidth: '46%',
-        itemStyle: { color: '#00b386', borderRadius: [3, 3, 0, 0] } },
+        itemStyle: { color: themeColor('--tech-chart-green'), borderRadius: [3, 3, 0, 0] } },
       { name: '需求数', type: 'line', yAxisIndex: 1, smooth: true, data: stats.trend.map((t) => t.reqs),
-        lineStyle: { color: '#3b9ad9', width: 2 }, itemStyle: { color: '#3b9ad9' } },
+        lineStyle: { color: themeColor('--tech-chart-blue'), width: 2 }, itemStyle: { color: themeColor('--tech-chart-blue') } },
     ],
-  })
+  }))
 }
 
 async function reload() { page.value = 1; await load() }
@@ -394,6 +396,8 @@ async function onDel(row) {
   } catch { /* 用户取消或请求拦截器已提示。 */ }
   finally { deleting.value = false }
 }
+
+useChartTheme(renderChart)
 </script>
 
 <style scoped>
@@ -401,46 +405,46 @@ async function onDel(row) {
 .board { color: var(--el-text-color-primary); }
 .board-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
 .board-title { display: flex; flex-direction: column; gap: 4px; }
-.kicker { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #4fd8c4; letter-spacing: 1px; }
+.kicker { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: var(--tech-cyan); letter-spacing: 1px; }
 .board-h1 { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
 .board-tools { display: flex; gap: 10px; align-items: center; }
 .stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
-.stat-card { background: #fff; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 16px; }
+.stat-card { background: var(--tech-panel); border: 1px solid var(--el-border-color-lighter); border-radius: var(--tech-radius); padding: 16px; }
 .stat-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 28px; font-weight: 700; color: var(--el-text-color-primary); line-height: 1.2; overflow-wrap: anywhere; }
 .stat-num.sm { font-size: 18px; }
 .stat-label { margin-top: 6px; font-size: 13px; color: var(--el-text-color-secondary); }
 /* 版本质量档案:深色 board 内横排记分卡 */
 .rq-row { display: flex; gap: 12px; overflow-x: auto; margin-top: 14px; padding-bottom: 4px; }
-.rq-card { flex: 0 0 220px; background: #fff; border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px; padding: 12px 14px; }
-.rq-card.rq-red { border-color: rgba(255,92,108,.45); }
-.rq-card.rq-yellow { border-color: rgba(232,162,61,.4); }
+.rq-card { flex: 0 0 220px; background: var(--tech-panel); border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--tech-radius); padding: 12px 14px; }
+.rq-card.rq-red { border-color: var(--tech-danger); }
+.rq-card.rq-yellow { border-color: var(--tech-warn); }
 .rq-hd { display: flex; align-items: center; gap: 8px; }
 .rq-light { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.rq-light.green { background: #00e5a0; box-shadow: 0 0 7px rgba(0,229,160,.7); }
-.rq-light.yellow { background: #e8a23d; box-shadow: 0 0 7px rgba(232,162,61,.7); }
-.rq-light.red { background: #ff5c6c; box-shadow: 0 0 8px rgba(255,92,108,.8); animation: rq-breathe 1.4s ease-in-out infinite; }
-.rq-ver { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 15px; color: #fff;
+.rq-light.green { background: var(--tech-success); box-shadow: 0 0 7px rgba(0,229,160,.7); }
+.rq-light.yellow { background: var(--tech-warn); box-shadow: 0 0 7px rgba(232,162,61,.7); }
+.rq-light.red { background: var(--tech-danger); box-shadow: 0 0 8px rgba(255,92,108,.8); animation: rq-breathe 1.4s ease-in-out infinite; }
+.rq-ver { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 15px; color: var(--tech-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rq-date { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: rgba(255,255,255,.55); flex: none; }
+.rq-date { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--tech-muted); flex: none; }
 .rq-mid { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .rq-ring { width: 46px; height: 46px; flex: none; }
-.rq-rl { font-size: 11px; color: rgba(255,255,255,.65); line-height: 1.6; }
-.rq-sub { font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,.45); }
+.rq-rl { font-size: 11px; color: var(--tech-muted); line-height: 1.6; }
+.rq-sub { font-family: 'JetBrains Mono', monospace; color: var(--tech-muted); }
 .rq-scope { font-size: 10px; padding: 0 5px; border-radius: 3px; margin-left: 5px; vertical-align: 1px;
-  border: 1px solid rgba(255,255,255,.25); color: rgba(255,255,255,.55); }
-.rq-scope.linked { border-color: rgba(0,229,160,.5); color: #00e5a0; }
-.rq-ck { color: rgba(255,255,255,.6); }
-.rq-ck.full { color: #00e5a0; }
+  border: 1px solid var(--tech-line); color: var(--tech-muted); }
+.rq-scope.linked { border-color: var(--tech-success); color: var(--tech-success); }
+.rq-ck { color: var(--tech-muted); }
+.rq-ck.full { color: var(--tech-success); }
 .rq-ft { display: flex; gap: 10px; margin-top: 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-.rq-bug { color: #ff5c6c; }
-.rq-iss { color: #e8a23d; }
-.rq-bug.zero, .rq-iss.zero { color: rgba(255,255,255,.35); }
+.rq-bug { color: var(--tech-danger); }
+.rq-iss { color: var(--tech-warn); }
+.rq-bug.zero, .rq-iss.zero { color: var(--tech-muted); }
 @keyframes rq-breathe { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .rq-light.red { animation: none; } }
 
-.chart-wrap { background: rgba(255,255,255,.04); border-radius: 8px; padding: 14px 12px 6px; }
-.chart-title { font-size: 13px; color: #bfcbd9; margin: 0 0 6px 8px; }
+.chart-wrap { background: var(--tech-panel); border-radius: var(--tech-radius); padding: 14px 12px 6px; }
+.chart-title { font-size: 13px; color: var(--tech-muted); margin: 0 0 6px 8px; }
 .chart { height: 260px; }
 .board .rq-ver, .board .rq-ring { color: var(--el-text-color-primary); }
 .board .rq-date, .board .rq-rl, .board .rq-sub, .board .rq-scope, .board .chart-title { color: var(--el-text-color-secondary); }
@@ -451,24 +455,24 @@ async function onDel(row) {
 .list-head { display: flex; justify-content: space-between; align-items: center; }
 .sub-tabs { margin-bottom: 12px; }
 .chan-tag { margin: 0 4px 2px 0; }
-.dim { color: #90a4ae; font-weight: normal; font-size: 13px; }
-.one-line { color: #5a6b7b; font-size: 13px; }
+.dim { color: var(--tech-muted); font-weight: normal; font-size: 13px; }
+.one-line { color: var(--tech-muted); font-size: 13px; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
-.detail { font-size: 13px; color: #334; }
+.detail { font-size: 13px; color: var(--tech-fg); }
 .detail .d-row { margin: 8px 0 2px; }
-.detail .d-k { display: inline-block; min-width: 72px; color: #90a4ae; }
-.detail .d-pre { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 2px 0 0; }
-.detail .d-empty { color: #a8abb2; font-size: 13px; }
-.form-hint { color: #90a4ae; font-size: 12px; }
-.md-body { font-size: 14px; line-height: 1.7; color: #1a1d21; background: #f9fafb; border-radius: 6px; padding: 10px 12px; }
+.detail .d-k { display: inline-block; min-width: 72px; color: var(--tech-muted); }
+.detail .d-pre { background: var(--tech-panel-2); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 2px 0 0; }
+.detail .d-empty { color: var(--tech-muted); font-size: 13px; }
+.form-hint { color: var(--tech-muted); font-size: 12px; }
+.md-body { font-size: 14px; line-height: 1.7; color: var(--tech-fg); background: var(--tech-panel-2); border-radius: 6px; padding: 10px 12px; }
 .md-body :deep(h1) { font-size: 19px; }
 .md-body :deep(h2) { font-size: 16px; }
 .md-body :deep(h3) { font-size: 15px; }
 .md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { margin: 10px 0 6px; font-weight: 600; }
 .md-body :deep(ul), .md-body :deep(ol) { padding-left: 22px; margin: 6px 0; }
-.md-body :deep(code) { background: #f2f4f7; border-radius: 3px; padding: 1px 5px; font-family: ui-monospace, monospace; font-size: 13px; }
-.md-body :deep(pre) { background: #f5f7fa; border-radius: 6px; padding: 10px 12px; overflow: auto; }
+.md-body :deep(code) { background: var(--tech-panel-2); border-radius: 3px; padding: 1px 5px; font-family: ui-monospace, monospace; font-size: 13px; }
+.md-body :deep(pre) { background: var(--tech-panel-2); border-radius: 6px; padding: 10px 12px; overflow: auto; }
 .md-body :deep(table) { border-collapse: collapse; margin: 8px 0; }
-.md-body :deep(th), .md-body :deep(td) { border: 1px solid #dcdfe6; padding: 5px 9px; }
-.md-body :deep(a) { color: #00926e; }
+.md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--tech-line); padding: 5px 9px; }
+.md-body :deep(a) { color: var(--tech-cyan); }
 </style>

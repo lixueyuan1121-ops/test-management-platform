@@ -340,30 +340,30 @@ onBeforeUnmount(() => { disposed = true; version++; historyVersion++; controller
 </script>
 
 <style scoped>
-.requirement-review { margin-top:24px; padding:20px; border:1px solid var(--el-border-color); border-radius:12px; background:var(--el-bg-color); }
-.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:10px; }
+.requirement-review { margin-top:24px; padding:20px; border:1px solid var(--el-border-color); border-radius:var(--tech-radius); background:var(--el-bg-color); }
+.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:var(--tech-radius); }
 .review-focus h4 { margin:0 0 8px; }
 .review-steps { margin-bottom:20px; }
 .review-head,.review-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .review-head { justify-content:space-between; align-items:flex-start; }
 h3 { margin:0; font-size:16px; }.review-head p,.hint { color:var(--el-text-color-secondary); font-size:12px; line-height:1.6; }
 .review-actions { margin:12px 0; }.review-tabs { margin-top:16px; }.rule-title { border:0; padding:0; background:none; color:var(--el-color-primary); text-align:left; cursor:pointer; font:inherit; font-weight:600; }
-.question-card { border:1px solid var(--el-border-color-lighter); border-radius:8px; padding:16px; margin:12px 0; line-height:1.65; overflow-wrap:anywhere; }
+.question-card { border:1px solid var(--el-border-color-lighter); border-radius:var(--tech-radius); padding:16px; margin:12px 0; line-height:1.65; overflow-wrap:anywhere; }
 .evidence { white-space:pre-wrap; background:var(--el-fill-color-light); padding:10px; }.confirm-area { margin-top:16px; padding-top:16px; border-top:1px solid var(--el-border-color-lighter); }
 .confirm-area .el-checkbox { height:auto; white-space:normal; margin-bottom:12px; }.blockers { color:var(--el-color-warning-dark-2); font-size:13px; line-height:1.8; }
 .criteria-edit { display:grid; gap:10px; width:100%; }.image-comparison { display:grid; grid-template-columns:1fr 1fr; gap:20px; min-height:100px; }.image-comparison img { width:100%; height:auto; object-fit:contain; align-self:start; }
 .visual-text { max-height:440px; overflow:auto; font-size:13px; }.visual-text :deep(table) { border-collapse:collapse; }.visual-text :deep(td),.visual-text :deep(th) { padding:6px; border:1px solid var(--el-border-color); }
 .requirement-review :deep(.el-alert) { margin:12px 0; }.requirement-review :deep(.el-table .cell) { overflow-wrap:anywhere; }
-@media(max-width:760px) { .requirement-review { padding:12px; }.image-comparison { grid-template-columns:1fr; }.review-head .el-select { width:100%!important; }.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:10px; }
+@media(max-width:760px) { .requirement-review { padding:12px; }.image-comparison { grid-template-columns:1fr; }.review-head .el-select { width:100%!important; }.review-focus { padding:16px; margin:16px 0; background:var(--el-fill-color-light); border-radius:var(--tech-radius); }
 .review-focus h4 { margin:0 0 8px; }
 .review-steps { padding:12px 8px; } }
 </style>
 
 <style scoped>
-.recovery-info { padding: 12px 16px; margin: 12px 0; border: 1px solid #dce5f5; border-radius: 8px; background: #f8faff; font-size: 14px; line-height: 1.7; }
+.recovery-info { padding: 12px 16px; margin: 12px 0; border: 1px solid var(--tech-line); border-radius: var(--tech-radius); background: var(--tech-panel); font-size: 14px; line-height: 1.7; }
 .recovery-info .el-button { max-width: 100%; height: auto; white-space: normal; line-height: 1.6; }
 .recovery-info .el-button :deep(span) { overflow-wrap: anywhere; }
-.saved-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font-size: 13px; line-height: 1.7; padding: 12px; background: #f6f8fb; }
+.saved-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font-size: 13px; line-height: 1.7; padding: 12px; background: var(--tech-panel-2); }
 </style>
 
 <style scoped>

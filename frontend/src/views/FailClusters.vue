@@ -171,21 +171,21 @@ init()
 
 <style scoped>
 .fc-page { padding: 4px; }
-.scope { margin: 8px 0 16px; padding: 12px 0; border-bottom: 1px solid #ebeef5; }
-.scope-h { font-size: 13px; color: #606266; margin-bottom: 10px; }
+.scope { margin: 8px 0 16px; padding: 12px 0; border-bottom: 1px solid var(--tech-line); }
+.scope-h { font-size: 13px; color: var(--tech-muted); margin-bottom: 10px; }
 .selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 13px; }
 .scope :deep(.el-checkbox) { display: flex; height: auto; margin: 0 0 12px; align-items: flex-start; }
 .scope :deep(.el-checkbox__input) { margin-top: 3px; }
 .scope :deep(.el-checkbox__label) { white-space: normal; overflow-wrap: anywhere; min-width: 0; line-height: 1.6; }
-.overview { font-size: 14px; margin: 12px 0; color: #303133; }
-.overview .big { font-size: 24px; font-weight: 700; color: #303133; font-family: monospace; }
+.overview { font-size: 14px; margin: 12px 0; color: var(--tech-fg); }
+.overview .big { font-size: 24px; font-weight: 700; color: var(--tech-fg); font-family: monospace; }
 .cards { display: flex; flex-direction: column; gap: 10px; }
-.rc-card { border: 1px solid #e3e8ef; border-radius: 8px; padding: 14px 16px; }
+.rc-card { border: 1px solid var(--tech-line); border-radius: var(--tech-radius); padding: 14px 16px; }
 .rc-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .rc-title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; min-width: 0; }
-.rc-sum { color: #606266; font-size: 13px; margin: 8px 0; }
-.rc-reqs { font-size: 12px; color: #909399; }
-.reqtag { display: block; margin: 4px 0; color: #606266; line-height: 1.6; }
+.rc-sum { color: var(--tech-muted); font-size: 13px; margin: 8px 0; }
+.rc-reqs { font-size: 12px; color: var(--tech-muted); }
+.reqtag { display: block; margin: 4px 0; color: var(--tech-muted); line-height: 1.6; }
 .rc-act { margin-top: 10px; }
 .rc-sum { overflow-wrap: anywhere; }
 .reqtag { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }

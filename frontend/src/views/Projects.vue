@@ -12,7 +12,7 @@
         <el-table-column label="极库云" width="90">
           <template #default="{ row }">
             <span v-if="row.geelib_sub_id">#{{ row.geelib_sub_id }}</span>
-            <span v-else style="color:#c0c4cc">—</span>
+            <span v-else style="color:var(--tech-muted)">—</span>
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100" />
@@ -110,5 +110,5 @@ async function submit() {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
-.hint { color: #999; font-size: 12px; line-height: 1.4; margin-top: 2px; }
+.hint { color: var(--tech-muted); font-size: 12px; line-height: 1.4; margin-top: 2px; }
 </style>

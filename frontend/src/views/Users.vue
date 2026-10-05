@@ -167,5 +167,5 @@ async function toggleStatus(row) {
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
-.tip { color: #999; font-size: 12px; margin-left: 8px; }
+.tip { color: var(--tech-muted); font-size: 12px; margin-left: 8px; }
 </style>

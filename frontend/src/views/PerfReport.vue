@@ -73,6 +73,8 @@
 </template>
 
 <script setup>
+import { withChartTheme, useChartTheme } from '@/utils/theme'
+
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import { Refresh } from '@element-plus/icons-vue'
 import '@/styles/workspace-overlays.css'
@@ -219,14 +221,14 @@ function renderCharts() {
       connectNulls: true,
       data: (o.samples || []).filter((s) => s.metric === metric).map((s) => [+(s.t / 1000).toFixed(1), s.value]),
     }))
-    c.setOption({
+    c.setOption(withChartTheme({
       tooltip: { trigger: 'axis' },
       legend: { data: g.objects.map((o) => o.variant), top: 0 },
       grid: { left: 48, right: 16, top: 28, bottom: 30 },
       xAxis: { type: 'value', name: '秒', axisLabel: { formatter: '{value}s' } },
       yAxis: { type: 'value', scale: true },
       series,
-    }, true)
+    }), true)
     c.resize()
   })
 }
@@ -239,35 +241,37 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   disposeCharts()
 })
+
+useChartTheme(renderCharts)
 </script>
 
 <style scoped>
 .th-tip { margin-bottom: 10px; }
 .threshold-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 16px; }
 @media (max-width:600px) { .threshold-form { grid-template-columns:1fr; } }
-.th-op { font-size: 12px; color: #909399; margin-right: 8px; }
+.th-op { font-size: 12px; color: var(--tech-muted); margin-right: 8px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .title { font-size: 18px; font-weight: 600; }
-.title .sub { font-size: 12px; color: #909399; font-weight: 400; margin-left: 8px; }
+.title .sub { font-size: 12px; color: var(--tech-muted); font-weight: 400; margin-left: 8px; }
 .ops { display: flex; gap: 8px; align-items: center; }
-.verdict { padding: 10px 14px; border-radius: 8px; font-size: 14px; margin-bottom: 14px; border-left: 4px solid #909399; background: #f4f4f5; }
-.verdict.better, .verdict.slightly-better { border-left-color: #00b386; background: rgba(0, 179, 134, .08); }
-.verdict.worse { border-left-color: #f56c6c; background: rgba(245, 108, 108, .08); }
-.verdict.mixed { border-left-color: #e6a23c; background: rgba(230, 162, 60, .08); }
+.verdict { padding: 10px 14px; border-radius: var(--tech-radius); font-size: 14px; margin-bottom: 14px; border-left: 4px solid var(--tech-line); background: var(--tech-panel-2); }
+.verdict.better, .verdict.slightly-better { border-left-color: var(--tech-success); background: var(--tech-success-bg); }
+.verdict.worse { border-left-color: var(--tech-danger); background: var(--tech-danger-bg); }
+.verdict.mixed { border-left-color: var(--tech-warn); background: var(--tech-warn-bg); }
 .kpi-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
-.kpi-card { min-width: 150px; flex: 1; padding: 12px 14px; border-radius: 8px; background: #fff; border: 1px solid #ebeef5; border-top: 3px solid #909399; }
-.kpi-card.good { border-top-color: #00b386; }
-.kpi-card.mid { border-top-color: #e6a23c; }
-.kpi-card.bad { border-top-color: #f56c6c; }
-.kpi-scene { font-size: 12px; color: #909399; }
-.kpi-label { font-size: 13px; color: #606266; margin: 2px 0 6px; }
+.kpi-card { min-width: 150px; flex: 1; padding: 12px 14px; border-radius: var(--tech-radius); background: var(--tech-panel); border: 1px solid var(--tech-line); border-top: 3px solid var(--tech-line); }
+.kpi-card.good { border-top-color: var(--tech-success); }
+.kpi-card.mid { border-top-color: var(--tech-warn); }
+.kpi-card.bad { border-top-color: var(--tech-danger); }
+.kpi-scene { font-size: 12px; color: var(--tech-muted); }
+.kpi-label { font-size: 13px; color: var(--tech-muted); margin: 2px 0 6px; }
 .kpi-val { font-size: 18px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace; }
-.kpi-vs { font-size: 12px; color: #c0c4cc; font-weight: 400; }
-.kpi-delta { font-size: 12px; color: #909399; margin-top: 4px; }
+.kpi-vs { font-size: 12px; color: var(--tech-muted); font-weight: 400; }
+.kpi-delta { font-size: 12px; color: var(--tech-muted); margin-top: 4px; }
 .scene-card { padding: 20px 0; border-top: 1px solid var(--el-border-color); }
 .scene-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-bottom: 12px; }
 .scene-name { font-size: 15px; font-weight: 600; }
-.scene-objs { font-size: 12px; color: #909399; flex: 1; overflow-wrap: anywhere; min-width: 100px; }
+.scene-objs { font-size: 12px; color: var(--tech-muted); flex: 1; overflow-wrap: anywhere; min-width: 100px; }
 .cmp-table { margin-bottom: 14px; }
 .chart { width: 100%; height: 280px; }
 </style>

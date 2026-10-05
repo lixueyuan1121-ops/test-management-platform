@@ -143,16 +143,16 @@ onMounted(async () => {
 .header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .intro { margin-bottom: 12px; }
-.set-name { margin-left: 6px; font-size: 12px; color: #606266; }
-.adhoc { color: #909399; font-style: italic; }
+.set-name { margin-left: 6px; font-size: 12px; color: var(--tech-muted); }
+.adhoc { color: var(--tech-muted); font-style: italic; }
 .stat-bar { display: flex; gap: 6px; flex-wrap: wrap; }
 .detail-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px; overflow-wrap:anywhere; }
 .full-reason { padding:12px 20px; font:14px/1.7 system-ui,sans-serif; overflow-wrap:anywhere; }
 .full-reason h3 { font-size:14px; margin:0; }
 .full-reason p { white-space:pre-wrap; }
-.batch { font-family: monospace; font-size: 12px; color: #606266; }
-.agg { font-size: 13px; color: #303133; }
-.reason { font-size:12px; color:#606266; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-.ev { margin-left: 8px; color: #409eff; font-size: 12px; }
-.none { color: #c0c4cc; }
+.batch { font-family: monospace; font-size: 12px; color: var(--tech-muted); }
+.agg { font-size: 13px; color: var(--tech-fg); }
+.reason { font-size:12px; color:var(--tech-muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.ev { margin-left: 8px; color: var(--tech-signal); font-size: 12px; }
+.none { color: var(--tech-muted); }
 </style>

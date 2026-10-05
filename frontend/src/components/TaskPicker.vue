@@ -72,7 +72,7 @@ const groups = computed(() => {
 <style scoped>
 .tp-opt { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .tp-tag { flex: none; }
-.tp-date { flex: none; color: #90a4ae; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+.tp-date { flex: none; color: var(--tech-muted); font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
 .tp-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 

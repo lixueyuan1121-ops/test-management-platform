@@ -178,8 +178,8 @@ onMounted(reload)
 .header { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 8px; }
 .intro { margin-bottom: 12px; }
-.prog-txt { font-size: 11px; color: #909399; }
-.none { color: #c0c4cc; }
+.prog-txt { font-size: 11px; color: var(--tech-muted); }
+.none { color: var(--tech-muted); }
 .dlg-tip { margin-bottom: 14px; }
 .up-form { margin-top: 6px; }
 </style>

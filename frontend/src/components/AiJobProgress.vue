@@ -82,16 +82,16 @@ onBeforeUnmount(() => clearInterval(timer))
 </script>
 
 <style scoped>
-.ai-live-progress { margin: 16px 0; padding: 18px; border: 1px solid #dce5f5; border-radius: 10px; background: #f8faff; min-width: 0; }
+.ai-live-progress { margin: 16px 0; padding: 18px; border: 1px solid var(--tech-line); border-radius: var(--tech-radius); background: var(--tech-panel); min-width: 0; }
 .live-heading, .live-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.live-heading { justify-content: space-between; color: #254c85; }
-.live-heading span, .live-note { font-size: 13px; color: #606b7d; line-height: 1.7; }
+.live-heading { justify-content: space-between; color: var(--tech-signal); }
+.live-heading span, .live-note { font-size: 13px; color: var(--tech-muted); line-height: 1.7; }
 .live-toolbar { margin: 12px 0; }
 .live-toolbar .el-select { width: 420px; max-width: 100%; }
-.live-output, .live-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; font-family: inherit; max-height: 320px; overflow: auto; padding: 16px; background: white; border: 1px solid #e2e8f1; border-radius: 6px; margin: 12px 0 0; }
+.live-output, .live-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; font-family: inherit; max-height: 320px; overflow: auto; padding: 16px; background: var(--tech-panel); border: 1px solid var(--tech-line); border-radius: 6px; margin: 12px 0 0; }
 .live-output { font-size: 14px; line-height: 1.8; }
-.live-raw { margin-top: 10px; font-size: 12px; color: #687588; }
+.live-raw { margin-top: 10px; font-size: 12px; color: var(--tech-muted); }
 .live-raw summary { cursor: pointer; }
-.live-error { color: #c64343; overflow-wrap: anywhere; }
+.live-error { color: var(--tech-danger); overflow-wrap: anywhere; }
 @media (max-width: 600px) { .ai-live-progress { padding: 12px; } .live-toolbar .el-select { width: 100%; } }
 </style>

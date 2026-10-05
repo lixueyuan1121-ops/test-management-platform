@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
       let data = [];
       const fail = () => route.fulfill({ status: 500, json: { msg: '模拟问题操作失败' } });
       if (path === '/api/auth/me') data = { user: { id: 1, name: '测试员' }, is_platform_admin: true, memberships: [] };
+      if (path === '/api/auth/geelib') data = { bound: true, enabled: true, configured: true, account_name: '模拟账号' };
       if (path === '/api/projects') data = [{ id: 1, name: '测试项目' }];
       if (path === '/api/issues') { if (failRead) return fail(); data = [row]; }
       if (req.method() !== 'GET') {

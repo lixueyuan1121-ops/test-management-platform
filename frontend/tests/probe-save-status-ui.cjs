@@ -31,7 +31,7 @@ const assert = require('node:assert/strict');
       await route.fulfill({json:{code:0,data}});
     });
     await page.route('**/probe-fixture.svg',r=>r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"/>'}));
-    await page.goto('http://127.0.0.1:5197/tests/fixtures/selector-targets.html');
+    await page.goto((process.env.UI_BASE_URL || 'http://127.0.0.1:5197') + '/tests/fixtures/selector-targets.html');
     await page.waitForFunction(()=>!!window.fixtureRouter);
     await page.evaluate(()=>window.fixtureRouter.push({name:'selectors',query:{project_id:'2',fix_keys:'unused',bulk:'1'}}));
     await page.getByRole('button',{name:'退出批量',exact:true}).click();

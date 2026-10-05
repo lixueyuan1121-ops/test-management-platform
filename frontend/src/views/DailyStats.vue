@@ -105,9 +105,9 @@ async function load() {
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .stat { text-align: center; padding: 8px 0; }
-.stat .num { font-size: 22px; font-weight: 600; color: #1f2d3d; }
-.stat .num.green { color: #67c23a; }
-.stat .num.red { color: #f56c6c; }
-.stat .lbl { color: #999; font-size: 12px; margin-top: 4px; }
-.wl { color: #555; line-height: 2; }
+.stat .num { font-size: 22px; font-weight: 600; color: var(--tech-fg); }
+.stat .num.green { color: var(--tech-success); }
+.stat .num.red { color: var(--tech-danger); }
+.stat .lbl { color: var(--tech-muted); font-size: 12px; margin-top: 4px; }
+.wl { color: var(--tech-fg); line-height: 2; }
 </style>

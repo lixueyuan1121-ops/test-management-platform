@@ -30,6 +30,7 @@ const assert = require('node:assert/strict');
     await report.waitFor({ state: 'hidden' });
     assert.equal(writes.find(w => w.path === '/api/daily-reports').body.task_id, 1);
     await page.goto(`${base}/commander`);
+    await page.getByRole('tab', { name: '项目问答', exact: true }).click();
     await page.getByPlaceholder('问我一个关于测试/质量的问题，回车发送（Shift+Enter 换行）').fill('执行计划');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.getByRole('button', { name: '确认执行', exact: true }).waitFor();

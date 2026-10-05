@@ -23,7 +23,7 @@ const assert = require('node:assert/strict');
       if (path.endsWith('/feedback/defense-calendar')) data = { days: [], streak: 0, total_guard_days: 0 };
       if (path.endsWith('/perf/jobs')) data = { id: 1 };
       if (path.endsWith('/perf/runs/1/prompt')) data = { status: 'running', scenario: '冷启动', variant: '测试版本', runner: 'win-01', prompt: '启动测试应用' };
-      if (path.endsWith('/exec-queue/history')) data = [{ id: 1, batch_id: 'batch-pending', status: 'running', title: '运行中的用例', runner: 'runner-1', created_at: '2026-09-10T10:00:00' }];
+      if (path.endsWith('/exec-queue/history')) data = { items: [{ run_id: 1, batch_id: 'batch-pending', status: 'running', title: '运行中的用例', runner: 'runner-1', created_at: '2026-09-10T10:00:00' }], total: 1, runners: ['runner-1'] };
       if (path.endsWith('/ai/cases')) {
         caseQueries.push(Object.fromEntries(url.searchParams));
         data = { items: Array.from({ length: 50 }, (_, i) => ({ id: i + 1, title: `功能用例${i + 1}`, steps: '完整步骤\n'.repeat(20), expected: '验证完整预期', review_status: 'adopted', exec_kind: 'gui', task_id: 1 })), total: 50 };

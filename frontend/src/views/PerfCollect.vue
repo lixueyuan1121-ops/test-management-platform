@@ -98,15 +98,15 @@ onBeforeUnmount(stop)
 <style scoped>
 .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .title { font-size: 18px; font-weight: 600; }
-.title .sub { font-size: 13px; color: #909399; font-weight: 400; margin-left: 8px; }
+.title .sub { font-size: 13px; color: var(--tech-muted); font-weight: 400; margin-left: 8px; }
 .title .st { margin-left: 10px; }
 .panel { max-width: 720px; }
-.waiting { display: flex; align-items: center; gap: 8px; color: #909399; padding: 20px 0; }
+.waiting { display: flex; align-items: center; gap: 8px; color: var(--tech-muted); padding: 20px 0; }
 .spin { animation: rot 1s linear infinite; }
 @keyframes rot { to { transform: rotate(360deg); } }
-.step-label { font-size: 12px; color: #909399; }
-.prompt { font-size: 20px; font-weight: 600; margin: 8px 0 16px; padding: 16px 18px; background: #f4f9f7; border-left: 4px solid #00b386; border-radius: 8px; line-height: 1.5; }
-.prompt.empty { color: #909399; font-weight: 400; font-size: 15px; border-left-color: #dcdfe6; background: #f7f8fa; }
-.tip { font-size: 13px; color: #606266; margin-bottom: 18px; line-height: 1.6; }
+.step-label { font-size: 12px; color: var(--tech-muted); }
+.prompt { font-size: 20px; font-weight: 600; margin: 8px 0 16px; padding: 16px 18px; background: var(--tech-panel-2); border-left: 4px solid var(--tech-success); border-radius: var(--tech-radius); line-height: 1.5; }
+.prompt.empty { color: var(--tech-muted); font-weight: 400; font-size: 15px; border-left-color: var(--tech-line); background: var(--tech-panel-2); }
+.tip { font-size: 13px; color: var(--tech-muted); margin-bottom: 18px; line-height: 1.6; }
 .ops { display: flex; gap: 12px; align-items: center; }
 </style>

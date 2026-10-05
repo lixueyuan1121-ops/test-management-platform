@@ -66,7 +66,7 @@ const tableRef = ref(null)
 
 const riskLabel = (r) => ({ high: '高', medium: '中', low: '低' }[r] || r)
 const sigLabel = (k) => ({ in_release: '属本版本', fail_rate: '失败率', priority: '优先级', flaky: 'flaky', had_bug: '曾出bug', stale: '陈旧' }[k] || k)
-const scoreColor = (s) => s >= 70 ? '#d03b3b' : s >= 50 ? '#fab219' : '#909399'
+const scoreColor = (s) => s >= 70 ? 'var(--tech-danger)' : s >= 50 ? 'var(--tech-warn)' : 'var(--tech-muted)'
 
 async function init() {
   try {
@@ -149,11 +149,11 @@ init()
 
 <style scoped>
 .rts-page { padding: 4px; }
-.reco { margin: 8px 0; padding: 12px 14px; border-radius: 8px; background: #f7f9fc; border-left: 4px solid #909399; }
-.reco.risk-high { border-left-color: #d03b3b; } .reco.risk-medium { border-left-color: #fab219; } .reco.risk-low { border-left-color: #0ca30c; }
-.reco-h { font-size: 14px; } .reco-s { color: #303133; margin: 6px 0; } .reco-r { color: #606266; font-size: 13px; }
-.reco-f { margin-top: 6px; } .fp { color: #d03b3b; font-size: 12px; margin-right: 12px; }
-.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0; font-size: 13px; color: #606266; }
+.reco { margin: 8px 0; padding: 12px 14px; border-radius: var(--tech-radius); background: var(--tech-panel-2); border-left: 4px solid var(--tech-line); }
+.reco.risk-high { border-left-color: var(--tech-danger); } .reco.risk-medium { border-left-color: var(--tech-warn); } .reco.risk-low { border-left-color: var(--tech-success); }
+.reco-h { font-size: 14px; } .reco-s { color: var(--tech-fg); margin: 6px 0; } .reco-r { color: var(--tech-muted); font-size: 13px; }
+.reco-f { margin-top: 6px; } .fp { color: var(--tech-danger); font-size: 12px; margin-right: 12px; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0; font-size: 13px; color: var(--tech-muted); }
 .sig { margin: 0 4px 2px 0; }
 .reco { overflow-wrap: anywhere; }
 </style>

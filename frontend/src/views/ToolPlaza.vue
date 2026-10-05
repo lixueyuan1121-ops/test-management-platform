@@ -102,9 +102,9 @@ function accentBg(cid) { return morandi[(cid || 0) % morandi.length] + '22' }
   margin-bottom: 28px; padding: 0 4px;
 }
 .plaza-title { display: flex; align-items: center; gap: 14px; }
-.plaza-title h2 { margin: 0; font-size: 20px; font-weight: 600; color: #303133; letter-spacing: 0.5px; }
+.plaza-title h2 { margin: 0; font-size: 20px; font-weight: 600; color: var(--tech-fg); letter-spacing: 0.5px; }
 .title-icon { font-size: 32px; }
-.subtitle { margin: 4px 0 0; font-size: 13px; color: #909399; }
+.subtitle { margin: 4px 0 0; font-size: 13px; color: var(--tech-muted); }
 
 .plaza-body { min-height: 200px; }
 
@@ -116,11 +116,11 @@ function accentBg(cid) { return morandi[(cid || 0) % morandi.length] + '22' }
 
 .tool-card {
   position: relative;
-  background: #fff;
-  border-radius: 8px;
+  background: var(--tech-panel);
+  border-radius: var(--tech-radius);
   overflow: hidden;
   cursor: pointer;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--tech-line);
   box-shadow: 0 1px 4px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.02);
   transition: box-shadow 0.25s ease, transform 0.25s ease;
 }
@@ -138,25 +138,25 @@ function accentBg(cid) { return morandi[(cid || 0) % morandi.length] + '22' }
 .card-top { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
 
 .card-icon {
-  width: 48px; height: 48px; border-radius: 12px;
+  width: 48px; height: 48px; border-radius: var(--tech-radius);
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; flex-shrink: 0;
 }
 
 .card-info { flex: 1; min-width: 0; }
 .card-name {
-  font-size: 15px; font-weight: 600; color: #303133;
+  font-size: 15px; font-weight: 600; color: var(--tech-fg);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .card-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .card-cat {
-  font-size: 12px; color: #909399; background: #f5f7fa; padding: 1px 8px;
+  font-size: 12px; color: var(--tech-muted); background: var(--tech-panel-2); padding: 1px 8px;
   border-radius: 4px; line-height: 20px;
 }
-.card-ver { font-size: 11px; color: #b0b4bb; }
+.card-ver { font-size: 11px; color: var(--tech-muted); }
 
 .card-desc {
-  font-size: 13px; color: #606266; line-height: 1.6;
+  font-size: 13px; color: var(--tech-muted); line-height: 1.6;
   overflow: hidden; text-overflow: ellipsis;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   margin-bottom: 14px; min-height: 42px;
@@ -168,7 +168,7 @@ function accentBg(cid) { return morandi[(cid || 0) % morandi.length] + '22' }
   font-size: 11px; padding: 2px 10px; border-radius: 20px;
   line-height: 18px; font-weight: 500; letter-spacing: 0.3px;
 }
-.tag-online { background: #e8f5e9; color: #66bb6a; }
-.tag-download { background: #e3f2fd; color: #42a5f5; }
-.tag-doc { background: #fff3e0; color: #ffa726; }
+.tag-online { background: var(--tech-panel-2); color: var(--tech-success); }
+.tag-download { background: var(--tech-panel-2); color: var(--tech-signal); }
+.tag-doc { background: var(--tech-panel-2); color: var(--tech-warn); }
 </style>

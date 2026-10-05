@@ -1,145 +1,226 @@
-/* ============================================================
-   全局石墨灰 + 钴蓝主题
-   - 定义设计 token（供各页面 var() 引用）
-   - 覆盖 ElementPlus CSS 变量，让标准组件(按钮/表格/标签/链接)
-     一次性统一到科技风，子页面无需逐个改样式。
-   登录页(深色工业风)不受影响：它用自己 scoped 的局部变量。
-   ============================================================ */
-
+/* Shared product tokens: every route and teleported overlay follows the same choice. */
 :root {
-  /* ---- 科技风设计 token ---- */
-  --tech-bg: #f5f6f8;
+  color-scheme: light;
+  --tech-bg: #f6f8fb;
   --tech-panel: #ffffff;
-  --tech-panel-2: #f5f6f8;
-  --tech-line: #e4e7ec;
-  --tech-line-strong: #d0d7e2;
-  --tech-fg: #27333e;
-  --tech-muted: #637181;
-  --tech-dim: #9aa3b2;
-  --tech-signal: #2563eb;
-  --tech-signal-weak: #eff4fe;
-  --tech-signal-line: #bed0f9;
-  --tech-success: #15803d;
-  --tech-warn: #b76a08;
-  --tech-info: #637181;
-  --tech-danger: #c83e4d;
-  --tech-sidebar: #202329;
-  --tech-sidebar-hover: #2c3038;
-  --tech-on-dark-accent: #93b4f5;
-
-  --tech-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, 'Menlo', monospace;
-
-  /* ---- 覆盖 ElementPlus 主色（影响全站按钮/链接/tag/开关等）---- */
+  --tech-panel-2: #f0f4f9;
+  --tech-panel-hover: #edf2fa;
+  --tech-line: #dfe6ef;
+  --tech-line-strong: #bac7d8;
+  --tech-fg: #1d2b42;
+  --tech-text: #42536b;
+  --tech-muted: #596a82;
+  --tech-dim: #6e7e94;
+  --tech-signal: #3867d6;
+  --tech-action: #3867d6;
+  --tech-action-hover: #2854bd;
+  --tech-signal-weak: #eaf0ff;
+  --tech-signal-line: #b7c9f1;
+  --tech-success: #18734e;
+  --tech-success-bg: #eaf6ef;
+  --tech-warn: #966018;
+  --tech-warn-bg: #fff4e2;
+  --tech-danger: #b9394a;
+  --tech-danger-bg: #fff0f2;
+  --tech-info: #596a82;
+  --tech-purple: #754bb4;
+  --tech-purple-bg: #f2edfb;
+  --tech-cyan: #177b8a;
+  --tech-cyan-bg: #e8f6f8;
+  --tech-on-solid: #ffffff;
+  --tech-on-status: #ffffff;
+  --tech-sidebar: #eef3fb;
+  --tech-sidebar-hover: #e0e9fa;
+  --tech-sidebar-text: #42536b;
+  --tech-on-dark-accent: #2854bd;
+  --tech-sidebar-input: #ffffff;
+  --tech-hero-bg: #eef3fb;
+  --tech-hero-fg: #1d2b42;
+  --tech-code-bg: #edf2f8;
+  --tech-code-fg: #344861;
+  --tech-loading: rgba(246,248,251,.88);
+  --tech-shadow: 0 3px 14px rgba(28,49,83,.05);
+  --tech-radius: 12px;
+  --tech-control-radius: 8px;
+  --tech-space: 24px;
+  --tech-chart-blue: #3867d6;
+  --tech-chart-mid-label: #000000;
+  --tech-chart-green: #19805b;
+  --tech-chart-purple: #8054c4;
+  --tech-chart-orange: #ac701e;
+  --tech-chart-cyan: #187e96;
+  --tech-seq-1: #c8dbf7;
+  --tech-seq-2: #89b1e8;
+  --tech-seq-3: #5587cd;
+  --tech-seq-4: #3867b5;
+  --tech-seq-5: #254c85;
+  --tech-mono: 'SFMono-Regular', ui-monospace, 'Menlo', monospace;
+}
+:root[data-ui-theme='tech'] {
+  color-scheme: dark;
+  --tech-bg: #101722;
+  --tech-on-status: #101722;
+  --tech-panel: #182333;
+  --tech-panel-2: #202e42;
+  --tech-panel-hover: #283b54;
+  --tech-line: #30415a;
+  --tech-line-strong: #4a6080;
+  --tech-fg: #e7eef9;
+  --tech-text: #c7d3e4;
+  --tech-muted: #a7b7ce;
+  --tech-dim: #92a4bd;
+  --tech-signal: #9dbbff;
+  --tech-action: #3d6bd5;
+  --tech-action-hover: #315bc0;
+  --tech-signal-weak: #233959;
+  --tech-signal-line: #4a6b9e;
+  --tech-success: #83d6ac;
+  --tech-success-bg: #183e33;
+  --tech-warn: #efc17c;
+  --tech-warn-bg: #44351f;
+  --tech-danger: #ff9ca8;
+  --tech-danger-bg: #492b37;
+  --tech-info: #a7b7ce;
+  --tech-purple: #c5a6f6;
+  --tech-purple-bg: #35294f;
+  --tech-cyan: #8ad3e3;
+  --tech-cyan-bg: #193e49;
+  --tech-sidebar: #141e2d;
+  --tech-sidebar-hover: #233959;
+  --tech-sidebar-text: #b8c9df;
+  --tech-on-dark-accent: #bdd2ff;
+  --tech-sidebar-input: #202e42;
+  --tech-hero-bg: #18283c;
+  --tech-hero-fg: #e7eef9;
+  --tech-code-bg: #111b29;
+  --tech-code-fg: #c7d3e4;
+  --tech-loading: rgba(16,23,34,.88);
+  --tech-shadow: 0 4px 18px rgba(0,0,0,.15);
+  --tech-radius: 8px;
+  --tech-control-radius: 6px;
+  --tech-space: 20px;
+  --tech-chart-blue: #88aeff;
+  --tech-chart-green: #71cda4;
+  --tech-chart-purple: #c0a0f5;
+  --tech-chart-orange: #e7b66e;
+  --tech-chart-cyan: #77cadd;
+  --tech-seq-1: #243e60;
+  --tech-seq-2: #325d91;
+  --tech-seq-3: #477cbb;
+  --tech-seq-4: #6a9ee2;
+  --tech-seq-5: #9fc7ff;
+}
+:root {
+  --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 70%, var(--tech-panel));
+  --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 50%, var(--tech-panel));
+  --el-color-primary-light-7: color-mix(in srgb, var(--el-color-primary) 30%, var(--tech-panel));
+  --el-color-primary-light-8: color-mix(in srgb, var(--el-color-primary) 20%, var(--tech-panel));
+  --el-color-primary-light-9: color-mix(in srgb, var(--el-color-primary) 10%, var(--tech-panel));
+  --el-color-primary-dark-2: var(--el-color-primary);
+  --el-color-success-light-3: color-mix(in srgb, var(--el-color-success) 70%, var(--tech-panel));
+  --el-color-success-light-5: color-mix(in srgb, var(--el-color-success) 50%, var(--tech-panel));
+  --el-color-success-light-7: color-mix(in srgb, var(--el-color-success) 30%, var(--tech-panel));
+  --el-color-success-light-8: color-mix(in srgb, var(--el-color-success) 20%, var(--tech-panel));
+  --el-color-success-light-9: color-mix(in srgb, var(--el-color-success) 10%, var(--tech-panel));
+  --el-color-success-dark-2: var(--el-color-success);
+  --el-color-warning-light-3: color-mix(in srgb, var(--el-color-warning) 70%, var(--tech-panel));
+  --el-color-warning-light-5: color-mix(in srgb, var(--el-color-warning) 50%, var(--tech-panel));
+  --el-color-warning-light-7: color-mix(in srgb, var(--el-color-warning) 30%, var(--tech-panel));
+  --el-color-warning-light-8: color-mix(in srgb, var(--el-color-warning) 20%, var(--tech-panel));
+  --el-color-warning-light-9: color-mix(in srgb, var(--el-color-warning) 10%, var(--tech-panel));
+  --el-color-warning-dark-2: var(--el-color-warning);
+  --el-color-danger-light-3: color-mix(in srgb, var(--el-color-danger) 70%, var(--tech-panel));
+  --el-color-danger-light-5: color-mix(in srgb, var(--el-color-danger) 50%, var(--tech-panel));
+  --el-color-danger-light-7: color-mix(in srgb, var(--el-color-danger) 30%, var(--tech-panel));
+  --el-color-danger-light-8: color-mix(in srgb, var(--el-color-danger) 20%, var(--tech-panel));
+  --el-color-danger-light-9: color-mix(in srgb, var(--el-color-danger) 10%, var(--tech-panel));
+  --el-color-danger-dark-2: var(--el-color-danger);
+  --el-color-error-light-3: color-mix(in srgb, var(--el-color-error) 70%, var(--tech-panel));
+  --el-color-error-light-5: color-mix(in srgb, var(--el-color-error) 50%, var(--tech-panel));
+  --el-color-error-light-7: color-mix(in srgb, var(--el-color-error) 30%, var(--tech-panel));
+  --el-color-error-light-8: color-mix(in srgb, var(--el-color-error) 20%, var(--tech-panel));
+  --el-color-error-light-9: color-mix(in srgb, var(--el-color-error) 10%, var(--tech-panel));
+  --el-color-error-dark-2: var(--el-color-error);
+  --el-color-info-light-3: color-mix(in srgb, var(--el-color-info) 70%, var(--tech-panel));
+  --el-color-info-light-5: color-mix(in srgb, var(--el-color-info) 50%, var(--tech-panel));
+  --el-color-info-light-7: color-mix(in srgb, var(--el-color-info) 30%, var(--tech-panel));
+  --el-color-info-light-8: color-mix(in srgb, var(--el-color-info) 20%, var(--tech-panel));
+  --el-color-info-light-9: color-mix(in srgb, var(--el-color-info) 10%, var(--tech-panel));
+  --el-color-info-dark-2: var(--el-color-info);
+}
+/* Element Plus palettes are inherited by dialogs, poppers, menus and loading masks. */
+:root {
   --el-color-primary: var(--tech-signal);
-  --el-color-primary-light-3: #668ff1;
-  --el-color-primary-light-5: #92b1f5;
-  --el-color-primary-light-7: #bed0f9;
-  --el-color-primary-light-8: #d3e0fb;
-  --el-color-primary-light-9: #e9effd;
-  --el-color-primary-dark-2: #1e4fbc;
   --el-color-success: var(--tech-success);
-  --el-color-success-light-3: #5ba675;
-  --el-color-success-light-5: #8ac09e;
-  --el-color-success-light-7: #b9d9c5;
-  --el-color-success-light-8: #d0e6d8;
-  --el-color-success-light-9: #e8f2ec;
-  --el-color-success-dark-2: #116631;
   --el-color-warning: var(--tech-warn);
-  --el-color-warning-light-3: #cd974f;
-  --el-color-warning-light-5: #dbb584;
-  --el-color-warning-light-7: #e9d2b5;
-  --el-color-warning-light-8: #f1e1ce;
-  --el-color-warning-light-9: #f8f0e6;
-  --el-color-warning-dark-2: #925506;
   --el-color-danger: var(--tech-danger);
-  --el-color-danger-light-3: #d87882;
-  --el-color-danger-light-5: #e49fa6;
-  --el-color-danger-light-7: #efc5ca;
-  --el-color-danger-light-8: #f4d8db;
-  --el-color-danger-light-9: #faecee;
-  --el-color-danger-dark-2: #a0323e;
-
+  --el-color-error: var(--tech-danger);
+  --el-color-info: var(--tech-info);
+  --el-bg-color: var(--tech-panel);
   --el-bg-color-page: var(--tech-bg);
+  --el-bg-color-overlay: var(--tech-panel);
+  --el-fill-color: var(--tech-panel-2);
+  --el-fill-color-light: var(--tech-panel-2);
+  --el-fill-color-lighter: var(--tech-panel-2);
+  --el-fill-color-extra-light: var(--tech-bg);
+  --el-fill-color-dark: var(--tech-line);
+  --el-fill-color-darker: var(--tech-line-strong);
+  --el-fill-color-blank: var(--tech-panel);
   --el-text-color-primary: var(--tech-fg);
-  --el-text-color-regular: #414651;
+  --el-text-color-regular: var(--tech-text);
+  --el-text-color-secondary: var(--tech-muted);
+  --el-text-color-placeholder: var(--tech-dim);
+  --el-text-color-disabled: var(--tech-dim);
   --el-border-color: var(--tech-line);
   --el-border-color-light: var(--tech-line);
   --el-border-color-lighter: var(--tech-line);
-
-  --el-border-radius-base: 6px;
+  --el-border-color-extra-light: var(--tech-line);
+  --el-border-color-dark: var(--tech-line-strong);
+  --el-border-color-darker: var(--tech-line-strong);
+  --el-disabled-bg-color: var(--tech-panel-2);
+  --el-disabled-text-color: var(--tech-dim);
+  --el-disabled-border-color: var(--tech-line);
+  --el-mask-color: var(--tech-loading);
+  --el-mask-color-extra-light: var(--tech-loading);
+  --el-box-shadow-light: var(--tech-shadow);
+  --el-border-radius-base: var(--tech-control-radius);
 }
-
-/* 卡片：细描边 + 极轻阴影 */
-.el-card {
-  border: 1px solid var(--tech-line) !important;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
-}
-.el-card__header {
-  border-bottom: 1px solid var(--tech-line);
-  font-weight: 600;
-  letter-spacing: 0;
-}
-
-/* 表格：中性表头，行 hover 淡蓝微染 */
-.el-table thead th {
-  background: var(--tech-panel-2) !important;
-  color: var(--tech-muted) !important;
-  font-weight: 500;
-}
-.el-table__row:hover > td,
-.el-table__body tr.hover-row > td {
-  background: var(--tech-signal-weak) !important;
-}
-
-/* 主按钮：钴蓝实心，悬停加深，不发光 */
+html, body { background: var(--tech-bg); color: var(--tech-fg); }
+body { font-size: 14px; }
+.el-card { border: 1px solid var(--tech-line); border-radius: var(--tech-radius); box-shadow: var(--tech-shadow); }
+.el-card__header { border-bottom-color: var(--tech-line); font-weight: 600; }
+.el-dialog, .el-message-box { border-radius: var(--tech-radius); }
+.el-table { --el-table-header-bg-color: var(--tech-panel-2); --el-table-header-text-color: var(--tech-muted); --el-table-row-hover-bg-color: var(--tech-signal-weak); border-radius: var(--tech-control-radius); }
+.el-table thead th { background: var(--tech-panel-2); color: var(--tech-muted); font-weight: 500; }
+.el-table__row:hover > td, .el-table__body tr.hover-row > td { background: var(--tech-signal-weak); }
 .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
-  --el-button-bg-color: var(--tech-signal);
-  --el-button-border-color: var(--tech-signal);
-  --el-button-hover-bg-color: #1d4ed8;
-  --el-button-hover-border-color: #1d4ed8;
-  --el-button-active-bg-color: #1e40af;
+  --el-button-bg-color: var(--tech-action); --el-button-border-color: var(--tech-action);
+  --el-button-text-color: var(--tech-on-solid); --el-button-hover-text-color: var(--tech-on-solid);
+  --el-button-hover-bg-color: var(--tech-action-hover); --el-button-hover-border-color: var(--tech-action-hover);
+  --el-button-active-bg-color: var(--tech-action-hover); --el-button-active-border-color: var(--tech-action-hover);
+  --el-button-disabled-bg-color: color-mix(in srgb, var(--tech-action) 45%, var(--tech-panel));
+  --el-button-disabled-border-color: color-mix(in srgb, var(--tech-action) 45%, var(--tech-panel));
+  --el-button-disabled-text-color: var(--tech-on-solid);
 }
-.el-button--primary:not(.is-link):hover {
-  box-shadow: none;
-}
-
-/* 浅色状态底使用深色文字，避免小字号标签对比度不足。 */
-.el-tag--success:not(.el-tag--dark) { --el-tag-text-color: var(--el-color-success-dark-2); }
-.el-tag--warning:not(.el-tag--dark) { --el-tag-text-color: var(--el-color-warning-dark-2); }
-.el-tag--danger:not(.el-tag--dark) { --el-tag-text-color: var(--el-color-danger-dark-2); }
-.el-button--warning.is-plain {
-  --el-button-text-color: var(--el-color-warning-dark-2);
-  --el-button-hover-bg-color: var(--el-color-warning-dark-2);
-  --el-button-hover-border-color: var(--el-color-warning-dark-2);
-}
-
-/* 输入聚焦：蓝色描边 + 清晰焦点圈 */
-.el-input__wrapper.is-focus,
-.el-input__wrapper:focus-within,
-.el-textarea__inner:focus {
-  box-shadow: 0 0 0 1px var(--tech-signal) inset,
-              0 0 0 3px var(--tech-signal-weak) !important;
-}
-
-/* 科技风工具类 */
-.tech-eyebrow {
-  font-family: var(--tech-mono);
-  font-size: 12px;
-  letter-spacing: 2px;
-  color: var(--tech-signal);
-  text-transform: uppercase;
-}
+.el-button--success:not(.is-plain):not(.is-link):not(.is-text),
+.el-button--warning:not(.is-plain):not(.is-link):not(.is-text),
+.el-button--danger:not(.is-plain):not(.is-link):not(.is-text) { --el-button-text-color: var(--tech-panel); --el-button-hover-text-color: var(--tech-panel); }
+.el-input__wrapper, .el-input__wrapper:hover, .el-input__wrapper:focus-within,
+.el-textarea__inner, .el-textarea__inner:hover, .el-textarea__inner:focus { background-color: var(--tech-panel) !important; }
+.el-input__wrapper.is-focus, .el-textarea__inner:focus { box-shadow: 0 0 0 1px var(--tech-signal) inset, 0 0 0 3px var(--tech-signal-weak); }
+.el-input__inner, .el-textarea__inner { caret-color: var(--tech-fg); }
+.el-input__inner:-webkit-autofill { -webkit-box-shadow: 0 0 0 1000px var(--tech-panel) inset; -webkit-text-fill-color: var(--tech-fg); }
+.el-pagination.is-background .el-pager li.is-active { background: var(--tech-action); color: var(--tech-on-solid); }
+.el-radio-button__original-radio:checked + .el-radio-button__inner { background: var(--tech-action); border-color: var(--tech-action); color: var(--tech-on-solid); box-shadow: -1px 0 0 0 var(--tech-action); }
+.el-checkbox__input.is-checked .el-checkbox__inner, .el-checkbox__input.is-indeterminate .el-checkbox__inner { background: var(--tech-action); border-color: var(--tech-action); }
+.tech-eyebrow { font-family: var(--tech-mono); font-size: 12px; letter-spacing: 1px; color: var(--tech-signal); }
 .tech-mono { font-family: var(--tech-mono); }
-
-/* 全局滚动条美化：纤细、半透明、圆角，跨平台（尤其 Windows 常驻滚动条）都低调不碍眼。
-   作用于内容区 el-main 与全站可滚动元素。 */
-.el-main::-webkit-scrollbar,
 *::-webkit-scrollbar { width: 8px; height: 8px; }
-.el-main::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb { background: var(--tech-line-strong); border-radius: 4px; }
-.el-main::-webkit-scrollbar-thumb:hover,
 *::-webkit-scrollbar-thumb:hover { background: var(--tech-dim); }
-.el-main::-webkit-scrollbar-track,
 *::-webkit-scrollbar-track { background: transparent; }
-/* Firefox */
 .el-main { scrollbar-width: thin; scrollbar-color: var(--tech-line-strong) transparent; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+  .hover-float, .anim-fade-up, .anim-fade, .anim-pop, .stagger > * { animation: none; transition: none; }
+}

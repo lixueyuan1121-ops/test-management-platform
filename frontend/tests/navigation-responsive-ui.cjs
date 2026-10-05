@@ -40,9 +40,10 @@ const assert = require('node:assert/strict');
         placeholder: getComputedStyle(input, '::placeholder').color,
         background: getComputedStyle(input.closest('.el-input__wrapper')).backgroundColor,
       }));
-      assert.equal(colors.background, 'rgb(43, 47, 54)');
-      assert.equal(colors.text, 'rgb(243, 245, 247)');
-      assert.equal(colors.placeholder, 'rgb(184, 193, 206)');
+      const dark = await page.locator('html').getAttribute('data-ui-theme') === 'tech';
+      assert.equal(colors.background, dark ? 'rgb(32, 46, 66)' : 'rgb(255, 255, 255)');
+      assert.equal(colors.text, dark ? 'rgb(231, 238, 249)' : 'rgb(29, 43, 66)');
+      assert.equal(colors.placeholder, dark ? 'rgb(167, 183, 206)' : 'rgb(89, 106, 130)');
     }
     await page.screenshot({ path: '/tmp/navigation-search-contrast.png', fullPage: true });
     await page.getByPlaceholder('查找功能').fill('不存在的功能');

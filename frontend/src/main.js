@@ -2,10 +2,13 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import 'element-plus/dist/index.css'   // 全量样式:配合按需导入(vite.config),保证所有 el-* 样式都在
 import '@/styles/anim.css'
-import '@/styles/theme.css'   // 亮色科技风：须在 element-plus 样式之后，才能覆盖其 CSS 变量
+import '@/styles/theme.css'   // 两套全站主题，在组件样式之后提供共享变量
 
 import App from './App.vue'
 import router from './router'
+import { initializeTheme } from '@/utils/theme'
+
+initializeTheme()
 
 const app = createApp(App)
 app.use(createPinia())
@@ -27,24 +30,3 @@ app.config.errorHandler = (err, _instance, info) => {
   }
 }
 app.mount('#app')
-
-// 动态注入输入框背景修复——必须在 Element Plus 组件样式之后
-const fixStyle = document.createElement('style')
-fixStyle.textContent = `
-  .el-input__wrapper,
-  .el-input__wrapper:hover,
-  .el-input__wrapper:focus-within,
-  .el-input__wrapper.is-focus,
-  .el-textarea__inner,
-  .el-textarea__inner:hover,
-  .el-textarea__inner:focus,
-  .el-select .el-input .el-input__wrapper,
-  .el-select .el-input .el-input__wrapper:hover,
-  .el-date-editor .el-input__wrapper,
-  .el-date-editor .el-input__wrapper:hover,
-  .el-input-number .el-input .el-input__wrapper,
-  .el-input-number .el-input .el-input__wrapper:hover {
-    background-color: #fff !important;
-  }
-`
-document.head.appendChild(fixStyle)

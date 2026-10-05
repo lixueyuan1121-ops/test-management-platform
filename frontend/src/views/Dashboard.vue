@@ -5,15 +5,15 @@
 
     <section class="goal-entry"><div><strong>从测试目标推进到质量结论</strong><p>交给 AI 理解需求、准备方案和跟进执行，集中处理业务决定与证据缺口。</p></div><el-button type="primary" @click="$router.push('/commander')">进入测试目标</el-button></section>
     <!-- ② KPI 指标墙：今日派单流转状态维度 -->
-    <div v-if="!isEmpty" class="kpi-wall" v-loading="ovLoading" element-loading-background="rgba(255,255,255,0.6)">
+    <div v-if="!isEmpty" class="kpi-wall" v-loading="ovLoading" element-loading-background="var(--tech-loading)">
       <div class="kpi ring">
         <div class="ring-wrap">
           <svg width="72" height="72" viewBox="0 0 100 100">
-            <circle cx="50" cy="50" r="42" fill="none" stroke="#e3e8ef" stroke-width="9" />
-            <circle cx="50" cy="50" r="42" fill="none" stroke="#00b386" stroke-width="9"
+            <circle cx="50" cy="50" r="42" fill="none" stroke="var(--tech-line)" stroke-width="9" />
+            <circle cx="50" cy="50" r="42" fill="none" stroke="var(--tech-success)" stroke-width="9"
                     stroke-linecap="round" :stroke-dasharray="RING_C" :stroke-dashoffset="ringOffset"
                     transform="rotate(-90 50 50)" class="ring-arc" />
-            <text x="50" y="56" text-anchor="middle" fill="#1a1d21" font-size="24"
+            <text x="50" y="56" text-anchor="middle" fill="var(--tech-fg)" font-size="24"
                   font-family="'JetBrains Mono',monospace" font-weight="700">{{ Math.round(t.done_rate) }}</text>
           </svg>
         </div>
@@ -59,13 +59,13 @@
       <div class="trend-head">
         <div class="trend-title">近 7 天派单趋势</div>
         <div class="trend-legend">
-          <span class="lg"><i style="background:#00b386"></i>任务量</span>
-          <span class="lg"><i style="background:#5b9bd5"></i>上线量</span>
+          <span class="lg"><i style="background:var(--tech-success-bg)"></i>任务量</span>
+          <span class="lg"><i style="background:var(--tech-signal-weak)"></i>上线量</span>
         </div>
       </div>
       <svg viewBox="0 0 700 180" preserveAspectRatio="none" class="trend-svg">
         <!-- 网格 -->
-        <g stroke="#e8ecf2" stroke-width="1">
+        <g stroke="var(--tech-line)" stroke-width="1">
           <line x1="40" y1="30" x2="660" y2="30" />
           <line x1="40" y1="70" x2="660" y2="70" />
           <line x1="40" y1="110" x2="660" y2="110" />
@@ -73,25 +73,25 @@
         </g>
         <defs>
           <linearGradient id="dashArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#00b386" stop-opacity="0.22" />
-            <stop offset="100%" stop-color="#00b386" stop-opacity="0" />
+            <stop offset="0%" stop-color="var(--tech-success)" stop-opacity="0.22" />
+            <stop offset="100%" stop-color="var(--tech-success)" stop-opacity="0" />
           </linearGradient>
         </defs>
         <!-- 面积 + 折线 -->
         <path :d="areaPath" fill="url(#dashArea)" />
-        <path :d="linePath" fill="none" stroke="#00b386" stroke-width="2.5" stroke-linejoin="round" class="line-glow" />
+        <path :d="linePath" fill="none" stroke="var(--tech-success)" stroke-width="2.5" stroke-linejoin="round" class="line-glow" />
         <!-- 提交人次次要柱 -->
-        <g fill="#3b82c4" opacity="0.5">
+        <g fill="var(--tech-chart-blue)" opacity="0.5">
           <rect v-for="(p, i) in points" :key="'b' + i" :x="p.x - 4" :y="p.by" width="8" :height="150 - p.by" rx="1" />
         </g>
         <!-- 数据点 -->
-        <g fill="#ffffff" stroke="#00b386" stroke-width="2">
+        <g fill="var(--tech-panel)" stroke="var(--tech-success)" stroke-width="2">
           <circle v-for="(p, i) in points" :key="'p' + i" :cx="p.x" :cy="p.y"
                   :r="i === points.length - 1 ? 4.5 : 3.5"
-                  :fill="i === points.length - 1 ? '#00b386' : '#ffffff'" />
+                  :fill="i === points.length - 1 ? 'var(--tech-success)' : 'var(--tech-panel)'" />
         </g>
         <!-- x 轴标签 -->
-        <g fill="#6b7280" font-size="11" font-family="'JetBrains Mono',monospace" text-anchor="middle">
+        <g fill="var(--tech-muted)" font-size="11" font-family="'JetBrains Mono',monospace" text-anchor="middle">
           <text v-for="(p, i) in points" :key="'x' + i" :x="p.x" y="172">{{ p.label }}</text>
         </g>
       </svg>
@@ -292,22 +292,22 @@ function roleClass(pid) {
 </script>
 
 <style scoped>
-.goal-entry{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:20px;margin:20px 0;background:var(--el-color-primary-light-9);border-radius:12px}.goal-entry p{color:var(--el-text-color-secondary);margin:8px 0 0;line-height:1.6}
+.goal-entry{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:20px;margin:20px 0;background:var(--el-color-primary-light-9);border-radius:var(--tech-radius)}.goal-entry p{color:var(--el-text-color-secondary);margin:8px 0 0;line-height:1.6}
 .workspace-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; }
 .workspace-head h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
 .workspace-head span { font-size: 13px; color: var(--el-text-color-secondary); }
 /* 亮色科技风 token（与全局 theme.css 呼应），仅作用于本页 */
 .dashboard {
-  --ink: #f4f6f9;
-  --panel: #ffffff;
-  --panel-2: #f7f9fc;
-  --line: #e3e8ef;
-  --dim: #9aa3b2;
-  --fg: #1a1d21;
-  --muted: #6b7280;
-  --signal: #00b386;
-  --warn: #e6a23c;
-  --info: #3b82c4;
+  --ink: var(--tech-bg);
+  --panel: var(--tech-panel);
+  --panel-2: var(--tech-panel-2);
+  --line: var(--tech-line);
+  --dim: var(--tech-muted);
+  --fg: var(--tech-fg);
+  --muted: var(--tech-muted);
+  --signal: var(--tech-signal);
+  --warn: var(--tech-warn);
+  --info: var(--tech-signal);
   --mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, monospace;
 
   display: flex;
@@ -321,7 +321,7 @@ function roleClass(pid) {
   color: var(--fg);
 }
 
-.panel { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+.panel { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: var(--tech-radius); overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
 .grid-bg {
   position: absolute; inset: 0;
   background-image:
@@ -358,7 +358,7 @@ function roleClass(pid) {
   display: flex; flex-direction: column; align-items: center; text-align: center;
 }
 .es-mark {
-  --tm-line: #cbd5e1; --tm-dim: #94a3b8; --tm-signal: var(--signal);
+  --tm-line: var(--tech-line); --tm-dim: var(--tech-muted); --tm-signal: var(--signal);
   filter: drop-shadow(0 0 10px rgba(0,179,134,.25));
   margin-bottom: 22px;
 }
@@ -368,7 +368,7 @@ function roleClass(pid) {
 .es-btn {
   margin-top: 24px; font-family: var(--mono); letter-spacing: .5px;
   --el-button-bg-color: var(--signal); --el-button-border-color: var(--signal);
-  --el-button-hover-bg-color: #00c896; --el-button-hover-border-color: #00c896;
+  --el-button-hover-bg-color: var(--tech-cyan); --el-button-hover-border-color: var(--tech-cyan);
 }
 .es-metrics {
   display: flex; align-items: center; gap: 14px; margin-top: 30px;
@@ -380,7 +380,7 @@ function roleClass(pid) {
 .kpi-wall { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
 .kpi {
   position: relative; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 18px; overflow: hidden;
+  border-radius: var(--tech-radius); padding: 18px; overflow: hidden;
   transition: border-color .18s ease, box-shadow .2s ease, transform .18s ease;
 }
 .kpi:hover { border-color: var(--signal); box-shadow: 0 0 16px rgba(0,179,134,.18); transform: translateY(-2px); }
@@ -390,7 +390,7 @@ function roleClass(pid) {
 .kpi-foot { font-size: 11px; color: var(--muted); margin-top: 8px; font-family: var(--mono); }
 .kpi.warn .kpi-num { color: var(--warn); }
 .kpi.info .kpi-num { color: var(--info); }
-.kpi.danger .kpi-num { color: #e05561; }
+.kpi.danger .kpi-num { color: var(--tech-danger); }
 .kpi.ring { display: flex; align-items: center; gap: 14px; }
 .ring-wrap { flex: 0 0 auto; }
 .ring-text { flex: 1; }
@@ -411,7 +411,7 @@ function roleClass(pid) {
 .quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .qcard {
   display: flex; align-items: center; gap: 14px; padding: 16px 18px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--tech-radius);
   cursor: pointer; transition: border-color .18s ease, box-shadow .2s ease, transform .18s ease;
 }
 .qcard:hover { border-color: var(--signal); box-shadow: 0 0 14px rgba(0,179,134,.16); transform: translateY(-2px); }
@@ -427,10 +427,10 @@ function roleClass(pid) {
 
 /* 深色标签 */
 .dtag { display: inline-block; font-size: 11px; font-family: var(--mono); padding: 2px 9px; border-radius: 3px; border: 1px solid; letter-spacing: .5px; }
-.dtag.admin { color: #e05561; border-color: rgba(224,85,97,.35); background: rgba(224,85,97,.07); }
-.dtag.member { color: var(--signal); border-color: rgba(0,179,134,.4); background: rgba(0,179,134,.08); }
+.dtag.admin { color: var(--tech-danger); border-color: var(--tech-danger); background: var(--tech-danger-bg); }
+.dtag.member { color: var(--signal); border-color: var(--tech-success); background: var(--tech-success-bg); }
 .dtag.guest { color: var(--muted); border-color: var(--line); background: transparent; }
-.dtag.active { color: var(--signal); border-color: rgba(0,179,134,.4); background: rgba(0,179,134,.08); }
+.dtag.active { color: var(--signal); border-color: var(--tech-success); background: var(--tech-success-bg); }
 
 /* 深色皮 el-table（仅作用于本页表格） */
 .dark-table { background: transparent; --el-table-border-color: var(--line); }
