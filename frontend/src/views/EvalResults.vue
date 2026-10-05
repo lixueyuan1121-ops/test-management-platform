@@ -125,10 +125,10 @@
               size="small" type="primary" :icon="DataAnalysis" :loading="batchJudging"
               :disabled="!pid || !judgeableCount"
               @click="batchJudge"
-            >{{ batchJudging && batchProgress ? batchProgress : `批量判定（${judgeableCount}）` }}</el-button>
+            >{{ batchJudging && batchProgress ? batchProgress : `批量判定${selectedRunIds.length ? `（${judgeableCount}）` : ''}` }}</el-button>
             <el-popconfirm v-if="failedCount" :title="`重跑当前列表全部 ${failedCount} 条失败？`" width="240" @confirm="retryAllFailed">
               <template #reference>
-                <el-button size="small" type="warning" plain>重跑失败（{{ failedCount }}）</el-button>
+                <el-button size="small" type="warning" plain>重跑失败{{ selectedRunIds.length ? `（${failedCount}）` : '' }}</el-button>
               </template>
             </el-popconfirm>
             <el-button
