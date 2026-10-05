@@ -67,6 +67,20 @@ test('duplicate actions fail without clicking; within and explicit nth target th
   await assert.rejects(runtime.assertAbsent({ key: 'button', within: { key: 'row', has_text: 'Nobody' } }), { code: 'CONTAINER_MISSING' });
 });
 
+test('visible text with 18 XPath matches produces actionable diagnostics and a screenshot', async () => {
+  await page.setContent(Array.from({ length: 16 }, () => '<button onclick="window.clicked=true">视觉PPT制作</button>').join(''));
+  const result = await runScript({ click: runtime.click, shotBuffer: () => page.screenshot() }, [
+    { action: 'click', target: { selector: "xpath=//*[contains(normalize-space(.), '视觉PPT制作')]", frame: 'shell' } },
+    { action: 'assert_visible', target: { selector: '#result' } },
+  ]);
+  assert.equal(result.verdict, 'fail');
+  assert.equal(result.report[0].diagnostic.code, 'AMBIGUOUS_TARGET');
+  assert.equal(result.report[0].diagnostic.match_count, 18);
+  assert.deepEqual(result.report[0].diagnostic.frames, [{ scope: 'shell', count: 18 }]);
+  assert(result.report[0].shotBuf.length > 0);
+  assert.equal(await page.evaluate(() => !!window.clicked), false);
+});
+
 test('candidate priority wins over DOM order', async () => {
   await page.setContent('<button id="legacy">legacy</button><button data-testid="preferred">preferred</button>');
   const rt = createAutomationRuntime({ page, registry: { x: { frame: 'shell', candidates: [{ by: 'testid', value: 'preferred' }, { by: 'css', value: '#legacy' }] } } });

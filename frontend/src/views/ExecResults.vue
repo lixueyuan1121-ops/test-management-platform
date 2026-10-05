@@ -79,8 +79,9 @@
                 </el-tooltip>
                 <span class="reason">{{ row.reason || '—' }}</span>
                 <template v-if="isBlocked(row)">
+                  <el-link v-if="selectorDiagnosis(row)" type="warning" class="fix-link" @click="showReport(row)">查看匹配冲突（{{ selectorDiagnosis(row).count }}）</el-link>
                   <el-tooltip
-                    v-if="row._fixKeys && row._fixKeys.length"
+                    v-else-if="row._fixKeys && row._fixKeys.length"
                     effect="light" placement="right" :show-after="150" :hide-after="100"
                     popper-class="missing-selector-tooltip" @before-show="loadFixTargets(row)"
                   >
@@ -147,6 +148,15 @@
           <span class="rep-meta">{{ KIND_LABEL[rep.row.kind] || rep.row.kind }} · {{ rep.row.runner }} · {{ rep.row.duration_ms != null ? (rep.row.duration_ms / 1000).toFixed(1) + 's' : '—' }}</span>
         </div>
         <p v-if="rep.row.reason" class="rep-reason">{{ rep.row.reason }}</p>
+        <el-alert v-if="selectorDiagnosis(rep.row)" type="warning" :closable="false" :title="selectorDiagnosis(rep.row).detail" />
+        <p class="rep-meta">执行方式：{{ executionMode(rep.row) }}</p>
+        <template v-if="rep.row.execution_evidence">
+          <p class="rep-meta">脚本版本：<code>{{ rep.row.execution_evidence.script_sha256.slice(0, 12) }}</code> · 执行器版本：<code>{{ rep.row.execution_evidence.runtime_sha256.slice(0, 12) }}</code></p>
+          <p v-if="rep.row.payload?.verified_import" class="rep-meta">来源：外部实测导入。已核对脚本与报告指纹，平台队列回归需单独验证。</p>
+          <el-alert v-if="rep.row.matches_current_version === false" type="warning" :closable="false" title="本次执行与当前回归版本不同，当前脚本或选择器需要重新验证" />
+          <p v-if="rep.row.execution_evidence.fallback_reason" class="rep-reason">兜底原因：{{ rep.row.execution_evidence.fallback_reason }}</p>
+        </template>
+        <ReplayReadiness :value="rep.row.replay_readiness" :case-id="rep.row.case_id" :project-id="rep.row.project_id" @submitted="onVerificationQueued" />
 
         <ol class="steps">
           <li v-for="(s, i) in (rep.row.report || [])" :key="i" class="step">
@@ -158,6 +168,13 @@
               <span class="step-desc">{{ s.desc || '' }}</span>
             </div>
             <div v-if="s.error" class="step-err">{{ s.error }}</div>
+            <div v-if="s.diagnostic" class="step-check">
+              <div>诊断：{{ s.diagnostic.code }}<template v-if="s.diagnostic.match_count != null"> · 匹配 {{ s.diagnostic.match_count }} 个元素</template></div>
+              <div v-if="s.diagnostic.target">定位：<code>{{ JSON.stringify(s.diagnostic.target) }}</code></div>
+              <div v-for="(frame, n) in (s.diagnostic.frames || [])" :key="n">{{ frame.scope }}：{{ frame.count }} 个匹配</div>
+              <div>{{ s.diagnostic.suggestion }}</div>
+            </div>
+            <div v-if="s.local_shot" class="rep-meta">本地截图：{{ s.local_shot }}（保存在执行机回填包旁的证据目录）</div>
             <div v-if="s.preparation" class="step-check">
               <div>{{ s.preparation.reason }}</div>
               <div v-for="(data, n) in (s.preparation.created || [])" :key="n">已创建：{{ data.type }} · {{ data.name }}</div>
@@ -255,6 +272,8 @@ import { useAuthStore } from '@/store/auth'
 import http from '@/api/http'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
+import ReplayReadiness from '@/components/ReplayReadiness.vue'
+import { executionMode, selectorDiagnosis } from '@/utils/executionEvidence'
 
 const router = useRouter()
 const route = useRoute()
@@ -397,6 +416,12 @@ async function showReport(row) {
   } catch { if (rep.value.row?.run_id === row.run_id) rep.value.error = true }
   finally { if (rep.value.row?.run_id === row.run_id) rep.value.loading = false }
 }
+async function onVerificationQueued(result) {
+  rep.value.visible = false
+  batchFilter.value = result.batch_id
+  page.value = 1
+  await load()
+}
 function showEvidence(row) { ev.value = { visible: true, path: row.evidence_url } }
 function zoom(url) { shot.value = { visible: true, url } }
 function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—' }
@@ -441,7 +466,7 @@ function resultLabel(row) {
   if (row.cancel_requested) return '终止中'
   if (row.fail_kind === 'cancelled') return '已终止'
   if (row.verdict === 'pass') return '通过'
-  if (isBlocked(row)) return '选择器阻塞'
+  if (isBlocked(row)) return selectorDiagnosis(row)?.label || '选择器阻塞'
   if (row.verdict === 'fail') return '失败'
   return STATUS_LABEL[row.status] || row.status
 }

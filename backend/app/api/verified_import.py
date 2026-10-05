@@ -58,6 +58,8 @@ def _request_digest(body):
     if not data["sub_product"]:
         del data["sub_product"]
     for case in data["cases"]:
+        for name in ('execution_evidence', 'selector_registry'):
+            if case.get(name) is None: case.pop(name, None)
         if case["resolution"] is None:
             del case["resolution"]
     return digest(data)
@@ -131,6 +133,11 @@ def perform_import(body, db, user, *, commit=True):
                                    "project_id": body.project_id, "sub_product": body.sub_product,
                                    "script": json.dumps(script, ensure_ascii=False)})
         payload = _dispatch_payload(snapshot, db, False)
+        if case.execution_evidence:
+            # Preserve the registry actually executed, not today's registry.
+            payload['selector_registry'] = case.selector_registry
+            payload['execution_evidence'] = case.execution_evidence.model_dump()
+            payload['execution_contract_sha256'] = case.execution_evidence.contract_sha256
         payload["verified_import"] = {"external_id": body.external_id, "requirement": body.requirement,
                                       "task_id": linked_task.id, "task_name": linked_task.title,
                                       "executor": case.executor, "environment": case.environment, "scope": case.scope,

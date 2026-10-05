@@ -5,6 +5,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.script_targets import validate_targets
+from app.schemas.execution_evidence import ExecutionEvidence
+from app.services.execution_evidence import validate_evidence
 
 class ImportResolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -41,9 +43,22 @@ class VerifiedCase(BaseModel):
     scope: str = Field(min_length=1, max_length=1000)
     finished_at: datetime
     duration_ms: int = Field(ge=0, le=2147483647)
+    execution_evidence: ExecutionEvidence | None = None
+    selector_registry: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def complete_evidence(self):
+        if self.execution_evidence is not None:
+            if self.exec_kind not in ('gui', 'e2e'):
+                raise ValueError('当前执行证据协议仅支持 GUI/E2E')
+            if self.selector_registry is None:
+                raise ValueError('执行证据必须带本次使用的选择器快照')
+            if len(json.dumps(self.selector_registry, ensure_ascii=False).encode()) > 2000000:
+                raise ValueError('选择器快照超过 2 MB 上限')
+            validate_evidence(self.execution_evidence.model_dump(),
+                              {'script': self.script, 'precondition': self.precondition, 'selector_registry': self.selector_registry}, self.report)
+        elif self.selector_registry is not None:
+            raise ValueError('选择器快照必须与 Runner 执行证据一起提交')
         if self.exec_kind in ("gui", "e2e"):
             validate_targets(self.script, self.title)
         if self.finished_at.tzinfo is None:

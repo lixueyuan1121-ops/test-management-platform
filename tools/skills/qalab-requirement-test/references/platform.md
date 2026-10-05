@@ -43,6 +43,20 @@ POST /api/verified-imports/jobs，Authorization: Bearer 用户 access token。�
 含非空 precondition 时先调用 Claude Code 导航；含 judge 或不支持的步骤可能调用模型。确定性脚本不应为无必要的环境文字引入 Claude 依赖。
 用例库执行/重试需线上设备 Runner 在线。重试读取最新用例，新增执行记录。外部回填不等价于已验证这一完整链路。
 
+## 同队列流程验证
+
+Namiwork GUI/E2E 最终验证使用已配置的 Runner 目录，先确认该设备没有正在执行的任务。准备 `draft.json`：顶层包含真实 project_id、runner_device_id、requirement、可选 task_name/sub_product；cases 内填写 title、steps、expected、script、environment、scope、可选 exec_kind/precondition。environment 写明应用版本、账号角色和地址，不含凭据。不要填写编造的 report/verdict。
+
+```sh
+node runner.mjs --verify-import draft.json --output verified.json
+```
+
+该命令只读取当前项目选择器快照，不认领线上任务、不上传结果；复用队列的应用连接、复位、前置导航、StepExecutor、截图和超时机制。桌面被其他 Runner 占用时拒绝抢占。每条连续执行两次，任何失败均保留现场并停止，不输出成功包。只有两次完整通过且执行器版本一致才生成 verified.json；相邻的 `.evidence-*` 目录保存逐步截图、追踪和每次结果。输出文件已存在时拒绝覆盖。
+
+将生成的 verified.json 原样交给原有 validate/import 命令。新增 execution_evidence 保存脚本、完整执行约定、报告和实际 Runner 内容指纹，selector_registry 保存当时使用的快照。修改脚本、前置条件、选择器或报告后须重新执行，不能手动更新哈希以绕过验证。新版平台和 skill 校验指纹一致性，旧平台尚未支持时保留原包并升级平台，不移除证据强行上传。
+
+外部实测及其两次本地结果仍是客户端提交的证据，不能证明线上队列完成。平台用例详情的“验证回归（2 次）”会创建两条严格队列执行；完整脚本从初始状态连续通过、无 Claude 兜底且执行器版本一致时才显示已验证。业务断言保持原样。脚本、前置条件或选择器快照变化后须重验。自然语言前置导航和 judge 会被明确标记，不获得纯脚本回归认证。
+
 ## 执行终止
 执行列表对排队项直接取消，对运行项发送终止请求。Runner 每 5 秒检查心跳返回的 cancel_requested，杀掉本条执行子进程及其工具后回写，再释放设备锁；默认整条执行超时 15 分钟（EXEC_TIMEOUT_MS）。旧 Runner 需要更新并重启才能响应终止；不能仅把服务端状态改成结束后继续让旧进程操作。
 

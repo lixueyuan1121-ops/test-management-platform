@@ -70,9 +70,18 @@ class Api:
 
 
 def validate_payload(payload):
-    cases = payload.get("cases", [])
+    cases = payload.get('cases', [])
     if not isinstance(cases, list) or not cases or len(cases) > 20:
-        raise RuntimeError("导入包须包含 1–20 条真实执行通过的用例")
+        raise RuntimeError('导入包须包含 1–20 条真实执行通过的用例')
+    if any(c.get('execution_evidence') for c in payload.get('cases', []) if isinstance(c, dict)):
+        import subprocess
+        try:
+            result = subprocess.run(['node', str(Path(__file__).with_name('validate-evidence.mjs'))],
+                                    input=json.dumps(payload, ensure_ascii=False), text=True, encoding='utf-8', capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError('执行证据校验需要可用的 Node.js；请使用运行 Runner 的同一环境') from error
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or '执行证据指纹不一致')
     if len({c.get("title") for c in cases}) != len(cases):
         raise RuntimeError("同批用例标题须唯一")
     for case in cases:

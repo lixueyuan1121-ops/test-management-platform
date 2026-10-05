@@ -60,9 +60,13 @@ def submit(body: VerifiedImport, db: Session = Depends(get_db), user: User = Dep
     payload = body.model_dump(mode="json")
     # Keep pre-task-name receipts retryable after upgrading.
     hash_payload = dict(payload)
+    hash_payload['cases'] = [{k: v for k, v in c.items() if not (k in ('execution_evidence', 'selector_registry') and v is None)} for c in payload['cases']]
     if hash_payload["task_name"] == DEFAULT_IMPORT_TASK:
         del hash_payload["task_name"]
     sha = digest(hash_payload)
+    # Also accept receipts from serializers which emitted the optional nulls.
+    explicit_defaults = {**hash_payload, 'cases': payload['cases']}
+    compatible_sha = digest(explicit_defaults)
     def existing():
         return db.query(VerifiedImportJob).filter_by(project_id=body.project_id, user_id=user.id, external_id=body.external_id).first()
     job = existing()
@@ -81,7 +85,7 @@ def submit(body: VerifiedImport, db: Session = Depends(get_db), user: User = Dep
             if job is None:
                 raise
             reused = True
-    if job.digest != sha:
+    if job.digest not in (sha, compatible_sha):
         raise HTTPException(409, "相同 external_id 已提交不同内容，请保留原始包核对")
     items = db.query(VerifiedImportItem).filter_by(job_id=job.id).all()
     execution_user = db.query(User.id, User.name, User.username).filter(User.id == job.user_id).first()

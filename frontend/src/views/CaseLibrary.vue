@@ -199,6 +199,7 @@
       <div v-if="detail.row" class="detail">
         <p><b>{{ detail.row.title }}</b></p>
         <p class="d-row"><span class="d-k">执行类型</span> {{ (detail.row.exec_kind || 'gui').toUpperCase() }}</p>
+        <ReplayReadiness :value="detail.row.replay_readiness" :case-id="detail.row.id" :project-id="detail.row.project_id || pid" />
         <p v-if="detail.row.page" class="d-row"><span class="d-k">关联页面</span> {{ detail.row.page }}</p>
         <p v-if="detail.row.is_regression" class="d-row"><span class="d-k">回归</span> <el-tag type="success" size="small" effect="dark">回归用例</el-tag></p>
         <p v-if="detail.row.kind_reason" class="d-row"><span class="d-k">判定理由</span> {{ detail.row.kind_reason }}</p>
@@ -297,6 +298,7 @@ import { collectMissingKeys } from '@/utils/bulk-fix-selectors'
 import SelectorTargetNotes from '@/components/SelectorTargetNotes.vue'
 import { describeSelectorTarget } from '@/utils/selector-target-description'
 import TaskPicker from '@/components/TaskPicker.vue'
+import ReplayReadiness from '@/components/ReplayReadiness.vue'
 
 // 维度 / 优先级 → el-tag 配色（与 AITestGen 口径一致）
 const CAT_TYPE = { 功能: 'primary', 边界: 'warning', 异常: 'danger', 兼容: 'info', 性能: 'success' }
@@ -770,7 +772,7 @@ async function saveScript() {
   scriptEdit.saving = true
   try {
     const updated = await updateTestcase(detail.row.id, { script: parsed })   // 后端按 kind 校验;不合法弹 msg
-    detail.row = updated                 // 用回写结果刷新(含重推的 page)
+    detail.row = { ...updated, replay_readiness: { state: 'pending', label: '脚本已保存，待重新验证', consecutive_passes: 0, required_passes: 2 } }
     scriptEdit.on = false
     ElMessage.success('script 已保存')
     await load()                         // 列表可能有 page 等展示变化

@@ -32,6 +32,9 @@ import { rawEventToStep, dedupeSteps } from "./record-capture.mjs";
 import { NAV_SYSTEM_PROMPT, parseNavOk } from "./precond-nav.mjs";
 import { selfUpdate } from "./self-update.mjs";
 import { runWithTrace } from "./exec-trace.mjs";
+import { executeGui } from './gui-execution.mjs';
+import { makeEvidence, runtimeFingerprint } from './execution-evidence.mjs';
+import { verifyImport, saveLocalReport } from './verify-import.mjs';
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -77,6 +80,7 @@ const RESET_BETWEEN_CASES = (process.env.RESET_BETWEEN_CASES ?? "1") !== "0";  /
 
 // perf 采集引擎目录:分发包内 nami-perfdog 与 runner 同目录 → 优先自身;开发环境回落源码路径。
 const __rdir = dirname(fileURLToPath(import.meta.url));
+const RUNTIME_FINGERPRINT = runtimeFingerprint();
 const PERFDOG_DIR  = process.env.PERFDOG_DIR || (existsSync(join(__rdir, "nami-perfdog.mjs")) ? __rdir : "D:/git/test/nami-perfdog");
 const SESSIONS_DIR = join(PERFDOG_DIR, "sessions");
 const REPORT_SET_ID = process.env.REPORT_SET_ID ? Number(process.env.REPORT_SET_ID) : null;
@@ -610,7 +614,7 @@ async function handlePerf() {
 }
 
 // ---- 主循环 ----
-async function executeItem(item) {
+async function executeItem(item, { localEvidenceDir = null } = {}) {
       let result;
       if (DRY) {
         result = { verdict: "pass", reason: "dry-run 握手验证", duration_ms: 1 };
@@ -623,6 +627,7 @@ async function executeItem(item) {
         // 执行前从平台拉该项目的合并注册表(DB 单源)换入 gui-core;失败/无则按当前项目回落缓存或内置文件，清除上个项目配置。
         const reg = item.payload?.selector_registry ? registrySnapshot(item.payload.selector_registry)
           : await fetchRegistry(item.payload?.project_id, item.payload?.sub_product || "");
+        item.payload.selector_registry = reg;
         guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
         result = await runWithTrace(guiCore, async () => {
           let result;
@@ -638,29 +643,14 @@ async function executeItem(item) {
             }
             throw new Error("重启后 CDP 超时,9222 未就绪");
           };
-          const gate = RESET_BETWEEN_CASES ? await resetOrBlock(guiCore, log, { restartClientFn }) : { ok: true };
-          if (!gate.ok) {
-            result = gate.result;
-          } else {
-            const script = item.payload?.script;
-            const hasPrecond = !!(item.payload?.precondition && String(item.payload.precondition).trim());
-            const hasScript = Array.isArray(script) && script.length;
-            // 保留前置导航：先导航到起始位置，再由共享执行器执行结构化步骤。
-            // 导航未返回到位结论时沿用远端的尽力执行策略，由步骤断言决定结果。
-            if (hasPrecond && hasScript) {
-              const nav = await runClaudePrecondition(item.payload, log);
-              log(`  ⇢ 前置导航${nav.ok ? "到位" : "未确认到位(仍尝试执行 script)"}:${nav.reason || ""}`);
-            }
-            if (hasScript) {
-              const r = await runScript(guiCore, script, (m) => log(m), judgeWithClaude);
-              if (r.needClaude) { log(`  script 需降级:${r.reason}`); result = await runClaude(item.payload, item.kind); }
-              else result = r;
-            } else {
-              result = await runClaude(item.payload, item.kind);
-            }
-          }
+          result = await executeGui({ payload: item.payload, log,
+            reset: async () => RESET_BETWEEN_CASES ? { ...await resetOrBlock(guiCore, log, { restartClientFn }), reset: true } : { ok: true, reset: false },
+            navigate: payload => runClaudePrecondition(payload, log),
+            scriptRun: script => runScript(guiCore, script, log, judgeWithClaude),
+            agentRun: payload => runClaude(payload, item.kind),
+          });
           return result;
-        }, { runId: item.run_id, directory: join(__rdir, "evidence"), mode: process.env.GUI_TRACE || "failures" });
+        }, { runId: item.run_id, directory: localEvidenceDir || join(__rdir, "evidence"), mode: localEvidenceDir ? 'all' : (process.env.GUI_TRACE || "failures") });
       } else if (item.kind === "api") {
         // api:有结构化 script → 确定性执行器(不经 LLM);无/降级 → claude(+Bash)兜底。
         const script = item.payload?.script;
@@ -678,7 +668,7 @@ async function executeItem(item) {
         result = { verdict: "fail", reason: `未知执行类型 kind=${item.kind},runner 不支持`, duration_ms: 1 };
       }
 
-      if (result.tracePath) {
+      if (result.tracePath && !localEvidenceDir) {
         result.report ||= [];
         if (!result.report.length) result.report.push({ action: "diagnostics", desc: "执行追踪", ok: result.verdict === "pass" });
         try { result.report.at(-1).trace_url = await uploadExecTrace(item.run_id, result.tracePath); }
@@ -687,7 +677,7 @@ async function executeItem(item) {
       // 有逐步报告(gui/e2e StepExecutor 产)→ 先把每步截图 Buffer 上传换成 URL,随回写落库。
       let reportJson = null;
       if (Array.isArray(result.report) && result.report.length) {
-        try { reportJson = await uploadReportShots(item.run_id, result.report); }
+        try { reportJson = localEvidenceDir ? saveLocalReport(result.report, localEvidenceDir) : await uploadReportShots(item.run_id, result.report); }
         catch (e) { log(`  报告截图处理失败 run_id=${item.run_id}: ${e.message}`); }
       }
 
@@ -695,7 +685,7 @@ async function executeItem(item) {
       // 把铸造的候选连同证据推给平台进「自学习待确认」评审队列。失败不影响回写主流程。
       try {
         const heals = guiCore.drainHeals?.() || [];
-        if (heals.length) {
+        if (heals.length && !localEvidenceDir) {
           await api("POST", "/api/selectors/learned", {
             project_id: item.payload?.project_id, sub_product: item.payload?.sub_product || "",
             runner: RUNNER_ID, run_id: item.run_id, items: heals,
@@ -704,7 +694,9 @@ async function executeItem(item) {
         }
       } catch (e) { log(`  自学习上报失败(不影响回写): ${e.message}`); }
 
-  return { ...result, report: reportJson };
+  const execution_evidence = ['gui', 'e2e'].includes(item.kind) && item.payload?.script?.length && result.execution
+    ? makeEvidence(item.payload, reportJson || [], RUNTIME_FINGERPRINT, result.execution) : null;
+  return { ...result, report: reportJson, execution_evidence };
 }
 
 async function tick() {
@@ -732,6 +724,7 @@ async function tick() {
         evidence_url: result.evidence ?? null,
         duration_ms: result.duration_ms ?? null,
         report: result.report,
+        execution_evidence: result.execution_evidence,
       });
       // 回写日志带上 reason + 耗时:无人值守时不必翻 UI 就能看出为什么 fail(解析失败/断言不过/超时)。
       const reasonTail = result.reason ? ` reason=${String(result.reason).replace(/\s+/g, " ").slice(0, 300)}` : "";
@@ -792,7 +785,14 @@ process.on("unhandledRejection", (e) => log("未处理拒绝(已忽略,继续轮
 // 入口:--update 自升级(run.sh/run.cmd 启动前调;updated → exit 75 通知外层重启);
 // upload 子命令直传本地 session;否则常驻三队列轮询。
 const _argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-if (process.argv.includes("--exec-worker")) {
+if (process.argv.includes('--verify-import')) {
+  const input = process.argv[process.argv.indexOf('--verify-import') + 1];
+  const output = process.argv.includes('--output') ? process.argv[process.argv.indexOf('--output') + 1] : null;
+  verifyImport({ input, output, execute: executeItem, fetchRegistry, acquireLease: desktopLease.acquireDesktopLease,
+    close: () => guiCore.close?.(), log, timeoutMs: Number(process.env.EXEC_TIMEOUT_MS || 900000),
+    workerFile: fileURLToPath(import.meta.url), runWorker: runInWorker })
+    .then(() => process.exit(0)).catch(e => { log(`本地回归验证失败：${e.message}`); process.exit(1); });
+} else if (process.argv.includes("--exec-worker")) {
   // Exit if the supervising runner disappears; no orphan can continue clicking.
   process.on("disconnect", () => {
     if (process.platform !== "win32") { try { process.kill(-process.pid, "SIGKILL"); } catch {} }
@@ -800,7 +800,7 @@ if (process.argv.includes("--exec-worker")) {
   });
   process.once("message", async (item) => {
     let result;
-    try { result = await executeItem(item); }
+    try { result = await executeItem(item, { localEvidenceDir: item.localEvidenceDir || null }); }
     catch (e) { result = { verdict: "fail", fail_kind: "selector", reason: `执行异常: ${e.message}` }; }
     try { await guiCore.close?.(); } catch {}
     process.send({ type: "result", result }, () => process.exit(0));

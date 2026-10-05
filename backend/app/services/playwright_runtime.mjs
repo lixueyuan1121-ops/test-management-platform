@@ -84,7 +84,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
   const registry = () => typeof getRegistry === "function" ? getRegistry() : getRegistry;
   const vmIframe = () => typeof getVmIframe === "function" ? getVmIframe() : getVmIframe;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const error = (code, message) => Object.assign(new Error(message), { code, fail_kind: "selector" });
+  const error = (code, message, diagnostic = {}) => Object.assign(new Error(message), { code, fail_kind: "selector", diagnostic: { code, ...diagnostic } });
   const limit = (args = {}) => {
     const n = args.timeout_ms ?? timeout;
     if (!Number.isFinite(n) || n < 0) throw error("INVALID_TIMEOUT", "timeout_ms 必须是非负数");
@@ -173,7 +173,10 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
       const total = hits.reduce((n, r) => n + r.count, 0);
       if (all) { matches.push(...hits); continue; }
       if (!multiple && total > 1) {
-        ambiguous ||= error("AMBIGUOUS_TARGET", `目标 ${target.key || target.selector} 在允许的 frame 中匹配 ${total} 个元素；请限定 frame/within/has_text`);
+        ambiguous ||= error("AMBIGUOUS_TARGET", `目标 ${target.key || target.selector} 在允许的 frame 中匹配 ${total} 个元素；请限定 frame/within/has_text`, {
+          match_count: total, target, candidate: normalizeCandidate(cand), frames: hits.map(h => ({ scope: h.hit.scope, count: h.count })),
+          suggestion: '限定所属容器、frame 或控件角色，现场确认唯一后重跑；不要直接选择第一个匹配项',
+        });
         continue; // 当前候选不唯一，不妨碍后续更精确的候选唯一定位。
       }
       if (total) {
@@ -198,9 +201,11 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     // 应快速失败给出明确提示,而非空等整个超时。
     const TRANSIENT = new Set(["INVALID_FRAME", "AMBIGUOUS_FRAME"]);
     let lastErr = null;
+    let lastCount = 0;
     for (;;) {
       try {
         const r = await inspect(target, { requireVisible });
+        lastCount = r.count;
         lastErr = null;
         if (r.count && (!requireVisible || await r.loc.isVisible())) return r;
       } catch (e) {
@@ -209,7 +214,10 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
       }
       if (Date.now() >= end) {
         if (lastErr) throw lastErr;
-        throw error("TARGET_TIMEOUT", `目标 ${target.key || target.selector} 在超时内未${requireVisible ? "可见" : "出现"}`);
+        throw error("TARGET_TIMEOUT", `目标 ${target.key || target.selector} 在超时内未${requireVisible ? "可见" : "出现"}`, {
+          target, match_count: lastCount, category: lastCount ? 'not_visible' : 'not_found',
+          suggestion: lastCount ? '元素存在但不可见，请检查当前页面状态和遮挡' : '检查导航结果、frame 和选择器是否对应当前页面',
+        });
       }
       await sleep(Math.min(pollMs, Math.max(1, end - Date.now())));
     }

@@ -516,6 +516,9 @@ def _payload_of(tc: TestCase | None, db: Session) -> dict:
             "auth_type": env.get("auth_type", "fixed"),
             "auth": env.get("auth", {}),
         }
+    if script and _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
+        from app.services.execution_evidence import execution_contract, fingerprint
+        payload['execution_contract_sha256'] = fingerprint(execution_contract(payload))
     return payload
 
 
@@ -675,6 +678,9 @@ def enqueue_case_runs(db, user, body, commit=True):
 
     ids = list(dict.fromkeys(body.test_case_ids))  # 去重保序
     ids = _expand_with_prereqs(db, ids)            # 展开关联前置:前置在前、主用例在后(去重防环)
+    repeats = getattr(body, 'verification_runs', 1)
+    if repeats == 2 and (len(ids) != 1 or body.auto_prepare):
+        raise HTTPException(422, '回归验证一次只验证一条独立用例；请将必要前置操作固化到脚本')
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
     found = {c.id: c for c in cases}
     auto_cache: dict = {}        # runner=auto 时按平台缓存所选设备(同批同平台落同一台)
@@ -695,11 +701,17 @@ def enqueue_case_runs(db, user, body, commit=True):
         _check_platform(runner, tc_platform, db, owner_id=user.id)
         _check_capability(runner, db, owner_id=user.id)
         resolved[cid] = runner
+        if repeats == 2:
+            p = _dispatch_payload(tc, db, False)
+            if _kind_of(tc) not in (ExecKind.gui, ExecKind.e2e) or not p.get('script') or p.get('precondition') or any(s.get('action') == 'judge' for s in p['script']):
+                raise HTTPException(422, '回归认证需要 GUI/E2E 完整脚本和确定性断言；请先将自然语言前置条件固化为步骤')
 
     created = []
     batch_id = _new_batch_id()   # 回归批次号,该批所有 run 共享(结果页按批汇总)
-    for cid in ids:
+    for cid in ids * repeats:
         tc = found[cid]
+        payload = _dispatch_payload(tc, db, body.auto_prepare)
+        if repeats == 2: payload['strict_replay'] = True
         row = ExecRun(
             checklist_item_id=None,          # 回归执行不挂清单项 → 回写不回流清单
             test_case_id=tc.id,
@@ -712,7 +724,7 @@ def enqueue_case_runs(db, user, body, commit=True):
             auto_reassign=body.runner == "auto",
             kind=_dispatch_kind(tc, body.auto_prepare),
             status=ExecStatus.pending,
-            payload=json.dumps(_dispatch_payload(tc, db, body.auto_prepare), ensure_ascii=False),
+            payload=json.dumps(payload, ensure_ascii=False),
             enqueued_by=user.id,
         )
         db.add(row)
@@ -804,6 +816,14 @@ def get_run_detail(run_id: int, db: Session = Depends(get_db), user: User = Depe
     membership = assert_project_role(db, user, r.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     d = _to_out(r)
     d["title"] = d["payload"].get("title")
+    d['execution_evidence'] = d['payload'].get('execution_evidence')
+    tc = db.get(TestCase, r.test_case_id) if r.test_case_id else None
+    if tc and _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
+        from app.services.execution_evidence import case_readiness
+        d['replay_readiness'] = case_readiness(db, tc)
+        current = d['replay_readiness'].get('contract_sha256')
+        actual = (d.get('execution_evidence') or {}).get('contract_sha256')
+        d['matches_current_version'] = actual == current if actual and current else None
     d["can_cancel"] = membership.role in _WRITE_ROLES and r.status in (ExecStatus.pending, ExecStatus.running)
     return ok(d)
 
@@ -965,6 +985,29 @@ def report(
     if r.runner_device_id is not None and (not ctx.device or ctx.device.id != r.runner_device_id):
         raise HTTPException(403, detail="实际认领设备不匹配")
 
+    payload = json.loads(r.payload or '{}')
+    if body.execution_evidence is not None:
+        from app.services.execution_evidence import validate_evidence
+        ev = body.execution_evidence.model_dump()
+        try:
+            validate_evidence(ev, payload, body.report or [])
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(422, f'执行证据校验失败：{error}')
+        # An old/non-strict dispatch cannot be certified by a client flag alone.
+        ev['strict_replay'] = ev['strict_replay'] and payload.get('strict_replay') is True
+        if body.verdict == 'pass' and ev['strict_replay'] and ev['mode'] == 'script':
+            steps, reports = payload.get('script') or [], body.report or []
+            complete = (not payload.get('precondition') and ev['reset'] and not ev['precondition']
+                        and isinstance(reports, list) and len(steps) == len(reports)
+                        and any(str(s.get('action', '')).startswith('assert_') for s in steps)
+                        and not any(s.get('action') == 'judge' for s in steps)
+                        and all(isinstance(rp, dict) and rp.get('ok') is True and rp.get('action') == st.get('action')
+                                and (not str(st.get('action', '')).startswith('assert_') or
+                                     isinstance(rp.get('check'), dict) and {'actual', 'expected'} <= rp['check'].keys() and rp['check'].get('pass') is not False)
+                                for st, rp in zip(steps, reports)))
+            if not complete: raise HTTPException(422, '严格回归通过必须包含最终脚本的完整逐步报告与实际断言证据')
+        payload['execution_evidence'] = ev
+        r.payload = json.dumps(payload, ensure_ascii=False)
     is_pass = body.verdict == "pass"
     # L2 失败分类:fail_kind=selector(选择器/环境阻塞)记 blocked,不计入功能失败率;
     # business 或缺 fail_kind(旧 runner)记 failed(真功能 bug)。pass 照常 passed。

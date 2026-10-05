@@ -27,6 +27,15 @@
 }
 
 function Test-ImportPayload($payload) {
+if (@($payload.cases | Where-Object { $_.execution_evidence }).Count) {
+  if (!(Get-Command node -ErrorAction SilentlyContinue)) { throw '执行证据校验需要 Node.js，请使用运行 Runner 的同一环境' }
+  $previousEncoding=$OutputEncoding
+  try {
+    $OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+    $evidenceOutput=($payload | ConvertTo-Json -Depth 100 -Compress) | & node (Join-Path $PSScriptRoot 'validate-evidence.mjs') 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ([string]::Join("`n", @($evidenceOutput))) }
+  } finally { $OutputEncoding=$previousEncoding }
+}
 if (@($payload.cases.title | Select-Object -Unique).Count -ne @($payload.cases).Count) { throw "同批用例标题须唯一" }
 if (@($payload.cases).Count -lt 1 -or @($payload.cases).Count -gt 20) { throw '每批提交 1 至 20 条用例' }
 foreach ($case in $payload.cases) {

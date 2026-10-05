@@ -103,8 +103,9 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   // 失败:记该步 + 截图,返回 fail 结果(带 report/steps)。
   // failKind 归类失败性质(接后端 L2):"selector"=定位/操作/环境阻塞(不计功能失败率),
   // "business"=断言不通过(真功能 bug)。缺省 selector(定位/操作抛错走 catch 兜底,均属阻塞类)。
-  const failAt = async (i, action, desc, reason, failKind = "selector", extraSteps) => {
+  const failAt = async (i, action, desc, reason, failKind = "selector", extraSteps, diagnostic) => {
     const rep = rec(i, action, desc, false, reason);
+    if (diagnostic) rep.diagnostic = diagnostic;
     await capShot(rep);
     return finish({ verdict: "fail", fail_kind: failKind, reason, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps: extraSteps || steps, report });
   };
@@ -206,7 +207,8 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
       }
     } catch (e) {
       // 定位/操作抛错(元素找不到、超时等)→ 整条 fail,带诊断 + 失败现场截图
-      return await failAt(i, action, desc, `step${i + 1}「${action}」执行出错:${e.message}`);
+      return await failAt(i, action, desc, `step${i + 1}「${action}」执行出错:${e.message}`, 'selector', undefined,
+        { code: e.code || 'ACTION_ERROR', target, ...e.diagnostic });
     }
   }
   // 所有步骤(含断言/judge)通过

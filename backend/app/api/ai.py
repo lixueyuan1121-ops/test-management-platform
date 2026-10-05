@@ -512,6 +512,9 @@ def get_testcase(
         title = t.title if t else None
     from app.services.requirement_analysis import case_links
     out = case_links(db, [_to_case_out(tc, task_title=title)])[0]
+    if getattr(tc.exec_kind, 'value', tc.exec_kind) in ('gui', 'e2e'):
+        from app.services.execution_evidence import case_readiness
+        out['replay_readiness'] = case_readiness(db, tc)
     # 运行期「选择器待补」兜底:只有 script 引用了、但注册表里没有的 key 才是真正待补的。
     # 生成期 selector_fix_keys 为空时(如执行期才 blocked 的用例),前端据此只列真缺的 key,
     # 不再把整脚本引用的 key 全列出来(修「待补单列出当前用例所有 key、实际只缺一个」)。
