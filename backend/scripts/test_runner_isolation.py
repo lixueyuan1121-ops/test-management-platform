@@ -88,11 +88,33 @@ class RunnerIsolationTests(DeviceBoardTests):
 
     def test_dual_consumers_are_both_available(self):
         from app.services.dispatcher import device_conflicts_kind
-        self.device.last_exec_at = self.now
+        for exec_age, eval_age, latest in [(10, 1, 'eval'), (1, 10, 'func'), (1, 1, 'eval')]:
+            with self.subTest(exec_age=exec_age, eval_age=eval_age):
+                self.device.last_exec_at = self.now - timedelta(seconds=exec_age)
+                self.device.last_eval_at = self.now - timedelta(seconds=eval_age)
+                self.db.commit()
+                # Display follows one latest heartbeat; both queues remain eligible.
+                self.assertFalse(device_conflicts_kind(self.db, 'a', 'exec'))
+                self.assertFalse(device_conflicts_kind(self.db, 'a', 'eval'))
+                self.assertEqual(self.board()[1]['active_kinds'], [latest])
+                mine = self.client.get('/api/devices').json()['data']
+                self.assertEqual(next(d for d in mine if d['id'] == 1)['active_kinds'], [latest])
+
+    def test_latest_heartbeat_display_keeps_running_details_separate(self):
+        active = self.run_row(status='running', runner_device_id=1, heartbeat_at=self.now)
+        self.device.last_exec_at = self.now - timedelta(seconds=10)
         self.device.last_eval_at = self.now
         self.db.commit()
-        self.assertFalse(device_conflicts_kind(self.db, 'a', 'exec'))
-        self.assertFalse(device_conflicts_kind(self.db, 'a', 'eval'))
-        self.assertEqual(self.board()[1]['active_kinds'], ['func', 'eval'])
+        board = self.board()[1]
+        self.assertEqual(board['active_kinds'], ['eval'])
+        self.assertEqual([r['kind'] for r in board['active_runs']], ['func'])
+        self.assertEqual(board['run_counts']['running'], 1)
+
+        self.device.last_exec_at = self.device.last_eval_at = self.now - timedelta(minutes=10)
+        self.db.commit()
+        self.assertEqual(self.board()[1]['active_kinds'], ['func'], 'legacy live run remains visible without fresh poll')
+        active.status = 'passed'
+        self.db.commit()
+        self.assertEqual(self.board()[1]['active_kinds'], [], 'expired idle service is not displayed')
 
 if __name__ == '__main__': unittest.main()

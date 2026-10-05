@@ -41,14 +41,13 @@ def _eval_running_runners(db: Session) -> set[str]:
 
 def current_kind(d: RunnerDevice, cutoff: datetime,
                  exec_running: set, eval_running: set) -> str | None:
-    """设备此刻在跑哪类 runner:'func'(功能)/ 'eval'(测评)/ None(未启动任何 runner)。
+    """供设备页面展示最近心跳类型:'func'(功能)/ 'eval'(测评)/ None。
 
-    一台机同时刻只能跑一类(抢同一客户端不能并行),故返回【单一】类型:
+    展示类型与调度能力分开；调度继续使用 available_kinds，允许两类服务待命。
     - 功能 runner 轮询 exec-queue 刷 last_exec_at、测评 runner 轮询 eval-queue 刷 last_eval_at;
-    - 两个时间戳都在在线窗口内(切换 runner 的重叠瞬间)→ 取【更晚】的那个 = 当前真正在跑的,
-      使切换后立即反映最新(而非 3 分钟内两类都显示,困惑用户);
+    - 两个时间戳都在在线窗口内 → 取更晚的那个；完全相同时固定选 eval，保证结果稳定;
     - 都过期 → running 补偿(执行期不轮询、心跳滞后,有 running 必在跑对应 runner);
-    - 全无 → None(空闲)。看板/派单/手动拦截统一据此,口径一致。
+    - 全无 → None。当前执行任务仍由 active_runs 展示，不由标签推断。
     """
     exec_fresh = bool(d.last_exec_at and d.last_exec_at >= cutoff)
     eval_fresh = bool(d.last_eval_at and d.last_eval_at >= cutoff)

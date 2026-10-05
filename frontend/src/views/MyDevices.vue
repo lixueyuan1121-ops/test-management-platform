@@ -6,8 +6,8 @@
       <el-alert type="info" :closable="false" show-icon class="intro">
         在自己的电脑上部署 runner,把这里生成的 <b>专属 token</b> 填进 runner 的 <code>.env</code>(RUNNER_TOKEN)与
         <code>RUNNER_ID</code>(填设备的 runner_id)。之后在用例库/任务清单下发时选中该设备,用例就会到你这台机器上执行。
-        <br>这台机<b>当前在跑哪类 runner</b>(功能 <code>run.sh</code> / 测评 <code>run-eval.sh</code>)由平台<b>自动感知</b>——
-        跑哪个就接哪类任务,无需手动配置。升级后的两套 runner 共用桌面锁，任务依次执行；等待期间不会操作客户端。
+        <br>类型标签按<b>最近一次心跳</b>显示功能测试或对话测评；任务接收能力由实际在线的 runner 自动决定，无需手动配置。
+        升级后的两套 runner 共用桌面锁，任务依次执行；等待期间不会操作客户端。
       </el-alert>
 
       <el-result v-if="loadError" icon="error" title="设备列表加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
@@ -19,7 +19,7 @@
             <el-tag :type="PLATFORM_TYPE[row.platform || 'web']" size="small" effect="plain">{{ PLATFORM_LABEL[row.platform || 'web'] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="当前 runner" width="130" align="center">
+        <el-table-column label="最近心跳类型" width="130" align="center">
           <template #default="{ row }">
             <template v-for="c in (row.active_kinds || [])" :key="c">
               <el-tag :type="CAP_TYPE[c]" size="small" effect="light" style="margin: 0 2px">{{ CAP_LABEL[c] || c }}</el-tag>
@@ -97,7 +97,7 @@ import { listMyDevices, registerDevice, updateDevice, resetDeviceToken, deleteDe
 
 const PLATFORM_LABEL = { web: 'PC/Web', android: 'Android', ios: 'iOS' }
 const PLATFORM_TYPE = { web: '', android: 'success', ios: 'warning' }
-// 当前 runner 类型标识:func=功能测试 / eval=对话测评(运行时感知,后端 active_kinds 返回)
+// 最近心跳类型:后端 active_kinds 最多返回一个标签，不代表全部调度能力。
 const CAP_LABEL = { func: '功能测试', eval: '对话测评' }
 const CAP_TYPE = { func: 'primary', eval: 'warning' }
 

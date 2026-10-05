@@ -56,7 +56,7 @@
 
           <!-- 标签独立换行，避免多产品/执行状态挤占设备名称。 -->
           <div class="device-tags">
-            <span v-for="c in devCaps(d)" :key="c" class="cap-tag" :class="'cap-' + c">{{ CAP_LABEL[c] || c }}</span>
+            <span v-for="c in devCaps(d)" :key="c" class="cap-tag" :class="'cap-' + c" title="最近心跳类型，当前执行任务见下方明细">{{ CAP_LABEL[c] || c }}</span>
             <el-tag v-if="d.platform && d.platform !== 'web'" :type="d.platform === 'ios' ? 'warning' : 'success'" size="small" effect="plain">{{ d.platform.toUpperCase() }}</el-tag>
             <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('workbuddy')" size="small" effect="light" class="wb-tag" title="该执行机支持 WorkBuddy 对话测评">WorkBuddy</el-tag>
             <el-tag v-if="d.eval_engine?.split(',').map(e => e.trim()).includes('qwork')" size="small" effect="light" title="该执行机支持 QWork 对话测评">QWork</el-tag>
@@ -132,16 +132,9 @@ let disposed = false
 // 执行类型标识:后端 active_runs[].kind → 展示文案(卡片头全称/明细行短标)。
 // 老数据无 kind 按 func 兜底;未知新类型直接显示原文,后端扩展类型时前端无需先行发版。
 const KIND_SHORT = { func: '功能', eval: '测评' }
-const runKinds = (d) => [...new Set((d.active_runs || []).map((r) => r.kind || 'func'))]
-// 设备能力(逗号串 → 有序数组):这台机被允许承接的任务类型,缺省视为全能力(与后端 default 一致)
-const CAP_ORDER = ['func', 'eval']
-// 当前 runner 文案与「我的设备」页一致；在线类型与执行类型合并去重。
+// 后端按最近心跳返回至多一种类型，与「我的设备」一致；执行明细不加入该标签。
 const CAP_LABEL = { func: '功能测试', eval: '对话测评' }
-// 设备当前在跑哪类 runner:后端 active_kinds(运行时感知,已是有序 func/eval 数组);做一层兜底过滤/排序
-const devCaps = (d) => {
-  const set = new Set([...(d.active_kinds || []), ...runKinds(d)].filter((x) => CAP_ORDER.includes(x)))
-  return CAP_ORDER.filter((c) => set.has(c))
-}
+const devCaps = (d) => (d.active_kinds || []).filter(c => ['func', 'eval'].includes(c))
 
 // 每秒 tick：驱动时钟与"执行中"计时器（用统一 now 让所有卡片同步跳动）
 const now = ref(Date.now())

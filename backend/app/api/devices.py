@@ -35,11 +35,11 @@ ACTIVE_RUNS_LIMIT = 8
 
 def _active_kinds(d: RunnerDevice, utc_now: datetime,
                   exec_running: set | None = None, eval_running: set | None = None) -> list[str]:
-    """One tag per live consumer type, independent of which queue currently owns the desktop."""
-    from app.services.dispatcher import available_kinds
+    """Display only the latest live heartbeat type; dispatch capabilities stay independent."""
+    from app.services.dispatcher import current_kind
     cutoff = utc_now - timedelta(seconds=ONLINE_WINDOW_SEC)
-    return available_kinds(d, cutoff, exec_running or set(), eval_running or set())
-
+    kind = current_kind(d, cutoff, exec_running or set(), eval_running or set())
+    return [kind] if kind else []
 
 
 class DeviceIn(BaseModel):
@@ -72,7 +72,7 @@ def _to_out(d: RunnerDevice, *, reveal_token: bool = False,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
-        # 当前在跑哪类 runner(运行时感知);列表页传入 running 集合补偿执行长任务期不轮询的心跳滞后
+        # 最近心跳类型，最多一个；旧 Runner 长任务无新心跳时才用执行中记录补偿。
         "active_kinds": _active_kinds(d, datetime.utcnow(), exec_running, eval_running),
         "token": d.token if reveal_token else _mask(d.token),  # 仅注册/重置时给明文
         "last_seen_at": (d.last_seen_at.isoformat() + "Z") if d.last_seen_at else None,
@@ -200,8 +200,7 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
-        # active_kinds:当前实际在跑哪类 runner(func/eval)——运行时感知,叠加 running 补偿执行期心跳滞后。
-        # 看板据此显示「这台机此刻在跑功能测试/对话测评」,而非静态配置(一台机同时刻只能跑一类)。
+        # 最近心跳类型，最多一个；当前执行任务独立显示在 active_runs，不合并成第二个类型。
         "active_kinds": _active_kinds(d, utc_now, exec_running_ids, eval_running_ids),
         "owner": {"id": d.owner_id, "name": owner_name},
         # 加 Z 标明 UTC：last_seen_at 是 naive UTC(utcnow 写入)，不带时区前端会当本地时间解析、
