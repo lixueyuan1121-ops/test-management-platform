@@ -1,5 +1,11 @@
 # 平台接入与脚本约定
 
+## 回填环境选择
+
+快捷输入卡片提供“线上（默认）”和“本地测试”两项。线上 origin 为 `https://qalab.claw.qihoo.net`，本地测试默认 `http://localhost:8000`，用户可填写其他测试平台地址。一次选择只用于当前批次；继续、重试和查询沿用同一 origin，新一次测试默认回到线上。
+
+Windows 所有命令显式带 `-BaseUrl <origin>`；macOS 使用 `python3 scripts/qalab.py --base-url <origin> <action>`。两个客户端省略地址时仍默认线上，凭据继续按 origin 隔离。不根据浏览器当前页或已有登录自动切换，不自动复制另一平台的项目/设备 ID、导入包或 Runner token。
+
 ## 准备
 Windows 需要 PowerShell 5.1+；登录脚本只使用内置能力。macOS 使用 Python 3.9+ 和 scripts/qalab.py，无第三方 Python 依赖；会话通过 Security.framework 的 SecItem API 保存在登录钥匙串中，按平台源地址隔离，不通过命令行参数或明文文件传递令牌。doctor 执行独立临时条目的读写删除自检，不访问平台；login 隐藏输入密码，status 检查项目设备，import --payload 提交后即返回，job --job-id 单次查询后台进度，logout 删除该平台的会话。其他系统可通过受支持的浏览器或正常获取的用户 bearer token 调用 API，不共享用户凭据。
 线上项目、用户和执行机与 localhost 分离。GET /api/projects 查询有权访问的项目；GET /api/devices 查询自己的设备；GET /api/auth/me 验证身份。
@@ -17,6 +23,19 @@ Windows 需要 PowerShell 5.1+；登录脚本只使用内置能力。macOS 使�
 `POST .../items/{item_id}/resolve`：仅管理员，body 为 action(reuse/create)、case_id(reuse必填)、token(候选confirmation_token)、reason(至少5字)。技能不自动调用。
 `POST .../items/{item_id}/retry`：仅管理员重试失败条目。数据库临时故障后台最多尝试3次，其余错误保留供管理员排查。
 旧同步接口及 preview 仅为旧客户端兼容保留，新技能不得降级调用。
+
+## 本地调试
+
+用户已指定本地平台后，每次命令都传该平台地址。地址按源隔离保存会话，`localhost` 与 `127.0.0.1` 也各自独立，整个流程统一使用一个写法。
+
+Windows（在技能目录下）：
+```powershell
+./scripts/qalab.ps1 -Action login -BaseUrl http://localhost:8000
+./scripts/qalab.ps1 -Action status -BaseUrl http://localhost:8000
+./scripts/qalab.ps1 -Action import -BaseUrl http://localhost:8000 -PayloadPath verified.json
+```
+
+macOS：`python3 scripts/qalab.py --base-url http://localhost:8000 login`；`status`、`import`、`job` 同样显式带 `--base-url`（具体参数见 `--help`）。项目和设备 ID 从本机平台查询，Runner 的 `BASE_URL` 和设备 token 也须对应此平台。只导入本次实际执行通过的报告，不为验证导入而伪造成功用例。缺少本机登录时，让用户在终端输入本机平台账号密码，不复用线上凭据。指定本机地址无法访问时停止回填并保留文件。
 
 ## 导入契约
 POST /api/verified-imports/jobs，Authorization: Bearer 用户 access token。仅项目 admin/member 可写，runner_device_id 必须属于当前用户。JSON:
@@ -81,6 +100,8 @@ writing-router 合理调用 huibao-writer 等下级写作技能不等于路由�
 此处地址仅为格式说明，不能当作用户真实待测应用。应用路径按用户本机填写，不给所有成员硬编码同一个 Windows 路径。
 
 ## 平台 DSL 与提交前校验
+
+重复元素定位字段、只读检查和新版 Runner 兼容规则见 [重复元素定位与执行效率](target-disambiguation.md)。`target.has_text_exact:true` 必须同时提供非空 `target.has_text`，嵌套 within 也遵循该规则；该字段保持原样提交，不挪入 args 或 report。
 
 `steps` 是给人看的文字，`script` 是 StepExecutor 实际执行的 JSON 数组。`click`、`hover`、`fill`、`type`、`set_checked`、`select_option`、`wait_for`、`get_text`、`assert_text`、`assert_visible`、`assert_absent` 必须有 `target.key` 或 `target.selector` 非空字符串；`press` 指定 target 时遵循同样约定。无目标的 connect、全局 press 等不能因此被强行添加虚假定位。
 

@@ -34,6 +34,10 @@ def validate_targets(script, title=""):
             for key in ("key", "selector"):
                 if key in current and (not isinstance(current[key], str) or not current[key].strip()):
                     raise ValueError(f"{prefix}「{action}」{key} 必须为非空字符串")
+            if "has_text" in current and not isinstance(current["has_text"], str):
+                raise ValueError(f"{prefix} has_text 必须是字符串")
+            if "has_text_exact" in current and (type(current["has_text_exact"]) is not bool or not isinstance(current.get("has_text"), str) or not current["has_text"].strip()):
+                raise ValueError(f"{prefix} has_text_exact 必须为布尔值，且同时填写非空 has_text")
             current = current.get("within")
             if current is None:
                 break

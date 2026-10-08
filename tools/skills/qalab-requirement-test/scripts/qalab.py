@@ -18,15 +18,17 @@ DEFAULT_ORIGIN = "https://qalab.claw.qihoo.net"
 def normalize_origin(value):
     try:
         parts = urlsplit(value)
-        if (parts.scheme != "https" or not parts.hostname or parts.username or parts.password
+        local_http = parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1", "::1")
+        if ((parts.scheme != "https" and not local_http) or not parts.hostname or parts.username or parts.password
                 or parts.path not in ("", "/") or parts.query or parts.fragment):
             raise ValueError()
         host = parts.hostname.lower()
         if ":" in host: host = "[" + host + "]"
         port = parts.port
-        return "https://" + host + (":" + str(port) if port and port != 443 else "")
+        default_port = 443 if parts.scheme == "https" else 80
+        return parts.scheme + "://" + host + (":" + str(port) if port and port != default_port else "")
     except ValueError:
-        raise RuntimeError("平台地址必须是 HTTPS 源地址，不带路径、用户名、密码或查询参数") from None
+        raise RuntimeError("平台地址必须是 HTTPS 源地址；本机 localhost、127.0.0.1、[::1] 可用 HTTP；不带路径、用户名、密码或查询参数") from None
 
 
 class NoRedirect(HTTPRedirectHandler):

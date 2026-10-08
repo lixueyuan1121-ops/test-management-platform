@@ -13,8 +13,9 @@ if ($Action -in @('validate','import','preview')) {
   if ($Action -eq 'validate') { Write-Output '本地导入结构校验通过；未连接平台，不代表设备实测通过。'; exit }
 }
 $origin = [Uri]$BaseUrl
-if ($origin.Scheme -ne 'https' -or $origin.UserInfo -or $origin.AbsolutePath -ne '/' -or $origin.Query -or $origin.Fragment) {
-  throw 'BaseUrl 必须是 HTTPS 平台源地址（不带路径、凭据或查询参数）'
+$localHttp = $origin.Scheme -eq 'http' -and $origin.DnsSafeHost.ToLowerInvariant() -in @('localhost','127.0.0.1','::1')
+if (($origin.Scheme -ne 'https' -and !$localHttp) -or $origin.UserInfo -or $origin.AbsolutePath -ne '/' -or $origin.Query -or $origin.Fragment) {
+  throw 'BaseUrl 必须是 HTTPS 平台源地址；本机 localhost、127.0.0.1、[::1] 可用 HTTP（不带路径、凭据或查询参数）'
 }
 $BaseUrl = $origin.GetLeftPart([System.UriPartial]::Authority)
 $sha = [Security.Cryptography.SHA256]::Create()
@@ -50,8 +51,9 @@ if ($Action -eq 'logout') {
   Write-Output '已清除本机加密登录信息'; exit
 }
 if ($Action -eq 'login') {
-  $username = Read-Host '线上用户名'
-  $secret = Read-Host '线上密码（隐藏输入）' -AsSecureString
+  Write-Output ('登录平台: ' + $BaseUrl)
+  $username = Read-Host '平台用户名'
+  $secret = Read-Host '平台密码（隐藏输入）' -AsSecureString
   $password = [Net.NetworkCredential]::new('', $secret).Password
   try { $session = Call-Api 'POST' '/api/auth/login' @{username=$username;password=$password} '' }
   finally { $password=$null; $secret=$null }

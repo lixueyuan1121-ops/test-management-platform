@@ -18,6 +18,8 @@
       foreach ($name in @('key','selector')) {
         if ($name -in @($current.PSObject.Properties.Name) -and ($current.$name -isnot [string] -or !$current.$name.Trim())) { throw ($label + ' ' + $name + ' 必须为非空字符串') }
       }
+      if ('has_text' -in @($current.PSObject.Properties.Name) -and $current.has_text -isnot [string]) { throw ($label + ' has_text 必须是字符串') }
+      if ('has_text_exact' -in @($current.PSObject.Properties.Name) -and ($current.has_text_exact -isnot [bool] -or $current.has_text -isnot [string] -or !$current.has_text.Trim())) { throw ($label + ' has_text_exact 必须为布尔值，且同时填写非空 has_text') }
       $current=$current.within
       if ($null -eq $current) { break }
       $depth++

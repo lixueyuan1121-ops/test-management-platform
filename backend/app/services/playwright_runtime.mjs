@@ -53,6 +53,13 @@ export function elementTextValue(el) {
   return el.textContent == null ? "" : String(el.textContent);
 }
 
+// hasText strings are substring matches. Escape user text rather than treating
+// names such as "PPT (A+B)" as regex; tolerate DOM whitespace around/between words.
+export function exactTextPattern(value) {
+  const escaped = value.trim().split(/\s+/).map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+  return new RegExp(`^\\s*${escaped}\\s*$`);
+}
+
 // Find the response contract before the last submit-capable action. Non-action
 // waits between submission and wait_response do not replace the baseline.
 export function responseArgsBeforeAction(script, index) {
@@ -138,6 +145,8 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     if ("state" in target || "selectedState" in target) throw error("INVALID_TARGET", "状态断言需要单独的状态选择器 key；不能忽略 state/selectedState");
     if (target.nth !== undefined && (!Number.isInteger(target.nth) || target.nth < 0)) throw error("INVALID_TARGET", "nth 必须是非负整数");
     if (target.has_text !== undefined && typeof target.has_text !== "string") throw error("INVALID_TARGET", "has_text 必须是字符串");
+    if (target.has_text_exact !== undefined && (typeof target.has_text_exact !== 'boolean' || typeof target.has_text !== 'string' || !target.has_text.trim()))
+      throw error('INVALID_TARGET', 'has_text_exact 必须为布尔值，且同时填写非空 has_text');
     if (target.key && !registry()?.[target.key]) throw error("UNKNOWN_KEY", `未定义语义 key "${target.key}"`);
     if (target.within) validateTarget(target.within, depth + 1);
   }
@@ -161,7 +170,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
         let loc = locator(s.scope, cand);
         if (cand.has_text !== undefined) loc = loc.filter({ hasText: cand.has_text });
         if (cand.nth !== undefined) loc = loc.nth(cand.nth);
-        if (target.has_text !== undefined) loc = loc.filter({ hasText: target.has_text });
+        if (target.has_text !== undefined) loc = loc.filter({ hasText: target.has_text_exact ? exactTextPattern(target.has_text) : target.has_text });
         if (target.visible !== undefined) loc = loc.filter({ visible: !!target.visible });
         if (target.nth !== undefined) loc = loc.nth(target.nth);
         const count = await loc.count(); // 无效语法/失联 frame 不能变成“元素不存在”。
@@ -173,9 +182,11 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
       const total = hits.reduce((n, r) => n + r.count, 0);
       if (all) { matches.push(...hits); continue; }
       if (!multiple && total > 1) {
+        const samples = ambiguous ? [] : await describeHits(hits).catch(() => []);
         ambiguous ||= error("AMBIGUOUS_TARGET", `目标 ${target.key || target.selector} 在允许的 frame 中匹配 ${total} 个元素；请限定 frame/within/has_text`, {
           match_count: total, target, candidate: normalizeCandidate(cand), frames: hits.map(h => ({ scope: h.hit.scope, count: h.count })),
-          suggestion: '限定所属容器、frame 或控件角色，现场确认唯一后重跑；不要直接选择第一个匹配项',
+          matches: samples, truncated: total > samples.length,
+          suggestion: '先限定真实控件类型和所属容器/frame，再用 has_text + has_text_exact:true 区分完整文本；全局 contains XPath 会命中祖先，追加相同文本仍可能重复。使用 inspectTarget/gui_inspect 确认唯一；不要默认选择第一项',
         });
         continue; // 当前候选不唯一，不妨碍后续更精确的候选唯一定位。
       }
@@ -189,6 +200,33 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     if (hidden) return hidden;
     if (ambiguous) throw ambiguous;
     return empty;
+  }
+
+  async function describeHits(hits) {
+    const samples = [];
+    for (const hit of hits) {
+      const remaining = 20 - samples.length;
+      if (remaining <= 0) break;
+      const rows = await hit.loc.evaluateAll((elements, max) => elements.slice(0, max).map(el => ({
+        tag: el.tagName.toLowerCase(), text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        testid: el.getAttribute('data-testid'), role: el.getAttribute('role'), aria_label: el.getAttribute('aria-label'),
+        visible: !!(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden'),
+      })), remaining);
+      samples.push(...rows.map(row => ({ frame: hit.hit.scope, ...row })));
+    }
+    return samples;
+  }
+
+  async function inspectTarget(target) {
+    try {
+      const result = await inspect(target, { requireVisible: true });
+      const matches = result.count ? await describeHits([result]) : [];
+      return { unique: result.count === 1 && matches[0]?.visible === true,
+        match_count: result.count, matches, candidate: result.hit, container_missing: !!result.containerMissing };
+    } catch (e) {
+      if (e.code !== 'AMBIGUOUS_TARGET') throw e;
+      return { unique: false, ...e.diagnostic };
+    }
   }
 
   async function resolve(target, { requireVisible = true } = {}) {
@@ -386,7 +424,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
   return {
     mockRoute, unmockRoute, unmockAll,
     mockStats: () => [...mocks.values()].map((r) => ({ ...r.stat })),
-    inspect, resolve, captureResponse, waitResponse, fill, pressKey,
+    inspect, inspectTarget, resolve, captureResponse, waitResponse, fill, pressKey,
     resetResponse() { responseBase = null; },
     resetConnection() { responseBase = null; mocks.clear(); },
     async isKeyVisible(key) { return !!(await visibleCount(await inspect({ key }, { multiple: true }))); },

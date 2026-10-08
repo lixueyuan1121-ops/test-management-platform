@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GUI_SERVER = fileURLToPath(new URL('./gui-mcp/server.mjs', import.meta.url));
-const TOOLS = ['gui_connect', 'gui_list_keys', 'gui_probe', 'gui_goto', 'gui_click', 'gui_hover', 'gui_fill', 'gui_get_text', 'gui_wait_for', 'gui_assert_text', 'gui_type', 'gui_press', 'gui_assert_visible', 'gui_assert_absent', 'gui_capture_response', 'gui_wait_response', 'gui_mock_route', 'gui_unmock_route'];
+const TOOLS = ['gui_connect', 'gui_list_keys', 'gui_probe', 'gui_inspect', 'gui_goto', 'gui_click', 'gui_hover', 'gui_fill', 'gui_get_text', 'gui_wait_for', 'gui_assert_text', 'gui_type', 'gui_press', 'gui_assert_visible', 'gui_assert_absent', 'gui_capture_response', 'gui_wait_response', 'gui_mock_route', 'gui_unmock_route'];
 const quote = value => JSON.stringify(value); // TOML strings/arrays, never shell text.
 
 export function codexCommand(bin = 'codex', platform = process.platform) {

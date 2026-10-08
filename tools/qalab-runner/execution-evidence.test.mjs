@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { fingerprint, executionContract, makeEvidence, normalizeScript } from './execution-evidence.mjs';
 import { executeGui } from './gui-execution.mjs';
 import { verifyImport } from './verify-import.mjs';
@@ -76,11 +77,11 @@ test('local verifier emits actual final script after two passes and refuses fail
     assert.equal(count, 2); assert.equal(released, 1);
     assert.deepEqual(result.cases[0].script, normalizeScript(script));
     assert.equal(result.cases[0].execution_evidence.repeat_count, 2);
-    const validator = new URL('../skills/qalab-requirement-test/scripts/validate-evidence.mjs', import.meta.url);
-    const valid = spawnSync(process.execPath, [validator.pathname], { input: readFileSync(output), encoding: 'utf8' });
+    const validator = fileURLToPath(new URL('../skills/qalab-requirement-test/scripts/validate-evidence.mjs', import.meta.url));
+    const valid = spawnSync(process.execPath, [validator], { input: readFileSync(output), encoding: 'utf8' });
     assert.equal(valid.status, 0, valid.stderr);
     result.cases[0].script[0].target.selector = '#tampered';
-    assert.equal(spawnSync(process.execPath, [validator.pathname], { input: JSON.stringify(result) }).status, 1);
+    assert.equal(spawnSync(process.execPath, [validator], { input: JSON.stringify(result) }).status, 1);
     await assert.rejects(verifyImport(options), /已存在/);
     failing = true; options.output = join(dir, 'failed.json');
     await assert.rejects(verifyImport(options), /未通过/);

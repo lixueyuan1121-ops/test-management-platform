@@ -22,11 +22,14 @@ const TARGET_PROPS = {
   selector: { type: "string", description: "原始 CSS selector(注册表未覆盖该元素时的兜底)" },
   within: { type: "object", description: "所属记录的定位，如 {key:'taskRow',has_text:'任务A'}；必须唯一" },
   has_text: { type: "string", description: "按业务文本过滤目标" },
+  has_text_exact: { type: "boolean", description: "和 has_text 一起使用；true 匹配完整文本（规范空白），避免同名带后缀项。仍须限定真实控件及所属容器" },
+  visible: { type: "boolean", description: "显式限制可见/隐藏元素；不能替代同名元素的业务范围约束" },
   nth: { type: "integer", minimum: 0, description: "仅在用例明确指定序号时使用，从0开始" },
   frame: { type: "string", description: "shell/vm/url:子串；缺省使用注册表作用域" },
   timeout_ms: { type: "number", minimum: 0 },
 };
 const TOOLS = [
+  { name: "gui_inspect", description: "只读检查当前步骤目标，不点击。返回 unique、match_count 和最多20个匹配的标签/文本/frame。重复时限定 frame、within、具体控件以及 has_text + has_text_exact，再检查唯一；不得默认取第一项。", inputSchema: { type: "object", properties: { ...TARGET_PROPS } } },
   { name: "gui_connect", description: "连接到 namiclaw 的 CDP 调试端口,返回顶层标题/URL 及自动下钻到的内容 frame URL(in_iframe=true 表示已进入 <vm_id>.work.n.cn 业务 iframe)。GUI 用例第一步必须先调它。", inputSchema: { type: "object", properties: {} } },
   { name: "gui_list_keys", description: "列出语义选择器注册表里的所有 key(含 frame 与描述)。定位元素前先调它,优先用语义 key 而不是猜 CSS。", inputSchema: { type: "object", properties: {} } },
   { name: "gui_probe", description: "注册表没覆盖某元素时用:扫描当前页(顶层 shell + 业务 iframe)的可见可交互元素,返回每个元素的候选选择器(按稳定性打分排序,best 最优)。可用 contains 过滤文本。拿到候选后:一次性用就传给 gui_click 的 selector;要复用就把 best 回报给人补进 selectors.json。", inputSchema: { type: "object", properties: { contains: { type: "string", description: "只返回可见文本包含该串的元素(缩小结果)" }, limit: { type: "number", description: "每个 frame 最多返回几个(默认 40)" } } } },
@@ -53,6 +56,7 @@ const fail = (v) => ({ content: [{ type: "text", text: typeof v === "string" ? v
 
 async function dispatch(name, args) {
   switch (name) {
+    case "gui_inspect": return ok(await gui.inspectTarget(args));
     case "gui_connect": return ok(await gui.connect());
     case "gui_list_keys": return ok(gui.listKeys());
     case "gui_probe": return ok({ hint: "best=最优候选;复用就把它按 {frame,by,value} 补进 selectors.json 的某个 key", ...(await gui.probe(args)) });

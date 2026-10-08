@@ -1,4 +1,5 @@
 import { homeRoleKeys } from '../home-anchors.mjs';
+import { pageDiagnostics } from '../execution-diagnostics.mjs';
 // gui-core —— 纳米Work GUI 自动化的**纯核心**(无 MCP、无进程),供两方复用:
 //   1) gui-mcp/server.mjs:包成 MCP 工具给 claude 用(judge 步/无 script 兜底);
 //   2) runner 的 StepExecutor:直接函数调用,按 script 确定性执行 gui 步骤(P3)。
@@ -249,6 +250,7 @@ export function createGuiCore(opts = {}) {
     },
     ensureConnected,
     contentFrame,
+    diagnostics(target) { return pageDiagnostics(page, { cdpUrl: CDP_URL, vmIframe: VM_IFRAME, target }); },
     // 取走并清空本轮自愈记录(runner 每条用例执行完调用,POST /api/selectors/learned 上报评审)。
     drainHeals() { return HEALS.splice(0); },
 
@@ -324,6 +326,7 @@ export function createGuiCore(opts = {}) {
       return { connected: true, title: await page.title(), url: page.url(), frame_url: f.url(), in_iframe: f !== page.mainFrame() };
     },
     async setChecked(args) { await ensureConnected(); return runtime.setChecked(args); },
+    async inspectTarget(args) { await ensureConnected(); return runtime.inspectTarget(args); },
     async selectOption(args) { await ensureConnected(); return runtime.selectOption(args); },
     listKeys() {
       return { count: Object.keys(REGISTRY).length, keys: Object.entries(REGISTRY).map(([k, v]) => ({ key: k, frame: v.frame, desc: v.desc })) };

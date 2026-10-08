@@ -51,8 +51,15 @@ class TestMacHelper(unittest.TestCase):
     def setUp(self): self.api = FakeApi(); self.store = Store(); self.client = qalab.Client(self.api, self.store)
     def test_https_origin_and_credential_boundary(self):
         self.assertEqual(qalab.normalize_origin('https://QALAB.claw.qihoo.net:443/'), qalab.DEFAULT_ORIGIN)
-        for url in ['http://localhost:8000', 'https://u:p@host', 'https://host/path', 'https://host/?token=x', 'https://host/#x']:
+        for url in ['http://example.com', 'http://localhost.example.com:8000', 'http://192.168.1.2:8000', 'http://u:p@localhost:8000', 'https://u:p@host', 'https://host/path', 'https://host/?token=x', 'https://host/#x']:
             with self.subTest(url=url), self.assertRaises(RuntimeError): qalab.normalize_origin(url)
+    def test_explicit_loopback_origin_preserves_platform_boundary(self):
+        for url, expected in [('http://LOCALHOST:8000/', 'http://localhost:8000'), ('http://127.0.0.1:8000', 'http://127.0.0.1:8000'),
+                              ('http://[::1]:8000', 'http://[::1]:8000'), ('http://localhost:80/', 'http://localhost')]:
+            self.assertEqual(qalab.normalize_origin(url), expected)
+            self.assertEqual(qalab.Api(url).origin, expected)
+            self.assertNotEqual(expected, qalab.DEFAULT_ORIGIN)
+        self.assertIsNone(qalab.NoRedirect().redirect_request(None, None, 302, '', {}, qalab.DEFAULT_ORIGIN))
     def test_login_refresh_does_not_save_password(self):
         self.assertEqual(self.client.login('tester', 'do-not-store'), 'a')
         self.assertNotIn('do-not-store', json.dumps(self.store.value))

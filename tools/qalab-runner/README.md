@@ -6,7 +6,7 @@
 > 本 README 讲整体设计与运行细节;`DEPLOY.md` 是精简部署卡片。
 
 ```
-qalab 平台(FastAPI)          runner.mjs(node,每 5s 轮询三条队列)
+qalab 平台(FastAPI)          runner.mjs(node,执行队列默认 1s，探测/perf 默认 5s)
    │  ①勾选用例下发到设备
    │  ②GET pending → claim ── exec  → gui/e2e/api/cli/manual 执行
    │                          probe → 探测/巡检语义选择器
@@ -19,11 +19,13 @@ qalab 平台(FastAPI)          runner.mjs(node,每 5s 轮询三条队列)
 ```
 
 ## 目录
+- `runner-polling.mjs` —— 分开执行队列与探测/perf 的检查间隔。`EXEC_POLL_MS` 可覆盖执行间隔；完成一批后立即检查下一批，同一设备仍串行执行。该间隔不包含网络、客户端启动和模型耗时。
 - `runner.mjs` —— 核心:轮询平台三条队列(exec/probe/perf)、调确定性执行器或 Claude Code、回写结果;GUI 用例前自动冷启动被测客户端带 CDP。
 - `step-executor.mjs` / `api-executor.mjs` —— 结构化 script 的**确定性执行器**(gui/e2e、api;不经 LLM,断言直接算 pass/fail)。
 - `reset-home.mjs` / `os-key.mjs` / `core-keys.mjs` —— gui/e2e 用例间**复位自愈**(reload → 掉登录检测 → 首页就绪门禁 → 分层 ESC / 新建会话)。
 - `perf-collect.mjs` —— 性能采集(perf 队列,共用同进程/配置/token)。
 - `gui-mcp/gui-core.mjs` —— GUI 定位引擎(runner 与 MCP server 共用一套);`server.mjs` 把它封装成 `mcp__gui__*` 工具供 claude 调。
+- 重复目标：先用 `gui_inspect`（直接调用时为 `gui.inspectTarget`）检查，再限定 `frame`、`within` 和实际控件；`has_text` 默认包含匹配，`has_text_exact:true` 改为完整文本匹配。不能仅给全局 contains XPath 追加同样文本来消除祖先匹配，也不能默认取第一项。修改脚本后须重跑并生成新的执行证据。
 - `gui-mcp/selectors.json` —— 语义选择器注册表(用法/更新见 `gui-mcp/README.md`)。
 - `.mcp.json` —— 注册 gui server(供 `claude -p` 加载)。
 - `cases/example-gui-login.json` —— 样例 GUI 用例 payload。

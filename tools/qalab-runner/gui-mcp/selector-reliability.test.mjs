@@ -136,7 +136,8 @@ try:
  payload=_payload_of(h.db.get(TestCase,r.json()['data']['id']),h.db)
  print(json.dumps(payload,ensure_ascii=False))
 finally: h.tearDown()`;
-  const payload = JSON.parse(execFileSync(backend+'.venv/bin/python', ['-B','-c',fixture], {cwd:backend, input:JSON.stringify(events), encoding:'utf8', stdio:['pipe','pipe','pipe']}));
+  const python = backend + '.venv/' + (process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const payload = JSON.parse(execFileSync(python, ['-B','-c',fixture], {cwd:backend, env:{...process.env,PYTHONUTF8:'1'}, input:JSON.stringify(events), encoding:'utf8', stdio:['pipe','pipe','pipe']}));
   await page.setContent(html);
   const runtime = createAutomationRuntime({page, registry:payload.selector_registry.registry, vmIframe:payload.selector_registry.vmIframe, timeout:200});
   const {runScript} = await import('../step-executor.mjs');

@@ -335,6 +335,7 @@ _AUTOMATION_FEASIBILITY_SPEC = """自动化可执行性约束:
 _GUI_SCRIPT_SPEC = """script(gui/e2e)——有序步骤数组,每步一个对象 {action, target?, args?, desc}:
    - action 只能取:connect(第一步必须,连接客户端)、click、hover(鼠标悬停到元素,触发悬浮态)、fill、type(追加输入不清空)、set_checked(设置勾选状态)、select_option(选择原生下拉选项)、press(发送按键如 End/Enter/Escape)、wait_for、wait_response(发消息后等 AI 回复生成完成,e2e 用)、get_text、assert_text、assert_visible、assert_absent、screenshot
    - 列表/重复控件必须缩小目标：target 可用 within:{key,has_text} 指定所属记录、has_text 过滤文本；只有用例明确按序号操作时才用 nth(从0开始)，不得默认取第一项。
+   - has_text 是包含匹配；完整同名文本用 has_text + has_text_exact:true，并限定真实控件与 frame/within。不要用全局 //*[contains(normalize-space(.),...)] 点击文本，它会命中祖先容器；追加同一文本仍可能重复。不能把控件名称当作全页面唯一性证明。
    - target:定位元素,**优先用语义 key**:{"key":"<下方清单里的 key>"};清单没有时给语义新 key 并描述元素，等待补齐；仅当输入提供已验证的 CSS 时才可用 {"selector":"<CSS>"}，不得臆造
    - **hover 用于"悬停才显示"的元素**(如列表项 hover 后才出现的更多/菜单按钮、悬浮提示 tooltip):先 hover 到承载元素,再 wait_for 等浮层出现,然后 click/assert;hover 本身不做断言
    - wait_response 紧跟提交用的 click/press(可在中间插 wait_for)，执行器在提交前记录本轮基线；自定义完成信号用 args.complete_key/stop_key。
@@ -2066,6 +2067,8 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
                     return [], "nth 必须是非负整数"
                 if "has_text" in current and not isinstance(current["has_text"], str):
                     return [], "has_text 必须是字符串"
+                if "has_text_exact" in current and (type(current["has_text_exact"]) is not bool or not isinstance(current.get("has_text"), str) or not current["has_text"].strip()):
+                    return [], "has_text_exact 必须为布尔值，且同时填写非空 has_text"
                 current, depth = current.get("within"), depth + 1
         if action == "set_checked" and type(args.get("checked")) is not bool:
             return [], "set_checked 缺少布尔值 args.checked"

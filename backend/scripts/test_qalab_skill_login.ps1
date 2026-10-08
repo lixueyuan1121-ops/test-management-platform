@@ -4,7 +4,7 @@ $scriptPath=Join-Path $PSScriptRoot '../../tools/skills/qalab-requirement-test/s
 function Read-Host { param($Prompt,[switch]$AsSecureString) if($AsSecureString){return (ConvertTo-SecureString 'fake-password' -AsPlainText -Force)};return 'test-user' }
 function Invoke-RestMethod {
  param($Uri,$Method,$Headers,$TimeoutSec,$MaximumRedirection,$Body,$ContentType)
- if(!$Uri.StartsWith('https://qalab-skill-test.invalid/')){throw 'Unexpected network origin'}
+ if(!$Uri.StartsWith($base+'/')){throw 'Unexpected network origin or fallback'}
  if($MaximumRedirection -ne 0){throw 'Redirect protection missing'}
  $path=([Uri]$Uri).AbsolutePath
  $qalabTestRequests.Add($path)
@@ -29,11 +29,12 @@ function Invoke-WebRequest {
  $bytes=[Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Depth 20 -Compress))
  return @{RawContentStream=[IO.MemoryStream]::new($bytes)}
 }
-$base='https://qalab-skill-test.invalid'
+foreach ($base in @('https://qalab-skill-test.invalid','http://localhost:38179','http://127.0.0.1:38179','http://[::1]:38179')) {
 try {
  $login = & $scriptPath -Action login -BaseUrl $base | Out-String
  if($login.Contains('fake-access-token') -or $login.Contains('fake-password') -or $login.Contains('must-not-print')){throw 'Secret in output'}
  $status = & $scriptPath -Action status -BaseUrl $base | Out-String | ConvertFrom-Json
+ if($status.platform -ne $base){throw 'Platform origin changed'}
  if($status.user -ne 'test-user' -or !$status.verified_import_available -or $status.projects[0].name -ne '中文项目'){throw 'DPAPI session roundtrip failed'}
  $fixture=[IO.Path]::GetTempFileName()
  try {
@@ -46,8 +47,11 @@ try {
    $state=& $scriptPath -Action job -JobId 7 -BaseUrl $base | Out-String | ConvertFrom-Json
    if($state.status -ne 'needs_confirmation'){throw 'Explicit job query failed'}
  } finally {Remove-Item -LiteralPath $fixture}
- $rejected=$false
- try {& $scriptPath -Action status -BaseUrl 'http://qalab-skill-test.invalid'} catch {$rejected=$true}
- if(!$rejected){throw 'Plain HTTP accepted'}
- 'PASS: masked login, DPAPI session roundtrip, refresh, discovery, async acceptance without polling, explicit job query, no secret output, HTTPS origin restriction'
+ foreach ($bad in @('http://qalab-skill-test.invalid','http://localhost.example.com:8000','http://192.168.1.2:8000','http://u:p@localhost:8000','http://localhost:8000/path','http://localhost:8000/?token=x')) {
+  $rejected=$false
+  try {& $scriptPath -Action status -BaseUrl $bad} catch {$rejected=$true}
+  if(!$rejected){throw ('Invalid origin accepted: '+$bad)}
+ }
+ ('PASS: '+$base+' isolated DPAPI session, refresh, discovery, async import/job, no fallback or secret output')
 } finally { & $scriptPath -Action logout -BaseUrl $base }
+}

@@ -15,6 +15,7 @@
 //   PNG Buffer 挂在该步 shotBuf。runner 负责把 shotBuf 逐张上传换成 URL(step-executor 不碰网络)。
 
 import { responseArgsBeforeAction, createTextCaptures } from "./gui-mcp/runtime-loader.mjs";
+import { boundedDiagnostic, safeUrl } from './execution-diagnostics.mjs';
 
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press", "set_checked", "select_option",
@@ -106,6 +107,11 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   const failAt = async (i, action, desc, reason, failKind = "selector", extraSteps, diagnostic) => {
     const rep = rec(i, action, desc, false, reason);
     if (diagnostic) rep.diagnostic = diagnostic;
+    if (gui.diagnostics) {
+      const context = await boundedDiagnostic(() => gui.diagnostics(script[i]?.target), 2500);
+      rep.diagnostic = { ...rep.diagnostic, context };
+      log(`  失败现场 step${i + 1}: ${JSON.stringify(context)}`);
+    }
     await capShot(rep);
     return finish({ verdict: "fail", fail_kind: failKind, reason, evidence: evidence[evidence.length - 1] || null, duration_ms: Date.now() - started, steps: extraSteps || steps, report });
   };
@@ -122,9 +128,20 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
       const responseArgs = responseArgsBeforeAction(script, i);
       if (responseArgs !== null) await gui.captureResponse(responseArgs);
       switch (action) {
-        case "connect": { const r = await gui.connect(); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "connect": {
+          const r = await gui.connect(); steps.push({ action, ok: true, ...r });
+          const rep = rec(i, action, desc, true);
+          rep.connection = { connected: r.connected, page_url: safeUrl(r.url), frame_url: safeUrl(r.frame_url), in_iframe: r.in_iframe };
+          log(`  页面连接: ${JSON.stringify(rep.connection)}`);
+          break;
+        }
         case "goto": { const r = await gui.goto(args.url || target.url, args); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
-        case "click": { const r = await gui.click(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "click": {
+          const r = await gui.click(operationArgs); steps.push({ action, ok: true, ...r });
+          const rep = rec(i, action, desc, true);
+          if (r?.skipped) { rep.skipped = true; log(`  step${i + 1} 可选点击跳过（目标未出现）`); }
+          break;
+        }
         case "hover": { const r = await gui.hover(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "fill": { const r = await gui.fill(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
         case "set_checked": { const r = await gui.setChecked(operationArgs); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }

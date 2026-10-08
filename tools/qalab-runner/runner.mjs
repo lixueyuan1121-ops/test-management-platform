@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runDomAudit } from './dom-audit.mjs';
+import { probeCdp, windowsClientStartScript, boundedDiagnostic } from './execution-diagnostics.mjs';
 import { runInWorker } from "./execution-worker.mjs";
 import desktopLease from "./desktop-lease.cjs";
 import { createHash } from "node:crypto";
@@ -37,6 +38,7 @@ import { makeEvidence, runtimeFingerprint } from './execution-evidence.mjs';
 import { verifyImport, saveLocalReport } from './verify-import.mjs';
 import { createExecutionTimer } from './execution-timing.mjs';
 import { runCodex } from './codex-engine.mjs';
+import { createPollSchedule } from './runner-polling.mjs';
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -180,9 +182,10 @@ const fetchRegistry = (projectId, sub = "") => loadRegistry(api, projectId, sub)
 // ---- 确保 namiclaw 带 CDP 调试端口在跑(GUI 用例前置)----
 // namiclaw 有单实例锁:必须先杀光旧实例,再带 --remote-debugging-port 冷启动,否则端口不开。
 // Windows 用 PowerShell Start-Process(脱离 git-bash fork 问题);Mac/Linux 用 spawn detached。
-function cdpAlive() {
-  return fetch(`http://127.0.0.1:${CDP_PORT}/json/version`, { signal: AbortSignal.timeout(3000) })
-    .then((r) => r.ok).catch(() => false);
+let lastCdpProbe = null;
+async function cdpAlive() {
+  lastCdpProbe = await probeCdp(CDP_PORT);
+  return lastCdpProbe.ok;
 }
 
 function psExec(script) {
@@ -196,11 +199,8 @@ function psExec(script) {
 async function coldStartClient() {
   if (!NAMICLAW_EXE) throw new Error("未配置 NAMICLAW_EXE,无法启动 GUI 客户端(这台机器可能不该跑 gui 用例)");
   if (IS_WIN) {
-    await psExec(
-      `Get-Process namiclaw -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;` +
-      `Start-Sleep -Seconds 2;` +
-      `Start-Process -FilePath '${NAMICLAW_EXE}' -ArgumentList '--remote-debugging-port=${CDP_PORT}'`
-    );
+    const startup = await psExec(windowsClientStartScript(NAMICLAW_EXE, CDP_PORT));
+    log(`客户端启动: ${startup.trim()}`);
   } else {
     // Mac/Linux:先杀旧实例(按可执行名),再 detached 冷启动带调试端口
     const name = NAMICLAW_EXE.split("/").pop();
@@ -217,14 +217,15 @@ async function coldStartClient() {
 }
 
 async function ensureNamiclaw() {
-  if (await cdpAlive()) return;                    // 已就绪,直接用
-  log("客户端 CDP 未就绪,冷启动中…");
+  if (await cdpAlive()) { log(`CDP 检查: ${JSON.stringify(lastCdpProbe)}`); return; }
+  log(`客户端 CDP 未就绪,冷启动中… ${JSON.stringify(lastCdpProbe)}`);
   await coldStartClient();
   for (let i = 0; i < 15; i++) {                   // 最多等 30s
     await sleep(2000);
     if (await cdpAlive()) { log(`客户端 CDP 就绪(${(i + 1) * 2}s)`); return; }
   }
-  throw new Error("namiclaw CDP 启动超时,9222 未就绪");
+  log(`CDP 启动失败: ${JSON.stringify(lastCdpProbe)}`);
+  throw new Error(`客户端 CDP 启动超时,${CDP_PORT} 未就绪 (${lastCdpProbe?.error || lastCdpProbe?.status || 'unknown'})`);
 }
 
 // ---- 调 Claude Code headless 执行一条用例,解析结构化结论 ----
@@ -247,6 +248,7 @@ verdict 只能是 "pass" 或 "fail"。evidence 放截图/日志本地路径,没�
 - GUI 用例:**只用 mcp__gui__* 工具**——先 gui_connect,再 gui_list_keys 看有哪些语义 key;
   定位元素**优先传 key**(gui_click/gui_fill/gui_get_text/gui_wait_for/gui_assert_text 都接 {key} 或 {selector}),
   注册表没覆盖的元素:先 gui_probe 探当前页拿候选选择器,再用其 best 当 {selector};gui_screenshot 存证。
+  同名/重复元素先 gui_inspect 检查：限定 frame 和所属列表/弹窗 within，再用具体控件选择器 + has_text、has_text_exact:true；全局 //*[contains(normalize-space(.),...)] 会匹配祖先容器，不可直接点击。只有 unique=true 才操作，仍重复就报定位阻塞，不默认 nth=0。
   发送消息前必须先 gui_capture_response，提交后 gui_wait_response，不能把旧回答当作本轮完成。
   禁止自己写 Playwright、禁止用鼠标坐标。
 - api 用例:用 curl / fetch 验证接口与响应。
@@ -659,6 +661,7 @@ async function handlePerf() {
 
 // ---- 主循环 ----
 async function executeItem(item, { localEvidenceDir = null } = {}) {
+      log(`执行上下文: run_id=${item.run_id} case=${item.case_id} runner=${RUNNER_ID} pid=${process.pid} cdp_port=${CDP_PORT}`);
       const timer = createExecutionTimer(undefined, log);
       let result;
       try {
@@ -677,6 +680,7 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
         });
         item.payload.selector_registry = reg;
         guiCore.setRegistry(reg?.registry, reg?.vmIframe, reg?.coreKeys);
+        log(`注册表: keys=${Object.keys(reg?.registry || {}).length} vm_iframe=${reg?.vmIframe || '(none)'}`);
         await timer.measure('prepare_ms', () => guiCore.ensureConnected());
         result = await runWithTrace(guiCore, async () => {
           let result;
@@ -690,10 +694,14 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
               await sleep(2000);
               if (await cdpAlive()) { log(`  客户端 CDP 就绪(${(i + 1) * 2}s)`); return; }
             }
-            throw new Error("重启后 CDP 超时,9222 未就绪");
+            throw new Error(`重启后 CDP 超时,${CDP_PORT} 未就绪 (${lastCdpProbe?.error || lastCdpProbe?.status || 'unknown'})`);
           };
           result = await executeGui({ payload: item.payload, log, engine: GUI_AI_ENGINE, measure: timer.measure,
-            reset: async () => RESET_BETWEEN_CASES ? { ...await resetOrBlock(guiCore, log, { restartClientFn }), reset: true } : { ok: true, reset: false },
+            reset: async () => {
+              const reset = RESET_BETWEEN_CASES ? { ...await resetOrBlock(guiCore, log, { restartClientFn }), reset: true } : { ok: true, reset: false };
+              log(`复位结果: enabled=${reset.reset} ok=${reset.ok}`);
+              return reset;
+            },
             navigate: payload => navigateWithEngine(payload, log),
             scriptRun: script => runScript(guiCore, script, log, judgeWithEngine),
             agentRun: payload => executeWithEngine(payload, item.kind),
@@ -718,7 +726,10 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
       }
 
       } catch (error) {
-        result = { verdict: 'fail', fail_kind: 'selector', reason: `执行异常：${error.message}`, report: [] };
+        const diagnostic = { cdp: lastCdpProbe, context: await boundedDiagnostic(() => guiCore.diagnostics(), 2500) };
+        log(`执行异常现场: ${JSON.stringify(diagnostic)}`);
+        result = { verdict: 'fail', fail_kind: 'selector', reason: `执行异常：${error.message}`,
+          report: [{ action: 'diagnostics', desc: '执行环境诊断', ok: false, error: error.message, diagnostic }] };
       }
       if (result.tracePath && !localEvidenceDir) {
         result.report ||= [];
@@ -754,7 +765,7 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
 
 async function tick() {
   const pending = await fetchPending();
-  if (!pending?.length) return;
+  if (!pending?.length) return 0;
   log(`拉到 ${pending.length} 条待执行`);
   const batch = [];   // 本批各条结果(供结束语汇总)
   for (const item of pending) {
@@ -796,12 +807,15 @@ async function tick() {
   }
   // 本批结束语:一批跑完给个明确收尾状态(此前静默结束,无人值守时看不出跑没跑完)。
   log(summarizeBatch(batch).text);
+  return batch.length;
 }
 
 async function main() {
   log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY} gui_ai_engine=${GUI_AI_ENGINE}`);
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
+  const polling = createPollSchedule({ pollMs: POLL_MS, execPollMs: process.env.EXEC_POLL_MS });
+  log(`执行队列轮询 ${polling.executionMs}ms，探测/perf 轮询 ${polling.maintenanceMs}ms`);
   let release;
   for (;;) {
     release ||= await desktopLease.acquireDesktopLease();
@@ -809,16 +823,19 @@ async function main() {
       // Presence polling never touches the desktop or claims work.
       try { if (!AUDIT_ONLY) await fetchPending(); } catch (e) { log("轮询异常:", e.message); }
       log("桌面正由另一 runner 使用，等待当前任务结束");
-      await sleep(POLL_MS);
+      await sleep(polling.executionMs);
       continue;
     }
     let recordingActive = false;
+    let completed = 0;
     try {
       recordingActive = !AUDIT_ONLY && await handleRecordings();
       if (recordingActive) { await sleep(POLL_MS); continue; }
-      try { if (!AUDIT_ONLY) await tick(); } catch (e) { log("轮询异常:", e.message); }
-      try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
-      try { if (!AUDIT_ONLY) await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
+      try { if (!AUDIT_ONLY) completed = await tick(); } catch (e) { log("轮询异常:", e.message); }
+      if (polling.maintenanceDue()) {
+        try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }
+        try { if (!AUDIT_ONLY) await handlePerf(); } catch (e) { log("perf 轮询异常:", e.message); }
+      }
     } finally {
       // Drop cached CDP handles before another executor can restart/switch clients.
       // Recording spans polls: retain both the CDP connection and desktop lease.
@@ -827,7 +844,7 @@ async function main() {
         finally { await release(); release = null; }
       }
     }
-    await sleep(POLL_MS);
+    await sleep(AUDIT_ONLY ? polling.maintenanceMs : polling.delay(completed));
   }
 }
 
