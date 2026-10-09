@@ -72,6 +72,8 @@ description: 单独调用时通过输入卡片收集需求、应用地址、回�
 
 ## 实际执行
 
+最终交付是平台可再次下发的用例：Codex 生成后转换成平台 DSL，由 Runner 执行同一脚本完成验证和后续重跑。涉及失败模拟、重试、迟到响应、重复请求或接口列表顺序时，先读 [可重放场景转换](references/replayable-scenarios.md)。按场景维护脚本、实测与提交状态；诊断检查通过但尚未转换的项目必须列为“未交付”，继续补齐已有能力可实现的脚本，不能只提交最容易的一条后把其他检查算作完成。
+
 同名选择器、重复 testid 或列表控件按 [重复元素定位与执行效率](references/target-disambiguation.md) 增加所属容器、frame 和完整文本限制，并用当前 Runner 的 `inspectTarget` / `gui_inspect` 只读核实。不要直接点击全局 contains XPath，也不默认选择首项绕过冲突。已有完整脚本优先确定性执行；Codex 仅用于需要动态决策的部分。
 
 优先复用环境现有自动化 Runner / Playwright / 已连接的应用；检查工具是否可用，不假设所有人拥有同一安装路径或 CDP 端口。桌面 UI 交互使用当前可用且授权的电脑控制能力；若使用电脑控制 skill，先读取其指引。Electron 可复用项目既有 guiCore + StepExecutor，浏览器应用使用适用的 Playwright 执行器。

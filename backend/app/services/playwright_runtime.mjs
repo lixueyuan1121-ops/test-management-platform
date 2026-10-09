@@ -441,7 +441,8 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
         if (!found.count || !await found.loc.isVisible()) return { skipped: true, reason: "目标当前不可见" };
       }
       const r = await resolve(args);
-      await r.loc.click({ timeout: Math.max(1, limit(args)) });
+      if (args.click_count !== undefined && ![1, 2].includes(args.click_count)) throw error('INVALID_CLICK', 'click_count 只能为 1 或 2');
+      await r.loc.click({ timeout: Math.max(1, limit(args)), clickCount: args.click_count ?? 1 });
       return { clicked: args.key || args.selector, via: r.hit };
     },
     async setChecked(args) {

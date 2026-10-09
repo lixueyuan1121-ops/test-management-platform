@@ -2,6 +2,35 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runScript } from "./step-executor.mjs";
 
+test('connect viewport is executed, recorded and restored on pass, assertion failure and action error', async () => {
+  for (const failure of ['', 'assert', 'click', 'connect']) {
+    const gui = fakeGui({ visibleOk: failure !== 'assert', clickThrow: failure === 'click' });
+    let restored = 0;
+    gui.connect = async args => {
+      assert.deepEqual(args.viewport, { width: 1280, height: 720 });
+      if (failure === 'connect') throw new Error('setup failed');
+      return { connected: true, viewport: { requested: args.viewport, actual: args.viewport } };
+    };
+    gui.restoreViewport = async () => { restored++; return { restored: true }; };
+    const result = await runScript(gui, [
+      { action: 'connect', args: { viewport: { width: 1280, height: 720 } } },
+      { action: 'click', target: { key: 'open' } },
+      { action: 'assert_visible', target: { key: 'menu' } },
+    ]);
+    assert.equal(restored, 1);
+    assert.equal(result.verdict, failure ? 'fail' : 'pass');
+    if (failure !== 'connect') assert.deepEqual(result.report[0].connection.viewport.actual, { width: 1280, height: 720 });
+  }
+});
+
+test('viewport cleanup failure blocks a successful result', async () => {
+  const gui = fakeGui();
+  gui.restoreViewport = async () => { throw new Error('disconnected'); };
+  const result = await runScript(gui, [{ action: 'assert_visible', target: { key: 'menu' } }]);
+  assert.equal(result.verdict, 'fail');
+  assert.match(result.reason, /视口恢复失败/);
+});
+
 test('restored execution keeps captured text comparisons and real failure evidence', async () => {
   for (const actual of ['订单 42', '错误订单']) {
     const gui = fakeGui();

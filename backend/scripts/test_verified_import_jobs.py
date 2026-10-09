@@ -68,6 +68,34 @@ class AsyncTests(ApiTests):
         self.assertEqual(self.submit(body).json()['data']['job_id'],jid)
         self.assertEqual(self.count(ExecRun),1)
 
+    def test_dynamic_text_assertion_import_and_retry(self):
+        body = source('dynamic-text')
+        case = body['cases'][0]
+        case['script'] = [
+            {'action': 'get_text', 'target': {'selector': '.row-title'}, 'args': {'save_as': 'rank_name'}, 'desc': '读取列表名称'},
+            {'action': 'assert_text', 'target': {'selector': '.detail-title'}, 'args': {'expected_from': 'rank_name'}, 'desc': '验证详情名称'},
+        ]
+        case['report'] = [
+            {'action': 'get_text', 'ok': True, 'text': 'fixture name'},
+            {'action': 'assert_text', 'ok': True, 'check': {'pass': True, 'actual': 'fixture name', 'expected': 'fixture name'}},
+        ]
+        response = self.submit(body)
+        self.assertEqual(response.status_code, 202, response.text)
+        jid = response.json()['data']['job_id']
+        # Reproduce an item rejected by the old fixed-text-only validator.
+        with patch('app.services.claude_runner._validate_script', return_value=([], 'assert_text 缺 args.expected')):
+            drain_once(self.factory)
+        item = self.job(jid)['items'][0]
+        self.assertEqual(item['status'], 'failed', item)
+        retry = self.client.post(f"/api/verified-imports/jobs/{jid}/items/{item['id']}/retry")
+        self.assertEqual(retry.status_code, 200, retry.text)
+        drain_once(self.factory)
+        self.assertEqual(self.job(jid)['items'][0]['status'], 'done', self.job(jid))
+        self.assertEqual(self.count(TestCase), 1)
+        self.assertEqual(self.count(ExecRun), 1)
+        with self.factory() as db:
+            self.assertEqual(json.loads(db.query(ExecRun).one().payload)['script'], case['script'])
+
     def test_concurrent_acceptance_and_workers_cross_user_reuse(self):
         body=source('same-retry')
         with ThreadPoolExecutor(max_workers=6) as pool:

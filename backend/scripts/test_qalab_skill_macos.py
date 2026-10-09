@@ -49,6 +49,31 @@ def payload():
 
 class TestMacHelper(unittest.TestCase):
     def setUp(self): self.api = FakeApi(); self.store = Store(); self.client = qalab.Client(self.api, self.store)
+    def test_network_protocol_checked_before_submit(self):
+        source = payload()
+        source['cases'][0]['script'] = [
+            {'action': 'watch_network', 'args': {'id': 'publish', 'path': '/publish', 'frame': 'shell', 'method': 'POST'}},
+            {'action': 'assert_network_count', 'args': {'id': 'publish', 'expected': 0}},
+        ]
+        source['cases'][0]['report'] = [
+            {'action': 'watch_network', 'ok': True},
+            {'action': 'assert_network_count', 'ok': True, 'check': {'actual': 0, 'expected': 0}},
+        ]
+        for mode in ('old', 'partial', 'current'):
+            api = FakeApi()
+            def request(method, path, body=None, token=None):
+                if path == '/api/verified-imports/capabilities':
+                    if mode == 'old': raise RuntimeError('HTTP 404')
+                    return {'replay_protocols': ['network-scenarios-v1'], 'actions': ['watch_network'] + (['assert_network_count'] if mode == 'current' else [])}
+                return api(method, path, body, token)
+            request.origin = api.origin
+            client = qalab.Client(request, self.store)
+            if mode == 'current':
+                self.assertEqual(client.import_cases(source, 'a')['job_id'], 7)
+            else:
+                with self.assertRaisesRegex(RuntimeError, '更新平台'):
+                    client.import_cases(source, 'a')
+                self.assertIsNone(api.payload)
     def test_https_origin_and_credential_boundary(self):
         self.assertEqual(qalab.normalize_origin('https://QALAB.claw.qihoo.net:443/'), qalab.DEFAULT_ORIGIN)
         for url in ['http://example.com', 'http://localhost.example.com:8000', 'http://192.168.1.2:8000', 'http://u:p@localhost:8000', 'https://u:p@host', 'https://host/path', 'https://host/?token=x', 'https://host/#x']:

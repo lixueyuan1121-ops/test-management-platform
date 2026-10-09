@@ -1,12 +1,12 @@
 ﻿function Test-ScriptTargets($steps, [string]$title) {
   if ($steps -isnot [array] -or $steps.Count -eq 0) { throw ($title + ': script 必须是非空数组') }
-  $targetActions=@('click','hover','fill','type','set_checked','select_option','wait_for','get_text','assert_text','assert_visible','assert_absent')
+  $targetActions=@('click','hover','fill','type','set_checked','select_option','wait_for','get_text','assert_text','assert_visible','assert_absent','assert_list_from_response')
   for ($n=0; $n -lt $steps.Count; $n++) {
     $step=$steps[$n]; $label=('{0}: 第 {1} 步' -f $title,($n+1))
     if ($step -isnot [pscustomobject]) { throw ($label + ' 必须是对象') }
     if ($step.action -isnot [string] -or !$step.action.Trim()) { throw ($label + ' 缺 action') }
     $action=$step.action.Trim(); $target=$step.target
-    if ($action -notin ($targetActions + @('connect','press','wait_response','screenshot','mock_route','unmock_route'))) { throw ($label + ' 非平台 GUI/E2E action「' + $action + '」；等待元素使用 wait_for + target') }
+    if ($action -notin ($targetActions + @('connect','press','wait_response','screenshot','mock_route','unmock_route','watch_network','fault_route','release_fault','wait_network','assert_network_count','assert_fault_hits'))) { throw ($label + ' 非平台 GUI/E2E action「' + $action + '」；等待元素使用 wait_for + target') }
     if ($null -ne $target -and $target -isnot [pscustomobject]) { throw ($label + ' target 必须是对象，定位写入 target.selector 或 target.key') }
     if ($null -ne $step.args -and $step.args -isnot [pscustomobject]) { throw ($label + ' args 必须是对象') }
     if ($action -notin $targetActions -and !($action -eq 'press' -and $null -ne $target -and @($target.PSObject.Properties).Count -gt 0)) { continue }
@@ -29,7 +29,7 @@
 }
 
 function Test-ImportPayload($payload) {
-if (@($payload.cases | Where-Object { $_.execution_evidence }).Count) {
+if (@($payload.cases | Where-Object { $_.execution_evidence -or @($_.script | Where-Object { $_.action -in @('watch_network','fault_route','release_fault','wait_network','assert_network_count','assert_fault_hits','assert_list_from_response') }).Count }).Count) {
   if (!(Get-Command node -ErrorAction SilentlyContinue)) { throw '执行证据校验需要 Node.js，请使用运行 Runner 的同一环境' }
   $previousEncoding=$OutputEncoding
   try {

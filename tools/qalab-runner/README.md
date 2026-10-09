@@ -5,6 +5,10 @@
 > 📖 **要在自己电脑上跑 runner?看 [`操作手册.md`](操作手册.md)**(执行机操作员 SOP:安装 → 配置 → 启动 → 下发 → 看结果 → 排障)。
 > 本 README 讲整体设计与运行细节;`DEPLOY.md` 是精简部署卡片。
 
+小屏回归须在最终脚本的连接步骤写入 `{"action":"connect","args":{"viewport":{"width":1280,"height":720}}}`。
+环境备注不会改变实际视口。新版 Runner 会校验实际尺寸、在连接报告记录尺寸，并在通过或失败后恢复原视口；不设置该参数的用例保持原行为。
+这是 CDP 渲染视口模拟，不是操作系统原生窗口缩放。执行设备须更新包含 `viewport-session.mjs` 的 Runner 后再下发此类脚本。
+
 ```
 qalab 平台(FastAPI)          runner.mjs(node,执行队列默认 1s，探测/perf 默认 5s)
    │  ①勾选用例下发到设备
@@ -72,3 +76,8 @@ GUI/E2E 的 AI 导航、主观判定和无脚本兜底也可使用 Codex：安�
 - **无人值守授权**:`runner.mjs` 里 `claude -p` 用 `--permission-mode acceptEdits` + `--allowedTools "Bash mcp__gui__*"`;按真实用例收敛白名单。
 - **判定可信度**:能用 `gui_assert_text` / 退出码 / 接口响应等确定性断言就用,少让 LLM"看一眼觉得对"。
 - **本机环境**:runner 用 node(本机 python 在 git-bash 下无法 fork);GUI 启动用 PowerShell `Start-Process`(bash 后台起 GUI 不可靠)。
+# 可重放网络场景
+
+`network-scenarios-v1` 在 StepExecutor 中确定性执行，不依赖 Codex/Claude。支持同源 fetch 的监听、失败/响应模拟、响应暂停与释放，以及请求次数和接口列表顺序断言。脚本、参数和限制见 [可重放场景转换](../skills/qalab-requirement-test/references/replayable-scenarios.md)。
+
+平台、技能校验器与 Runner 需一同更新；旧平台会在提交前被能力检查拦截。模拟未命中、超时、恢复失败一律不通过；清理在用例成功/失败出口执行。独立浏览器回归：`node --test gui-mcp/network-scenarios.test.mjs`，使用 `PLAYWRIGHT_TEST_EXECUTABLE` 指定本机浏览器。测试不会操作已登录应用。

@@ -517,6 +517,11 @@ def _payload_of(tc: TestCase | None, db: Session) -> dict:
             "auth": env.get("auth", {}),
         }
     if script and _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
+        from app.services.script_targets import NETWORK_ACTIONS
+        if any(s.get('action') in NETWORK_ACTIONS for s in script):
+            # Network fault/observation semantics must never fall back to an AI
+            # improvising an unsupported step on an older execution device.
+            payload['strict_replay'] = True
         from app.services.execution_evidence import execution_contract, fingerprint
         payload['execution_contract_sha256'] = fingerprint(execution_contract(payload))
     return payload

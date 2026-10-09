@@ -1,3 +1,4 @@
+import { validateNetworkScript } from './network-contract.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
@@ -19,6 +20,7 @@ function fingerprint(value) {
 try {
   const payload = JSON.parse(readFileSync(0, 'utf8').replace(/^\uFEFF/, ''));
   for (const c of payload.cases || []) {
+    if (['gui', 'e2e'].includes(c.exec_kind || 'e2e')) validateNetworkScript(c.script || []);
     const e = c.execution_evidence;
     if (!e) continue;
     const script = c.script.map(s => ({ action: String(s.action || '').trim(), target: s.target || {}, args: s.args || {}, desc: Array.from(String(s.desc || '')).slice(0,200).join('') }));

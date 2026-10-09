@@ -1,4 +1,6 @@
 import { homeRoleKeys } from '../home-anchors.mjs';
+import { createViewportSession } from './viewport-session.mjs';
+import { createNetworkScenarios } from './network-scenarios.mjs';
 import { pageDiagnostics } from '../execution-diagnostics.mjs';
 // gui-core —— 纳米Work GUI 自动化的**纯核心**(无 MCP、无进程),供两方复用:
 //   1) gui-mcp/server.mjs:包成 MCP 工具给 claude 用(judge 步/无 script 兜底);
@@ -101,6 +103,7 @@ export function createGuiCore(opts = {}) {
 
   let browser = null;
   let page = null;
+  const viewportSession = createViewportSession();
 
   let ctx = null;
   let traceContext = null;
@@ -115,6 +118,7 @@ export function createGuiCore(opts = {}) {
     page: () => page, registry: () => REGISTRY, vmIframe: () => VM_IFRAME,
     timeout: DEFAULT_TIMEOUT,
   });
+  const networkScenarios = createNetworkScenarios(() => page, runtime);
 
   async function ensureConnected() {
     if (browser && browser.isConnected() && page && !page.isClosed()) {
@@ -320,11 +324,13 @@ export function createGuiCore(opts = {}) {
       for (const f of page.frames()) await f.evaluate(ACK_SCRIPT, ids).catch(() => {});
     },
 
-    async connect() {
+    async connect(args = {}) {
       await ensureConnected();
+      const viewport = args.viewport === undefined ? undefined : await viewportSession.set(page, args.viewport);
       const f = await waitForContentFrame();
-      return { connected: true, title: await page.title(), url: page.url(), frame_url: f.url(), in_iframe: f !== page.mainFrame() };
+      return { connected: true, title: await page.title(), url: page.url(), frame_url: f.url(), in_iframe: f !== page.mainFrame(), ...(viewport ? { viewport } : {}) };
     },
+    async restoreViewport() { return viewportSession.restore(); },
     async setChecked(args) { await ensureConnected(); return runtime.setChecked(args); },
     async inspectTarget(args) { await ensureConnected(); return runtime.inspectTarget(args); },
     async selectOption(args) { await ensureConnected(); return runtime.selectOption(args); },
@@ -558,17 +564,22 @@ export function createGuiCore(opts = {}) {
       }
     },
     async mockRoute(args) { await ensureConnected(); return runtime.mockRoute(args); },
+    async networkStep(action, args, target) { await ensureConnected(); return networkScenarios.execute(action, args, target); },
+    async cleanupNetworkScenarios() { return networkScenarios.cleanup(); },
     async unmockRoute(args) { return runtime.unmockRoute(args); },
     async unmockAll() { return runtime.unmockAll(); },
     mockStats() { return runtime.mockStats(); },
     async close() {
       // connectOverCDP 的 close 只断开连接,不关被测客户端
+      try { await viewportSession.restore(); } finally {
+      try { await networkScenarios.cleanup(); } catch { /* reported by StepExecutor; disconnect still required */ }
       try { await runtime.unmockAll(); } catch { /* disconnected context */ }
       if (traceContext) { try { await traceContext.tracing.stop(); } catch {} }
       if (browser) { try { await browser.close(); } catch { /* 已断开 */ } }
       traceContext = null;
       runtime.resetConnection();
       browser = null; page = null; ctx = null; testidInjected = false;
+      }
     },
   };
 }

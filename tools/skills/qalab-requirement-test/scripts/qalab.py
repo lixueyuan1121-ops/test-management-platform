@@ -152,6 +152,15 @@ class Client:
 
     def import_cases(self, payload, token):
         validate_payload(payload)
+        from script_targets import NETWORK_ACTIONS
+        required = {s.get('action') for c in payload['cases'] for s in c['script']} & NETWORK_ACTIONS
+        if required:
+            try:
+                caps = self.api('GET', '/api/verified-imports/capabilities', token=token)
+            except RuntimeError as exc:
+                raise RuntimeError('目标平台尚未确认网络场景协议；请更新平台，保留原始实测包，不提交或改投其他环境') from exc
+            if 'network-scenarios-v1' not in caps.get('replay_protocols', []) or not required.issubset(set(caps.get('actions', []))):
+                raise RuntimeError('目标平台不支持本批脚本的网络场景动作；请更新平台后重试原包')
         status = self.status(token)
         if not status["async_import_available"]:
             raise RuntimeError("线上尚未发布异步导入接口；保留待导入包，请先更新服务器，不退回同步导入")

@@ -95,6 +95,13 @@ if ($Action -eq 'preview') {
   Call-Api 'POST' '/api/verified-imports/preview' $payload $session.access_token | ConvertTo-Json -Depth 100
   exit
 }
+$networkActions = @('watch_network','fault_route','release_fault','wait_network','assert_network_count','assert_fault_hits','assert_list_from_response')
+$required = @($payload.cases | ForEach-Object { $_.script } | Where-Object { $_.action -in $networkActions } | Select-Object -ExpandProperty action -Unique)
+if ($required.Count) {
+  try { $caps = Call-Api 'GET' '/api/verified-imports/capabilities' $null $session.access_token }
+  catch { throw '目标平台尚未确认网络场景协议；请更新平台，保留原始实测包，不提交或改投其他环境' }
+  if ('network-scenarios-v1' -notin @($caps.replay_protocols) -or @($required | Where-Object { $_ -notin @($caps.actions) }).Count) { throw '目标平台不支持本批脚本的网络场景动作；请更新平台后重试原包' }
+}
 $receipt = Call-Api 'POST' '/api/verified-imports/jobs' $payload $session.access_token
 if ($receipt.accepted -ne $true -or $receipt.job_id -le 0 -or $receipt.project_id -ne $payload.project_id -or $receipt.external_id -cne $payload.external_id -or $receipt.case_count -ne @($payload.cases).Count) {
   throw '提交回执无法确认；保留原 external_id 和内容重试，勿生成新 ID；不宣称已经入库'

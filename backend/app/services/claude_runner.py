@@ -11,6 +11,8 @@
 - runner 只负责「跑 + 解析 + yield 事件」，不碰数据库；落库由 api 层完成。
 """
 from app.services.script_keys import referenced_keys
+from app.services.script_text_captures import validate_text_captures
+from app.services.script_targets import NETWORK_ACTIONS, validate_network_script
 import json
 import logging
 import os
@@ -1973,7 +1975,7 @@ def parse_testcases(raw: str, project_id: int | None = None, sub_product: str = 
 
 def _contains_network_mock(script) -> bool:
     return isinstance(script, list) and any(
-        isinstance(step, dict) and str(step.get("action") or "").strip() in ("mock_route", "unmock_route")
+        isinstance(step, dict) and str(step.get("action") or "").strip() in ("mock_route", "unmock_route", "fault_route", "release_fault")
         for step in script
     )
 
@@ -1985,6 +1987,7 @@ def _validate_generated_gui_script(script, valid_keys=None):
 
 
 _VALID_ACTIONS = {"connect", "click", "hover", "fill", "type", "set_checked", "select_option", "press", "wait_for", "wait_response", "get_text", "assert_text", "assert_visible", "assert_absent", "screenshot", "mock_route", "unmock_route"}
+_VALID_ACTIONS |= NETWORK_ACTIONS
 
 # gui/e2e 因"选择器未注册"降级 manual 时的 kind_reason 前缀标识。
 # 前端据此前缀渲染「补选择器可自动化」标签(见 CaseLibrary.vue),故改此串须同步前端。
@@ -2051,7 +2054,7 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
                 if valid_keys is not None and key not in valid_keys:
                     return [], f"step「wait_response」用了未注册的 key「{key}」"
 
-        if action in ("click", "hover", "fill", "type", "set_checked", "select_option", "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent") or (action == "press" and target):
+        if action in ("click", "hover", "fill", "type", "set_checked", "select_option", "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent", "assert_list_from_response") or (action == "press" and target):
             if not (isinstance(target, dict) and (target.get("key") or target.get("selector"))):
                 return [], f"step「{action}」缺 target.key/selector"
             current, depth = target, 0
@@ -2076,13 +2079,18 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
             return [], "select_option 缺少 args.values 字符串或字符串数组"
         if action == "press" and not (st.get("args") or {}).get("key_name"):
             return [], "press 缺少 args.key_name"
-        if action == "assert_text" and not isinstance((st.get("args") or {}).get("expected"), str):
-            return [], "assert_text 缺 args.expected"
         if action in ("mock_route", "unmock_route") and not (st.get("args") or {}).get("url"):
             return [], f"{action} 缺 args.url"
-        if action in ("assert_text", "assert_visible", "assert_absent"):
+        if action.startswith("assert_"):
             has_assert = True
         norm.append({"action": action, "target": target, "args": st.get("args") or {}, "desc": str(st.get("desc") or "")[:200]})
+    try:
+        validate_network_script(norm)
+    except ValueError as exc:
+        return [], str(exc)
+    capture_error = validate_text_captures(norm)
+    if capture_error:
+        return [], capture_error
     if not has_assert:
         return [], "无任何断言步骤(assert_text/assert_visible)"
     return norm, None

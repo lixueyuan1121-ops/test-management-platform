@@ -16,12 +16,14 @@
 
 import { responseArgsBeforeAction, createTextCaptures } from "./gui-mcp/runtime-loader.mjs";
 import { boundedDiagnostic, safeUrl } from './execution-diagnostics.mjs';
+import { NETWORK_ACTIONS, validateNetworkScript } from './gui-mcp/network-scenarios.mjs';
 
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press", "set_checked", "select_option",
   "wait_for", "wait_response", "get_text", "screenshot", "goto",
   "assert_text", "assert_visible", "assert_absent", "judge",
   "mock_route", "unmock_route",
+  ...NETWORK_ACTIONS,
 ]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
@@ -40,7 +42,12 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   }
 
   let textCaptures;
-  try { textCaptures = createTextCaptures(script); }
+  try {
+    textCaptures = createTextCaptures(script);
+    validateNetworkScript(script);
+    if (script.some(s => NETWORK_ACTIONS.has(s.action)) && (typeof gui.networkStep !== 'function' || typeof gui.cleanupNetworkScenarios !== 'function'))
+      throw new Error('Runner 缺少网络场景执行能力，请更新 Runner；未执行任何步骤');
+  }
   catch (e) { return { verdict: "fail", fail_kind: "selector", reason: `脚本文本比较无效，未执行操作：${e.message}`, report: [], steps: [] }; }
 
   const started = Date.now();
@@ -70,6 +77,18 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   //     这正是 mock 不生效最常见的形态(URL 模式没匹配上真实请求),不点名就只剩一句看不出所以然的断言失败。
   // 老 gui 没有 mockStats/unmockAll → 各自跳过(向后兼容)。
   const finish = async (result) => {
+    try { await gui.cleanupNetworkScenarios?.(); }
+    catch (e) {
+      result.verdict = 'fail'; result.fail_kind = 'selector';
+      result.reason += `；网络场景未生效或恢复失败：${e.message}`;
+    }
+    try {
+      const restored = await gui.restoreViewport?.();
+      if (restored) { result.viewport_cleanup = restored; log(`  视口恢复: ${JSON.stringify(restored)}`); }
+    } catch (e) {
+      result.verdict = 'fail'; result.fail_kind = 'selector';
+      result.reason += `；视口恢复失败：${e.message || e}`;
+    }
     // 收尾时仍存活的拦截器命中数以 gui 为准(它一直在计数);已被 unmock_route 撤掉的以 mocksSeen 记的为准。
     // 老 gui 不会计数,此时 hits 恒 0 并不代表"没拦到",不能据此报警 —— 整块统计一并跳过。
     let counted = typeof gui.mockStats === "function";
@@ -128,10 +147,24 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
       const responseArgs = responseArgsBeforeAction(script, i);
       if (responseArgs !== null) await gui.captureResponse(responseArgs);
       switch (action) {
+        case 'watch_network': case 'fault_route': case 'release_fault': case 'wait_network':
+        case 'assert_network_count': case 'assert_fault_hits': case 'assert_list_from_response': {
+          const r = await gui.networkStep(action, args, target);
+          steps.push({ action, ...r });
+          const rep = rec(i, action, desc, r.pass !== false, r.pass === false ? `step${i + 1} ${action} 断言失败` : undefined);
+          if (action.startsWith('assert_')) {
+            rep.check = { actual: r.actual, expected: r.expected, pass: r.pass, mode: 'equals' };
+            await capShot(rep);
+            if (!r.pass) return finish({ verdict: 'fail', fail_kind: 'business', reason: rep.error, duration_ms: Date.now() - started, report, steps });
+          } else rep.network = r;
+          break;
+        }
         case "connect": {
-          const r = await gui.connect(); steps.push({ action, ok: true, ...r });
+          const r = await gui.connect(args); steps.push({ action, ok: true, ...r });
+          if (args.viewport && (!r.viewport || r.viewport.actual?.width !== args.viewport.width || r.viewport.actual?.height !== args.viewport.height))
+            throw new Error('Runner 未确认请求的视口尺寸，请升级 Runner 后执行');
           const rep = rec(i, action, desc, true);
-          rep.connection = { connected: r.connected, page_url: safeUrl(r.url), frame_url: safeUrl(r.frame_url), in_iframe: r.in_iframe };
+          rep.connection = { connected: r.connected, page_url: safeUrl(r.url), frame_url: safeUrl(r.frame_url), in_iframe: r.in_iframe, ...(r.viewport ? { viewport: r.viewport } : {}) };
           log(`  页面连接: ${JSON.stringify(rep.connection)}`);
           break;
         }

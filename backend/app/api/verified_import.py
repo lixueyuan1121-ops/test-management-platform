@@ -21,6 +21,12 @@ from app.services.verified_dedup import digest, plans_for
 router = APIRouter(prefix="/api/verified-imports", tags=["verified-imports"])
 
 
+@router.get('/capabilities')
+def capabilities(user: User = Depends(get_current_user)):
+    from app.services.script_targets import VALID_ACTIONS
+    return ok({'replay_protocols': ['network-scenarios-v1'], 'actions': sorted(VALID_ACTIONS)})
+
+
 def _authorize_and_lock(body, db, user):
     assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
     # A database write lock, not a process mutex: serializes workers/hosts and SQLite.
