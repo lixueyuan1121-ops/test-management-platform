@@ -2,21 +2,22 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user, require_platform_admin
 from app.core.enums import IssueStatus, ProjectRole
 from app.db.session import get_db
-from app.models import ExecRun, Project, ProjectMember, ReleaseRecord, RemainingIssue, User
+from app.models import ExecRun, Project, ProjectMember, ReleaseRecord, ReleaseProduct, RemainingIssue, User
 from app.schemas.common import ok
 
 router = APIRouter(prefix="/api/releases", tags=["releases"])
 
 _ALL_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
 
-# 子产品固定枚举：按项目平台类型分两套。前端 ReleaseNotes.vue 的常量须与此保持一致。
+# 内置子产品按项目平台类型分两套；发版页还可添加项目专属产品。
 SUB_PRODUCTS_BY_TYPE = {
     "pc": ("纳米Work云端版", "纳米Work桌面版", "360安全龙虾云端版", "360安全龙虾WSL"),
     "app": ("纳米Work Android端", "纳米Work iOS端", "360安全龙虾Android端", "360安全龙虾iOS端"),
@@ -34,15 +35,25 @@ def _sub_products_for(platform_type: str | None) -> tuple[str, ...]:
     return SUB_PRODUCTS_BY_TYPE["app"] if platform_type == "app" else SUB_PRODUCTS_BY_TYPE["pc"]
 
 
-def _norm_sub_product(v: str | None, platform_type: str | None) -> str | None:
-    """校验并规整子产品：空/空串 → None；非该项目类型白名单值 → 400。"""
+def _project_products(db: Session, project: Project) -> list[str]:
+    custom = [name for (name,) in db.query(ReleaseProduct.name)
+              .filter(ReleaseProduct.project_id == project.id).order_by(ReleaseProduct.id).all()]
+    return list(dict.fromkeys([*_sub_products_for(project.platform_type), *custom]))
+
+
+def _norm_sub_product(v: str | None, platform_type: str | None, *, db: Session | None = None, project_id: int | None = None) -> str | None:
+    """空值规整为 None，其余必须为内置产品或本项目已登记的产品。"""
     if v is None:
         return None
     v = v.strip()
     if not v:
         return None
     if v not in _sub_products_for(platform_type):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="子产品取值非法")
+        exists = db is not None and db.query(ReleaseProduct.id).filter(
+            ReleaseProduct.project_id == project_id, ReleaseProduct.name == v
+        ).first()
+        if not exists:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="子产品取值非法")
     return v
 
 
@@ -86,6 +97,49 @@ class ReleaseUpdate(BaseModel):
     req_count: int | None = Field(default=None, ge=0)
     content: str | None = None
     memo: str | None = None
+
+
+class ReleaseProductCreate(BaseModel):
+    project_id: int
+    name: str = Field(min_length=1, max_length=32)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, value):
+        if value == "全部" or any(ord(c) < 32 for c in value):
+            raise ValueError("产品名称不能为全部或包含控制字符")
+        return value
+
+
+@router.get("/products")
+def list_release_products(project_id: int = Query(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    assert_project_role(db, user, project_id, _ALL_ROLES)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    return ok(_project_products(db, project))
+
+
+@router.post("/products")
+def create_release_product(body: ReleaseProductCreate, db: Session = Depends(get_db), user: User = Depends(require_platform_admin)):
+    project = db.get(Project, body.project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    if body.name in _project_products(db, project):
+        raise HTTPException(409, "该产品已存在")
+    product = ReleaseProduct(project_id=body.project_id, name=body.name, created_by=user.id)
+    db.add(product)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "该产品已存在，请刷新后重试")
+    return ok({"id": product.id, "project_id": product.project_id, "name": product.name})
 
 
 def _visible_project_ids(db: Session, user: User) -> list[int]:
@@ -344,7 +398,7 @@ def create_release(body: ReleaseCreate, db: Session = Depends(get_db), user: Use
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
     r = ReleaseRecord(
         project_id=body.project_id, version=body.version.strip(), release_date=body.release_date,
-        sub_product=_norm_sub_product(body.sub_product, proj.platform_type),
+        sub_product=_norm_sub_product(body.sub_product, proj.platform_type, db=db, project_id=proj.id),
         channel=_norm_channel(body.channel, proj.platform_type),
         req_count=body.req_count or 0, content=body.content, memo=body.memo, created_by=user.id,
     )
@@ -365,7 +419,7 @@ def update_release(rid: int, body: ReleaseUpdate, db: Session = Depends(get_db),
         r.version = body.version.strip()
     if "sub_product" in body.model_fields_set:
         # 显式传入才更新：传值→按项目类型校验白名单；传 null/空→清为未指定。未传则保持原值。
-        r.sub_product = _norm_sub_product(body.sub_product, ptype)
+        r.sub_product = _norm_sub_product(body.sub_product, ptype, db=db, project_id=r.project_id)
     if "channel" in body.model_fields_set:
         # 显式传入才更新：APP 端项目规整存储；非 APP 端一律清空；未传则保持原值。
         r.channel = _norm_channel(body.channel, ptype)

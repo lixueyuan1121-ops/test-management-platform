@@ -1,9 +1,22 @@
 from datetime import date, datetime
 
-from sqlalchemy import String, Text, Date, DateTime, Integer, ForeignKey, func
+from sqlalchemy import String, Text, Date, DateTime, Integer, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
+
+
+class ReleaseProduct(Base):
+    """项目专属发版产品；内置产品保留。"""
+
+    __tablename__ = "release_product"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_release_product_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(32))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class ReleaseRecord(Base):
@@ -14,7 +27,7 @@ class ReleaseRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     version: Mapped[str] = mapped_column(String(64))
-    # 子产品：按项目平台类型分两套固定枚举（PC/APP），可空=未指定。校验白名单集中在 api/release.py。
+    # 子产品：项目类型内置产品 + 当前项目自定义产品，可空=未指定。
     sub_product: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 发版渠道：仅 APP 端项目使用，多渠道逗号分隔存储(MySQL5.6 无 JSON)；API 层收发数组。
     channel: Mapped[str | None] = mapped_column(String(255), nullable=True)

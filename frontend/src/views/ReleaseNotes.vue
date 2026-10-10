@@ -2,7 +2,7 @@
   <div class="release-notes functional-workspace">
     <WorkspacePage title="发版记录">
       <template #actions>
-          <el-select v-model="pid" :disabled="dialog.visible || deleting" placeholder="全部项目" clearable size="small" style="width:200px" @change="onProjectChange">
+          <el-select v-model="pid" :disabled="dialog.visible || productDialog.visible || deleting" placeholder="全部项目" clearable size="small" style="width:200px" @change="onProjectChange">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
           <el-button v-if="isAdmin" type="primary" size="small" :disabled="!pid || deleting" @click="openCreate">登记发版</el-button>
@@ -71,7 +71,9 @@
           <el-radio-button :value="''">全部</el-radio-button>
           <el-radio-button v-for="sp in subProducts" :key="sp" :value="sp">{{ sp }}</el-radio-button>
         </el-radio-group>
+        <el-button v-if="isAdmin" size="small" plain type="primary" :disabled="productsLoading || productsError || deleting" @click="openProduct">新增产品</el-button>
       </div>
+      <el-alert v-if="pid && productsError" title="产品列表加载失败" type="warning" :closable="false" show-icon><el-button link type="primary" @click="loadProducts">重试产品列表</el-button></el-alert>
       <el-result v-if="listError" icon="error" title="版本列表加载失败"><template #extra><el-button @click="load">重试列表</el-button></template></el-result>
       <el-table v-else-if="pid" :data="rows" v-loading="loading" size="small" border stripe empty-text="该项目暂无发版记录">
         <el-table-column prop="version" label="版本号" width="140" />
@@ -162,6 +164,19 @@
         <el-button type="primary" :loading="dialog.saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-if="productDialog.visible" v-model="productDialog.visible" title="新增产品" width="420px"
+               :show-close="!productDialog.saving" :close-on-click-modal="!productDialog.saving" :close-on-press-escape="!productDialog.saving">
+      <el-form label-width="80px" @submit.prevent="saveProduct">
+        <el-form-item label="产品名称" required>
+          <el-input v-model="productDialog.name" :disabled="productDialog.saving" maxlength="32" show-word-limit placeholder="请输入产品名称" />
+        </el-form-item>
+        <div class="form-hint">新增到当前项目，可用于筛选和登记发版。</div>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="productDialog.saving" @click="productDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="productDialog.saving" @click="saveProduct">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -178,22 +193,19 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import { CanvasRenderer } from 'echarts/renderers'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
-import { listReleases, releaseStats, releaseQuality, getRelease, createRelease, updateRelease, deleteRelease } from '@/api'
+import { listReleases, listReleaseProducts, createReleaseProduct, releaseStats, releaseQuality, getRelease, createRelease, updateRelease, deleteRelease } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { renderMarkdown } from '@/utils/markdown'
 
 echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
-// 子产品固定枚举：按项目平台类型分两套。须与后端 api/release.py 的 SUB_PRODUCTS_BY_TYPE 保持一致。
-const SUB_PRODUCTS_PC = ['纳米Work云端版', '纳米Work桌面版', '360安全龙虾云端版', '360安全龙虾WSL']
-const SUB_PRODUCTS_APP = ['纳米Work Android端', '纳米Work iOS端', '360安全龙虾Android端', '360安全龙虾iOS端']
 // 发版渠道候选（仅 APP 端）：按子产品所属平台(iOS/Android)给建议值，登记时支持手填。
 const CHANNELS_IOS = ['App Store', '内测']
 const CHANNELS_ANDROID = ['官网', '自升级', '全渠道']
 
 const auth = useAuthStore()
 const app = useAppStore()
-const isAdmin = auth.isPlatformAdmin
+const isAdmin = computed(() => auth.isPlatformAdmin)
 
 const projects = ref([])
 const pid = ref(null)
@@ -203,7 +215,44 @@ const rows = ref([])
 // 当前项目平台类型 → 决定子产品枚举、是否显示渠道列（从已缓存的 projects 里按 pid 取）
 const currentPlatform = computed(() => projects.value.find((p) => p.id === pid.value)?.platform_type || '')
 const isApp = computed(() => currentPlatform.value === 'app')
-const subProducts = computed(() => (isApp.value ? SUB_PRODUCTS_APP : SUB_PRODUCTS_PC))
+const subProducts = ref([])
+const productsLoading = ref(false), productsError = ref(false)
+let productsVersion = 0
+const productDialog = reactive({ visible: false, saving: false, projectId: null, name: '' })
+
+async function loadProducts() {
+  const version = ++productsVersion, project = pid.value
+  subProducts.value = []; productsError.value = false; productsLoading.value = false
+  if (!project) return
+  productsLoading.value = true
+  try {
+    const data = await listReleaseProducts(project)
+    if (!disposed && version === productsVersion) subProducts.value = data
+  } catch { if (!disposed && version === productsVersion) productsError.value = true }
+  finally { if (!disposed && version === productsVersion) productsLoading.value = false }
+}
+function openProduct() {
+  if (!isAdmin.value || !pid.value) return
+  Object.assign(productDialog, { visible: true, saving: false, projectId: pid.value, name: '' })
+}
+async function saveProduct() {
+  if (!isAdmin.value || productDialog.saving) return
+  const name = productDialog.name.trim()
+  if (!name) { ElMessage.warning('请输入产品名称'); return }
+  if (subProducts.value.includes(name)) { ElMessage.warning('该产品已存在'); return }
+  productDialog.saving = true
+  try {
+    const product = await createReleaseProduct({ project_id: productDialog.projectId, name })
+    if (!disposed && pid.value === product.project_id) {
+      if (!subProducts.value.includes(product.name)) subProducts.value.push(product.name)
+      subProduct.value = product.name
+      productDialog.visible = false
+      ElMessage.success('产品已新增')
+      await reload()
+    }
+  } catch { /* 保存失败保留输入，接口负责权限和重名校验。 */ }
+  finally { productDialog.saving = false }
+}
 // 渠道候选随所选子产品的平台(iOS/Android)联动；无法判断时给全部候选。手填仍可任意输入。
 function channelOptions(sub) {
   if (sub && sub.includes('iOS')) return CHANNELS_IOS
@@ -251,7 +300,7 @@ onMounted(async () => {
   try { projects.value = await app.fetchProjects() } catch { projects.value = [] }
   if (disposed) return
   pid.value = pickDefaultProjectId(projects.value)
-  if (pid.value) await reload()
+  if (pid.value) await Promise.all([reload(), loadProducts()])
   if (!disposed) await loadStats()
 })
 onBeforeUnmount(() => { disposed = true; ++listVersion; ++statsVersion; ++detailVersion; window.removeEventListener('resize', onResize); chart?.dispose() })
@@ -264,7 +313,7 @@ async function onProjectChange() {
   statsLoading.value = true
   quality.value = []
   chart?.clear()
-  await reload()
+  await Promise.all([reload(), loadProducts()])
   if (!disposed) await loadStats()
 }
 
@@ -453,7 +502,7 @@ useChartTheme(renderChart)
 .list-head { margin-bottom: 12px; }
 @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .list-head { display: flex; justify-content: space-between; align-items: center; }
-.sub-tabs { margin-bottom: 12px; }
+.sub-tabs { margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .chan-tag { margin: 0 4px 2px 0; }
 .dim { color: var(--tech-muted); font-weight: normal; font-size: 13px; }
 .one-line { color: var(--tech-muted); font-size: 13px; }

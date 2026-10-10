@@ -316,6 +316,8 @@ export const retryExecRun = (runId) => http.post(`/exec-queue/${runId}/retry`)
 
 // 我的执行设备(成员登记自有 runner,拿专属 token)。token 仅注册/重置时返回明文。
 export const listReleases = (params) => http.get('/releases', { params })
+export const listReleaseProducts = (project_id) => http.get('/releases/products', { params: { project_id } })
+export const createReleaseProduct = (data) => http.post('/releases/products', data)
 export const releaseStats = (project_id) => http.get('/releases/stats', { params: { project_id } })
 // 版本质量档案：每版一张记分卡(通过率/真bug/遗留问题/红黄绿)
 export const releaseQuality = (project_id, limit = 6) =>
