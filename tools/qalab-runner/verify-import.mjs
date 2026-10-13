@@ -16,7 +16,25 @@ export function saveLocalReport(report, directory) {
   });
 }
 
-export async function verifyImport({ input, output, execute, fetchRegistry, acquireLease, close, log = () => {}, timeoutMs = 900000, workerFile, runWorker }) {
+export async function waitForDesktopLease(acquireLease, { waitMs = 30000, log = () => {} } = {}) {
+  if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > 300000) throw new Error('桌面锁等待时间必须为 0–300000 毫秒');
+  const started = performance.now();
+  let waiting = false;
+  for (;;) {
+    const release = await acquireLease();
+    if (release) {
+      if (waiting) log('已取得桌面锁，继续正式验证');
+      return release;
+    }
+    const remaining = waitMs - (performance.now() - started);
+    if (remaining <= 0) throw new Error('桌面锁等待超时（' + waitMs + ' 毫秒）；另一个 Runner 仍在使用桌面，本次未执行测试，请稍后重试');
+    if (!waiting) log('桌面正在被另一个 Runner 使用，最多等待 ' + waitMs + ' 毫秒，不抢占当前测试');
+    waiting = true;
+    await new Promise(resolve => setTimeout(resolve, Math.min(250, remaining)));
+  }
+}
+
+export async function verifyImport({ input, output, execute, fetchRegistry, acquireLease, close, log = () => {}, timeoutMs = 900000, workerFile, runWorker, leaseWaitMs = 30000 }) {
   if (!input || !output || input.startsWith('--') || output.startsWith('--')) throw new Error('用法：node runner.mjs --verify-import draft.json --output verified.json');
   if (resolve(input) === resolve(output) || existsSync(output)) throw new Error('输出文件已存在或与输入相同；请指定新的文件名');
   const draft = JSON.parse(readFileSync(input, 'utf8').replace(/^\uFEFF/, ''));
@@ -30,8 +48,7 @@ export async function verifyImport({ input, output, execute, fetchRegistry, acqu
     if (!c.script.some(s => s.action.startsWith('assert_'))) throw new Error('需要真实业务断言');
     for (const key of ['report', 'verdict', 'finished_at', 'duration_ms', 'execution_evidence', 'selector_registry', 'resolution']) delete c[key];
   }
-  const release = await acquireLease();
-  if (!release) throw new Error('桌面正在被另一个 Runner 使用；等待它结束后再验证，不抢占当前测试');
+  const release = await waitForDesktopLease(acquireLease, { waitMs: leaseWaitMs, log });
   try {
     const registry = await fetchRegistry(draft.project_id, draft.sub_product || '');
     mkdirSync(dirname(resolve(output)), { recursive: true });
