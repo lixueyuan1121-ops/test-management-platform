@@ -53,3 +53,29 @@ test('regular browsers retain normal CDP connection',async()=>{
  await connectApplication({connectOverCDP:async arg=>{seen=arg}},'http://127.0.0.1:9222',{fetchImpl:async()=>({ok:true,json:async()=>({'User-Agent':'Chrome/148'})})});
  assert.equal(seen,'http://127.0.0.1:9222');
 });
+test('excludes desktop voice surface before checking main page uniqueness',()=>{
+ const voice={...target,id:'voice',url:target.url+'?vm_target=elec&namiwork_surface=desktop_voice'};
+ assert.equal(selectBusinessTarget([voice,target]).id,'app');
+ assert.throws(()=>selectBusinessTarget([voice]),{code:'CDP_TARGET_NOT_READY'});
+ assert.throws(()=>selectBusinessTarget([voice,target],'voice'),{code:'CDP_TARGET_NOT_READY'});
+ assert.throws(()=>selectBusinessTarget([voice,target,{...target,id:'second'}]),{code:'CDP_TARGET_AMBIGUOUS'});
+});
+test('waits for main renderer registration while only voice is ready',async()=>{
+ let polls=0,selected;
+ await connectApplication({connectOverCDP:async()=>({})},'http://127.0.0.1:9222',{
+  timeout:1000,pollIntervalMs:1,
+  fetchImpl:async url=>({ok:true,json:async()=>url.endsWith('version')?{'User-Agent':'Electron/42',webSocketDebuggerUrl:'ws://localhost/browser'}:
+   ++polls<3?[{...target,id:'voice',url:target.url+'?namiwork_surface=desktop_voice'}]:[target]}),
+  transportFactory:async(url,id)=>{selected=id;return {close(){}}}
+ });
+ assert.equal(polls,3);assert.equal(selected,'app');
+});
+test('missing renderer has a bounded wait and never attaches auxiliary targets',async()=>{
+ let attached=false;
+ await assert.rejects(connectApplication({connectOverCDP:async()=>{}},'http://127.0.0.1:9222',{
+  timeout:10,pollIntervalMs:1,
+  fetchImpl:async url=>({ok:true,json:async()=>url.endsWith('version')?{'User-Agent':'Electron/42',webSocketDebuggerUrl:'ws://localhost/browser'}:[]}),
+  transportFactory:async()=>{attached=true;return {close(){}}}
+ }),{code:'CDP_TARGET_NOT_READY'});
+ assert.equal(attached,false);
+});

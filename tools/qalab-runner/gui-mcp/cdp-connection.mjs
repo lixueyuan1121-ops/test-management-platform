@@ -4,10 +4,17 @@ export function selectBusinessTarget(targets, targetId = '') {
   const matches = targets.filter(t => {
     if (t.type !== 'page') return false;
     try { const u = new URL(t.url); return ['http:', 'https:'].includes(u.protocol)
-      && (u.hostname === 'work.n.cn' || u.hostname.endsWith('.work.n.cn')); }
+      && (u.hostname === 'work.n.cn' || u.hostname.endsWith('.work.n.cn'))
+      // The desktop voice surface shares the business origin but is not the
+      // main application. Never select it, even when it is the only page ready.
+      && u.searchParams.get('namiwork_surface') !== 'desktop_voice'; }
     catch { return false; }
   }).filter(t => !targetId || t.id === targetId);
-  if (matches.length !== 1) throw new Error(`客户端业务页面应唯一，实际 ${matches.length} 个；请打开主窗口或用 QALAB_CDP_TARGET_ID 指定本次页面`);
+  if (matches.length !== 1) {
+    const error = new Error(`客户端业务页面应唯一，实际 ${matches.length} 个；请打开主窗口或用 QALAB_CDP_TARGET_ID 指定本次页面`);
+    error.code = matches.length ? 'CDP_TARGET_AMBIGUOUS' : 'CDP_TARGET_NOT_READY';
+    throw error;
+  }
   return matches[0];
 }
 
@@ -50,6 +57,7 @@ export async function createScopedTransport(endpoint, targetId, { timeout = 1000
 export async function connectApplication(chromium, cdpUrl, {
   targetId = process.env.QALAB_CDP_TARGET_ID || '', timeout = 30000,
   fetchImpl = globalThis.fetch, transportFactory = createScopedTransport,
+  pollIntervalMs = 250,
 } = {}) {
   // Preserve existing WS/remote-browser support; the Electron probe uses HTTP.
   if (!/^https?:/.test(cdpUrl)) return chromium.connectOverCDP(cdpUrl, { timeout });
@@ -63,7 +71,17 @@ export async function connectApplication(chromium, cdpUrl, {
   if (!/Electron\//i.test(version['User-Agent'] || version.userAgent || '')) {
     return chromium.connectOverCDP(cdpUrl, { timeout });
   }
-  const target = selectBusinessTarget(await get('/json/list'), targetId);
+  // The debug port is available before the Electron main renderer registers
+  // its target. Retry only absence; real main-window ambiguity remains an error.
+  const deadline = Date.now() + timeout;
+  let target;
+  for (;;) {
+    try { target = selectBusinessTarget(await get('/json/list'), targetId); break; }
+    catch (error) {
+      if (error.code !== 'CDP_TARGET_NOT_READY' || Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, deadline - Date.now())));
+    }
+  }
   if (!version.webSocketDebuggerUrl) throw new Error('CDP 缺少浏览器 WebSocket 地址');
   const transport = await transportFactory(version.webSocketDebuggerUrl, target.id, { timeout: Math.min(timeout, 10000) });
   try {
