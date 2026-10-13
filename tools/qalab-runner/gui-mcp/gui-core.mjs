@@ -9,6 +9,7 @@ import { pageDiagnostics } from '../execution-diagnostics.mjs';
 //
 // 依赖:playwright-core。前提:namiclaw 已带 --remote-debugging-port 启动。
 import { chromium } from "playwright-core";
+import { connectApplication } from './cdp-connection.mjs';
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -132,7 +133,7 @@ export function createGuiCore(opts = {}) {
       traceContext = null;
     }
     testidInjected = false;
-    browser = await chromium.connectOverCDP(CDP_URL);
+    browser = await connectApplication(chromium, CDP_URL);
     ctx = browser.contexts()[0] || (await browser.newContext());
     // 冷启动竞态:CDP 端口先活、渲染进程的页面 target 后注册,刚连上时 ctx.pages() 可能仍空。
     // 此时若直接 ctx.newPage() 会撞 Electron 的 Target.createTarget: Not supported(不支持建 target),
