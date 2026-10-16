@@ -34,7 +34,6 @@ footer { text-align: center; color: #9ca3af; font-size: 12px; padding: 22px 0; o
 .version-content section + section { padding-top: 10px; }
 h3 { font-size: 16px; color: #1e40af; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid #eef1f7; }
 .mode-daily h3 { color: #0f766e; }
-.status-tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 9px; margin-left: 8px; border-radius: 999px; background: #ecfdf5; color: #047857; vertical-align: middle; white-space: nowrap; }
 @media (max-width: 640px) { .version-head { padding: 20px 18px; } .version-head h2 { font-size: 18px; } }
 
 /* Light gradient header and white cards, per the user's reporting prompt. */

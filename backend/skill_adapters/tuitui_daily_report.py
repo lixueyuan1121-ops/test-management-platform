@@ -180,8 +180,7 @@ def generate_report(date_str=None, version=None, web_items=None, upgrade_items=N
                 heading = f"**{clean(item['headline'])}**" if item.get('headline') else clean(item['summary'])
                 if section == 'issues':
                     heading = '⚠ ' + heading
-                suffix = f'（{status}）' if group['release'] else ''
-                lines.append(f'{index}. {heading}{suffix}')
+                lines.append(f'{index}. {heading}')
                 if item.get('tags'):
                     lines.append('   标签：' + ' / '.join(clean(tag) for tag in item['tags']))
                 if item.get('headline') and item['summary'].strip():
@@ -261,10 +260,9 @@ def render_platform_html(report):
         for number, lines in group['items']:
             value = lines[0]
             badge = re.search(r'（(测试完成|已上线)）$', value) if nested else None
-            status_html = ''
+            # Hide legacy generated per-item status suffixes on republication.
             if badge:
                 value = value[:badge.start()]
-                status_html = '<span class="status-tag">' + escape(badge.group(1)) + '</span>'
             tags, details, bullets = [], [], []
             for line in lines[1:]:
                 if line.startswith('标签：'):
@@ -276,7 +274,7 @@ def render_platform_html(report):
             tag_html = ''.join('<span class="type-tag">' + escape(tag) + '</span>' for tag in tags)
             bullet_html = '<ul class="subitems">' + ''.join('<li>' + inline(value) + '</li>' for value in bullets) + '</ul>' if bullets else ''
             rendered_items.append('<div class="upd"><div class="title"><span class="no">' + escape(number) +
-                '</span><span class="item-title">' + inline(value) + status_html + tag_html + '</span></div>' +
+                '</span><span class="item-title">' + inline(value) + tag_html + '</span></div>' +
                 ''.join('<p class="desc">' + inline(line) + '</p>' for line in details) + bullet_html + '</div>')
         tag = ('h4' if group.get('level') == 4 else 'h3') if nested else 'h2'
         heading = '<' + tag + '>' + escape(group['heading']) + '</' + tag + '>' if group['heading'] else ''
