@@ -5,7 +5,7 @@ _release_generate_report/_release_main. This extension prepares summary prompts 
 it never fetches or sends messages.
 """
 
-PLATFORM_ADAPTER_VERSION = 7
+PLATFORM_ADAPTER_VERSION = 8
 
 
 def _summary_input(summary):
@@ -165,13 +165,16 @@ def version_groups(tasks):
 def report_title(platform):
     groups = version_groups(platform['tasks'])
     if len(groups) == 1:
-        # Save title column is limited; full version label remains in the body.
-        return groups[0]['heading'][:255]
-    if groups and all(group['release'] for group in groups):
-        return '版本更新说明汇总'
-    if any(group['release'] for group in groups):
-        return '版本更新与测试日报'
-    return '版本测试日报'
+        title = groups[0]['heading']
+    elif groups and all(group['release'] for group in groups):
+        title = '版本更新说明汇总'
+    elif any(group['release'] for group in groups):
+        title = '版本更新与测试日报'
+    else:
+        title = '版本测试日报'
+    # Project name is trusted local layout metadata, never model input.
+    product = re.sub(r'\s+', ' ', platform.get('product_name') or '').strip()
+    return ' '.join(filter(None, [product, title]))[:255]
 
 
 def generate_report(date_str=None, version=None, web_items=None, upgrade_items=None, *, platform=None):
@@ -341,7 +344,8 @@ def render_platform_html(report):
 
     overview, sections = [], []
     versions = [block for block in blocks if block['mode']]
-    single = versions[0] if len(versions) == 1 and versions[0]['heading'] == report['title'] else None
+    # A custom title must not turn a single-version report into two page headers.
+    single = versions[0] if len(versions) == 1 else None
     for block in blocks:
         if not block['mode']:
             for group in block['groups']:
@@ -363,7 +367,7 @@ def render_platform_html(report):
             style + '</style></head><body><div class="wrap">'
             '<header class="report-header' + mode + '"><span class="eyebrow">' + label + '</span><h1>' + escape(report['title']) + '</h1>' +
             ''.join('<p class="sub">' + inline(line) + '</p>' for line in overview) + (header_facts(single) if single else '') + '</header>' +
-            ''.join(sections) + '<footer>纳米Work · ' + escape(report['title']) + '</footer></div></body></html>')
+            ''.join(sections) + '<footer>' + escape(report['title']) + '</footer></div></body></html>')
 
 
 def validate_html(document):

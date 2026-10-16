@@ -57,8 +57,8 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
     assert_project_role(db, user, body.project_id, WRITE_ROLES)
     rows = selected_tasks(db, body.project_id, body.task_ids)
     from app.services import ai_jobs, generators
-    # Version and status are layout inputs only; the AI still receives titles only.
-    payload = {'tasks': [dict(id=task.id, title=task.title,
+    # Product, version and status are local layout inputs; AI receives titles only.
+    payload = {'product_name': db.get(Project, body.project_id).name, 'tasks': [dict(id=task.id, title=task.title,
                              target_version=task.target_version, status=task.status.value) for task in rows]}
     provider = generators.DEFAULT_PROVIDER
     if not generators.get_provider(provider).is_available():

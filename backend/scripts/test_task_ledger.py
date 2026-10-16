@@ -157,10 +157,13 @@ class LedgerTests(unittest.TestCase):
         queued = self.client.post('/api/task-ledger/digests/generate', json=payload).json()['data']
         url = f"/api/task-ledger/digests/generations/{queued['generation_id']}"
         self.client.patch(f"/api/tasks/{task['id']}", json={'title':'后来修改的标题','status':'online','target_version':'3.28.0'})
+        self.db.get(Project, 1).name = '入队后改名'
         job = self.db.get(AiJob, queued['job_id']); job.status = 'running'; self.db.commit()
         ai_jobs.run_job(sessionmaker(bind=self.engine), job.id)
         self.db.expire_all()
-        content = self.client.get(url).json()['data']['content']
+        result = self.client.get(url).json()['data']
+        self.assertEqual(result['title'], '台账项目 3.27.0 测试日报')
+        content = result['content']
         self.assertIn('入队时标题', content)
         self.assertNotIn('后来修改的标题', content)
         self.assertIn('### 测试中',content)
@@ -263,7 +266,7 @@ class LedgerTests(unittest.TestCase):
         self.assertNotIn('旧日报反馈保留', generated['content'])
         from app.models.task_digest import TaskDigestGeneration
         stored = __import__('json').loads(self.db.query(TaskDigestGeneration).one().input)
-        self.assertEqual(stored, {'tasks':[{'id':a['id'],'title':'筛选内任务','status':a['status'],'target_version':a['target_version']}]})
+        self.assertEqual(stored, {'product_name':'台账项目', 'tasks':[{'id':a['id'],'title':'筛选内任务','status':a['status'],'target_version':a['target_version']}]})
         self.assertNotIn('filter_summary', stored)
         self.assertEqual(self.db.query(DailyReport).one().summary, '旧日报反馈保留')
         self.assertNotIn(b['title'], generated['content'])

@@ -23,7 +23,7 @@ def _invoke_skill(payload, mode):
     try:
         manifest = json.loads((skill_dir / 'platform-install.json').read_text())
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
-        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 7
+        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 8
                 or manifest.get('skill_sha256') != hashlib.sha256((skill_dir / 'SKILL.md').read_bytes()).hexdigest()
                 or manifest.get('template_sha256') != hashlib.sha256((skill_dir / 'references/template.html').read_bytes()).hexdigest()
                 or manifest.get('platform_style_sha256') != hashlib.sha256((skill_dir / 'references/platform.css').read_bytes()).hexdigest()):
@@ -79,7 +79,8 @@ def generate_task_digest(payload, provider=None, on_progress=None):
     source = {'tasks': [{'id': task['id'], 'title': task['title']} for task in tasks]}
     summary = summarize(source, provider=provider, on_progress=on_progress)
     version_summaries = compose_version_summaries(tasks, summary, provider=provider, on_progress=on_progress)
-    payload = {'tasks': tasks, 'summary': summary, 'version_summaries': version_summaries}
+    payload = {'tasks': tasks, 'summary': summary, 'version_summaries': version_summaries,
+               'product_name': payload.get('product_name') or ''}
     output, manifest = _invoke_skill(payload, '--tasks-json')
     title, content = output['title'], output['content']
     if len(title) > 255 or len(content) > 60000:

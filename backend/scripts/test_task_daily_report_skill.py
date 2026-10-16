@@ -88,7 +88,7 @@ class DailyReportSkillTests(unittest.TestCase):
                  next_action='不应传给AI的下一步',risk_level='不应传给AI的风险',
                  requirement_url='不应传给AI的链接',developer='不应传给AI的开发') for i in range(1,33)]
         payload = self.payload(tasks)
-        payload.update(project_name='不应传给AI的项目名',filter_summary='不应传给AI的筛选条件')
+        payload.update(product_name='不应传给AI的产品名',project_name='不应传给AI的项目名',filter_summary='不应传给AI的筛选条件')
         with patch.object(summaries, 'collect', wraps=summaries.collect) as model:
             report = service.generate_task_digest(payload)
         self.assertEqual(model.call_count, 5)  # two summary/review batches and final overview
@@ -99,6 +99,7 @@ class DailyReportSkillTests(unittest.TestCase):
             self.assertTrue(all(set(task) == {'id','title'} for task in prepared['tasks']))
             for derived in ([prepared['review_candidate']] if 'review_candidate' in prepared else prepared.get('batch_summaries', [])):
                 self.assertTrue(all(set(item) == {'id','summary'} for item in derived['items']))
+        self.assertTrue(report['title'].startswith('不应传给AI的产品名 '))
         self.assertIn('不应传给AI的版本',report['content'])
         self.assertNotIn('不应传给AI的姓名',report['content'])
         self.assertNotIn('不应传给AI的说明',report['content'])
@@ -198,7 +199,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 7)
+        self.assertEqual(upgraded['platform_adapter_version'], 8)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -314,6 +315,40 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertIn('TEST DAILY',html)
         self.assertIn('人工补充仍可编辑',html)
         self.assertIn('class="report-header mode-daily"',html)
+
+    def test_product_prefix_and_custom_title_keep_one_header_for_single_version(self):
+        for status, kind, label in [('ready_online', '版本更新说明', 'RELEASE NOTES'),
+                                    ('testing', '测试日报', 'TEST DAILY')]:
+            with self.subTest(status=status):
+                tasks = [dict(id=1, title='功能甲', target_version='3.27.0', status=status)]
+                report = service.generate_task_digest(dict(self.payload(tasks), product_name='  纳米Work PC端  '))
+                expected = f'纳米Work PC端 3.27.0 {kind}'
+                self.assertEqual(report['title'], expected)
+                for title in (expected, f'纳米Work PC端 V3.27.0 {kind}', '人工标题 <说明>'):
+                    report['title'] = title
+                    html = service.render_task_digest_html(report)
+                    from html import escape
+                    self.assertEqual(html.count('<header '), 1)
+                    self.assertEqual(html.count('<h1>'), 1)
+                    self.assertIn(f'<h1>{escape(title)}</h1>', html)
+                    self.assertIn(f'<footer>{escape(title)}</footer>', html)
+                    self.assertIn(label, html)
+                    self.assertIn('class="status-pill"', html)
+                    self.assertIn('条目数：1', html)
+                    self.assertIn('功能甲', html)
+                    self.assertNotIn('class="version-head"', html)
+
+    def test_product_prefix_keeps_multiple_version_headers(self):
+        tasks = [dict(id=1, title='功能甲', target_version='3.27.0', status='ready_online'),
+                 dict(id=2, title='功能乙', target_version='3.28.0', status='testing')]
+        report = service.generate_task_digest(dict(self.payload(tasks), product_name='另一产品'))
+        self.assertEqual(report['title'], '另一产品 版本更新与测试日报')
+        report['title'] = '另一产品 本期汇总'
+        html = service.render_task_digest_html(report)
+        self.assertEqual(html.count('<h1>'), 1)
+        self.assertEqual(html.count('class="version-head"'), 2)
+        self.assertIn('<h2>3.27.0 版本更新说明</h2>', html)
+        self.assertIn('<h2>3.28.0 测试日报</h2>', html)
 
     def test_prompt_enrichment_preserves_subitems_platforms_issues_and_structure(self):
         tasks=[dict(id=1,title='三端产物编辑：a. 超限预览；b. 大于20MB仍打开本地编辑器；c. 选择云端或本地版本',status='ready_online',target_version='3.30.0'),

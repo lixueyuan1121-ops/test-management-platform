@@ -70,7 +70,7 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
     adapted = adapted.replace('def main():', 'def _release_main():', 1)
     adapted = adapted.replace(marker, adapter.decode('utf-8') + '\n\n' + marker, 1)
     compile(adapted, SCRIPT, 'exec')
-    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 7,
+    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 8,
                 'skill_sha256': sha256(files['SKILL.md']),
                 'template_sha256': sha256(files['references/template.html']),
                 'platform_style_sha256': sha256(platform_style),
@@ -92,7 +92,7 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
         (staging / 'PLATFORM.md').write_text(
             '# 平台任务输入\n\n使用 `python scripts/fetch_daily_report.py --tasks-json`，从 stdin 读取 JSON。\n'
             '--summary-prompt-json 准备总结提示，平台现有 AI 服务总结后，经 --validate-summary-json 校验再生成正文。保留所有功能/需求条目，不拉取群消息、不发消息。--html-json 使用用户指定参考网页的渐变页头与编号列表版式渲染当前正文，由平台复用测评报告服务发布。\n'
-            'AI 总结与事实审校只接收功能/需求列（title）和条目 ID。规划版本与状态仅用于本地排版，按版本分组、测试完成和已上线在前；明确版本且所选条目均为测试完成/已上线时采用版本更新说明，其他版本采用测试日报。其他列不进入模型或正文。原入口和原脚本副本均保留。\n', encoding='utf-8')
+            'AI 总结与事实审校只接收功能/需求列（title）和条目 ID。项目名仅用于标题前缀；规划版本与状态仅用于本地排版，按版本分组、测试完成和已上线在前；明确版本且所选条目均为测试完成/已上线时采用版本更新说明，其他版本采用测试日报。其他列不进入模型或正文。原入口和原脚本副本均保留。\n', encoding='utf-8')
         backup = None
         if destination.exists():
             backup = destination.with_name(destination.name + '.backup-' + uuid.uuid4().hex[:12])
