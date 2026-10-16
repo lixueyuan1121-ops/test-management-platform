@@ -99,9 +99,12 @@ class DailyReportSkillTests(unittest.TestCase):
             self.assertTrue(all(set(task) == {'id','title'} for task in prepared['tasks']))
             for derived in ([prepared['review_candidate']] if 'review_candidate' in prepared else prepared.get('batch_summaries', [])):
                 self.assertTrue(all(set(item) == {'id','summary'} for item in derived['items']))
-        self.assertNotIn('不应传给AI的',json.dumps(report,ensure_ascii=False))
+        self.assertIn('不应传给AI的版本',report['content'])
+        self.assertNotIn('不应传给AI的姓名',report['content'])
+        self.assertNotIn('不应传给AI的说明',report['content'])
         html=service.render_task_digest_html(report)
-        self.assertNotIn('不应传给AI的',html)
+        self.assertIn('不应传给AI的版本',html)
+        self.assertNotIn('不应传给AI的姓名',html)
         self.assertNotIn('class="stats"',html)
         # The skill itself enforces the same boundary, even if called directly.
         prepared, _ = service._invoke_skill(payload, '--summary-prompt-json')
@@ -115,8 +118,9 @@ class DailyReportSkillTests(unittest.TestCase):
             dict(id=2,headline='适配安全卫士 AI 版相关优化',summary='')])
         with patch('app.services.task_digest_summary.collect',return_value=result) as model:
             report=service.generate_task_digest(self.payload(tasks))
-        self.assertIn('1. **PDF 支持编辑**\n   提供 PDF 内容编辑能力',report['content'])
-        self.assertTrue(report['content'].endswith('2. **适配安全卫士 AI 版相关优化**'))
+        self.assertIn('2. **PDF 支持编辑**\n   提供 PDF 内容编辑能力',report['content'])
+        self.assertIn('1. **适配安全卫士 AI 版相关优化**',report['content'])
+        self.assertLess(report['content'].index('适配安全卫士 AI 版相关优化'),report['content'].index('PDF 支持编辑'))
         prompt=model.call_args.args[1]
         self.assertIn('不只是复制标题',prompt)
         self.assertIn('事实审校同时保留自然、清晰的润色',prompt)
@@ -145,14 +149,15 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertEqual(report['generator']['archive_sha256'],self.manifest['archive_sha256'])
         self.assertNotIn('共 11 个任务',content)
         for task in tasks:
-            self.assertEqual(content.count(task['title']),1)
+            self.assertIn(task['title'],content)
         self.assertNotIn('测试：',content)
         self.assertNotIn('平台甲',content)
         self.assertNotIn('飞书原说明',content)
         self.assertNotIn('https://example.test/share/abc',content)
         self.assertNotIn('版本：桌面版',content)
         self.assertNotIn('**测试中（',content)
-        self.assertEqual([line.split('. ',1)[1] for line in content.splitlines() if __import__('re').match(r'^\d+\. ',line)], [t['title'] for t in tasks])
+        expected = [tasks[i]['title'] for i in [2,1,0,3,4,8,7,5,6,9,10]]
+        self.assertEqual([line.split('. ',1)[1] for line in content.splitlines() if __import__('re').match(r'^\d+\. ',line)], expected)
         self.assertNotIn('goodcase：无',content)
 
     def test_install_is_idempotent_and_keeps_original(self):
@@ -174,14 +179,14 @@ class DailyReportSkillTests(unittest.TestCase):
         style = (self.skill/'references/platform.css').read_text()
         self.assertIn(style, html)
         for task in tasks:
-            self.assertEqual(html.count(task['title']), 1)
+            self.assertIn(task['title'],html)
         self.assertIn('手工标题 &lt;script&gt;', html)
         self.assertIn('&lt;img src=x onerror=alert(1)&gt;', html)
         self.assertNotIn('<img', html)
         self.assertIn('人工补充', html)
         self.assertIn('href="https://example.test/?a=1&amp;b=2"', html)
         self.assertIn('</a>（第 3 行）', html)
-        self.assertIn('class="report-header"',html)
+        self.assertIn('data-report-type="daily"',html)
         self.assertIn('linear-gradient(135deg',html)
         self.assertIn('class="no"',html)
         self.assertNotIn('class="stats"',html)
@@ -193,7 +198,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 5)
+        self.assertEqual(upgraded['platform_adapter_version'], 6)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -222,8 +227,8 @@ class DailyReportSkillTests(unittest.TestCase):
             next_steps=[{'task_ids':[1],'summary':'额外安排'}],items=[dict(id=1,status='online',summary='功能摘要',owners=['额外人员'])])
         with patch('app.services.task_digest_summary.collect',return_value=model_result) as model:
             report = service.generate_task_digest(self.payload())
-        self.assertNotIn('测试中',report['content'])
-        self.assertNotIn('已上线',report['content'])
+        self.assertIn('### 测试中',report['content'])
+        self.assertNotIn('### 已上线',report['content'])
         for word in ('额外风险','额外安排','额外人员'):
             self.assertNotIn(word,report['content'])
             self.assertNotIn(word,model.call_args.args[1])
@@ -251,6 +256,97 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertNotIn('共 32 个任务',report['content'])
         self.assertNotIn('**测试中（32 项）**',report['content'])
         self.assertEqual(len(__import__('re').findall(r'^\d+\. ',report['content'],__import__('re').M)),32)
+
+    def test_versions_choose_layout_and_sort_completed_statuses_first(self):
+        tasks = [dict(id=1,title='版本九上线项',target_version='3.9.0',status='online'),
+                 dict(id=2,title='版本十测试项',target_version='3.10.0',status='testing'),
+                 dict(id=3,title='版本九完成项',target_version=' 3.9.0 ',status='ready_online'),
+                 dict(id=4,title='版本十完成项',target_version='3.10.0',status='ready_online'),
+                 dict(id=5,title='版本十上线项',target_version='3.10.0',status='online'),
+                 dict(id=6,title='未规划项',target_version=None,status='ready_online'),
+                 dict(id=7,title='版本十待修项',target_version='3.10.0',status='waiting_fix')]
+        report=service.generate_task_digest(self.payload(tasks))
+        self.assertEqual(report['title'],'版本更新与测试日报')
+        content=report['content']
+        self.assertLess(content.index('## 3.10.0 测试日报'),content.index('## 3.9.0 版本更新说明'))
+        self.assertLess(content.index('## 3.9.0 版本更新说明'),content.index('## 未填写规划版本 测试日报'))
+        self.assertLess(content.index('版本十完成项'),content.index('版本十上线项'))
+        self.assertLess(content.index('版本十上线项'),content.index('版本十测试项'))
+        self.assertLess(content.index('版本十测试项'),content.index('版本十待修项'))
+        self.assertLess(content.index('版本九完成项'),content.index('版本九上线项'))
+        self.assertIn('1. 版本九完成项（测试完成）',content)
+        self.assertIn('2. 版本九上线项（已上线）',content)
+        html=service.render_task_digest_html(report)
+        self.assertEqual(html.count('data-report-type="release"'),1)
+        self.assertEqual(html.count('data-report-type="daily"'),2)
+        self.assertIn('<span class="status-tag">测试完成</span>',html)
+        self.assertIn('<h4>测试中</h4>',html)
+        for task in tasks: self.assertIn(task['title'],html)
+        self.assertEqual(html.count('class="upd"'),len(tasks))
+
+    def test_only_completed_or_online_versions_use_release_layout(self):
+        statuses=['ready_online','online','testing','regressing','waiting_fix','blocked','at_risk',
+                  'pending','unassigned','paused','closed','future_status',None]
+        tasks=[dict(id=i,title=f'需求{i}',target_version=f'版本{i}',status=status) for i,status in enumerate(statuses,1)]
+        tasks.append(dict(id=99,title='旧队列无状态需求',target_version='旧版本'))
+        content=service.generate_task_digest(self.payload(tasks))['content']
+        for i,status in enumerate(statuses,1):
+            mode='版本更新说明' if status in ('ready_online','online') else '测试日报'
+            self.assertIn(f'## 版本{i} {mode}',content)
+        self.assertIn('## 旧版本 测试日报',content)
+        self.assertIn('### 状态未记录',content)
+
+    def test_single_release_and_daily_titles_and_html_remain_editable(self):
+        tasks=[dict(id=1,title='编辑功能',target_version='3.27.0',status='ready_online')]
+        report=service.generate_task_digest(self.payload(tasks))
+        self.assertEqual(report['title'],'3.27.0 版本更新说明')
+        html=service.render_task_digest_html(report)
+        self.assertIn('RELEASE NOTES',html)
+        self.assertIn('<h1>3.27.0 版本更新说明</h1>',html)
+        self.assertNotIn('TEST DAILY',html)
+        self.assertNotIn('状态：已上线',report['content'])
+        tasks[0]['status']='testing'
+        report=service.generate_task_digest(self.payload(tasks))
+        self.assertEqual(report['title'],'3.27.0 测试日报')
+        report['content']+='\n\n### 手工补充\n人工补充仍可编辑'
+        html=service.render_task_digest_html(report)
+        self.assertIn('TEST DAILY',html)
+        self.assertIn('人工补充仍可编辑',html)
+        self.assertIn('class="report-header mode-daily"',html)
+
+    def test_prompt_enrichment_preserves_subitems_platforms_issues_and_structure(self):
+        tasks=[dict(id=1,title='三端产物编辑：a. 超限预览；b. 大于20MB仍打开本地编辑器；c. 选择云端或本地版本',status='ready_online',target_version='3.30.0'),
+               dict(id=2,title='其他需求：微信转发，开发跟进中',status='pending',target_version='3.30.0'),
+               dict(id=3,title='主要问题：msix签名流程阻塞',status='blocked',target_version='3.30.0')]
+        result=dict(overview='产物编辑与其他需求。',items=[
+            dict(id=1,headline='三端产物编辑优化',summary='完善产物编辑体验。',tags=['体验优化'],platforms=['三端'],bullets=['a. 超限预览','b. 大于20MB仍打开本地编辑器','c. 选择云端或本地版本'],section='updates'),
+            dict(id=2,headline='微信转发',summary='开发跟进中。',tags=[],platforms=[],bullets=[],section='other'),
+            dict(id=3,headline='msix 签名流程阻塞',summary='阻塞原因是 msix 签名流程。',tags=[],platforms=[],bullets=[],section='issues')])
+        with patch('app.services.task_digest_summary.collect',return_value=result) as model:
+            report=service.generate_task_digest(self.payload(tasks))
+        review=json.loads(model.call_args.args[1].split('输入数据：\n',1)[1])['review_candidate']
+        self.assertEqual(review['items'][0]['bullets'],result['items'][0]['bullets'])
+        self.assertIn('不可缩成 Windows',model.call_args.args[1])
+        html=service.render_task_digest_html(report)
+        self.assertIn('涉及平台：三端',html)
+        self.assertNotIn('Windows',html)
+        self.assertIn('<ul class="subitems"><li>a. 超限预览</li>',html)
+        self.assertLess(html.index('a. 超限预览'),html.index('b. 大于20MB'))
+        self.assertLess(html.index('b. 大于20MB'),html.index('c. 选择云端'))
+        self.assertIn('<h3>其他需求</h3>',html)
+        self.assertIn('<h3>遗留问题 / 主要问题</h3>',html)
+        self.assertIn('⚠',html)
+        self.assertIn('msix 签名流程',html)
+        self.assertIn('class="notes"',html)
+        self.assertIn('class="status-pill"',html)
+        self.assertIn('class="type-tag"',html)
+        import runpy
+        validate=runpy.run_path(str(self.skill/'scripts/fetch_daily_report.py'))['validate_html']
+        self.assertEqual(validate(html),html)
+        for invalid in ['<html><body></body><head><style></style></head></html>',
+                        '<html><head><style>p{color:red}</head><body></body></html>',
+                        '<html><head><style></style></head><body><div></body></html>']:
+            with self.assertRaises(ValueError): validate(invalid)
 
     def test_archive_path_traversal_is_rejected(self):
         archive=Path(self.temp.name)/'invalid.zip'
@@ -289,7 +385,7 @@ class DailyReportSkillTests(unittest.TestCase):
             expected_env.add('SystemRoot')
             self.assertEqual(run.call_args.kwargs['env']['SystemRoot'], os.environ['SystemRoot'])
         self.assertEqual(set(run.call_args.kwargs['env']), expected_env)
-        self.assertEqual(json.loads(run.call_args.kwargs['input'])['tasks'],[{'id':1,'title':'待测试功能'}])
+        self.assertEqual(json.loads(run.call_args.kwargs['input'])['tasks'],[{'id':1,'title':'待测试功能','status':'testing','target_version':None}])
         self.assertIn('summary',json.loads(run.call_args.kwargs['input']))
         self.assertEqual(run.call_args_list[0].args[0][-1], '--summary-prompt-json')
 

@@ -57,8 +57,9 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
     assert_project_role(db, user, body.project_id, WRITE_ROLES)
     rows = selected_tasks(db, body.project_id, body.task_ids)
     from app.services import ai_jobs, generators
-    # No task metadata enters the generation snapshot or report renderer.
-    payload = {'tasks': [dict(id=task.id, title=task.title) for task in rows]}
+    # Version and status are layout inputs only; the AI still receives titles only.
+    payload = {'tasks': [dict(id=task.id, title=task.title,
+                             target_version=task.target_version, status=task.status.value) for task in rows]}
     provider = generators.DEFAULT_PROVIDER
     if not generators.get_provider(provider).is_available():
         raise HTTPException(503, detail='平台 AI 服务不可用，暂时无法总结日报')
@@ -134,7 +135,7 @@ def publish_digest(body: DigestSave, db: Session = Depends(get_db), user: User =
     db.commit()  # Do not hold a DB connection during the shared service's upload.
     if not has_cloud_url:
         from app.services.report_publishing import publish_html
-        published = publish_html(html, fallback)
+        published = publish_html(html, fallback, prefer_shortlink=True)
         deployed = db.get(TaskDigestDeployment, publication_id)
         if deployed is None:
             deployed = TaskDigestDeployment(publication_id=publication_id, **published)

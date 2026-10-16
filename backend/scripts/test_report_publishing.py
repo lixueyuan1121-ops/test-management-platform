@@ -14,3 +14,20 @@ class ReportPublishingTests(unittest.TestCase):
         with patch.object(service.settings, 'NAMI_DEPLOY_ENABLED', True), patch.object(service.nami_deploy, 'is_configured', return_value=True), patch.object(service.nami_deploy, 'deploy_html', side_effect=RuntimeError('unavailable')):
             self.assertEqual(service.publish_html('html', 'https://platform/r/eval')['url'], 'https://platform/r/eval')
             self.assertEqual(service.publish_html('html', '/d/digest')['url'], '/d/digest')
+
+    def test_digest_can_request_short_link_without_changing_global_settings(self):
+        with patch.object(service.settings,'NAMI_DEPLOY_ENABLED',True), patch.object(service.settings,'NAMI_SHORTLINK_ENABLED',False), patch.object(service.nami_deploy,'is_configured',return_value=True), patch.object(service.nami_deploy,'deploy_html',return_value='https://report.zhaomi.cn/') as deploy:
+            result=service.publish_html('html','/d/test',prefer_shortlink=True)
+            deploy.assert_called_once_with('html',prefer_shortlink=True)
+            self.assertEqual(result['url'],'https://report.zhaomi.cn/')
+            self.assertFalse(service.settings.NAMI_SHORTLINK_ENABLED)
+
+    def test_short_link_override_uses_existing_uploader_and_safe_fallback(self):
+        nd=service.nami_deploy
+        with patch.object(nd.settings,'NAMI_SHORTLINK_ENABLED',False), patch.object(nd,'_read_cookie',return_value='test'), patch.object(nd,'_upload',return_value='https://ns.chat.360.cn/client-up/abc') as upload, patch.object(nd,'_read_vm_id',return_value='test-vm'), patch.object(nd,'_get_short',return_value='https://report.zhaomi.cn/') as shorten:
+            self.assertEqual(nd.deploy_html('html',prefer_shortlink=True),'https://report.zhaomi.cn/')
+            upload.assert_called_once_with('html','test')
+            shorten.assert_called_once()
+            self.assertFalse(nd.settings.NAMI_SHORTLINK_ENABLED)
+            shorten.side_effect=nd.NamiDeployError('unavailable')
+            self.assertEqual(nd.deploy_html('html',prefer_shortlink=True),'https://ns.chat.360.cn/client-up/abc/index.html')

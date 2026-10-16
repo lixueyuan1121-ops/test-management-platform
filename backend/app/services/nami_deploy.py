@@ -224,18 +224,19 @@ def _dir_index_url(base_url: str) -> str:
     return u if u.endswith("/index.html") else u + "/index.html"
 
 
-def deploy_html(html: str) -> str:
+def deploy_html(html: str, *, prefer_shortlink: bool | None = None) -> str:
     """把 HTML 部署为公网可访问链接,返回 URL。失败抛 NamiDeployError(调用方回落自托管)。
 
     默认返回 <目录URL>/index.html 直链(裸目录 URL 是 404,必须带 index.html 才可点开)。
-    仅当 NAMI_SHORTLINK_ENABLED=true 且有 vm_id 时才尝试换 zhaomi.cn 短链——取短链接口
+    由 NAMI_SHORTLINK_ENABLED 或调用方 prefer_shortlink 决定是否换 zhaomi.cn 短链（需 vm_id）——取短链接口
     吃 n.cn 登录态(约 7 天过期,过期报 110005 Unauthorized;上传不受影响),失败仍回落直链。
     """
     if not html or not html.strip():
         raise NamiDeployError("HTML 为空,不部署")
     cookie = _read_cookie()
     base_url = _upload(html, cookie)
-    if not settings.NAMI_SHORTLINK_ENABLED:
+    short_enabled = settings.NAMI_SHORTLINK_ENABLED if prefer_shortlink is None else prefer_shortlink
+    if not short_enabled:
         return _dir_index_url(base_url)
     vm_id = _read_vm_id()
     if not vm_id:
