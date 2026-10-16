@@ -254,7 +254,12 @@ class LedgerTests(unittest.TestCase):
         payload = dict(project_id=1, task_ids=[a['id'],a['id']], report_date=self.today, filter_summary='风险：黄')
         generated = self.generate(payload)
         self.assertIn('共 1 个任务', generated['content'])
-        self.assertIn('旧日报反馈保留', generated['content'])
+        self.assertNotIn('旧日报反馈保留', generated['content'])
+        from app.models.task_digest import TaskDigestGeneration
+        stored = __import__('json').loads(self.db.query(TaskDigestGeneration).one().input)
+        self.assertEqual(set(stored['tasks'][0]), {'id','title','status','owners','priority','target_version','risk_level','affects_release'})
+        self.assertNotIn('filter_summary', stored)
+        self.assertEqual(self.db.query(DailyReport).one().summary, '旧日报反馈保留')
         self.assertNotIn(b['title'], generated['content'])
         payload.update(generated, content=generated['content']+'\n手工补充')
         saved = self.client.post('/api/task-ledger/digests', json=payload).json()['data']

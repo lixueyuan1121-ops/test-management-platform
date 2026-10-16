@@ -23,7 +23,7 @@ def _invoke_skill(payload, mode):
     try:
         manifest = json.loads((skill_dir / 'platform-install.json').read_text())
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
-        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 3
+        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 4
                 or manifest.get('skill_sha256') != hashlib.sha256((skill_dir / 'SKILL.md').read_bytes()).hexdigest()
                 or manifest.get('template_sha256') != hashlib.sha256((skill_dir / 'references/template.html').read_bytes()).hexdigest()):
             raise ValueError('skill installation mismatch')
@@ -69,6 +69,9 @@ def render_task_digest_html(payload):
 def generate_task_digest(payload, provider=None, on_progress=None):
     from app.services.task_digest_summary import summarize
     summary = summarize(payload, provider=provider, on_progress=on_progress)
+    # Model output cannot supply status; grouping always uses the platform snapshot.
+    states = {task['id']: task['status'] for task in payload['tasks']}
+    summary = {**summary, 'items': [{**item, 'status': states[item['id']]} for item in summary['items']]}
     payload = {**payload, 'summary': summary}
     output, manifest = _invoke_skill(payload, '--tasks-json')
     title, content = output['title'], output['content']
@@ -78,4 +81,4 @@ def generate_task_digest(payload, provider=None, on_progress=None):
              manifest['name'], manifest['platform_adapter_version'], len(payload.get('tasks', [])))
     return {'title': title, 'content': content, 'generator': {
         'name': manifest['name'], 'adapter_version': manifest['platform_adapter_version'],
-        'archive_sha256': manifest['archive_sha256'], 'summarized': True, 'provider': provider}}
+        'archive_sha256': manifest['archive_sha256'], 'summarized': True, 'provider': provider, 'input_fields': ['title']}}

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user, require_platform_admin
 from app.core.enums import ProjectRole, TaskStatus
 from app.db.session import get_db
-from app.models import DailyReport, Project, ReleaseRecord, Task, TaskDigest, User
+from app.models import Project, ReleaseRecord, Task, TaskDigest, User
 from app.schemas.common import ok
 from app.schemas.task_ledger import DigestGenerate, DigestSave, TaskReleaseCreate
 
@@ -58,29 +58,15 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
     rows = selected_tasks(db, body.project_id, body.task_ids)
     project = db.get(Project, body.project_id)
     from app.services import ai_jobs, generators
-    report_rows = db.query(DailyReport).filter(
-        DailyReport.task_id.in_(body.task_ids), DailyReport.report_date == body.report_date
-    ).order_by(DailyReport.id).all()
-    user_ids = {uid for task in rows for uid in task.assigned_to_ids} | {r.user_id for r in report_rows}
+    user_ids = {uid for task in rows for uid in task.assigned_to_ids}
     names = dict(db.query(User.id, User.name).filter(User.id.in_(user_ids)).all())
-    reports = {}
-    for report in report_rows:
-        if report.summary:
-            reports.setdefault(report.task_id, []).append(f"{names.get(report.user_id, '未指定')}：{report.summary}")
-    payload = {'project_name': project.name, 'report_date': str(body.report_date),
-               'filter_summary': body.filter_summary, 'tasks': []}
-    for task in rows:
-        item = {key: getattr(task, key) for key in (
-            'id', 'title', 'description', 'developer', 'requirement_url', 'target_version',
-            'progress_note', 'risk_level', 'next_action', 'action_owner', 'affects_release',
-            'conclusion', 'close_note')}
-        item.update(status=task.status.value, priority=task.priority.value,
-                    owners=[names[uid] for uid in task.assigned_to_ids if uid in names],
-                    assigned_date=str(task.assigned_date),
-                    expected_completion=str(task.expected_completion) if task.expected_completion else None,
-                    feedback_due_at=task.feedback_due_at.strftime('%Y-%m-%d %H:%M') if task.feedback_due_at else None,
-                    daily_feedback='\n'.join(reports.get(task.id, [])))
-        payload['tasks'].append(item)
+    # Only title is summarized. These separate fields are retained for local rendering.
+    payload = {'project_name': project.name, 'report_date': str(body.report_date), 'tasks': [
+        dict(id=task.id, title=task.title, status=task.status.value,
+             owners=[names[uid] for uid in task.assigned_to_ids if uid in names],
+             priority=task.priority.value, target_version=task.target_version,
+             risk_level=task.risk_level, affects_release=task.affects_release)
+        for task in rows]}
     provider = generators.DEFAULT_PROVIDER
     if not generators.get_provider(provider).is_available():
         raise HTTPException(503, detail='平台 AI 服务不可用，暂时无法总结日报')
