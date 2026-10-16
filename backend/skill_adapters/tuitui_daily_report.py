@@ -75,12 +75,21 @@ def prepare_summary_prompt(platform):
 4. summary 不重复负责人、优先级、版本、来源链接、行号、原始描述或测试步骤清单，这些只用于理解；平台会附上准确的负责人和版本，并原样带回 goodcase。
 5. overview 用 1–3 句归纳整体进展和关注重点，不重复统计数字、不堆任务标题。risks 提炼需关注的真实风险；next_steps 汇总输入中已有的下一步安排，不捏造动作或期限。无依据则对应数组为空。
 6. 每个 items 的 id/status 必须与输入一致，所有输入任务恰好出现一次。风险和下一步中的 task_ids 只能引用当前输入任务，每条至少一个 ID，summary 不超过 220 字。
-7. 只输出 JSON，不输出 Markdown 代码块：
+7. 严格区分事实与动作：没有“已/完成”等明确证据时，“改到主流程”“合入主分支”只能写为计划或待处理，绝不能自行改为“已改/已合入”。ready_online 仅表示测试完成，既不能推断已上线，也不能推断仍待某人验收。
+8. 相对时间“今天/明天/当日”只有当天 daily_feedback 或明确标注 report_date 的材料才能写成报告日安排；较早 assigned_date 下的旧进度备注应去掉相对日期，保留未修完、暂不发布等事实，不能复活旧排期。
+9. 只使用 owners 中的当前测试负责人。owners 非空时，忽略“分配测试负责人”等与已分配事实冲突的旧动作；owners 为空时不从原说明恢复人名，也不添加“待某人验收/验收后上线”。姓名由平台追加，不在 summary 中另写。
+10. 每项 summary 专注功能、进展、具体卡点，不写版本号、负责人、优先级，不逐项追加“风险绿/归属版本”等标签。原始风险等级由整体统计表达；具体风险可据实提炼。
+11. 输出前自检：所有任务均保留；未把计划写成完成；未把旧备注当今日安排；未复用历史负责人；没有重复版本标签。只输出 JSON，不输出 Markdown 代码块：
 {"overview":"整体总结","risks":[{"task_ids":[1],"summary":"风险归纳"}],"next_steps":[{"task_ids":[1],"summary":"后续安排"}],"items":[{"id":1,"status":"testing","summary":"核心功能及测试进展"}]}
 """
     if platform.get('overview_only'):
         prompt += '\n本次为最终归纳：输入已经是逐项摘要。只输出 overview、risks、next_steps，不再输出 items；参考 batch_summaries 合并共同主题，但保留有据的风险。'
-    return prompt + '\n输入数据：\n' + json.dumps(platform, ensure_ascii=False)
+    # Resolve the known stale allocation note before it can contradict platform owners.
+    prepared = {**platform, 'tasks': [dict(task) for task in platform['tasks']]}
+    for task in prepared['tasks']:
+        if task.get('owners') and re.fullmatch(r'(?:待|需|仍需)?分配测试负责人[。！!]?', (task.get('next_action') or '').strip()):
+            task['next_action'] = None
+    return prompt + '\n输入数据：\n' + json.dumps(prepared, ensure_ascii=False)
 
 
 def validate_summary(platform, summary):
@@ -99,6 +108,8 @@ def validate_summary(platform, summary):
             raise ValueError('AI 总结改变了任务范围或状态')
         if not isinstance(item.get('summary'), str) or not item['summary'].strip() or len(item['summary']) > 500:
             raise ValueError('任务摘要缺失或过长')
+        if tasks[tid].get('owners') and re.search(r'(?:待|需|未|仍需).{0,6}(?:分配|指定)测试负责人', item['summary']):
+            raise ValueError('AI 总结与已有测试负责人冲突')
         seen.add(tid)
     for key in ('risks', 'next_steps'):
         notes = summary.get(key)
