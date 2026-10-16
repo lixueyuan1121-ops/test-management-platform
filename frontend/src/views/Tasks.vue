@@ -11,11 +11,11 @@
       </template>
       <template #filters>
         <el-input v-model="filters.keyword" clearable aria-label="搜索任务名称或负责人" placeholder="搜索任务、负责人、开发或卡点" style="width:260px" />
-        <el-select v-model="filters.status" clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:160px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
-        <el-select v-model="filters.owner" clearable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:150px"><el-option v-for="m in members" :key="m.user_id" :label="m.name" :value="m.user_id" /></el-select>
-        <el-select v-model="filters.version" clearable filterable placeholder="归属版本" aria-label="筛选归属版本" style="width:150px"><el-option label="未填写版本" value="__unset" /><el-option v-for="v in versions" :key="v" :label="v" :value="v" /></el-select>
+        <el-select v-model="filters.status" multiple collapse-tags collapse-tags-tooltip clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:180px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
+        <el-select v-model="filters.owner" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:180px"><el-option v-for="m in members" :key="m.user_id" :label="m.name" :value="m.user_id" /></el-select>
+        <el-select v-model="filters.version" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="归属版本" aria-label="筛选归属版本" style="width:180px"><el-option label="未填写版本" value="__unset" /><el-option v-for="v in versions" :key="v" :label="v" :value="v" /></el-select>
         <el-select v-model="filters.risk" clearable placeholder="风险等级" aria-label="筛选风险等级" style="width:150px"><el-option label="未评估" value="__unset" /><el-option v-for="(m,k) in RISK_META" :key="k" :label="m.label" :value="k" /></el-select>
-        <el-select v-model="filters.priority" clearable placeholder="优先级" aria-label="筛选优先级" style="width:110px"><el-option v-for="p in ['p0','p1','p2','p3']" :key="p" :label="p.toUpperCase()" :value="p" /></el-select>
+        <el-select v-model="filters.priority" multiple collapse-tags collapse-tags-tooltip clearable placeholder="优先级" aria-label="筛选优先级" style="width:140px"><el-option v-for="p in ['p0','p1','p2','p3']" :key="p" :label="p.toUpperCase()" :value="p" /></el-select>
         <el-select v-model="filters.impact" clearable placeholder="是否影响发版" aria-label="筛选发版影响" style="width:160px"><el-option label="影响发版" value="yes" /><el-option label="不影响发版" value="no" /><el-option label="未评估" value="__unset" /></el-select>
         <el-switch v-model="filters.riskOnly" active-text="仅看风险/阻塞" />
         <el-button link @click="resetFilters">重置筛选</el-button>
@@ -287,8 +287,8 @@ const canManage = computed(() => {
 })
 const date = ref(localDate())
 const tasks = ref([]), taskTable = ref(null), selection = ref([]), loadError = ref(false)
-const initialFilters = { keyword: '', status: '', owner: '', priority: '', version: '', risk: '', impact: '', riskOnly: false }
-const filters = reactive({ ...initialFilters })
+const initialFilters = () => ({ keyword: '', status: [], owner: [], priority: [], version: [], risk: '', impact: '', riskOnly: false })
+const filters = reactive(initialFilters())
 const filteredTasks = computed(() => filterLedger(tasks.value, filters))
 const versions = computed(() => [...new Set(tasks.value.map(t => t.target_version).filter(Boolean))].sort())
 const selectedTasks = computed(() => filteredTasks.value.filter(t => selection.value.some(s => s.id === t.id)))
@@ -296,14 +296,14 @@ const actionTasks = computed(() => selectedTasks.value.length ? selectedTasks.va
 const releasableTasks = computed(() => actionTasks.value.filter(t => t.status === 'online' && t.target_version && !t.release_record_id))
 const digestContext = ref(null), releaseVisible = ref(false), releaseRows = ref([])
 watch(filters, () => { selection.value = []; taskTable.value?.clearSelection() })
-function resetFilters() { Object.assign(filters, initialFilters) }
+function resetFilters() { Object.assign(filters, initialFilters()) }
 function openDigest(history = false) {
   const parts = [date.value ? `工作日期 ${date.value}（含顺延）` : '全部日期']
   if (filters.keyword) parts.push(`关键词：${filters.keyword}`)
-  if (filters.status) parts.push(`状态：${STATUS_META[filters.status].label}`)
-  if (filters.owner) parts.push(`负责人：${members.value.find(m => m.user_id === filters.owner)?.name}`)
-  if (filters.priority) parts.push(filters.priority.toUpperCase())
-  if (filters.version) parts.push(`版本：${filters.version === '__unset' ? '未填写' : filters.version}`)
+  if (filters.status.length) parts.push(`状态：${filters.status.map(status => STATUS_META[status].label).join('、')}`)
+  if (filters.owner.length) parts.push(`负责人：${filters.owner.map(id => members.value.find(m => m.user_id === id)?.name || `#${id}`).join('、')}`)
+  if (filters.priority.length) parts.push(`优先级：${filters.priority.map(p => p.toUpperCase()).join('、')}`)
+  if (filters.version.length) parts.push(`版本：${filters.version.map(version => version === '__unset' ? '未填写' : version).join('、')}`)
   if (filters.risk) parts.push(`风险：${RISK_META[filters.risk]?.label || '未评估'}`)
   if (filters.impact) parts.push(`影响发版：${({ yes: '是', no: '否', __unset: '未评估' })[filters.impact]}`)
   if (filters.riskOnly) parts.push('仅风险/阻塞')
