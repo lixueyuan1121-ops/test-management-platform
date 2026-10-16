@@ -95,7 +95,7 @@ def render_platform_html(report):
 
     def inline(value):
         # Task notes are untrusted text. Never render raw HTML, images or unsafe links.
-        parts = re.split(r'(https?://[^\s<>"\x27]+)', value)
+        parts = re.split(r'(https?://[^\s<>"\x27（）【】。，；]+)', value)
         rendered = []
         for part in parts:
             safe = escape(part)

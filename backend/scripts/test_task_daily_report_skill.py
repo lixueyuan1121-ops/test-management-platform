@@ -89,7 +89,7 @@ class DailyReportSkillTests(unittest.TestCase):
                      'pending','unassigned','at_risk','blocked','paused','closed'])]
         report = service.generate_task_digest(self.payload(tasks))
         report.update(report_date='2026-10-16', title='手工标题 <script>')
-        report['content'] += '\n\n**补充说明**\n<img src=x onerror=alert(1)>\n人工补充 https://example.test/?a=1&b=2'
+        report['content'] += '\n\n**补充说明**\n<img src=x onerror=alert(1)>\n人工补充 https://example.test/?a=1&b=2（第 3 行）'
         html = service.render_task_digest_html(report)
         import re
         style = re.search(r'<style[^>]*>(.*?)</style>', (self.skill/'references/template.html').read_text(), re.S|re.I).group(1)
@@ -101,6 +101,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertNotIn('<img', html)
         self.assertIn('人工补充', html)
         self.assertIn('href="https://example.test/?a=1&amp;b=2"', html)
+        self.assertIn('</a>（第 3 行）', html)
         self.assertIn('<h2>测试中</h2>', html)
         self.assertIn('<h2>已关闭</h2>', html)
 
