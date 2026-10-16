@@ -70,6 +70,16 @@ class DailyReportSkillTests(unittest.TestCase):
         return {'project_name': '验证项目', 'report_date': '2026-10-16', 'filter_summary': '多选筛选',
                 'tasks': tasks if tasks is not None else [dict(id=1, title='待测试功能', status='testing', owners=['平台姓名'])]}
 
+    def test_current_owner_overrides_stale_allocation_note(self):
+        payload = self.payload([dict(id=1,title='功能',status='testing',owners=['平台姓名'],next_action='分配测试负责人')])
+        output, _ = service._invoke_skill(payload, '--summary-prompt-json')
+        prepared = json.loads(output['prompt'].split('输入数据：\n', 1)[1])
+        self.assertIsNone(prepared['tasks'][0]['next_action'])
+        self.assertEqual(payload['tasks'][0]['next_action'], '分配测试负责人')
+        payload['summary'] = dict(overview='测试中',risks=[],next_steps=[],items=[dict(id=1,status='testing',summary='待分配测试负责人跟进')])
+        with self.assertRaises(HTTPException):
+            service._invoke_skill(payload, '--validate-summary-json')
+
     def test_real_entry_keeps_all_statuses_and_preserves_goodcases(self):
         statuses = ['online','ready_online','testing','regressing','waiting_fix','pending',
                     'unassigned','at_risk','blocked','paused','closed']

@@ -84,7 +84,12 @@ def prepare_summary_prompt(platform):
 """
     if platform.get('overview_only'):
         prompt += '\n本次为最终归纳：输入已经是逐项摘要。只输出 overview、risks、next_steps，不再输出 items；参考 batch_summaries 合并共同主题，但保留有据的风险。'
-    return prompt + '\n输入数据：\n' + json.dumps(platform, ensure_ascii=False)
+    # Resolve the known stale allocation note before it can contradict platform owners.
+    prepared = {**platform, 'tasks': [dict(task) for task in platform['tasks']]}
+    for task in prepared['tasks']:
+        if task.get('owners') and re.fullmatch(r'(?:待|需|仍需)?分配测试负责人[。！!]?', (task.get('next_action') or '').strip()):
+            task['next_action'] = None
+    return prompt + '\n输入数据：\n' + json.dumps(prepared, ensure_ascii=False)
 
 
 def validate_summary(platform, summary):
@@ -103,6 +108,8 @@ def validate_summary(platform, summary):
             raise ValueError('AI 总结改变了任务范围或状态')
         if not isinstance(item.get('summary'), str) or not item['summary'].strip() or len(item['summary']) > 500:
             raise ValueError('任务摘要缺失或过长')
+        if tasks[tid].get('owners') and re.search(r'(?:待|需|未|仍需).{0,6}(?:分配|指定)测试负责人', item['summary']):
+            raise ValueError('AI 总结与已有测试负责人冲突')
         seen.add(tid)
     for key in ('risks', 'next_steps'):
         notes = summary.get(key)
