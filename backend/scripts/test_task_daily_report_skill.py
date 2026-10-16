@@ -30,6 +30,7 @@ if __name__ == "__main__":
 '''
         with zipfile.ZipFile(archive, 'w') as z:
             z.writestr('tuitui-daily-report-skill-latest/SKILL.md', '# Test skill')
+            z.writestr('tuitui-daily-report-skill-latest/references/template.html', '<style>body { background: #f5f5f7; }</style>')
             z.writestr('tuitui-daily-report-skill-latest/scripts/fetch_daily_report.py', upstream)
     destination = Path(root) / 'installed'
     manifest = install(archive, destination)
@@ -81,6 +82,41 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(original).hexdigest(),self.manifest['upstream_script_sha256'])
         with self.assertRaises(ValueError):
             install(self.archive,Path(self.temp.name)/'wrong',expected_sha256='wrong')
+
+    def test_html_uses_template_and_preserves_all_groups_edits_and_safe_text(self):
+        tasks = [dict(id=i, title='任务-' + status, status=status, owners=['平台甲'])
+                 for i, status in enumerate(['online','ready_online','testing','regressing','waiting_fix',
+                     'pending','unassigned','at_risk','blocked','paused','closed'])]
+        report = service.generate_task_digest(self.payload(tasks))
+        report.update(report_date='2026-10-16', title='手工标题 <script>')
+        report['content'] += '\n\n**补充说明**\n<img src=x onerror=alert(1)>\n人工补充 https://example.test/?a=1&b=2'
+        html = service.render_task_digest_html(report)
+        import re
+        style = re.search(r'<style[^>]*>(.*?)</style>', (self.skill/'references/template.html').read_text(), re.S|re.I).group(1)
+        self.assertIn(style, html)
+        for task in tasks:
+            self.assertEqual(html.count(task['title']), 1)
+        self.assertIn('手工标题 &lt;script&gt;', html)
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt;', html)
+        self.assertNotIn('<img', html)
+        self.assertIn('人工补充', html)
+        self.assertIn('href="https://example.test/?a=1&amp;b=2"', html)
+        self.assertIn('<h2>测试中</h2>', html)
+        self.assertIn('<h2>已关闭</h2>', html)
+
+    def test_template_integrity_and_upgrade_keeps_backup(self):
+        manifest_path = self.skill/'platform-install.json'
+        old = dict(self.manifest, adapter_sha256='previous-version', platform_adapter_version=1)
+        manifest_path.write_text(json.dumps(old))
+        with self.assertRaises(ValueError): install(self.archive, self.skill)
+        upgraded = install(self.archive, self.skill, upgrade=True)
+        self.assertEqual(upgraded['platform_adapter_version'], 2)
+        backups = list(self.skill.parent.glob('installed.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
+        (self.skill/'references/template.html').write_text('modified')
+        with self.assertRaises(HTTPException) as caught: service.generate_task_digest(self.payload())
+        self.assertEqual(caught.exception.status_code, 503)
 
     def test_archive_path_traversal_is_rejected(self):
         archive=Path(self.temp.name)/'invalid.zip'

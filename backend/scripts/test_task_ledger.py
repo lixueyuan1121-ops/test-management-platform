@@ -74,6 +74,53 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()['data']
 
+    def test_published_html_keeps_snapshot_requires_project_access_and_preserves_history(self):
+        task = self.task(title='筛选内任务', status='testing')
+        outside = self.task(title='筛选外任务', status='online')
+        self.client.patch(f"/api/tasks/{task['id']}", json={'status':'testing'})
+        selection = dict(project_id=1, task_ids=[task['id']], report_date=self.today)
+        generated = self.client.post('/api/task-ledger/digests/generate', json=selection).json()['data']
+        draft = dict(selection, title=generated['title'], content=generated['content'] + '\n人工补充')
+        result = self.client.post('/api/task-ledger/digests/publish', json=draft)
+        self.assertEqual(result.status_code, 200, result.text)
+        saved = result.json()['data']
+        url = '/api/task-ledger/digests/shared/' + saved['share_path'].split('/')[-1]
+        html = self.client.get(url).json()['data']['html']
+        self.assertIn('筛选内任务', html); self.assertNotIn('筛选外任务', html)
+        self.assertIn('人工补充', html); self.assertIn('<h2>测试中</h2>', html)
+        again = self.client.post('/api/task-ledger/digests/publish', json=saved).json()['data']
+        self.assertEqual(again['share_path'], saved['share_path'])
+        equivalent = dict(saved, content=saved['content'].replace('**' + saved['title'] + '**', '**另一条测试日报**', 1))
+        equivalent_result = self.client.post('/api/task-ledger/digests/publish', json=equivalent).json()['data']
+        self.assertTrue(equivalent_result['share_path'])
+        self.user_id = 4
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.user_id = 3
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertEqual(self.client.post('/api/task-ledger/digests/publish', json=saved).status_code, 403)
+        self.user_id = 2
+        self.assertEqual(self.client.post('/api/task-ledger/digests/publish', json=saved).status_code, 404)
+        self.user_id = 1
+        self.db.delete(self.db.get(Task, task['id'])); self.db.commit()
+        edited = dict(saved, content=saved['content'] + '\n新的补充说明')
+        saved_edit = self.client.post('/api/task-ledger/digests', json=edited).json()['data']
+        self.assertIsNone(saved_edit['share_path'])
+        revised = self.client.post('/api/task-ledger/digests/publish', json=edited).json()['data']
+        self.assertNotEqual(revised['share_path'], saved['share_path'])
+        self.assertEqual(self.client.get(url).json()['data']['html'], html)
+        self.assertEqual(self.client.get('/api/task-ledger/digests', params={'project_id':1}).json()['data'][0]['share_path'], revised['share_path'])
+        # Remove the test identity override: unauthenticated readers must be rejected.
+        del self.client.app.dependency_overrides[get_current_user]
+        self.assertIn(self.client.get(url).status_code, (401, 403))
+
+    def test_failed_publish_does_not_save_partial_snapshot(self):
+        from fastapi import HTTPException
+        task = self.task()
+        draft = dict(project_id=1, task_ids=[task['id']], report_date=self.today, title='标题', content='正文')
+        with patch('app.services.task_digest_skill.render_task_digest_html', side_effect=HTTPException(503, detail='skill missing')):
+            self.assertEqual(self.client.post('/api/task-ledger/digests/publish', json=draft).status_code, 503)
+        self.assertEqual(self.db.query(TaskDigest).count(), 0)
+
     def test_reconcile_backed_up_create_close_and_preserve_owners(self):
         from scripts.reconcile_task_ledger import prepare, apply
         primary=self.task(title='Existing primary',developer='平台开发',description='历史验收说明')

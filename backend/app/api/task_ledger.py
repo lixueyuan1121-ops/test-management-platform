@@ -1,5 +1,10 @@
 """提测台账的日报快照与发版归档。原逐任务日报和验收关系不变。"""
 import json
+import hashlib
+import secrets
+import re
+
+from app.models.task_digest import TaskDigestPublication
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -31,10 +36,18 @@ def selected_tasks(db, project_id, task_ids, lock=False):
     return [by_id[tid] for tid in ids]
 
 
-def digest_out(row):
+def source_hash(row):
+    value = json.dumps([row.title, row.content, str(row.report_date)], ensure_ascii=False)
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def digest_out(row, db=None):
+    publication = (db.query(TaskDigestPublication).filter_by(digest_id=row.id, source_sha256=source_hash(row))
+                   .order_by(TaskDigestPublication.id.desc()).first()) if db else None
     return {"id": row.id, "project_id": row.project_id, "report_date": str(row.report_date),
             "title": row.title, "content": row.content, "task_ids": json.loads(row.task_ids),
-            "filter_summary": row.filter_summary, "updated_at": row.updated_at}
+            "filter_summary": row.filter_summary, "updated_at": row.updated_at,
+            "share_path": f"/d/{publication.code}" if publication else None}
 
 
 @router.post("/digests/generate")
@@ -74,13 +87,12 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
 def list_digests(project_id: int = Query(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, project_id, WRITE_ROLES)
     rows = db.query(TaskDigest).filter_by(project_id=project_id, author_id=user.id).order_by(TaskDigest.id.desc()).all()
-    return ok([digest_out(r) for r in rows])
+    return ok([digest_out(r, db) for r in rows])
 
 
-@router.post("/digests")
-def save_digest(body: DigestSave, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def _save_digest(body, db, user):
     assert_project_role(db, user, body.project_id, WRITE_ROLES)
-    row = db.get(TaskDigest, body.id) if body.id else None
+    row = db.query(TaskDigest).filter_by(id=body.id).with_for_update().first() if body.id else None
     if body.id and (not row or row.project_id != body.project_id or row.author_id != user.id):
         raise HTTPException(404, detail="日报不存在或无编辑权限")
     if row is None:
@@ -90,9 +102,45 @@ def save_digest(body: DigestSave, db: Session = Depends(get_db), user: User = De
         db.add(row)
     # 保存已有快照不重新读取任务，任务后续删除不影响历史日报。
     row.report_date, row.title, row.content = body.report_date, body.title, body.content
+    db.flush()
+    return row
+
+
+@router.post("/digests")
+def save_digest(body: DigestSave, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = _save_digest(body, db, user)
     db.commit()
     db.refresh(row)
-    return ok(digest_out(row))
+    return ok(digest_out(row, db))
+
+
+@router.post("/digests/publish")
+def publish_digest(body: DigestSave, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.task_digest_skill import render_task_digest_html
+    row = _save_digest(body, db, user)
+    html = render_task_digest_html({'title': row.title, 'content': row.content, 'report_date': str(row.report_date)})
+    html_hash = hashlib.sha256(html.encode('utf-8')).hexdigest()
+    publication = db.query(TaskDigestPublication).filter_by(
+        digest_id=row.id, source_sha256=source_hash(row), html_sha256=html_hash).first()
+    if publication is None:
+        publication = TaskDigestPublication(digest_id=row.id, code=secrets.token_urlsafe(12),
+            source_sha256=source_hash(row), html_sha256=html_hash, html=html)
+        db.add(publication)
+    db.commit()
+    db.refresh(row)
+    return ok(digest_out(row, db))
+
+
+@router.get("/digests/shared/{code}")
+def shared_digest(code: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{16}', code):
+        raise HTTPException(404, detail="日报链接不存在")
+    publication = db.query(TaskDigestPublication).filter_by(code=code).first()
+    if publication is None:
+        raise HTTPException(404, detail="日报链接不存在")
+    row = db.get(TaskDigest, publication.digest_id)
+    assert_project_role(db, user, row.project_id, READ_ROLES)
+    return ok({'html': publication.html})
 
 
 @router.post("/releases")

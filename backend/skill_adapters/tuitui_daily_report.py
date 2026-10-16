@@ -5,7 +5,7 @@ _release_generate_report/_release_main. This extension uses the skill's item
 renderer and adds a JSON stdin entry point; it never fetches or sends messages.
 """
 
-PLATFORM_ADAPTER_VERSION = 1
+PLATFORM_ADAPTER_VERSION = 2
 TASK_STATUSES = [
     ('online', '已上线'), ('ready_online', '测试完成'), ('testing', '测试中'),
     ('regressing', '回归中'), ('waiting_fix', '待开发修复'), ('pending', '待跟进'),
@@ -84,7 +84,79 @@ def generate_report(date_str=None, version=None, web_items=None, upgrade_items=N
     return '\n'.join(lines)
 
 
+def render_platform_html(report):
+    """Render the edited report snapshot using the installed skill's template styles."""
+    from html import escape
+    from pathlib import Path
+    template = (Path(__file__).resolve().parents[1] / 'references/template.html').read_text(encoding='utf-8')
+    style = re.search(r'<style[^>]*>(.*?)</style>', template, re.S | re.I)
+    if not style:
+        raise ValueError('skill HTML 模板缺少样式')
+
+    def inline(value):
+        # Task notes are untrusted text. Never render raw HTML, images or unsafe links.
+        parts = re.split(r'(https?://[^\s<>"\x27]+)', value)
+        rendered = []
+        for part in parts:
+            safe = escape(part)
+            if re.match(r'^https?://', part, re.I):
+                safe = f'<a href="{safe}" target="_blank" rel="noopener noreferrer">{safe}</a>'
+            rendered.append(safe)
+        return ''.join(rendered)
+
+    groups, current = [], {'heading': '日报内容', 'items': [], 'paragraphs': []}
+    groups.append(current)
+    for line_no, line in enumerate(report['content'].splitlines()):
+        heading = re.fullmatch(r'\*\*(.+)\*\*', line) or re.fullmatch(r'#{1,3} (.+)', line)
+        if heading:
+            label = heading.group(1)
+            if line_no == 0 and (label == report['title'] or label.endswith('测试日报')):
+                continue
+            current = {'heading': label, 'items': [], 'paragraphs': []}
+            groups.append(current)
+        elif re.match(r'^\d+\. ', line):
+            number, value = line.split('. ', 1)
+            current['items'].append([number, [value]])
+        elif line.startswith('   ') and current['items']:
+            current['items'][-1][1].append(line[3:])
+        elif line.strip():
+            # Preserve free-form edits, including additions after the generated items.
+            if current['items']:
+                current['items'][-1][1].append(line)
+            else:
+                current['paragraphs'].append(line)
+    sections, stats = [], []
+    colors = {'已上线': 'online', '测试完成': 'online', '测试中': 'testing', '回归中': 'testing',
+              '有风险': 'legacy', '阻塞': 'legacy', '待开发修复': 'legacy'}
+    status_labels = set(dict(TASK_STATUSES).values())
+    for group in groups:
+        if not group['items'] and not group['paragraphs']:
+            continue
+        label = re.sub(r'（\d+ 项）$', '', group['heading'])
+        color = colors.get(label, 'pending')
+        badge = ''
+        if label in status_labels:
+            count = len(group['items'])
+            badge = f'<span class="badge badge-{color}">{count} 项</span>'
+            stats.append(f'<div class="stat-card stat-{color}"><div class="num">{count}</div><div class="label">{escape(label)}</div></div>')
+        paragraphs = ''.join('<p>' + inline(line) + '</p>' for line in group['paragraphs'])
+        items = ''.join('<li><span class="item-num">' + escape(number) + '.</span><span class="item-text">' +
+                        '<br>'.join(inline(line) for line in lines) + '</span></li>' for number, lines in group['items'])
+        sections.append(f'<section class="section"><div class="section-header"><h2>{escape(label)}</h2>{badge}</div>{paragraphs}<ol class="item-list">{items}</ol></section>')
+    extra_style = "a { color: #1565c0; } .item-text, p { overflow-wrap: anywhere; white-space: pre-wrap; } .item-text { min-width: 0; } .stat-card { min-width: 120px; } @media(max-width:600px) { body { padding:12px; } .section { padding:16px; } .header h1 { font-size:22px; } .stats { gap:8px; } }"
+    return ('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            '<meta name="robots" content="noindex,nofollow"><title>' + escape(report['title']) + '</title><style>' +
+            style.group(1) + extra_style + '</style></head><body><div class="container">'
+            '<header class="header"><h1>' + escape(report['title']) + '</h1></header>' +
+            '<div class="stats">' + ''.join(stats) + '</div>' + ''.join(sections) +
+            '<footer class="footer">测试进度日报 · ' + escape(report['report_date']) + '</footer></div></body></html>')
+
+
 def main():
+    if sys.argv[1:] == ['--html-json']:
+        print(json.dumps({'html': render_platform_html(json.load(sys.stdin))}, ensure_ascii=False))
+        return
     if sys.argv[1:] != ['--tasks-json']:
         return _release_main()
     platform = json.load(sys.stdin)

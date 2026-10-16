@@ -3,6 +3,7 @@ import { useAuthStore } from '@/store/auth'
 import MainLayout from '@/layouts/MainLayout.vue'
 
 const routes = [
+  { path: '/d/:code', name: 'task-digest-share', component: () => import('@/views/TaskDigestShare.vue') },
   { path: '/login', name: 'login', component: () => import('@/views/Login.vue'), meta: { public: true } },
   {
     path: '/',
@@ -65,13 +66,13 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.meta.public) return true
-  if (!auth.isLoggedIn) return { path: '/login' }
+  if (!auth.isLoggedIn) return { path: '/login', query: to.name === 'task-digest-share' ? { redirect: to.fullPath } : {} }
   if (!auth.user) {
     try {
       await auth.fetchMe()
     } catch {
       auth.logout()
-      return { path: '/login' }
+      return { path: '/login', query: to.name === 'task-digest-share' ? { redirect: to.fullPath } : {} }
     }
   }
   if (to.meta.automationTools && !auth.canUseAutomationTools) {

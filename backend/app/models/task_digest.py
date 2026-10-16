@@ -21,3 +21,16 @@ class TaskDigest(Base):
     filter_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TaskDigestPublication(Base):
+    """Immutable HTML snapshot; reading still requires platform/project access."""
+    __tablename__ = "task_digest_publication"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    digest_id: Mapped[int] = mapped_column(ForeignKey("task_digest.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(24), unique=True)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    html_sha256: Mapped[str] = mapped_column(String(64))
+    html: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
