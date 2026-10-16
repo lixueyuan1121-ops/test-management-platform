@@ -109,7 +109,8 @@ class LedgerTests(unittest.TestCase):
         url = '/api/task-ledger/digests/shared/' + saved['share_path'].split('/')[-1]
         html = self.client.get(url).json()['data']['html']
         self.assertIn('筛选内任务', html); self.assertNotIn('筛选外任务', html)
-        self.assertIn('人工补充', html); self.assertIn('<h2>测试中</h2>', html)
+        self.assertIn('人工补充', html); self.assertIn('功能/需求</h2>', html)
+        self.assertNotIn('测试中</h2>',html)
         again = self.client.post('/api/task-ledger/digests/publish', json=saved).json()['data']
         self.assertEqual(again['share_path'], saved['share_path'])
         equivalent = dict(saved, content=saved['content'].replace('**' + saved['title'] + '**', '**另一条测试日报**', 1))
@@ -161,7 +162,8 @@ class LedgerTests(unittest.TestCase):
         content = self.client.get(url).json()['data']['content']
         self.assertIn('入队时标题', content)
         self.assertNotIn('后来修改的标题', content)
-        self.assertIn('**测试中（1 项）**', content)
+        self.assertNotIn('测试中',content)
+        self.assertNotIn('已上线',content)
         self.user_id = 2
         self.assertEqual(self.client.get(url).status_code, 404)
 
@@ -253,11 +255,12 @@ class LedgerTests(unittest.TestCase):
         self.db.commit()
         payload = dict(project_id=1, task_ids=[a['id'],a['id']], report_date=self.today, filter_summary='风险：黄')
         generated = self.generate(payload)
-        self.assertIn('共 1 个任务', generated['content'])
+        self.assertEqual(generated['content'].count('筛选内任务'),1)
+        self.assertNotIn('共 1 个任务',generated['content'])
         self.assertNotIn('旧日报反馈保留', generated['content'])
         from app.models.task_digest import TaskDigestGeneration
         stored = __import__('json').loads(self.db.query(TaskDigestGeneration).one().input)
-        self.assertEqual(set(stored['tasks'][0]), {'id','title','status','owners','priority','target_version','risk_level','affects_release'})
+        self.assertEqual(stored, {'tasks':[{'id':a['id'],'title':'筛选内任务'}]})
         self.assertNotIn('filter_summary', stored)
         self.assertEqual(self.db.query(DailyReport).one().summary, '旧日报反馈保留')
         self.assertNotIn(b['title'], generated['content'])
@@ -318,7 +321,10 @@ class LedgerTests(unittest.TestCase):
         self.client.patch(f"/api/tasks/{task['id']}", json={'risk_level':'red','assigned_to':1})
         self.assertEqual(self.db.get(Task,task['id']).assigned_to_ids,[1,2])
         digest=self.generate({'project_id':1,'task_ids':[task['id']],'report_date':self.today})
-        self.assertIn('平台负责人、平台成员',digest['content'])
+        self.assertNotIn('平台负责人',digest['content'])
+        self.assertNotIn('平台成员',digest['content'])
+        self.assertNotIn('3.27.0',digest['content'])
+        self.assertEqual(self.db.get(Task,task['id']).assigned_to_ids,[1,2])
         source={'rows':[{'source_row':2,'功能/需求':'来源简称','风险等级':'黄','测试负责人':'未知昵称'}]}
         plan=make_plan(self.db,self.db.get(Project,1),source,{'2':{'task_id':task['id'],'title':task['title']}})
         with tempfile.TemporaryDirectory() as temp:

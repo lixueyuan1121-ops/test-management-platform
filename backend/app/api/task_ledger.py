@@ -56,17 +56,9 @@ def digest_out(row, db=None):
 def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, WRITE_ROLES)
     rows = selected_tasks(db, body.project_id, body.task_ids)
-    project = db.get(Project, body.project_id)
     from app.services import ai_jobs, generators
-    user_ids = {uid for task in rows for uid in task.assigned_to_ids}
-    names = dict(db.query(User.id, User.name).filter(User.id.in_(user_ids)).all())
-    # Only title is summarized. These separate fields are retained for local rendering.
-    payload = {'project_name': project.name, 'report_date': str(body.report_date), 'tasks': [
-        dict(id=task.id, title=task.title, status=task.status.value,
-             owners=[names[uid] for uid in task.assigned_to_ids if uid in names],
-             priority=task.priority.value, target_version=task.target_version,
-             risk_level=task.risk_level, affects_release=task.affects_release)
-        for task in rows]}
+    # No task metadata enters the generation snapshot or report renderer.
+    payload = {'tasks': [dict(id=task.id, title=task.title) for task in rows]}
     provider = generators.DEFAULT_PROVIDER
     if not generators.get_provider(provider).is_available():
         raise HTTPException(503, detail='平台 AI 服务不可用，暂时无法总结日报')

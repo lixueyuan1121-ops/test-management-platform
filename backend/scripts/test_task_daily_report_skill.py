@@ -46,7 +46,7 @@ class SummaryEngine:
         items = []
         for task in payload['tasks']:
             items.append({'id': task['id'], 'summary': task['title']})
-        result = {'overview': '本次涵盖多项功能需求。', 'risks': [], 'next_steps': [], 'items': items}
+        result = {'overview': '本次涵盖多项功能需求。', 'items': items}
         yield {'type':'result', 'text':json.dumps(result, ensure_ascii=False), 'complete':True}
 
 
@@ -78,7 +78,7 @@ class DailyReportSkillTests(unittest.TestCase):
             self.assertEqual(model.call_count, 2)
             self.assertIn('事实审校', model.call_args.args[1])
             self.assertIn('便于对文档进行调整与完善', report['content'])
-            self.assertNotIn('已上线', report['content'].split('**测试中')[1])
+            self.assertNotIn('已上线', report['content'])
 
     def test_all_model_stages_receive_titles_only_even_for_legacy_payloads(self):
         from app.services import task_digest_summary as summaries
@@ -99,9 +99,10 @@ class DailyReportSkillTests(unittest.TestCase):
             self.assertTrue(all(set(task) == {'id','title'} for task in prepared['tasks']))
             for derived in ([prepared['review_candidate']] if 'review_candidate' in prepared else prepared.get('batch_summaries', [])):
                 self.assertTrue(all(set(item) == {'id','summary'} for item in derived['items']))
-        self.assertIn('**测试中（32 项）**',report['content'])
-        self.assertIn('测试：不应传给AI的姓名；版本：不应传给AI的版本',report['content'])
-        self.assertNotIn('不应传给AI的说明',report['content'])
+        self.assertNotIn('不应传给AI的',json.dumps(report,ensure_ascii=False))
+        html=service.render_task_digest_html(report)
+        self.assertNotIn('不应传给AI的',html)
+        self.assertNotIn('class="stats"',html)
         # The skill itself enforces the same boundary, even if called directly.
         prepared, _ = service._invoke_skill(payload, '--summary-prompt-json')
         self.assertNotIn('不应传给AI的', prepared['prompt'])
@@ -115,7 +116,7 @@ class DailyReportSkillTests(unittest.TestCase):
         with patch('app.services.task_digest_summary.collect',return_value=result) as model:
             report=service.generate_task_digest(self.payload(tasks))
         self.assertIn('1. **PDF 支持编辑**\n   提供 PDF 内容编辑能力',report['content'])
-        self.assertIn('1. **适配安全卫士 AI 版相关优化**\n   （测试：待指定）',report['content'])
+        self.assertTrue(report['content'].endswith('2. **适配安全卫士 AI 版相关优化**'))
         prompt=model.call_args.args[1]
         self.assertIn('不只是复制标题',prompt)
         self.assertIn('事实审校同时保留自然、清晰的润色',prompt)
@@ -124,12 +125,14 @@ class DailyReportSkillTests(unittest.TestCase):
         report['report_date']='2026-10-16'
         report['content']+='\n\n**手工备注**\n1. **<script>alert(1)</script>**'
         html=service.render_task_digest_html(report)
-        self.assertIn('<strong>PDF 支持编辑</strong><br>提供 PDF 内容编辑能力',html)
-        self.assertIn('<strong>适配安全卫士 AI 版相关优化</strong><br>（测试：待指定）',html)
+        self.assertIn('<strong>PDF 支持编辑</strong>',html)
+        self.assertIn('<p class="desc">提供 PDF 内容编辑能力',html)
+        self.assertIn('<strong>适配安全卫士 AI 版相关优化</strong>',html)
+        self.assertNotIn('测试：',html)
         self.assertIn('<strong>&lt;script&gt;alert(1)&lt;/script&gt;</strong>',html)
         self.assertNotIn('<script>',html)
 
-    def test_real_entry_keeps_statuses_but_excludes_notes_and_goodcases(self):
+    def test_real_entry_keeps_all_features_without_other_columns(self):
         statuses = ['online','ready_online','testing','regressing','waiting_fix','pending',
                     'unassigned','at_risk','blocked','paused','closed']
         tasks = [dict(id=i, title=f'任务-{status}', status=status, owners=['平台甲','平台乙'])
@@ -140,16 +143,16 @@ class DailyReportSkillTests(unittest.TestCase):
         report = service.generate_task_digest(self.payload(tasks))
         content = report['content']
         self.assertEqual(report['generator']['archive_sha256'],self.manifest['archive_sha256'])
-        self.assertIn('共 11 个任务',content)
+        self.assertNotIn('共 11 个任务',content)
         for task in tasks:
             self.assertEqual(content.count(task['title']),1)
-        self.assertIn('测试：平台甲、平台乙',content)
-        self.assertIn('测试：待指定',content)
+        self.assertNotIn('测试：',content)
+        self.assertNotIn('平台甲',content)
         self.assertNotIn('飞书原说明',content)
         self.assertNotIn('https://example.test/share/abc',content)
-        self.assertIn('版本：桌面版',content)
-        testing_section = content.split('**测试中（1 项）**')[1].split('**回归中')[0]
-        self.assertIn(tasks[2]['title'],testing_section)
+        self.assertNotIn('版本：桌面版',content)
+        self.assertNotIn('**测试中（',content)
+        self.assertEqual([line.split('. ',1)[1] for line in content.splitlines() if __import__('re').match(r'^\d+\. ',line)], [t['title'] for t in tasks])
         self.assertNotIn('goodcase：无',content)
 
     def test_install_is_idempotent_and_keeps_original(self):
@@ -160,7 +163,7 @@ class DailyReportSkillTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             install(self.archive,Path(self.temp.name)/'wrong',expected_sha256='wrong')
 
-    def test_html_uses_template_and_preserves_all_groups_edits_and_safe_text(self):
+    def test_html_uses_reference_style_and_preserves_features_edits_and_safe_text(self):
         tasks = [dict(id=i, title='任务-' + status, status=status, owners=['平台甲'])
                  for i, status in enumerate(['online','ready_online','testing','regressing','waiting_fix',
                      'pending','unassigned','at_risk','blocked','paused','closed'])]
@@ -168,8 +171,7 @@ class DailyReportSkillTests(unittest.TestCase):
         report.update(report_date='2026-10-16', title='手工标题 <script>')
         report['content'] += '\n\n**补充说明**\n<img src=x onerror=alert(1)>\n人工补充 https://example.test/?a=1&b=2（第 3 行）'
         html = service.render_task_digest_html(report)
-        import re
-        style = re.search(r'<style[^>]*>(.*?)</style>', (self.skill/'references/template.html').read_text(), re.S|re.I).group(1)
+        style = (self.skill/'references/platform.css').read_text()
         self.assertIn(style, html)
         for task in tasks:
             self.assertEqual(html.count(task['title']), 1)
@@ -179,8 +181,11 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertIn('人工补充', html)
         self.assertIn('href="https://example.test/?a=1&amp;b=2"', html)
         self.assertIn('</a>（第 3 行）', html)
-        self.assertIn('<h2>测试中</h2>', html)
-        self.assertIn('<h2>已关闭</h2>', html)
+        self.assertIn('class="report-header"',html)
+        self.assertIn('linear-gradient(135deg',html)
+        self.assertIn('class="no"',html)
+        self.assertNotIn('class="stats"',html)
+        self.assertNotIn('2026-10-16',html)
 
     def test_template_integrity_and_upgrade_keeps_backup(self):
         manifest_path = self.skill/'platform-install.json'
@@ -188,7 +193,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 4)
+        self.assertEqual(upgraded['platform_adapter_version'], 5)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -196,7 +201,7 @@ class DailyReportSkillTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught: service.generate_task_digest(self.payload())
         self.assertEqual(caught.exception.status_code, 503)
 
-    def test_semantic_output_is_required_and_status_or_coverage_errors_fail(self):
+    def test_semantic_output_is_required_and_coverage_errors_fail(self):
         from app.services import task_digest_summary as summaries
         payload = self.payload()
         valid = {'overview':'完成核心场景验证，持续推进联调。', 'risks':[], 'next_steps':[],
@@ -208,24 +213,43 @@ class DailyReportSkillTests(unittest.TestCase):
             self.assertNotIn('风险等级：',report['content'])
             self.assertIn('提炼', model.call_args.args[1])
         for invalid in [dict(valid, items=[]),
-                        dict(valid, risks=[{'task_ids':[999], 'summary':'不存在任务的风险'}])]:
+                        dict(valid, items=[dict(id=999,summary='不存在任务')])]:
             with patch.object(summaries, 'collect', return_value=invalid):
                 with self.assertRaises(HTTPException): service.generate_task_digest(payload)
 
-    def test_model_cannot_override_platform_status(self):
-        model_result = dict(overview='功能概览',risks=[],next_steps=[],items=[dict(id=1,status='online',summary='功能摘要')])
-        with patch('app.services.task_digest_summary.collect',return_value=model_result):
+    def test_model_extra_metadata_does_not_enter_review_or_output(self):
+        model_result = dict(overview='功能概览',risks=[{'task_ids':[1],'summary':'额外风险'}],
+            next_steps=[{'task_ids':[1],'summary':'额外安排'}],items=[dict(id=1,status='online',summary='功能摘要',owners=['额外人员'])])
+        with patch('app.services.task_digest_summary.collect',return_value=model_result) as model:
             report = service.generate_task_digest(self.payload())
-        self.assertIn('**测试中（1 项）**',report['content'])
-        self.assertNotIn('**已上线（1 项）**',report['content'])
-        with self.assertRaises(HTTPException):
-            service._invoke_skill({**self.payload(), 'summary': model_result}, '--validate-summary-json')
+        self.assertNotIn('测试中',report['content'])
+        self.assertNotIn('已上线',report['content'])
+        for word in ('额外风险','额外安排','额外人员'):
+            self.assertNotIn(word,report['content'])
+            self.assertNotIn(word,model.call_args.args[1])
+        validated,_=service._invoke_skill({**self.payload(), 'summary': model_result}, '--validate-summary-json')
+        self.assertEqual(validated['summary'],dict(overview='功能概览',items=[dict(id=1,summary='功能摘要')]))
+
+    def test_style_integrity_is_checked_and_upgrade_restores_it(self):
+        (self.skill/'references/platform.css').write_text('tampered')
+        with self.assertRaises(HTTPException) as caught:
+            service.render_task_digest_html(dict(title='标题',content='正文'))
+        self.assertEqual(caught.exception.status_code,503)
+        with self.assertRaises(ValueError): install(self.archive,self.skill)
+        install(self.archive,self.skill,upgrade=True)
+        self.assertIn('linear-gradient',service.render_task_digest_html(dict(title='标题',content='正文')))
+
+    def test_legacy_saved_report_content_remains_renderable(self):
+        report=dict(title='历史测试日报',report_date='2026-10-15',content='**测试中（1 项）**\n1. 老任务（测试：甲；版本：3.26.0）')
+        html=service.render_task_digest_html(report)
+        self.assertIn('测试中（1 项）',html)
+        self.assertIn('老任务（测试：甲；版本：3.26.0）',html)
 
     def test_multiple_batches_are_summarized_without_losing_tasks(self):
         tasks = [dict(id=i,title=f'条目{i}',status='testing',owners=['平台甲']) for i in range(1,33)]
         report = service.generate_task_digest(self.payload(tasks))
-        self.assertIn('共 32 个任务',report['content'])
-        self.assertIn('**测试中（32 项）**',report['content'])
+        self.assertNotIn('共 32 个任务',report['content'])
+        self.assertNotIn('**测试中（32 项）**',report['content'])
         self.assertEqual(len(__import__('re').findall(r'^\d+\. ',report['content'],__import__('re').M)),32)
 
     def test_archive_path_traversal_is_rejected(self):
@@ -265,7 +289,7 @@ class DailyReportSkillTests(unittest.TestCase):
             expected_env.add('SystemRoot')
             self.assertEqual(run.call_args.kwargs['env']['SystemRoot'], os.environ['SystemRoot'])
         self.assertEqual(set(run.call_args.kwargs['env']), expected_env)
-        self.assertEqual(json.loads(run.call_args.kwargs['input'])['tasks'],self.payload()['tasks'])
+        self.assertEqual(json.loads(run.call_args.kwargs['input'])['tasks'],[{'id':1,'title':'待测试功能'}])
         self.assertIn('summary',json.loads(run.call_args.kwargs['input']))
         self.assertEqual(run.call_args_list[0].args[0][-1], '--summary-prompt-json')
 

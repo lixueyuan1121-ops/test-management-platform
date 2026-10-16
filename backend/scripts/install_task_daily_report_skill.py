@@ -13,6 +13,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 DEFAULT_DESTINATION = BACKEND / '.skills' / 'tuitui-daily-report'
 ADAPTER = BACKEND / 'skill_adapters' / 'tuitui_daily_report.py'
 SCRIPT = 'scripts/fetch_daily_report.py'
+PLATFORM_STYLE = BACKEND / 'skill_adapters' / 'feature_report.css'
 
 
 def sha256(data):
@@ -25,12 +26,16 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
     if expected_sha256 and archive_hash != expected_sha256:
         raise ValueError('安装包 SHA256 不匹配')
     adapter = ADAPTER.read_bytes()
+    platform_style = PLATFORM_STYLE.read_bytes()
     if destination.exists():
         manifest = json.loads((destination / 'platform-install.json').read_text())
         if (manifest['archive_sha256'] == archive_hash and manifest['adapter_sha256'] == sha256(adapter)
                 and manifest['script_sha256'] == sha256((destination / SCRIPT).read_bytes())
                 and manifest.get('skill_sha256') == sha256((destination / 'SKILL.md').read_bytes())
-                and manifest.get('template_sha256') == sha256((destination / 'references/template.html').read_bytes())):
+                and manifest.get('template_sha256') == sha256((destination / 'references/template.html').read_bytes())
+                and manifest.get('platform_style_sha256') == sha256(platform_style)
+                and (destination / 'references/platform.css').exists()
+                and manifest['platform_style_sha256'] == sha256((destination / 'references/platform.css').read_bytes())):
             return manifest
         if not upgrade:
             raise ValueError('目标目录已存在不同版本，请用 --upgrade 备份后升级')
@@ -65,9 +70,10 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
     adapted = adapted.replace('def main():', 'def _release_main():', 1)
     adapted = adapted.replace(marker, adapter.decode('utf-8') + '\n\n' + marker, 1)
     compile(adapted, SCRIPT, 'exec')
-    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 4,
+    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 5,
                 'skill_sha256': sha256(files['SKILL.md']),
                 'template_sha256': sha256(files['references/template.html']),
+                'platform_style_sha256': sha256(platform_style),
                 'archive_sha256': archive_hash, 'adapter_sha256': sha256(adapter),
                 'upstream_script_sha256': sha256(files[SCRIPT]),
                 'script_sha256': sha256(adapted.encode('utf-8'))}
@@ -78,14 +84,15 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
+        (staging / 'references/platform.css').write_bytes(platform_style)
         (staging / 'scripts/fetch_daily_report.upstream.py').write_bytes(files[SCRIPT])
         # Preserve the exact bytes hashed in the manifest on every platform.
         (staging / SCRIPT).write_bytes(adapted.encode('utf-8'))
         (staging / 'platform-install.json').write_text(json.dumps(manifest, indent=2) + '\n')
         (staging / 'PLATFORM.md').write_text(
             '# 平台任务输入\n\n使用 `python scripts/fetch_daily_report.py --tasks-json`，从 stdin 读取 JSON。\n'
-            '--summary-prompt-json 准备总结提示，平台现有 AI 服务总结后，经 --validate-summary-json 校验再生成正文。保留所有任务和平台状态，不拉取群消息、不发消息。--html-json 使用原模板渲染当前正文，由平台复用测评报告服务发布。\n'
-            '总结与事实审校仅接收功能/需求列（title）和对应条目 ID；状态、平台姓名、版本与统计只在本地排版时使用。原入口和原脚本副本均保留。\n', encoding='utf-8')
+            '--summary-prompt-json 准备总结提示，平台现有 AI 服务总结后，经 --validate-summary-json 校验再生成正文。保留所有功能/需求条目，不拉取群消息、不发消息。--html-json 使用用户指定参考网页的渐变页头与编号列表版式渲染当前正文，由平台复用测评报告服务发布。\n'
+            '生成快照、总结、事实审校和正文排版仅接收功能/需求列（title）和对应条目 ID。正文仅含润色后的功能概览和条目，不拼入其他列，不添加状态分组、统计或额外分节。原入口和原脚本副本均保留。\n', encoding='utf-8')
         backup = None
         if destination.exists():
             backup = destination.with_name(destination.name + '.backup-' + uuid.uuid4().hex[:12])

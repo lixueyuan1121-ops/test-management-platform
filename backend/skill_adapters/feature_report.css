@@ -1,0 +1,26 @@
+/* Layout reference supplied by the user: https://pcvgfvzrg.zhaomi.cn/ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f4f6fa; color: #1f2937; line-height: 1.75; padding: 24px; }
+.wrap { max-width: 960px; margin: 0 auto; }
+.report-header { background: linear-gradient(135deg, #0ea5e9 0%, #4f46e5 55%, #7c3aed 100%); color: #fff; border-radius: 18px; padding: 34px 36px; box-shadow: 0 10px 30px rgba(79,70,229,.3); position: relative; overflow: hidden; }
+.report-header::after, .report-header::before { content: ""; position: absolute; border-radius: 50%; pointer-events: none; }
+.report-header::after { right: -70px; top: -70px; width: 240px; height: 240px; background: rgba(255,255,255,.08); }
+.report-header::before { right: 60px; bottom: -90px; width: 180px; height: 180px; background: rgba(255,255,255,.06); }
+.report-header > * { position: relative; z-index: 1; }
+.eyebrow { display: inline-block; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.3); font-size: 12px; letter-spacing: 1px; padding: 4px 14px; border-radius: 999px; margin-bottom: 14px; }
+h1 { font-size: 26px; font-weight: 800; letter-spacing: .5px; overflow-wrap: anywhere; }
+.sub { font-size: 14px; opacity: .94; margin-top: 8px; overflow-wrap: anywhere; }
+section { background: #fff; border-radius: 16px; padding: 24px 28px; margin-top: 18px; box-shadow: 0 2px 12px rgba(20,20,60,.06); }
+h2 { font-size: 17px; font-weight: 700; color: #1e40af; display: flex; align-items: center; gap: 9px; padding-bottom: 12px; border-bottom: 1px solid #eef1f7; margin-bottom: 16px; overflow-wrap: anywhere; }
+.ico { font-size: 19px; }
+.upd { padding: 13px 0; border-bottom: 1px dashed #eef1f7; }
+.upd:last-child { border-bottom: none; }
+.title { font-size: 15px; font-weight: 600; color: #111827; display: flex; gap: 9px; align-items: flex-start; }
+.item-title { min-width: 0; overflow-wrap: anywhere; }
+.no { flex-shrink: 0; min-width: 22px; height: 22px; padding: 0 4px; border-radius: 6px; background: #e0f2fe; color: #0369a1; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; margin-top: 3px; }
+.desc { font-size: 14px; color: #4b5563; margin-top: 7px; padding-left: 31px; overflow-wrap: anywhere; }
+.paragraph { font-size: 14px; color: #4b5563; margin: 8px 0; overflow-wrap: anywhere; }
+a { color: #1565c0; overflow-wrap: anywhere; }
+.report-header a { color: #fff; }
+footer { text-align: center; color: #9ca3af; font-size: 12px; padding: 22px 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) { body { padding: 14px; } .report-header { padding: 26px 22px; } h1 { font-size: 20px; } section { padding: 20px 18px; } }
