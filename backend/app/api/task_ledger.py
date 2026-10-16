@@ -42,47 +42,32 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
     assert_project_role(db, user, body.project_id, WRITE_ROLES)
     rows = selected_tasks(db, body.project_id, body.task_ids)
     project = db.get(Project, body.project_id)
-    names = dict(db.query(User.id, User.name).filter(User.id.in_([uid for t in rows for uid in t.assigned_to_ids])).all())
-    reports = {r.task_id: r for r in db.query(DailyReport).filter(
-        DailyReport.task_id.in_(body.task_ids), DailyReport.report_date == body.report_date).all()}
-    done = [t for t in rows if t.status in (TaskStatus.ready_online, TaskStatus.online)]
-    risky = [t for t in rows if t.risk_level in ("red", "yellow") or t.status in (TaskStatus.blocked, TaskStatus.at_risk) or t.affects_release]
-    title = f"{project.name} · {body.report_date} 测试日报"
-    lines = [f"# {title}", "", f"筛选范围：{body.filter_summary or '当前任务列表'}", "", "## 今日提测概览",
-             f"共 {len(rows)} 个功能：测试完成/已上线 {len(done)} 个，测试中 {sum(t.status == TaskStatus.testing for t in rows)} 个，"
-             f"阻塞 {sum(t.status == TaskStatus.blocked for t in rows)} 个，有风险 {len(risky)} 个。"]
-
-    def detail(t):
-        owner = "、".join([names.get(uid, "") for uid in t.assigned_to_ids]) or "未指定"
-        parts = [f"{t.title}：{STATUS[t.status.value]}", f"测试负责人：{owner}"]
-        if t.target_version:
-            parts.append(f"归属版本：{t.target_version}")
-        report = reports.get(t.id)
-        for label, value in [("当前卡点/进度", t.progress_note), ("日报反馈", report.summary if report else None),
-                             ("结论/备注", t.conclusion)]:
-            if value:
-                parts.append(f"{label}：{value}")
-        if t.expected_completion:
-            parts.append(f"预计完成：{t.expected_completion}")
-        if t.risk_level:
-            parts.append(f"风险：{ {'green': '绿', 'yellow': '黄', 'red': '红'}[t.risk_level] }")
-        if t.affects_release is not None:
-            parts.append(f"影响发版：{'是' if t.affects_release else '否'}")
-        if t.next_action:
-            parts.append(f"下一步：{t.next_action}")
-        if t.action_owner:
-            parts.append(f"动作负责人：{t.action_owner}")
-        if t.feedback_due_at:
-            parts.append(f"最晚反馈：{t.feedback_due_at:%Y-%m-%d %H:%M}")
-        return "；".join(parts).replace("\n", "\n   ")
-
-    sections = [("已完成", done), ("进行中/待跟进", [t for t in rows if t not in done and t.status != TaskStatus.closed]),
-                ("风险/阻塞", risky), ("需要协助/决策", [t for t in rows if t.next_action]),
-                ("已关闭", [t for t in rows if t.status == TaskStatus.closed])]
-    for heading, group in sections:
-        lines.extend(["", f"## {heading}"])
-        lines.extend([f"{i}. {detail(t)}" for i, t in enumerate(group, 1)] or ["暂无。"])
-    return ok({"title": title, "content": "\n".join(lines), "task_ids": [t.id for t in rows]})
+    from app.services.task_digest_skill import generate_task_digest
+    report_rows = db.query(DailyReport).filter(
+        DailyReport.task_id.in_(body.task_ids), DailyReport.report_date == body.report_date
+    ).order_by(DailyReport.id).all()
+    user_ids = {uid for task in rows for uid in task.assigned_to_ids} | {r.user_id for r in report_rows}
+    names = dict(db.query(User.id, User.name).filter(User.id.in_(user_ids)).all())
+    reports = {}
+    for report in report_rows:
+        if report.summary:
+            reports.setdefault(report.task_id, []).append(f"{names.get(report.user_id, '未指定')}：{report.summary}")
+    payload = {'project_name': project.name, 'report_date': str(body.report_date),
+               'filter_summary': body.filter_summary, 'tasks': []}
+    for task in rows:
+        item = {key: getattr(task, key) for key in (
+            'id', 'title', 'description', 'developer', 'requirement_url', 'target_version',
+            'progress_note', 'risk_level', 'next_action', 'action_owner', 'affects_release',
+            'conclusion', 'close_note')}
+        item.update(status=task.status.value, priority=task.priority.value,
+                    owners=[names[uid] for uid in task.assigned_to_ids if uid in names],
+                    assigned_date=str(task.assigned_date),
+                    expected_completion=str(task.expected_completion) if task.expected_completion else None,
+                    feedback_due_at=task.feedback_due_at.strftime('%Y-%m-%d %H:%M') if task.feedback_due_at else None,
+                    daily_feedback='\n'.join(reports.get(task.id, [])))
+        payload['tasks'].append(item)
+    generated = generate_task_digest(payload)
+    return ok({**generated, 'task_ids': [task.id for task in rows]})
 
 
 @router.get("/digests")

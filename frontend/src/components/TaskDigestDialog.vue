@@ -53,7 +53,7 @@ async function generate() {
   loading.value = true; error.value = ''
   try {
     Object.assign(draft, await generateTaskDigest(props.context))
-  } catch { error.value = '日报生成失败，请重试' }
+  } catch (err) { error.value = err.response?.data?.msg || '日报生成失败，请重试' }
   finally { loading.value = false }
 }
 async function save() {

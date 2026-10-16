@@ -23,6 +23,19 @@ from app.models import User, Project, ProjectMember, Task, DailyReport, TaskDige
 
 
 class LedgerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from scripts.test_task_daily_report_skill import install_test_skill
+        cls.skill_temp = tempfile.TemporaryDirectory()
+        cls.skill_dir, _, _ = install_test_skill(cls.skill_temp.name)
+        cls.skill_patch = patch('app.services.task_digest_skill.get_skill_dir', return_value=cls.skill_dir)
+        cls.skill_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.skill_patch.stop()
+        cls.skill_temp.cleanup()
+
     def setUp(self):
         self.engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)
