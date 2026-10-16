@@ -18,7 +18,7 @@ class Task(Base):
         ForeignKey("team.id", ondelete="SET NULL"), nullable=True
     )
     assigned_by: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"))
-    assigned_to: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    assigned_to: Mapped[int | None] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     module: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 被测项目/模块
@@ -40,6 +40,19 @@ class Task(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # 关闭备注：关闭任务时填写的说明，任务详情可见。
     close_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 提测台账扩展：旧任务保留 NULL，不把未评估误判为低风险。
+    risk_level: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    target_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    progress_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_completion: Mapped[date | None] = mapped_column(Date, nullable=True)
+    next_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    feedback_due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    affects_release: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    conclusion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    release_record_id: Mapped[int | None] = mapped_column(
+        ForeignKey("release_record.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -52,7 +65,7 @@ class Task(Base):
 
     @property
     def assigned_to_ids(self) -> list[int]:
-        return list(dict.fromkeys([self.assigned_to, *(a.user_id for a in self.assignees)]))
+        return list(dict.fromkeys(uid for uid in [self.assigned_to, *(a.user_id for a in self.assignees)] if uid is not None))
 
 
 class TaskAssignee(Base):

@@ -221,7 +221,7 @@ def stats_overview(db, user, params: dict) -> dict:
                 (Task.assigned_date == today)
                 | (
                     (Task.assigned_date < today)
-                    & (Task.status.in_([TaskStatus.testing, TaskStatus.blocked, TaskStatus.ready_online]))
+                    & (Task.status.notin_([TaskStatus.online, TaskStatus.closed]))
                 )
             ),
         )
@@ -257,6 +257,7 @@ def stats_overview(db, user, params: dict) -> dict:
         "date": str(today),
         "today": {
             "total": total,
+            **{st.value: counts.get(st, 0) for st in TaskStatus},
             "pending": counts[TaskStatus.pending],
             "testing": counts[TaskStatus.testing],
             "ready_online": counts[TaskStatus.ready_online],

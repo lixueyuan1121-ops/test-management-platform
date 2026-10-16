@@ -10,7 +10,7 @@ from app.core.enums import ProjectRole, TaskStatus
 from app.db.session import get_db
 from app.models import Project, ProjectMember, Task, TaskAssignee, User
 from app.schemas.common import ok
-from app.schemas.task import TaskCreate, TaskOut, TaskUpdate
+from app.schemas.task import TaskCreate, TaskLedgerFields, TaskOut, TaskUpdate
 from app.services.task_dates import filter_task_dates
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -58,6 +58,8 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "online_at": t.online_at.isoformat() if t.online_at else None,
         "closed_at": t.closed_at.isoformat() if t.closed_at else None,
         "close_note": t.close_note,
+        **{field: getattr(t, field) for field in TaskLedgerFields.model_fields},
+        "release_record_id": t.release_record_id,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -67,9 +69,9 @@ def _assignee_ids(db: Session, body):
     if supplied is None and body.assigned_to is None:
         return None
     ids = list(dict.fromkeys(supplied if supplied is not None else [body.assigned_to]))
-    if not ids or any(type(uid) is not int or uid <= 0 for uid in ids):
-        raise HTTPException(422, detail="至少选择一名有效指派人")
-    if supplied is not None and body.assigned_to is not None and body.assigned_to != ids[0]:
+    if any(type(uid) is not int or uid <= 0 for uid in ids):
+        raise HTTPException(422, detail="指派用户无效")
+    if supplied is not None and body.assigned_to is not None and (not ids or body.assigned_to != ids[0]):
         raise HTTPException(422, detail="单人指派字段与多人指派字段不一致")
     existing = {uid for (uid,) in db.query(User.id).filter(User.id.in_(ids)).all()}
     if set(ids) != existing:
@@ -78,7 +80,7 @@ def _assignee_ids(db: Session, body):
 
 
 def _set_assignees(task: Task, ids):
-    task.assigned_to = ids[0]
+    task.assigned_to = ids[0] if ids else None
     existing = {a.user_id: a for a in task.assignees}
     task.assignees = [existing.get(uid) or TaskAssignee(user_id=uid) for uid in ids[1:]]
 
@@ -136,11 +138,11 @@ def create_task(
     assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    ids = _assignee_ids(db, body)
+    ids = _assignee_ids(db, body) or []
     t = Task(
         project_id=body.project_id,
         assigned_by=user.id,
-        assigned_to=ids[0],
+        assigned_to=ids[0] if ids else None,
         title=body.title,
         description=body.description,
         module=body.module,
@@ -149,6 +151,7 @@ def create_task(
         priority=body.priority,
         assigned_date=body.assigned_date,
         status=TaskStatus.pending,
+        **{field: getattr(body, field) for field in TaskLedgerFields.model_fields},
     )
     _set_assignees(t, ids)
     db.add(t)
@@ -187,6 +190,16 @@ def update_task(
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
+    if "target_version" in body.model_fields_set and t.release_record_id:
+        if (body.target_version or "").strip() != (t.target_version or "").strip():
+            raise HTTPException(400, detail="任务已填写发版记录，不能修改归属版本")
+    if body.assigned_to is not None and not db.get(User, body.assigned_to):
+        raise HTTPException(404, detail="指派用户不存在")
+    # 扩展字段显式传 null 表示清空；旧客户端不传时保留原值。
+    for field in TaskLedgerFields.model_fields:
+        if field in body.model_fields_set:
+            value = getattr(body, field)
+            setattr(t, field, value.strip() or None if isinstance(value, str) else value)
     ids = _assignee_ids(db, body)
     # Old forms resend the unchanged scalar assignee while editing other fields.
     # Preserve co-assignees unless the assignment is actually changed.
@@ -280,6 +293,7 @@ def copy_yesterday(
             priority=s.priority,
             assigned_date=target_date,
             status=TaskStatus.pending,
+            **{field: getattr(s, field) for field in TaskLedgerFields.model_fields},
         )
         _set_assignees(t, s.assigned_to_ids)
         db.add(t)

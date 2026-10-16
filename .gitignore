@@ -29,3 +29,6 @@ backend/.secrets/
 # 私有需求评测只保留本地，不随公开仓库分发
 backend/evals/ai-native/reports/*-private*.json
 docs/reviews/*-private-evaluation.md
+
+# 用户提供的服务器私有 skill 及配置，不随代码分发
+backend/.skills/

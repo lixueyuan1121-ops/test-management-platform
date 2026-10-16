@@ -27,7 +27,7 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import TargetMark from '@/components/TargetMark.vue'
@@ -35,6 +35,7 @@ import ThemeSwitcher from '@/components/ThemeSwitcher.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const loginError = ref(false)
 const form = reactive({ username: '', password: '' })
@@ -46,7 +47,8 @@ async function onLogin() {
   loginError.value = false
   try {
     await auth.login(form.username, form.password)
-    await router.push('/dashboard')
+    const destination = route.query.redirect
+    await router.push(typeof destination === 'string' && /^\/d\/[A-Za-z0-9_-]{16}$/.test(destination) ? destination : '/dashboard')
   } catch {
     loginError.value = true
   } finally {

@@ -82,6 +82,12 @@ def ensure_task_columns() -> None:
     cols = _columns("task")
     if not cols:
         return  # 表尚未建，交给 create_all
+    if engine.dialect.name == "mysql":
+        owner_column = next(c for c in inspect(engine).get_columns("task") if c["name"] == "assigned_to")
+        if not owner_column["nullable"]:
+            owner_type = owner_column["type"].compile(dialect=engine.dialect)
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE task MODIFY COLUMN assigned_to {owner_type} NULL"))
     with engine.begin() as conn:
         if "requirement_url" not in cols:
             conn.execute(text("ALTER TABLE task ADD COLUMN requirement_url VARCHAR(512)"))
@@ -98,6 +104,18 @@ def ensure_task_columns() -> None:
             conn.execute(text("ALTER TABLE task ADD COLUMN closed_at DATETIME NULL"))
         if "close_note" not in cols:
             conn.execute(text("ALTER TABLE task ADD COLUMN close_note TEXT NULL"))
+        ledger_columns = {
+            "risk_level": "VARCHAR(8)",
+            "target_version": "VARCHAR(64)", "progress_note": "TEXT",
+            "expected_completion": "DATE", "next_action": "TEXT",
+            "action_owner": "VARCHAR(128)", "feedback_due_at": "DATETIME",
+            "affects_release": "BOOLEAN", "conclusion": "TEXT",
+            "release_record_id": "BIGINT",
+        }
+        for name, sql_type in ledger_columns.items():
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE task ADD COLUMN {name} {sql_type} NULL"))
+    _ensure_index("task", "idx_task_release_record", "release_record_id")
 
 
 def ensure_testcase_precondition_column() -> None:
@@ -179,7 +197,7 @@ def migrate_task_status() -> None:
             # 放宽为新旧并集，避免 UPDATE 时旧值/新值任一不在定义内而报错
             conn.execute(text(
                 "ALTER TABLE task MODIFY COLUMN `status` "
-                "ENUM('pending','doing','done','closed','testing','ready_online','blocked','online') "
+                "ENUM('pending','doing','done','closed','testing','ready_online','blocked','online','unassigned','waiting_fix','regressing','at_risk','paused') "
                 "NOT NULL DEFAULT 'pending'"
             ))
         conn.execute(text("UPDATE task SET status='testing' WHERE status='doing'"))
@@ -188,7 +206,7 @@ def migrate_task_status() -> None:
             # 收紧为最终新定义（含 closed 独立态）
             conn.execute(text(
                 "ALTER TABLE task MODIFY COLUMN `status` "
-                "ENUM('pending','testing','ready_online','blocked','online','closed') "
+                "ENUM('pending','testing','ready_online','blocked','online','closed','unassigned','waiting_fix','regressing','at_risk','paused') "
                 "NOT NULL DEFAULT 'pending'"
             ))
 

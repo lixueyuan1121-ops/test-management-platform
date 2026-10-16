@@ -60,7 +60,7 @@ def overview_stats(
             or_(
                 Task.assigned_date == today,
                 and_(Task.assigned_date < today,
-                     Task.status.in_([TaskStatus.testing, TaskStatus.blocked, TaskStatus.ready_online])),
+                     Task.status.notin_([TaskStatus.online, TaskStatus.closed])),
             ),
         )
         .group_by(Task.status)
@@ -125,6 +125,7 @@ def overview_stats(
         "project_cnt": len(pids),
         "today": {
             "total": total,
+            **{st.value: counts.get(st, 0) for st in TaskStatus},
             "pending": counts[TaskStatus.pending],
             "testing": counts[TaskStatus.testing],
             "ready_online": counts[TaskStatus.ready_online],

@@ -45,7 +45,7 @@ const assert = require('node:assert/strict');
     const dialog = page.getByRole('dialog');
     const day = new Date();
     const today = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-    assert.equal(await dialog.locator('.el-date-editor input').inputValue(), today);
+    assert.equal(await dialog.getByRole('combobox', { name: /分配日期/ }).inputValue(), today);
     await dialog.getByRole('button', { name: '取消', exact: true }).click();
 
     await input.click();

@@ -70,13 +70,25 @@ CREATE TABLE `task` (
   `project_id` BIGINT NOT NULL,
   `team_id` BIGINT DEFAULT NULL,
   `assigned_by` BIGINT NOT NULL,
-  `assigned_to` BIGINT NOT NULL,
+  `assigned_to` BIGINT NULL,
   `title` VARCHAR(255) NOT NULL,
   `description` TEXT,
   `module` VARCHAR(128) DEFAULT NULL,
+  `requirement_url` VARCHAR(512) DEFAULT NULL,
+  `developer` VARCHAR(64) DEFAULT NULL,
+  `risk_level` VARCHAR(8) DEFAULT NULL,
+  `target_version` VARCHAR(64) DEFAULT NULL,
+  `progress_note` TEXT,
+  `expected_completion` DATE DEFAULT NULL,
+  `next_action` TEXT,
+  `action_owner` VARCHAR(128) DEFAULT NULL,
+  `feedback_due_at` DATETIME DEFAULT NULL,
+  `affects_release` TINYINT(1) DEFAULT NULL,
+  `conclusion` TEXT,
+  `release_record_id` BIGINT DEFAULT NULL,
   `priority` ENUM('p0','p1','p2','p3') NOT NULL DEFAULT 'p2',
   `assigned_date` DATE NOT NULL,
-  `status` ENUM('pending','testing','blocked','online','closed') NOT NULL DEFAULT 'pending',
+  `status` ENUM('pending','testing','ready_online','blocked','online','closed','unassigned','waiting_fix','regressing','at_risk','paused') NOT NULL DEFAULT 'pending',
   `status_locked` TINYINT(1) NOT NULL DEFAULT 0,
   `online_at` DATETIME DEFAULT NULL,
   `closed_at` DATETIME DEFAULT NULL,
@@ -86,6 +98,7 @@ CREATE TABLE `task` (
   PRIMARY KEY (`id`),
   KEY `idx_project_date` (`project_id`,`assigned_date`),
   KEY `idx_assignee` (`assigned_to`,`assigned_date`),
+  KEY `idx_task_release_record` (`release_record_id`),
   CONSTRAINT `fk_task_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_task_team` FOREIGN KEY (`team_id`) REFERENCES `team`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_task_by` FOREIGN KEY (`assigned_by`) REFERENCES `user`(`id`) ON DELETE CASCADE,
@@ -495,6 +508,29 @@ CREATE TABLE `release_record` (
   CONSTRAINT `fk_release_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_release_user` FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 筛选台账日报：保留任务范围快照，不修改 daily_report 的工时与进度口径。
+CREATE TABLE IF NOT EXISTS `task_digest` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT NOT NULL,
+  `author_id` BIGINT NOT NULL,
+  `report_date` DATE NOT NULL,
+  `title` VARCHAR(255) NOT NULL,
+  `content` LONGTEXT NOT NULL,
+  `task_ids` TEXT NOT NULL,
+  `filter_summary` TEXT,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_digest_project` (`project_id`),
+  KEY `idx_digest_author` (`author_id`),
+  KEY `idx_digest_date` (`report_date`),
+  CONSTRAINT `fk_digest_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_digest_author` FOREIGN KEY (`author_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE `task` ADD CONSTRAINT `fk_task_release_record`
+  FOREIGN KEY (`release_record_id`) REFERENCES `release_record`(`id`) ON DELETE SET NULL;
 
 -- 语义选择器注册表（单一事实源）：按 project_id + sub_product 分域
 -- candidates 用 TEXT 存 JSON 字符串（MySQL 5.6 无原生 JSON）
