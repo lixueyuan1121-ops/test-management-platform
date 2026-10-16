@@ -5,6 +5,7 @@ from app.models.user import User
 from app.models.geelib_account import GeelibAccount
 from app.models.project import Project, Team, ProjectMember
 from app.models.task import Task, TaskAssignee
+from app.models.task_digest import TaskDigest
 from app.models.report import DailyReport
 from app.models.issue import RemainingIssue
 from app.models.integration import Integration, ApiToken, IntegrationEvent

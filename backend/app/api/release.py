@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import assert_project_role, get_current_user, require_platform_admin
 from app.core.enums import IssueStatus, ProjectRole
 from app.db.session import get_db
-from app.models import ExecRun, Project, ProjectMember, ReleaseRecord, ReleaseProduct, RemainingIssue, User
+from app.models import ExecRun, Project, ProjectMember, ReleaseRecord, ReleaseProduct, RemainingIssue, Task, User
 from app.schemas.common import ok
 
 router = APIRouter(prefix="/api/releases", tags=["releases"])
@@ -388,7 +388,10 @@ def get_release(rid: int, db: Session = Depends(get_db), user: User = Depends(ge
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
     assert_project_role(db, user, r.project_id, _ALL_ROLES)
-    return ok(_to_out(db, r))
+    result = _to_out(db, r)
+    result["tasks"] = [{"id": t.id, "title": t.title, "status": t.status.value}
+                       for t in db.query(Task).filter_by(release_record_id=rid).order_by(Task.id).all()]
+    return ok(result)
 
 
 @router.post("")
@@ -416,7 +419,10 @@ def update_release(rid: int, body: ReleaseUpdate, db: Session = Depends(get_db),
     proj = db.get(Project, r.project_id)
     ptype = proj.platform_type if proj else None
     if body.version is not None:
+        if not body.version.strip():
+            raise HTTPException(400, detail="版本号不能为空")
         r.version = body.version.strip()
+        db.query(Task).filter_by(release_record_id=rid).update({"target_version": r.version})
     if "sub_product" in body.model_fields_set:
         # 显式传入才更新：传值→按项目类型校验白名单；传 null/空→清为未指定。未传则保持原值。
         r.sub_product = _norm_sub_product(body.sub_product, ptype, db=db, project_id=r.project_id)
@@ -441,6 +447,8 @@ def delete_release(rid: int, db: Session = Depends(get_db), user: User = Depends
     r = db.get(ReleaseRecord, rid)
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="发版记录不存在")
+    # 老库 ADD COLUMN 没有外键，同样显式解除关联；保留任务的归属版本。
+    db.query(Task).filter_by(release_record_id=rid).update({"release_record_id": None})
     db.delete(r)
     db.commit()
     return ok({"deleted": rid})

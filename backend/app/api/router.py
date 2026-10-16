@@ -50,6 +50,8 @@ api_router.include_router(record.router)
 
 api_router.include_router(modules.router)
 
+from app.api import task_ledger
+api_router.include_router(task_ledger.router)
 from app.api import verified_import
 api_router.include_router(verified_import.router)
 

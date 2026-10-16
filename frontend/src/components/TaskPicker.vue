@@ -40,8 +40,13 @@ defineEmits(['update:modelValue', 'change'])
 const ST = {
   testing: { label: '测试中', type: 'warning', order: 0 },
   blocked: { label: '阻塞', type: 'danger', order: 1 },
-  pending: { label: '待办', type: 'info', order: 2 },
-  ready_online: { label: '待上线', type: 'primary', order: 3 },
+  unassigned: { label: '待分配', type: 'info', order: 2 },
+  waiting_fix: { label: '待开发修复', type: 'warning', order: 1 },
+  regressing: { label: '回归中', type: 'primary', order: 1 },
+  at_risk: { label: '有风险', type: 'danger', order: 0 },
+  paused: { label: '暂停', type: 'info', order: 3 },
+  pending: { label: '待跟进', type: 'info', order: 2 },
+  ready_online: { label: '测试完成', type: 'primary', order: 3 },
   online: { label: '已上线', type: 'success', order: 4 },
   closed: { label: '已关闭', type: 'info', order: 5 },
 }

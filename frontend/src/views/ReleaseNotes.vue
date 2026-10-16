@@ -131,6 +131,10 @@
         <div v-else class="d-empty">（未填写）</div>
         <p class="d-row"><span class="d-k">备忘</span></p>
         <pre class="d-pre">{{ detail.row.memo || '（无）' }}</pre>
+        <template v-if="detail.row.tasks?.length">
+          <p class="d-row"><span class="d-k">关联任务</span> {{ detail.row.tasks.length }} 项</p>
+          <ul><li v-for="task in detail.row.tasks" :key="task.id">#{{ task.id }} · {{ task.title }}</li></ul>
+        </template>
       </div>
     </el-drawer>
 

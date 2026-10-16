@@ -23,8 +23,13 @@ class ProjectStatus(str, enum.Enum):
 
 
 class TaskStatus(str, enum.Enum):
+    unassigned = "unassigned"  # 待分配（飞书台账）
     pending = "pending"    # 待测：已派单，尚未开始
     testing = "testing"    # 测试中：正在执行
+    waiting_fix = "waiting_fix"  # 待开发修复
+    regressing = "regressing"    # 回归中
+    at_risk = "at_risk"          # 有风险
+    paused = "paused"            # 暂停
     ready_online = "ready_online"  # 待上线：测试完成，等待发布
     blocked = "blocked"    # 阻塞：卡住（环境/缺陷/依赖）
     online = "online"      # 已上线：测完通过、已上线

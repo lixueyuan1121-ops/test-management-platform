@@ -91,7 +91,7 @@ def _to_out_list(db: Session, rows: list[ChecklistItem]) -> list[dict]:
 @router.get("/tasks/checklist-summary")
 def list_checklist_summary(
     project_id: int = Query(...),
-    on_date: date = Query(..., alias="date"),
+    on_date: date | None = Query(None, alias="date"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -104,20 +104,17 @@ def list_checklist_summary(
     （status ∉ {online, closed}）的任务，否则顺延到次日的任务其清单/下发入口会消失。
     """
     assert_project_role(db, user, project_id, _ALL_ROLES)
-    task_ids = [
-        tid for (tid,) in
-        db.query(Task.id)
-        .filter(
-            Task.project_id == project_id,
-            or_(
+    task_query = db.query(Task.id).filter(Task.project_id == project_id)
+    if on_date:
+        task_query = task_query.filter(or_(
                 Task.assigned_date == on_date,
                 (Task.assigned_date < on_date) & Task.status.notin_(
                     [TaskStatus.online, TaskStatus.closed]
                 ),
-            ),
-        )
-        .all()
-    ]
+                func.date(Task.online_at) == on_date,
+                func.date(Task.closed_at) == on_date,
+        ))
+    task_ids = [tid for (tid,) in task_query.all()]
     if not task_ids:
         return ok({})
     rows = (

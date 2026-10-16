@@ -2,25 +2,47 @@
   <div class="tasks functional-workspace">
     <WorkspacePage title="任务分配">
       <template #actions>
-            <el-select v-model="pid" placeholder="选择项目" size="small" style="width:180px" @change="load">
+            <el-select v-model="pid" :disabled="dialog.visible || !!digestContext || releaseVisible" placeholder="选择项目" size="small" style="width:180px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
-            <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid">复制昨日</el-button>
+            <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" placeholder="全部日期" @change="load" />
+            <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid || !date">复制昨日</el-button>
             <el-button type="primary" size="small" v-if="canManage" @click="openCreate" :disabled="!pid">新建任务</el-button>
       </template>
       <template #filters>
-        <el-input v-model="taskKeyword" clearable aria-label="搜索任务名称或负责人" placeholder="搜索任务名称或负责人" style="width:260px" />
-        <el-select v-model="statusFilter" clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:160px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
-        <span class="cl-hint">共 {{ filteredTasks.length }} 个任务</span>
+        <el-input v-model="filters.keyword" clearable aria-label="搜索任务名称或负责人" placeholder="搜索任务、负责人、开发或卡点" style="width:260px" />
+        <el-select v-model="filters.status" clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:160px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
+        <el-select v-model="filters.owner" clearable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:150px"><el-option v-for="m in members" :key="m.user_id" :label="m.name" :value="m.user_id" /></el-select>
+        <el-select v-model="filters.version" clearable filterable placeholder="归属版本" aria-label="筛选归属版本" style="width:150px"><el-option label="未填写版本" value="__unset" /><el-option v-for="v in versions" :key="v" :label="v" :value="v" /></el-select>
+        <el-select v-model="filters.risk" clearable placeholder="风险等级" aria-label="筛选风险等级" style="width:150px"><el-option label="未评估" value="__unset" /><el-option v-for="(m,k) in RISK_META" :key="k" :label="m.label" :value="k" /></el-select>
+        <el-select v-model="filters.priority" clearable placeholder="优先级" aria-label="筛选优先级" style="width:110px"><el-option v-for="p in ['p0','p1','p2','p3']" :key="p" :label="p.toUpperCase()" :value="p" /></el-select>
+        <el-select v-model="filters.impact" clearable placeholder="是否影响发版" aria-label="筛选发版影响" style="width:160px"><el-option label="影响发版" value="yes" /><el-option label="不影响发版" value="no" /><el-option label="未评估" value="__unset" /></el-select>
+        <el-switch v-model="filters.riskOnly" active-text="仅看风险/阻塞" />
+        <el-button link @click="resetFilters">重置筛选</el-button>
       </template>
-      <el-table :data="filteredTasks" v-loading="loading" size="small" empty-text="没有符合条件的任务" row-key="id" @expand-change="onExpandChange">
-        <el-table-column type="expand">
+      <template #selection>
+        <div class="ledger-summary">
+          <span>筛选结果 <strong>{{ filteredTasks.length }}</strong> 项</span>
+          <span>测试完成/已上线 <strong>{{ filteredTasks.filter(t => ['ready_online','online'].includes(t.status)).length }}</strong></span>
+          <span>风险/阻塞 <strong>{{ filteredTasks.filter(hasRisk).length }}</strong></span>
+          <span v-if="selectedTasks.length">已选 {{ selectedTasks.length }} 项 <el-button link @click="taskTable?.clearSelection()">清除选择</el-button></span>
+          <div class="ledger-actions">
+            <el-button v-if="canManage" size="small" :disabled="!actionTasks.length || loading" @click="openDigest(false)">编写日报{{ selectedTasks.length ? '（已选）' : '（筛选结果）' }}</el-button>
+            <el-button v-if="canManage" size="small" :disabled="!pid" @click="openDigest(true)">历史日报</el-button>
+            <el-button v-if="auth.isPlatformAdmin" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
+          </div>
+        </div>
+        <p class="cl-hint">{{ date ? '按日展示，包含未完成的顺延任务；清空日期可查看全部台账。' : '当前展示全部日期的任务台账。' }} 空白风险与发版影响表示未评估。</p>
+      </template>
+      <el-result v-if="loadError" icon="error" title="任务加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
+      <el-table v-else ref="taskTable" :data="filteredTasks" v-loading="loading" size="small" empty-text="没有符合条件的任务" row-key="id" @expand-change="onExpandChange" @selection-change="selection = $event">
+        <el-table-column v-if="canManage" type="selection" width="42" fixed />
+        <el-table-column type="expand" fixed>
           <template #default="{ row }">
             <div class="cl-expand">
               <div v-if="!row._summary && !row._summaryFailed" class="cl-empty">该任务暂无验收清单</div>
               <template v-else>
-                <div class="cl-toolbar">
+                <div v-if="canManage" class="cl-toolbar">
                   <el-select v-model="row._runner" size="small" style="width:160px"
                              :placeholder="myDevices.length ? '选择我的设备' : '未登记设备'" no-data-text="去『我的设备』注册">
                     <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
@@ -76,27 +98,28 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="任务名称" min-width="160" show-overflow-tooltip>
+        <el-table-column prop="title" label="功能/需求" min-width="260" fixed show-overflow-tooltip>
           <template #default="{ row }">
             <el-tag v-if="row.is_carried" size="small" type="warning" effect="light" style="margin-right:6px">
               顺延自 {{ (row.assigned_date || '').slice(5) }}
             </el-tag>
-            {{ row.description || '-' }}
+            {{ row.title || row.description || '—' }}
           </template>
         </el-table-column>
+        <el-table-column prop="assigned_date" label="日期" width="110" />
         <el-table-column prop="module" label="模块" width="110" />
-        <el-table-column prop="developer" label="开发" width="100" />
-        <el-table-column label="需求地址" width="120">
+        <el-table-column prop="developer" label="开发负责人" width="100" />
+        <el-table-column label="需求文档" width="90">
           <template #default="{ row }">
             <el-link v-if="row.requirement_url" :href="row.requirement_url" target="_blank" type="primary" :underline="false">查看</el-link>
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="priority" label="优先级" width="80" />
-        <el-table-column prop="assigned_to_name" label="指派给" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="priority" label="优先级" width="80"><template #default="{row}">{{ row.priority?.toUpperCase() }}</template></el-table-column>
+        <el-table-column label="测试负责人" width="145" show-overflow-tooltip><template #default="{row}">{{ taskOwners(row) }}</template></el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-dropdown trigger="click" @command="(s) => changeStatus(row, s)">
+            <el-dropdown :disabled="!canManage" trigger="click" @command="(s) => changeStatus(row, s)">
               <el-tag :type="STATUS_META[row.status]?.type || 'info'" effect="light" size="small" class="status-trigger">
                 {{ STATUS_META[row.status]?.label || row.status }}<el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-tag>
@@ -110,6 +133,15 @@
             </el-dropdown>
           </template>
         </el-table-column>
+        <el-table-column label="风险等级" width="135"><template #default="{row}"><el-tag v-if="row.risk_level" :type="RISK_META[row.risk_level]?.type" size="small">{{ RISK_META[row.risk_level]?.label }}</el-tag><span v-else class="cl-hint">未评估</span></template></el-table-column>
+        <el-table-column prop="target_version" label="归属版本" width="150" show-overflow-tooltip><template #default="{row}">{{ row.target_version || '—' }}<el-tag v-if="row.release_record_id" size="small" type="success">已归档</el-tag></template></el-table-column>
+        <el-table-column prop="progress_note" label="当前卡点/进度" min-width="230" show-overflow-tooltip />
+        <el-table-column prop="expected_completion" label="预计完成" width="115" />
+        <el-table-column prop="next_action" label="下一步动作" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="action_owner" label="动作负责人" width="120" />
+        <el-table-column label="最晚反馈时间" width="155"><template #default="{row}">{{ fmtDetailTime(row.feedback_due_at) }}</template></el-table-column>
+        <el-table-column label="是否影响发版" width="120"><template #default="{row}"><el-tag v-if="row.affects_release != null" :type="row.affects_release ? 'danger' : 'info'" size="small">{{ row.affects_release ? '是' : '否' }}</el-tag><span v-else class="cl-hint">未评估</span></template></el-table-column>
+        <el-table-column prop="conclusion" label="结论/备注" min-width="220" show-overflow-tooltip />
         <el-table-column label="验收进度" width="190">
           <template #default="{ row }">
             <div v-if="row._summary" class="cl-prog">
@@ -123,7 +155,7 @@
             <span v-else class="cl-dim">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" :width="canManage ? 180 : 70">
+        <el-table-column label="操作" fixed="right" :width="canManage ? 180 : 70">
           <template #default="{ row }">
             <el-button link type="info" @click="openDetail(row)">详情</el-button>
             <el-button v-if="canManage" link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -133,11 +165,11 @@
       </el-table>
     </WorkspacePage>
 
-    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="560px">
-      <el-form :model="form" label-width="90px">
-        <el-form-item label="任务名称" required><el-input v-model="form.title" /></el-form-item>
-        <el-form-item label="需求地址"><el-input v-model="form.requirement_url" placeholder="http://..." /></el-form-item>
-        <el-form-item label="开发"><el-input v-model="form.developer" placeholder="开发人员姓名" /></el-form-item>
+    <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="min(720px, 96vw)" :close-on-click-modal="false" :show-close="!dialog.saving" :close-on-press-escape="!dialog.saving">
+      <el-form :model="form" :disabled="dialog.saving" label-width="116px">
+        <el-form-item label="功能/需求" required><el-input v-model="form.title" maxlength="255" /></el-form-item>
+        <el-form-item label="需求文档"><el-input v-model="form.requirement_url" placeholder="http://..." /></el-form-item>
+        <el-form-item label="开发负责人"><el-input v-model="form.developer" placeholder="开发人员姓名" /></el-form-item>
         <el-form-item label="模块"><el-input v-model="form.module" /></el-form-item>
         <el-form-item label="优先级">
           <el-select v-model="form.priority" style="width:100%">
@@ -145,7 +177,7 @@
             <el-option label="P2" value="p2" /><el-option label="P3" value="p3" />
           </el-select>
         </el-form-item>
-        <el-form-item label="指派给" required>
+        <el-form-item label="测试负责人" required>
           <el-select v-model="form.assigned_to_ids" multiple filterable placeholder="选择项目成员（可多选）" style="width:100%">
             <el-option v-for="m in members" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
@@ -158,10 +190,11 @@
             <el-option v-for="(m, k) in STATUS_META" :key="k" :label="m.label" :value="k" />
           </el-select>
         </el-form-item>
-        <el-form-item label="说明"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
+        <TaskLedgerFields :form="form" :versions="versions" :linked="dialog.linked" />
+        <el-form-item label="任务说明"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialog.visible = false">取消</el-button>
+        <el-button :disabled="dialog.saving" @click="dialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="dialog.saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
@@ -189,7 +222,14 @@
           <el-link v-if="detail.row.requirement_url" :href="detail.row.requirement_url" target="_blank" type="primary" :underline="false">{{ detail.row.requirement_url }}</el-link>
           <span v-else>—</span>
         </p>
-        <p class="d-row"><span class="d-k">说明</span></p>
+        <p class="d-row"><span class="d-k">归属版本</span>{{ detail.row.target_version || '—' }}<el-tag v-if="detail.row.release_record_id" size="small">发版记录 #{{ detail.row.release_record_id }}</el-tag></p>
+        <p class="d-row"><span class="d-k">风险等级</span>{{ RISK_META[detail.row.risk_level]?.label || '未评估' }}</p>
+        <p class="d-row"><span class="d-k">预计完成</span>{{ detail.row.expected_completion || '—' }}</p>
+        <p class="d-row"><span class="d-k">动作负责人</span>{{ detail.row.action_owner || '—' }}</p>
+        <p class="d-row"><span class="d-k">最晚反馈</span>{{ fmtDetailTime(detail.row.feedback_due_at) }}</p>
+        <p class="d-row"><span class="d-k">影响发版</span>{{ detail.row.affects_release == null ? '未评估' : detail.row.affects_release ? '是' : '否' }}</p>
+        <template v-for="(label,field) in { progress_note: '当前卡点/进度', next_action: '下一步动作', conclusion: '结论/备注' }" :key="field"><p class="d-row"><span class="d-k">{{ label }}</span></p><pre class="d-pre">{{ detail.row[field] || '—' }}</pre></template>
+        <p class="d-row"><span class="d-k">任务说明</span></p>
         <pre class="d-pre">{{ detail.row.description || '—' }}</pre>
         <template v-if="detail.row.status === 'closed'">
           <p class="d-row"><span class="d-k">关闭备注</span></p>
@@ -197,11 +237,17 @@
         </template>
       </div>
     </el-drawer>
+    <TaskDigestDialog v-if="digestContext" :context="digestContext" @close="digestContext = null" />
+    <TaskReleaseDialog v-if="releaseVisible" :rows="releaseRows" :project-id="pid" :platform="projects.find(p => p.id === pid)?.platform_type" @close="releaseVisible = false" @saved="releaseVisible = false; load()" />
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import TaskLedgerFields from '@/components/TaskLedgerFields.vue'
+import TaskDigestDialog from '@/components/TaskDigestDialog.vue'
+import TaskReleaseDialog from '@/components/TaskReleaseDialog.vue'
+import { TASK_STATUS, RISK_META, LEDGER_DEFAULTS, localDate, taskOwners, hasRisk, filterLedger } from '@/utils/taskLedger'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -212,14 +258,7 @@ import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 
 // 任务状态：待测 → 测试中 → 待上线 → 已上线；也可标记阻塞或关闭。
-const STATUS_META = {
-  pending: { label: '待测', type: 'info' },
-  testing: { label: '测试中', type: 'warning' },
-  ready_online: { label: '待上线', type: 'primary' },
-  blocked: { label: '阻塞', type: 'danger' },
-  online: { label: '已上线', type: 'success' },
-  closed: { label: '已关闭', type: 'info' },
-}
+const STATUS_META = TASK_STATUS
 
 // 验收清单项三态结果配色（沿用全局口径：通过青绿/失败红/阻塞warn/待测灰）
 const EXEC_META = {
@@ -246,17 +285,35 @@ const canManage = computed(() => {
   const r = auth.roleIn(pid.value)
   return auth.isPlatformAdmin || r === 'admin' || r === 'member'
 })
-const date = ref(new Date().toISOString().slice(0, 10))
-const tasks = ref([])
-const taskKeyword = ref('')
-const statusFilter = ref('')
-const filteredTasks = computed(() => tasks.value.filter(row =>
-  `${row.description || ''} ${row.title || ''} ${row.assigned_to_name || ''}`.toLocaleLowerCase().includes(taskKeyword.value.trim().toLocaleLowerCase()) &&
-  (!statusFilter.value || row.status === statusFilter.value)))
+const date = ref(localDate())
+const tasks = ref([]), taskTable = ref(null), selection = ref([]), loadError = ref(false)
+const initialFilters = { keyword: '', status: '', owner: '', priority: '', version: '', risk: '', impact: '', riskOnly: false }
+const filters = reactive({ ...initialFilters })
+const filteredTasks = computed(() => filterLedger(tasks.value, filters))
+const versions = computed(() => [...new Set(tasks.value.map(t => t.target_version).filter(Boolean))].sort())
+const selectedTasks = computed(() => filteredTasks.value.filter(t => selection.value.some(s => s.id === t.id)))
+const actionTasks = computed(() => selectedTasks.value.length ? selectedTasks.value : filteredTasks.value)
+const releasableTasks = computed(() => actionTasks.value.filter(t => t.status === 'online' && t.target_version && !t.release_record_id))
+const digestContext = ref(null), releaseVisible = ref(false), releaseRows = ref([])
+watch(filters, () => { selection.value = []; taskTable.value?.clearSelection() })
+function resetFilters() { Object.assign(filters, initialFilters) }
+function openDigest(history = false) {
+  const parts = [date.value ? `工作日期 ${date.value}（含顺延）` : '全部日期']
+  if (filters.keyword) parts.push(`关键词：${filters.keyword}`)
+  if (filters.status) parts.push(`状态：${STATUS_META[filters.status].label}`)
+  if (filters.owner) parts.push(`负责人：${members.value.find(m => m.user_id === filters.owner)?.name}`)
+  if (filters.priority) parts.push(filters.priority.toUpperCase())
+  if (filters.version) parts.push(`版本：${filters.version === '__unset' ? '未填写' : filters.version}`)
+  if (filters.risk) parts.push(`风险：${RISK_META[filters.risk]?.label || '未评估'}`)
+  if (filters.impact) parts.push(`影响发版：${({ yes: '是', no: '否', __unset: '未评估' })[filters.impact]}`)
+  if (filters.riskOnly) parts.push('仅风险/阻塞')
+  if (selectedTasks.value.length) parts.push(`手动选中 ${selectedTasks.value.length} 项`)
+  digestContext.value = { project_id: pid.value, report_date: date.value || localDate(), task_ids: actionTasks.value.map(t => t.id), filter_summary: parts.join('；'), history }
+}
 const members = ref([])
 const loading = ref(false)
-const dialog = reactive({ visible: false, id: null, saving: false })
-const form = reactive({ title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: '', description: '', status: 'pending' })
+const dialog = reactive({ visible: false, id: null, saving: false, linked: false })
+const form = reactive({ ...LEDGER_DEFAULTS, title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: '', description: '', status: 'pending' })
 
 onMounted(async () => {
   // 设备与项目列表互不依赖,并行拉取;项目列表走 store 缓存
@@ -267,35 +324,27 @@ onMounted(async () => {
   if (pid.value) await load()
 })
 
-async function loadMembers() {
-  if (!pid.value) { members.value = []; return }
-  members.value = await listMembers(pid.value)
-}
-
+let loadVersion = 0
 async function load() {
-  if (!pid.value) return
-  setLastProjectId(pid.value)   // 记住当前项目，供其他页面默认选中
-  await loadMembers()
+  const seq = ++loadVersion, projectId = pid.value, onDate = date.value
+  tasks.value = []; selection.value = []; members.value = []; loadError.value = false
+  if (!projectId) return
+  setLastProjectId(projectId)
   loading.value = true
   try {
-    // 任务与验收汇总并行拉取；汇总失败不阻断表格，记 _summaryFailed 供展开区区分「无清单」与「汇总不可用」
-    const [rows, summaryResult] = await Promise.all([
-      listTasks({ project_id: pid.value, date: date.value }),
-      getChecklistSummary(pid.value, date.value).catch(() => null),
+    const [rows, summaryResult, projectMembers] = await Promise.all([
+      listTasks({ project_id: projectId, date: onDate || undefined }),
+      getChecklistSummary(projectId, onDate || undefined).catch(() => null),
+      listMembers(projectId),
     ])
+    if (seq !== loadVersion) return
+    members.value = projectMembers
     const summary = summaryResult || {}
-    const summaryFailed = summaryResult === null
-    tasks.value = rows.map((t) => ({
-      ...t,
-      _summary: summary[String(t.id)] || null,
-      _summaryFailed: summaryFailed,
-      _items: null,
-      _itemsLoading: false,
-      _runner: myDevices.value[0]?.runner_id || '',   // 默认下发到我的第一台设备
-      _checked: [],          // 展开区勾选的清单项
-      _enqueuing: false,
-    }))
-  } finally { loading.value = false }
+    tasks.value = rows.map(t => ({ ...t, _summary: summary[String(t.id)] || null,
+      _summaryFailed: summaryResult === null, _items: null, _itemsLoading: false,
+      _runner: myDevices.value[0]?.runner_id || '', _checked: [], _enqueuing: false }))
+  } catch { if (seq === loadVersion) loadError.value = true }
+  finally { if (seq === loadVersion) loading.value = false }
 }
 
 async function onExpandChange(row, expandedRows) {
@@ -336,13 +385,16 @@ function fmtExecAt(s) {
 
 function openCreate() {
   dialog.id = null
+  dialog.linked = false
   // 新建入口仅 canManage(admin/member)可见,均可自由选指派人,默认不预填。
-  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: date.value, description: '', status: 'pending' })
+  Object.assign(form, { ...LEDGER_DEFAULTS, title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: date.value || localDate(), description: '', status: 'pending' })
   dialog.visible = true
 }
 function openEdit(row) {
   dialog.id = row.id
+  dialog.linked = !!row.release_record_id
   Object.assign(form, {
+    ...Object.fromEntries(Object.entries(LEDGER_DEFAULTS).map(([k,v]) => [k, row[k] ?? v])),
     title: row.title, requirement_url: row.requirement_url || '', developer: row.developer || '',
     module: row.module || '', priority: row.priority, assigned_to_ids: [...(row.assigned_to_ids || [row.assigned_to])],
     assigned_date: row.assigned_date, description: row.description || '', status: row.status,
@@ -361,7 +413,7 @@ async function submit() {
   if (!form.title || !form.assigned_to_ids.length || !form.assigned_date) { ElMessage.warning('任务名称/指派/日期必填'); return }
   dialog.saving = true
   try {
-    const payload = { ...form, project_id: pid.value }
+    const payload = { ...form, project_id: pid.value, risk_level: form.risk_level || null, expected_completion: form.expected_completion || null, feedback_due_at: form.feedback_due_at || null }
     if (dialog.id) await updateTask(dialog.id, payload)
     else await createTask(payload)
     ElMessage.success('保存成功')
@@ -371,7 +423,7 @@ async function submit() {
   finally { dialog.saving = false }
 }
 async function changeStatus(row, s) {
-  if (s === row.status) return
+  if (!canManage.value || s === row.status) return
   const payload = { status: s }
   // 关闭任务时收集关闭备注（可选，允许留空）
   if (s === 'closed') {
@@ -403,6 +455,10 @@ async function onCopy() {
 </script>
 
 <style scoped>
+.ledger-summary { display:flex; flex-wrap:wrap; gap:18px; align-items:center; padding-top:14px; font-size:13px; }
+.ledger-summary strong { font-size:16px; margin-left:4px; }
+.ledger-actions { display:flex; flex-wrap:wrap; gap:8px; margin-left:auto; }
+.ledger-actions .el-button { margin-left:0; }
 .header { display: flex; justify-content: space-between; align-items: center; }
 .filters { display: flex; gap: 8px; align-items: center; }
 .status-trigger { cursor: pointer; }
