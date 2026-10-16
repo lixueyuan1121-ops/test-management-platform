@@ -70,6 +70,18 @@ class DailyReportSkillTests(unittest.TestCase):
         return {'project_name': '验证项目', 'report_date': '2026-10-16', 'filter_summary': '多选筛选',
                 'tasks': tasks if tasks is not None else [dict(id=1, title='待测试功能', status='testing', owners=['平台姓名'])]}
 
+    def test_final_report_uses_fact_review_result(self):
+        import copy
+        first = dict(overview='第一稿',risks=[],next_steps=[],items=[dict(id=1,status='testing',summary='验证并录屏已完成')])
+        reviewed = copy.deepcopy(first)
+        reviewed['items'][0]['summary'] = '功能正在测试，录屏要求尚无完成反馈。'
+        with patch('app.services.task_digest_summary.collect', side_effect=[first, reviewed]) as model:
+            report = service.generate_task_digest(self.payload())
+            self.assertEqual(model.call_count, 2)
+            self.assertIn('事实审校', model.call_args.args[1])
+            self.assertIn('录屏要求尚无完成反馈', report['content'])
+            self.assertNotIn('录屏已完成', report['content'])
+
     def test_current_owner_overrides_stale_allocation_note(self):
         payload = self.payload([dict(id=1,title='功能',status='testing',owners=['平台姓名'],next_action='分配测试负责人')])
         output, _ = service._invoke_skill(payload, '--summary-prompt-json')

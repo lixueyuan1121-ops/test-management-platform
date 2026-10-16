@@ -67,7 +67,9 @@ def summarize(payload, provider=None, on_progress=None):
         raise HTTPException(502, detail='AI 总结校验失败')
 
     for index, tasks in enumerate(batches, 1):
-        result = run({**payload, 'tasks': tasks}, f'正在提炼任务进展（{index}/{len(batches)}）')
+        part = {**payload, 'tasks': tasks}
+        draft = run(part, f'正在提炼任务进展（{index}/{len(batches)}）')
+        result = run({**part, 'review_candidate': draft}, f'正在核对总结与任务事实（{index}/{len(batches)}）')
         all_items.extend(result['items']); partials.append(result)
     if len(partials) == 1:
         return partials[0]

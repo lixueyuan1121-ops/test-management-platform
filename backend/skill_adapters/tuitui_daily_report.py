@@ -82,6 +82,8 @@ def prepare_summary_prompt(platform):
 11. 输出前自检：所有任务均保留；未把计划写成完成；未把旧备注当今日安排；未复用历史负责人；没有重复版本标签。只输出 JSON，不输出 Markdown 代码块：
 {"overview":"整体总结","risks":[{"task_ids":[1],"summary":"风险归纳"}],"next_steps":[{"task_ids":[1],"summary":"后续安排"}],"items":[{"id":1,"status":"testing","summary":"核心功能及测试进展"}]}
 """
+    if platform.get('review_candidate'):
+        prompt += '\n本次为事实审校：review_candidate 是上一步模型草稿，并非事实来源。逐句对照 tasks 修订后返回完整 JSON。删除或改写一切无依据的完成、范围、期限、归因和安排；不要仅润色。任务说“要录屏”只能保留录屏要求，不能写成“已录屏”；空白卡点/绿色等级只能说“未记录卡点”，不能说“暂无遗留问题”；旧备注的“今天不发”不能扩展成整个本期不发布；缺失当日反馈不自动构成发布风险。建议动作不能冒充输入已有的下一步安排，next_steps 只保留明确动作或明确计划。删去 summary 重复的版本号、负责人、优先级。保留全部 ID 与原状态，已分配负责人不能写待分配。'
     if platform.get('overview_only'):
         prompt += '\n本次为最终归纳：输入已经是逐项摘要。只输出 overview、risks、next_steps，不再输出 items；参考 batch_summaries 合并共同主题，但保留有据的风险。'
     # Resolve the known stale allocation note before it can contradict platform owners.
