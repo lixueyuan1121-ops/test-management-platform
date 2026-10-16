@@ -152,6 +152,8 @@ def apply(db, plan, backup_path, result_path):
         db.add(task); db.flush()
         created.append({'source_row': r['source_row'], 'task_id': task.id, 'title': task.title})
     db.flush()
+    # Read stored precision (e.g. MySQL DATETIME truncates microseconds) before comparing.
+    db.expire_all()
     expected = {tid: snapshot(task) for tid, task in tasks.items()}
     expected.update({r['task_id']: snapshot(db.get(Task, r['task_id'])) for r in created})
     db.commit()
