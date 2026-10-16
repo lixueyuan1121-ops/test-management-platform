@@ -37,15 +37,33 @@ if __name__ == "__main__":
     return destination, archive, manifest
 
 
+class SummaryEngine:
+    """Network-free model double; the real skill still prepares, validates and renders."""
+    def is_available(self): return True
+    def stream_generate(self, requirement, **kwargs):
+        prompt = kwargs['prompt_builder']()
+        payload, _ = json.JSONDecoder().raw_decode(prompt.split('输入数据：\n', 1)[1])
+        items = []
+        for task in payload['tasks']:
+            detail = task.get('daily_feedback') or (task.get('progress_note') or '').split('\n')[0]
+            title = task.get('title') or task.get('summary')
+            items.append({'id': task['id'], 'status': task['status'], 'summary': title + ('：' + detail if detail else '，按当前状态持续跟进。')})
+        result = {'overview': '本次主要推进功能验证，仍需关注风险事项。', 'risks': [], 'next_steps': [], 'items': items}
+        yield {'type':'result', 'text':json.dumps(result, ensure_ascii=False), 'complete':True}
+
+
 class DailyReportSkillTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.skill, self.archive, self.manifest = install_test_skill(self.temp.name)
         self.path_patch = patch.object(service, 'get_skill_dir', return_value=self.skill)
         self.path_patch.start()
+        self.engine_patch = patch('app.services.task_digest_summary.generators.get_provider', return_value=SummaryEngine())
+        self.engine_patch.start()
 
     def tearDown(self):
         self.path_patch.stop()
+        self.engine_patch.stop()
         self.temp.cleanup()
 
     def payload(self, tasks=None):
@@ -63,14 +81,14 @@ class DailyReportSkillTests(unittest.TestCase):
         report = service.generate_task_digest(self.payload(tasks))
         content = report['content']
         self.assertEqual(report['generator']['archive_sha256'],self.manifest['archive_sha256'])
-        self.assertIn('共 11 个功能',content)
+        self.assertIn('共 11 个任务',content)
         for task in tasks:
             self.assertEqual(content.count(task['title']),1)
-        self.assertIn('测试负责人：平台甲、平台乙',content)
-        self.assertIn('测试负责人：未指定',content)
-        self.assertIn('一尘跟进验收',content)
+        self.assertIn('测试：平台甲、平台乙',content)
+        self.assertIn('测试：待指定',content)
+        self.assertNotIn('飞书原说明',content)
         self.assertIn('goodcase：【案例】https://example.test/share/abc?x=1&y=2',content)
-        self.assertIn('归属版本：桌面版',content)
+        self.assertIn('版本：桌面版',content)
         testing_section = content.split('**测试中（1 项）**')[1].split('**回归中')[0]
         self.assertIn(tasks[2]['title'],testing_section)
         self.assertNotIn('goodcase：无',content)
@@ -111,13 +129,36 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 2)
+        self.assertEqual(upgraded['platform_adapter_version'], 3)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
         (self.skill/'references/template.html').write_text('modified')
         with self.assertRaises(HTTPException) as caught: service.generate_task_digest(self.payload())
         self.assertEqual(caught.exception.status_code, 503)
+
+    def test_semantic_output_is_required_and_status_or_coverage_errors_fail(self):
+        from app.services import task_digest_summary as summaries
+        payload = self.payload()
+        valid = {'overview':'完成核心场景验证，持续推进联调。', 'risks':[], 'next_steps':[],
+                 'items':[{'id':1,'status':'testing','summary':'核心场景已验证，正在联调异常链路。'}]}
+        with patch.object(summaries, 'collect', return_value=valid) as model:
+            report = service.generate_task_digest(payload)
+            self.assertTrue(report['generator']['summarized'])
+            self.assertIn('核心场景已验证，正在联调异常链路。',report['content'])
+            self.assertNotIn('风险等级：',report['content'])
+            self.assertIn('提炼', model.call_args.args[1])
+        for invalid in [dict(valid, items=[]), dict(valid, items=[dict(valid['items'][0], status='online')]),
+                        dict(valid, risks=[{'task_ids':[999], 'summary':'不存在任务的风险'}])]:
+            with patch.object(summaries, 'collect', return_value=invalid):
+                with self.assertRaises(HTTPException): service.generate_task_digest(payload)
+
+    def test_multiple_batches_are_summarized_without_losing_tasks(self):
+        tasks = [dict(id=i,title=f'条目{i}',status='testing',owners=['平台甲']) for i in range(1,33)]
+        report = service.generate_task_digest(self.payload(tasks))
+        self.assertIn('共 32 个任务',report['content'])
+        self.assertIn('**测试中（32 项）**',report['content'])
+        self.assertEqual(len(__import__('re').findall(r'^\d+\. ',report['content'],__import__('re').M)),32)
 
     def test_archive_path_traversal_is_rejected(self):
         archive=Path(self.temp.name)/'invalid.zip'
@@ -140,7 +181,7 @@ class DailyReportSkillTests(unittest.TestCase):
         with patch.object(service.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','failure')):
             with self.assertRaises(HTTPException) as caught: service.generate_task_digest(self.payload())
             self.assertEqual(caught.exception.status_code,502)
-        with patch.object(service.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps({'title':'标题','content':'x'*60001}),'')):
+        with patch('app.services.task_digest_summary.summarize', return_value={}), patch.object(service.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps({'title':'标题','content':'x'*60001}),'')):
             with self.assertRaises(HTTPException) as caught: service.generate_task_digest(self.payload())
             self.assertEqual(caught.exception.status_code,422)
 
@@ -156,7 +197,9 @@ class DailyReportSkillTests(unittest.TestCase):
             expected_env.add('SystemRoot')
             self.assertEqual(run.call_args.kwargs['env']['SystemRoot'], os.environ['SystemRoot'])
         self.assertEqual(set(run.call_args.kwargs['env']), expected_env)
-        self.assertEqual(json.loads(run.call_args.kwargs['input']),self.payload())
+        self.assertEqual(json.loads(run.call_args.kwargs['input'])['tasks'],self.payload()['tasks'])
+        self.assertIn('summary',json.loads(run.call_args.kwargs['input']))
+        self.assertEqual(run.call_args_list[0].args[0][-1], '--summary-prompt-json')
 
 
 if __name__ == '__main__':

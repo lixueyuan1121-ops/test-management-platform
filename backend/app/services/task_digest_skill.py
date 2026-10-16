@@ -23,7 +23,8 @@ def _invoke_skill(payload, mode):
     try:
         manifest = json.loads((skill_dir / 'platform-install.json').read_text())
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
-        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 2
+        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 3
+                or manifest.get('skill_sha256') != hashlib.sha256((skill_dir / 'SKILL.md').read_bytes()).hexdigest()
                 or manifest.get('template_sha256') != hashlib.sha256((skill_dir / 'references/template.html').read_bytes()).hexdigest()):
             raise ValueError('skill installation mismatch')
     except (OSError, ValueError, KeyError):
@@ -43,7 +44,11 @@ def _invoke_skill(payload, mode):
         if result.returncode:
             raise ValueError('skill failed')
         output = json.loads(result.stdout)
-        keys = ('html',) if mode == '--html-json' else ('title', 'content')
+        if mode == '--validate-summary-json':
+            if not isinstance(output.get('summary'), dict):
+                raise ValueError('invalid summary')
+            return output, manifest
+        keys = {'--html-json': ('html',), '--summary-prompt-json': ('prompt',)}.get(mode, ('title', 'content'))
         if any(not isinstance(output.get(k), str) or not output[k].strip() for k in keys):
             raise ValueError('empty skill output')
     except subprocess.TimeoutExpired:
@@ -61,7 +66,10 @@ def render_task_digest_html(payload):
     return output['html']
 
 
-def generate_task_digest(payload):
+def generate_task_digest(payload, provider=None, on_progress=None):
+    from app.services.task_digest_summary import summarize
+    summary = summarize(payload, provider=provider, on_progress=on_progress)
+    payload = {**payload, 'summary': summary}
     output, manifest = _invoke_skill(payload, '--tasks-json')
     title, content = output['title'], output['content']
     if len(title) > 255 or len(content) > 60000:
@@ -70,4 +78,4 @@ def generate_task_digest(payload):
              manifest['name'], manifest['platform_adapter_version'], len(payload.get('tasks', [])))
     return {'title': title, 'content': content, 'generator': {
         'name': manifest['name'], 'adapter_version': manifest['platform_adapter_version'],
-        'archive_sha256': manifest['archive_sha256']}}
+        'archive_sha256': manifest['archive_sha256'], 'summarized': True, 'provider': provider}}

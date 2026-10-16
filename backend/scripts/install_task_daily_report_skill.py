@@ -29,6 +29,7 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
         manifest = json.loads((destination / 'platform-install.json').read_text())
         if (manifest['archive_sha256'] == archive_hash and manifest['adapter_sha256'] == sha256(adapter)
                 and manifest['script_sha256'] == sha256((destination / SCRIPT).read_bytes())
+                and manifest.get('skill_sha256') == sha256((destination / 'SKILL.md').read_bytes())
                 and manifest.get('template_sha256') == sha256((destination / 'references/template.html').read_bytes())):
             return manifest
         if not upgrade:
@@ -64,7 +65,8 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
     adapted = adapted.replace('def main():', 'def _release_main():', 1)
     adapted = adapted.replace(marker, adapter.decode('utf-8') + '\n\n' + marker, 1)
     compile(adapted, SCRIPT, 'exec')
-    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 2,
+    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 3,
+                'skill_sha256': sha256(files['SKILL.md']),
                 'template_sha256': sha256(files['references/template.html']),
                 'archive_sha256': archive_hash, 'adapter_sha256': sha256(adapter),
                 'upstream_script_sha256': sha256(files[SCRIPT]),
@@ -82,7 +84,7 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
         (staging / 'platform-install.json').write_text(json.dumps(manifest, indent=2) + '\n')
         (staging / 'PLATFORM.md').write_text(
             '# 平台任务输入\n\n使用 `python scripts/fetch_daily_report.py --tasks-json`，从 stdin 读取 JSON。\n'
-            '平台输入保留所有任务，按显式状态分组，不拉取群消息、不发消息。--html-json 使用原 HTML 模板样式渲染当前正文，平台负责托管短链。\n'
+            '--summary-prompt-json 准备总结提示，平台现有 AI 服务总结后，经 --validate-summary-json 校验再生成正文。保留所有任务和平台状态，不拉取群消息、不发消息。--html-json 使用原模板渲染当前正文，由平台复用测评报告服务发布。\n'
             '使用平台姓名，保留进度、风险、下一步动作及 goodcase。原入口和原脚本副本均保留。\n', encoding='utf-8')
         backup = None
         if destination.exists():
