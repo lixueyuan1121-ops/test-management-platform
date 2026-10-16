@@ -82,6 +82,12 @@ def ensure_task_columns() -> None:
     cols = _columns("task")
     if not cols:
         return  # 表尚未建，交给 create_all
+    if engine.dialect.name == "mysql":
+        owner_column = next(c for c in inspect(engine).get_columns("task") if c["name"] == "assigned_to")
+        if not owner_column["nullable"]:
+            owner_type = owner_column["type"].compile(dialect=engine.dialect)
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE task MODIFY COLUMN assigned_to {owner_type} NULL"))
     with engine.begin() as conn:
         if "requirement_url" not in cols:
             conn.execute(text("ALTER TABLE task ADD COLUMN requirement_url VARCHAR(512)"))

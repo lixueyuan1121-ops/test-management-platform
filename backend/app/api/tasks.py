@@ -67,9 +67,9 @@ def _assignee_ids(db: Session, body):
     if supplied is None and body.assigned_to is None:
         return None
     ids = list(dict.fromkeys(supplied if supplied is not None else [body.assigned_to]))
-    if not ids or any(type(uid) is not int or uid <= 0 for uid in ids):
-        raise HTTPException(422, detail="至少选择一名有效指派人")
-    if supplied is not None and body.assigned_to is not None and body.assigned_to != ids[0]:
+    if any(type(uid) is not int or uid <= 0 for uid in ids):
+        raise HTTPException(422, detail="指派用户无效")
+    if supplied is not None and body.assigned_to is not None and (not ids or body.assigned_to != ids[0]):
         raise HTTPException(422, detail="单人指派字段与多人指派字段不一致")
     existing = {uid for (uid,) in db.query(User.id).filter(User.id.in_(ids)).all()}
     if set(ids) != existing:
@@ -78,7 +78,7 @@ def _assignee_ids(db: Session, body):
 
 
 def _set_assignees(task: Task, ids):
-    task.assigned_to = ids[0]
+    task.assigned_to = ids[0] if ids else None
     existing = {a.user_id: a for a in task.assignees}
     task.assignees = [existing.get(uid) or TaskAssignee(user_id=uid) for uid in ids[1:]]
 
@@ -136,11 +136,11 @@ def create_task(
     assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
     if not db.get(Project, body.project_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    ids = _assignee_ids(db, body)
+    ids = _assignee_ids(db, body) or []
     t = Task(
         project_id=body.project_id,
         assigned_by=user.id,
-        assigned_to=ids[0],
+        assigned_to=ids[0] if ids else None,
         title=body.title,
         description=body.description,
         module=body.module,

@@ -63,12 +63,28 @@ class MultiAssigneeTests(unittest.TestCase):
         self.assertEqual(self.rows()[0]['assigned_to_ids'],[2])
         self.assertEqual(self.rows()[0]['id'],row['id'])
 
-    def test_invalid_assignment_is_atomic_and_empty_rejected(self):
+    def test_invalid_assignment_is_atomic(self):
         tid=self.create()['id']
-        for payload,code in [({'assigned_to_ids':[]},422),({'assigned_to_ids':[2,999]},404),({'assigned_to_ids':[2,3],'assigned_to':4},422)]:
+        for payload,code in [({'assigned_to_ids':[2,999]},404),({'assigned_to_ids':[2,3],'assigned_to':4},422)]:
             r=self.client.patch(f'/api/tasks/{tid}',json={'title':'must not persist',**payload});self.assertEqual(r.status_code,code,r.text)
         with self.factory() as db:
             t=db.get(Task,tid);self.assertEqual(t.title,'Shared task');self.assertEqual(t.assigned_to_ids,[2,3])
+    def test_unassigned_create_assign_clear_and_copy(self):
+        row=self.create(assigned_to_ids=[]);tid=row['id']
+        self.assertIsNone(row['assigned_to']);self.assertEqual(row['assigned_to_ids'],[])
+        self.assertEqual(row['assigned_to_name'],'')
+        changed=self.client.patch(f'/api/tasks/{tid}',json={'assigned_to_ids':[2,3]}).json()['data']
+        self.assertEqual(changed['assigned_to_ids'],[2,3])
+        cleared=self.client.patch(f'/api/tasks/{tid}',json={'assigned_to_ids':[]}).json()['data']
+        self.assertIsNone(cleared['assigned_to']);self.assertEqual(cleared['assigned_to_ids'],[])
+        metadata=self.client.patch(f'/api/tasks/{tid}',json={'title':'Unassigned task'}).json()['data']
+        self.assertEqual(metadata['assigned_to_ids'],[])
+        self.assertEqual(self.client.post('/api/tasks/copy',params={'project_id':1,'target_date':'2026-09-28'}).status_code,200)
+        with self.factory() as db:
+            self.assertTrue(all(t.assigned_to is None and t.assigned_to_ids==[] for t in db.query(Task).all()))
+        daily=self.client.get('/api/stats/daily',params={'project_id':1,'date':'2026-09-27'}).json()['data']
+        self.assertEqual(daily['should_submit'],0)
+
     def test_copy_and_delete_preserve_then_remove_links(self):
         tid=self.create()['id'];r=self.client.post('/api/tasks/copy',params={'project_id':1,'target_date':'2026-09-28'})
         self.assertEqual(r.status_code,200,r.text)

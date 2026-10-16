@@ -178,7 +178,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="测试负责人" required>
-          <el-select v-model="form.assigned_to_ids" multiple filterable placeholder="选择项目成员（可多选）" style="width:100%">
+          <el-select v-model="form.assigned_to_ids" multiple filterable placeholder="选择项目成员（可多选或留空）" style="width:100%">
             <el-option v-for="m in members" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
         </el-form-item>
@@ -410,7 +410,7 @@ function fmtDetailTime(s) {
   return String(s).replace('T', ' ').slice(0, 16)
 }
 async function submit() {
-  if (!form.title || !form.assigned_to_ids.length || !form.assigned_date) { ElMessage.warning('任务名称/指派/日期必填'); return }
+  if (!form.title || !form.assigned_date) { ElMessage.warning('任务名称和日期必填'); return }
   dialog.saving = true
   try {
     const payload = { ...form, project_id: pid.value, risk_level: form.risk_level || null, expected_completion: form.expected_completion || null, feedback_due_at: form.feedback_due_at || null }

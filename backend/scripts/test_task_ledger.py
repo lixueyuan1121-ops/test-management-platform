@@ -61,6 +61,47 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()['data']
 
+    def test_reconcile_backed_up_create_close_and_preserve_owners(self):
+        from scripts.reconcile_task_ledger import prepare, apply
+        primary=self.task(title='Existing primary',developer='平台开发',description='历史验收说明')
+        duplicate=self.task(title='Duplicate')
+        self.client.patch(f"/api/tasks/{primary['id']}",json={'status':'online'})
+        source={'url':'https://example.test/sheet','rows':[
+            {'source_row':2,'功能/需求':'飞书需求','状态':'测试中','风险等级':'红','归属版本':'3.27.0'},
+            {'source_row':3,'功能/需求':'无人负责','日期':'1016','状态':'测试中','测试负责人':'保留原说明'}]}
+        mapping={'primary':{'2':primary['id']},'new_owners':{'3':[]},'duplicates':{str(duplicate['id']):[primary['id']]}}
+        plan=prepare(self.db,source,mapping,'台账项目',2026,1)
+        with tempfile.TemporaryDirectory() as d:
+            backup,result=Path(d)/'backup.json',Path(d)/'result.json'
+            outcome=apply(self.db,plan,backup,result)
+            self.assertTrue(backup.exists() and result.exists());self.assertTrue(outcome['verified'])
+            with self.assertRaises(ValueError):apply(self.db,plan,backup,result)
+        old=self.db.get(Task,primary['id'])
+        self.assertEqual(old.title,'飞书需求');self.assertEqual(old.status,TaskStatus.online)
+        self.assertEqual(old.assigned_to_ids,[1]);self.assertEqual(old.developer,'平台开发')
+        self.assertEqual(old.description,'历史验收说明')
+        closed=self.db.get(Task,duplicate['id'])
+        self.assertEqual(closed.status,TaskStatus.closed);self.assertIn(str(primary['id']),closed.close_note)
+        created=self.db.get(Task,outcome['created'][0]['task_id'])
+        self.assertIsNone(created.assigned_to);self.assertEqual(created.assigned_to_ids,[])
+        self.assertEqual(created.status,TaskStatus.testing);self.assertIn('保留原说明',created.description)
+
+    def test_reconcile_stale_preview_aborts_before_any_write(self):
+        from scripts.reconcile_task_ledger import prepare, apply
+        primary=self.task(title='Primary')
+        source={'url':'https://example.test/sheet','rows':[
+            {'source_row':2,'功能/需求':'Primary','状态':'测试中'},
+            {'source_row':3,'功能/需求':'New task','日期':'1016'}]}
+        mapping={'primary':{'2':primary['id']},'new_owners':{'3':[1]},'duplicates':{}}
+        plan=prepare(self.db,source,mapping,'台账项目',2026,1)
+        self.client.patch(f"/api/tasks/{primary['id']}",json={'title':'Changed by colleague'})
+        with tempfile.TemporaryDirectory() as d:
+            backup=Path(d)/'backup.json'
+            with self.assertRaises(ValueError):apply(self.db,plan,backup,Path(d)/'result.json')
+            self.assertFalse(backup.exists())
+        self.assertEqual(self.db.query(Task).count(),1)
+        self.assertEqual(self.db.get(Task,primary['id']).title,'Changed by colleague')
+
     def test_legacy_roundtrip_null_and_status_values(self):
         old = self.task(description='历史说明', developer='平台开发')
         self.assertIsNone(old['risk_level'])

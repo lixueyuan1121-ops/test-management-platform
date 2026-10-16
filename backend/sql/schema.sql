@@ -70,7 +70,7 @@ CREATE TABLE `task` (
   `project_id` BIGINT NOT NULL,
   `team_id` BIGINT DEFAULT NULL,
   `assigned_by` BIGINT NOT NULL,
-  `assigned_to` BIGINT NOT NULL,
+  `assigned_to` BIGINT NULL,
   `title` VARCHAR(255) NOT NULL,
   `description` TEXT,
   `module` VARCHAR(128) DEFAULT NULL,
