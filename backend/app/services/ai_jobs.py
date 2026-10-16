@@ -110,6 +110,8 @@ def get_job(db: Session, job_id: int) -> AiJob | None:
 
 def _ensure_handlers() -> None:
     """惰性 import 各特性模块,触发其 register_handler(避免循环导入,worker 启动/首跑前确保就位)。"""
+    if "task_digest" not in _HANDLERS:
+        import app.services.task_digest_summary  # noqa: F401
     if "mission_plan" not in _HANDLERS:
         import app.services.test_missions  # noqa: F401
     if "requirement_analysis" not in _HANDLERS:

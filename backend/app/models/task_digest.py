@@ -34,3 +34,23 @@ class TaskDigestPublication(Base):
     html_sha256: Mapped[str] = mapped_column(String(64))
     html: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TaskDigestGeneration(Base):
+    """Input/result snapshots kept outside the queue's MySQL TEXT size limit."""
+    __tablename__ = "task_digest_generation"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    input: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"))
+    result: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TaskDigestDeployment(Base):
+    """The existing Nami report service's result for an immutable publication."""
+    __tablename__ = "task_digest_deployment"
+    publication_id: Mapped[int] = mapped_column(ForeignKey("task_digest_publication.id", ondelete="CASCADE"), primary_key=True)
+    url: Mapped[str] = mapped_column(Text)
+    hosting: Mapped[str] = mapped_column(String(24))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

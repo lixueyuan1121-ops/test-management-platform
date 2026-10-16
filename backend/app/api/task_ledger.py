@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import re
 
-from app.models.task_digest import TaskDigestPublication
+from app.models.task_digest import TaskDigestPublication, TaskDigestGeneration, TaskDigestDeployment
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -44,10 +44,12 @@ def source_hash(row):
 def digest_out(row, db=None):
     publication = (db.query(TaskDigestPublication).filter_by(digest_id=row.id, source_sha256=source_hash(row))
                    .order_by(TaskDigestPublication.id.desc()).first()) if db else None
+    deployment = db.get(TaskDigestDeployment, publication.id) if db and publication else None
     return {"id": row.id, "project_id": row.project_id, "report_date": str(row.report_date),
             "title": row.title, "content": row.content, "task_ids": json.loads(row.task_ids),
             "filter_summary": row.filter_summary, "updated_at": row.updated_at,
-            "share_path": f"/d/{publication.code}" if publication else None}
+            "share_path": deployment.url if deployment else f"/d/{publication.code}" if publication else None,
+            "share_hosting": deployment.hosting if deployment else "platform"}
 
 
 @router.post("/digests/generate")
@@ -55,7 +57,7 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
     assert_project_role(db, user, body.project_id, WRITE_ROLES)
     rows = selected_tasks(db, body.project_id, body.task_ids)
     project = db.get(Project, body.project_id)
-    from app.services.task_digest_skill import generate_task_digest
+    from app.services import ai_jobs, generators
     report_rows = db.query(DailyReport).filter(
         DailyReport.task_id.in_(body.task_ids), DailyReport.report_date == body.report_date
     ).order_by(DailyReport.id).all()
@@ -79,8 +81,29 @@ def generate_digest(body: DigestGenerate, db: Session = Depends(get_db), user: U
                     feedback_due_at=task.feedback_due_at.strftime('%Y-%m-%d %H:%M') if task.feedback_due_at else None,
                     daily_feedback='\n'.join(reports.get(task.id, [])))
         payload['tasks'].append(item)
-    generated = generate_task_digest(payload)
-    return ok({**generated, 'task_ids': [task.id for task in rows]})
+    provider = generators.DEFAULT_PROVIDER
+    if not generators.get_provider(provider).is_available():
+        raise HTTPException(503, detail='平台 AI 服务不可用，暂时无法总结日报')
+    encoded = json.dumps(payload, ensure_ascii=False)
+    if len(encoded.encode('utf-8')) > 2_000_000:
+        raise HTTPException(422, detail='所选任务内容过多，请缩小筛选范围后生成日报')
+    generation = TaskDigestGeneration(project_id=body.project_id, author_id=user.id, input=encoded)
+    db.add(generation); db.flush()
+    job = ai_jobs.enqueue(db, 'task_digest', provider=provider, project_id=body.project_id,
+                         user_id=user.id, input={'generation_id': generation.id},
+                         ref_kind='task_digest', ref_id=generation.id)
+    return ok({'job_id': job.id, 'generation_id': generation.id})
+
+
+@router.get('/digests/generations/{generation_id}')
+def generated_digest(generation_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.get(TaskDigestGeneration, generation_id)
+    if row is None or row.author_id != user.id:
+        raise HTTPException(404, detail='日报生成记录不存在')
+    assert_project_role(db, user, row.project_id, WRITE_ROLES)
+    if not row.result:
+        raise HTTPException(409, detail='日报仍在总结中')
+    return ok(json.loads(row.result))
 
 
 @router.get("/digests")
@@ -126,9 +149,22 @@ def publish_digest(body: DigestSave, db: Session = Depends(get_db), user: User =
         publication = TaskDigestPublication(digest_id=row.id, code=secrets.token_urlsafe(12),
             source_sha256=source_hash(row), html_sha256=html_hash, html=html)
         db.add(publication)
-    db.commit()
-    db.refresh(row)
-    return ok(digest_out(row, db))
+    db.flush()
+    publication_id, digest_id, fallback = publication.id, row.id, f'/d/{publication.code}'
+    deployed = db.get(TaskDigestDeployment, publication_id)
+    has_cloud_url = deployed is not None and deployed.hosting == 'nami'
+    db.commit()  # Do not hold a DB connection during the shared service's upload.
+    if not has_cloud_url:
+        from app.services.report_publishing import publish_html
+        published = publish_html(html, fallback)
+        deployed = db.get(TaskDigestDeployment, publication_id)
+        if deployed is None:
+            deployed = TaskDigestDeployment(publication_id=publication_id, **published)
+            db.add(deployed)
+        else:
+            deployed.url, deployed.hosting = published['url'], published['hosting']
+        db.commit()
+    return ok(digest_out(db.get(TaskDigest, digest_id), db))
 
 
 @router.get("/digests/shared/{code}")

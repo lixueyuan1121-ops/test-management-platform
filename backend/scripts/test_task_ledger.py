@@ -19,7 +19,7 @@ from app.core.enums import TaskStatus, ProjectRole
 from app.core.errors import register_exception_handlers
 from app.db import migrate
 from app.db.session import Base, get_db
-from app.models import User, Project, ProjectMember, Task, DailyReport, TaskDigest, ReleaseRecord, ChecklistItem
+from app.models import AiJob, User, Project, ProjectMember, Task, DailyReport, TaskDigest, ReleaseRecord, ChecklistItem
 
 
 class LedgerTests(unittest.TestCase):
@@ -30,10 +30,17 @@ class LedgerTests(unittest.TestCase):
         cls.skill_dir, _, _ = install_test_skill(cls.skill_temp.name)
         cls.skill_patch = patch('app.services.task_digest_skill.get_skill_dir', return_value=cls.skill_dir)
         cls.skill_patch.start()
+        from scripts.test_task_daily_report_skill import SummaryEngine
+        cls.engine_patch = patch('app.services.generators.get_provider', return_value=SummaryEngine())
+        cls.engine_patch.start()
+        cls.deploy_patch = patch('app.services.report_publishing.publish_html', side_effect=lambda html, fallback: {'url':fallback,'hosting':'platform'})
+        cls.deploy_patch.start()
 
     @classmethod
     def tearDownClass(cls):
         cls.skill_patch.stop()
+        cls.engine_patch.stop()
+        cls.deploy_patch.stop()
         cls.skill_temp.cleanup()
 
     def setUp(self):
@@ -74,12 +81,27 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()['data']
 
+    def generate(self, payload):
+        from app.services import ai_jobs
+        response = self.client.post('/api/task-ledger/digests/generate', json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        queued = response.json()['data']
+        job = self.db.get(AiJob, queued['job_id'])
+        self.assertEqual(job.kind, 'task_digest')
+        self.assertEqual(self.client.get(f"/api/task-ledger/digests/generations/{queued['generation_id']}").status_code,409)
+        job.status = 'running'; self.db.commit()
+        ai_jobs.run_job(sessionmaker(bind=self.engine),job.id)
+        self.db.expire_all()
+        result = self.client.get(f"/api/task-ledger/digests/generations/{queued['generation_id']}")
+        self.assertEqual(result.status_code,200,result.text)
+        return result.json()['data']
+
     def test_published_html_keeps_snapshot_requires_project_access_and_preserves_history(self):
         task = self.task(title='筛选内任务', status='testing')
         outside = self.task(title='筛选外任务', status='online')
         self.client.patch(f"/api/tasks/{task['id']}", json={'status':'testing'})
         selection = dict(project_id=1, task_ids=[task['id']], report_date=self.today)
-        generated = self.client.post('/api/task-ledger/digests/generate', json=selection).json()['data']
+        generated = self.generate(selection)
         draft = dict(selection, title=generated['title'], content=generated['content'] + '\n人工补充')
         result = self.client.post('/api/task-ledger/digests/publish', json=draft)
         self.assertEqual(result.status_code, 200, result.text)
@@ -112,6 +134,36 @@ class LedgerTests(unittest.TestCase):
         # Remove the test identity override: unauthenticated readers must be rejected.
         del self.client.app.dependency_overrides[get_current_user]
         self.assertIn(self.client.get(url).status_code, (401, 403))
+
+    def test_online_publication_reuses_evaluation_service_and_existing_url(self):
+        task = self.task()
+        draft = dict(project_id=1, task_ids=[task['id']], report_date=self.today, title='在线日报', content='总结正文')
+        with patch('app.services.report_publishing.publish_html', return_value={'url':'https://example.test/report/index.html','hosting':'nami'}) as publish:
+            first = self.client.post('/api/task-ledger/digests/publish', json=draft).json()['data']
+            second = self.client.post('/api/task-ledger/digests/publish', json=first).json()['data']
+            self.assertEqual(first['share_path'], 'https://example.test/report/index.html')
+            self.assertEqual(second['share_hosting'], 'nami')
+            publish.assert_called_once()
+            self.assertIn('总结正文', publish.call_args.args[0])
+            self.assertTrue(publish.call_args.args[1].startswith('/d/'))
+
+    def test_generation_keeps_input_snapshot_and_is_private_to_author(self):
+        from app.services import ai_jobs
+        task = self.task(title='入队时标题')
+        self.client.patch(f"/api/tasks/{task['id']}", json={'status':'testing'})
+        payload = dict(project_id=1, task_ids=[task['id']], report_date=self.today)
+        queued = self.client.post('/api/task-ledger/digests/generate', json=payload).json()['data']
+        url = f"/api/task-ledger/digests/generations/{queued['generation_id']}"
+        self.client.patch(f"/api/tasks/{task['id']}", json={'title':'后来修改的标题','status':'online'})
+        job = self.db.get(AiJob, queued['job_id']); job.status = 'running'; self.db.commit()
+        ai_jobs.run_job(sessionmaker(bind=self.engine), job.id)
+        self.db.expire_all()
+        content = self.client.get(url).json()['data']['content']
+        self.assertIn('入队时标题', content)
+        self.assertNotIn('后来修改的标题', content)
+        self.assertIn('**测试中（1 项）**', content)
+        self.user_id = 2
+        self.assertEqual(self.client.get(url).status_code, 404)
 
     def test_failed_publish_does_not_save_partial_snapshot(self):
         from fastapi import HTTPException
@@ -200,8 +252,8 @@ class LedgerTests(unittest.TestCase):
         self.db.add(DailyReport(task_id=a['id'], project_id=1, user_id=1, report_date=date.today(), summary='旧日报反馈保留', workload_hours=2))
         self.db.commit()
         payload = dict(project_id=1, task_ids=[a['id'],a['id']], report_date=self.today, filter_summary='风险：黄')
-        generated = self.client.post('/api/task-ledger/digests/generate', json=payload).json()['data']
-        self.assertIn('共 1 个功能', generated['content'])
+        generated = self.generate(payload)
+        self.assertIn('共 1 个任务', generated['content'])
         self.assertIn('旧日报反馈保留', generated['content'])
         self.assertNotIn(b['title'], generated['content'])
         payload.update(generated, content=generated['content']+'\n手工补充')
@@ -260,7 +312,7 @@ class LedgerTests(unittest.TestCase):
             task = self.task(title='多人测试任务', assigned_to_ids=[1,2], target_version='3.27.0')
         self.client.patch(f"/api/tasks/{task['id']}", json={'risk_level':'red','assigned_to':1})
         self.assertEqual(self.db.get(Task,task['id']).assigned_to_ids,[1,2])
-        digest=self.client.post('/api/task-ledger/digests/generate',json={'project_id':1,'task_ids':[task['id']],'report_date':self.today}).json()['data']
+        digest=self.generate({'project_id':1,'task_ids':[task['id']],'report_date':self.today})
         self.assertIn('平台负责人、平台成员',digest['content'])
         source={'rows':[{'source_row':2,'功能/需求':'来源简称','风险等级':'黄','测试负责人':'未知昵称'}]}
         plan=make_plan(self.db,self.db.get(Project,1),source,{'2':{'task_id':task['id'],'title':task['title']}})

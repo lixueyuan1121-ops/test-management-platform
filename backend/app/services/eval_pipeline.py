@@ -353,28 +353,10 @@ def _summary_share_url(session_factory, task_id, batch_id=None) -> str | None:
     finally:
         db.close()
 
-    # 优先 nami 公网直链
-    if settings.NAMI_DEPLOY_ENABLED and page_html:
-        try:
-            from app.services import nami_deploy
-            if nami_deploy.is_configured():
-                url = nami_deploy.deploy_html(page_html)
-                # "/client-up/" 是上传目录直链的标志。默认(短链关)它就是期望形态,正常 info;
-                # 仅当开了 NAMI_SHORTLINK_ENABLED 却仍拿到直链才 warning(说明取短链没成,
-                # deploy_html 已就 vm_id 缺失/取短链失败各打 warning 说明原因)。
-                if settings.NAMI_SHORTLINK_ENABLED and "/client-up/" in url:
-                    logger.warning("综合评价 nami 仅得直链(短链未成) task=%s url=%s", task_id, url)
-                else:
-                    logger.info("综合评价 nami 在线报告部署成功 task=%s url=%s", task_id, url)
-                return url
-        except Exception as e:  # noqa: BLE001 nami 失败绝不阻断一条龙,回落自托管
-            logger.warning("综合评价 nami 部署失败 task=%s,回落自托管 /r:%s", task_id, e)
-
-    # 回落自托管 /r/<code>
+    from app.services.report_publishing import publish_html
     base = (settings.PLATFORM_BASE_URL or "").rstrip("/")
-    if base and code:
-        return f"{base}{share_path(code)}"
-    return None
+    fallback = f"{base}{share_path(code)}" if base and code else None
+    return publish_html(page_html, fallback)['url']
 
 
 def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str, batch_id: str) -> None:
