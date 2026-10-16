@@ -23,7 +23,7 @@ def _invoke_skill(payload, mode):
     try:
         manifest = json.loads((skill_dir / 'platform-install.json').read_text())
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
-        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 6
+        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 7
                 or manifest.get('skill_sha256') != hashlib.sha256((skill_dir / 'SKILL.md').read_bytes()).hexdigest()
                 or manifest.get('template_sha256') != hashlib.sha256((skill_dir / 'references/template.html').read_bytes()).hexdigest()
                 or manifest.get('platform_style_sha256') != hashlib.sha256((skill_dir / 'references/platform.css').read_bytes()).hexdigest()):
@@ -45,6 +45,10 @@ def _invoke_skill(payload, mode):
         if result.returncode:
             raise ValueError('skill failed')
         output = json.loads(result.stdout)
+        if mode == '--summary-quality-json':
+            if not isinstance(output.get('issues'), list) or any(not isinstance(issue, str) for issue in output['issues']):
+                raise ValueError('invalid quality assessment')
+            return output, manifest
         if mode == '--validate-summary-json':
             if not isinstance(output.get('summary'), dict):
                 raise ValueError('invalid summary')
@@ -68,14 +72,14 @@ def render_task_digest_html(payload):
 
 
 def generate_task_digest(payload, provider=None, on_progress=None):
-    from app.services.task_digest_summary import summarize
+    from app.services.task_digest_summary import summarize, compose_version_summaries
     # Only these two metadata fields may reach local layout; never model prompts.
     tasks = [{'id': task['id'], 'title': task['title'], 'status': task.get('status'),
               'target_version': task.get('target_version')} for task in payload['tasks']]
     source = {'tasks': [{'id': task['id'], 'title': task['title']} for task in tasks]}
     summary = summarize(source, provider=provider, on_progress=on_progress)
-    payload = {'tasks': tasks}
-    payload = {**payload, 'summary': summary}
+    version_summaries = compose_version_summaries(tasks, summary, provider=provider, on_progress=on_progress)
+    payload = {'tasks': tasks, 'summary': summary, 'version_summaries': version_summaries}
     output, manifest = _invoke_skill(payload, '--tasks-json')
     title, content = output['title'], output['content']
     if len(title) > 255 or len(content) > 60000:

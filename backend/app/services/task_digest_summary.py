@@ -1,5 +1,6 @@
 """Semantic reports using the platform AI gateway authorized for task summarization."""
 import json
+import re
 from fastapi import HTTPException
 from sqlalchemy.orm import sessionmaker
 from app.services import generators, ai_jobs
@@ -47,36 +48,82 @@ def summarize(payload, provider=None, on_progress=None):
         batches.append(batch)
     all_items, partials = [], []
 
-    def run(part, stage, prior_items=None):
+    def run(part, stage, prior_items=None, check_quality=False):
         if on_progress:
             on_progress(stage)
         prepared, _ = _invoke_skill(part, '--summary-prompt-json')
         prompt = prepared['prompt']
         for attempt in range(2):
+            issues = []
             try:
                 result = collect(engine, prompt)
                 if prior_items is not None:
                     result['items'] = prior_items
                 validated, _ = _invoke_skill({**part, 'summary': result}, '--validate-summary-json')
+                if check_quality:
+                    checked, _ = _invoke_skill({**part, 'summary': validated['summary']}, '--summary-quality-json')
+                    issues = checked['issues']
+                    if issues:
+                        raise ValueError('summary quality regression')
                 return validated['summary']
             except HTTPException as exc:
                 if exc.status_code != 502 or attempt:
                     raise
             except (ValueError, TypeError, KeyError):
                 if attempt:
-                    raise HTTPException(502, detail='AI 总结格式或任务覆盖校验失败，请重试') from None
+                    message = 'AI 日报未通过内容质量校验，请重试' if issues else 'AI 总结格式或任务覆盖校验失败，请重试'
+                    raise HTTPException(502, detail=message) from None
             prompt = prepared['prompt'] + '\n上次输出未通过校验，请严格返回完整 JSON，并保持每个任务 ID 与输入一致，不漏项、不增加任务。'
+            if issues:
+                prompt += '\n请逐项修订以下编辑问题，再返回完整成稿：\n' + '\n'.join(issues)
+                if on_progress:
+                    on_progress('正在补充功能说明与用途，避免空说明和标题复述')
         raise HTTPException(502, detail='AI 总结校验失败')
 
     for index, tasks in enumerate(batches, 1):
         part = {'tasks': tasks}
         draft = run(part, f'正在提炼并润色功能/需求（{index}/{len(batches)}）')
-        result = run({**part, 'review_candidate': draft}, f'正在核对总结与任务事实（{index}/{len(batches)}）')
+        result = run({**part, 'review_candidate': draft}, f'正在核对事实与表达质量（{index}/{len(batches)}）', check_quality=True)
         all_items.extend(result['items']); partials.append(result)
     if len(partials) == 1:
         return partials[0]
     overview_input = {**source, 'batch_summaries': partials, 'overview_only': True}
     return run(overview_input, '正在归纳功能主题与用途', prior_items=all_items)
+
+
+def compose_version_summaries(tasks, summary, provider=None, on_progress=None):
+    """Compose each version's prose with only its titles and reviewed prose as input."""
+    from app.services.task_digest_skill import _invoke_skill
+    groups = {}
+    for task in tasks:
+        version = re.sub(r'\s+', ' ', task.get('target_version') or '').strip() or '未填写规划版本'
+        groups.setdefault(version, []).append({'id': task['id'], 'title': task['title']})
+    if len(groups) <= 1:
+        return {}
+    by_id = {item['id']: item for item in summary['items']}
+    result = {}
+    engine = generators.get_provider(provider)
+    for index, (version, source) in enumerate(groups.items(), 1):
+        items = [by_id[task['id']] for task in source]
+        if len(items) == 1:
+            result[version] = {'overview': items[0]['summary'] or items[0].get('headline', ''), 'conclusion': ''}
+            continue
+        if on_progress:
+            on_progress(f'正在组织各版本的主题和发布小结（{index}/{len(groups)}）')
+        part = {'tasks': source, 'overview_only': True,
+                'batch_summaries': [{'overview': '', 'items': items}]}
+        prepared, _ = _invoke_skill(part, '--summary-prompt-json')
+        for attempt in range(2):
+            try:
+                composed = collect(engine, prepared['prompt'])
+                composed['items'] = items
+                validated, _ = _invoke_skill({**part, 'summary': composed}, '--validate-summary-json')
+                result[version] = {key: validated['summary'].get(key, '') for key in ('overview', 'conclusion')}
+                break
+            except (HTTPException, ValueError, TypeError, KeyError):
+                if attempt:
+                    raise HTTPException(502, detail='版本小结生成失败，请重试') from None
+    return result
 
 
 def run_digest_job(db, job):

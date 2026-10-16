@@ -198,7 +198,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 6)
+        self.assertEqual(upgraded['platform_adapter_version'], 7)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -348,6 +348,57 @@ class DailyReportSkillTests(unittest.TestCase):
                         '<html><head><style>p{color:red}</head><body></body></html>',
                         '<html><head><style></style></head><body><div></body></html>']:
             with self.assertRaises(ValueError): validate(invalid)
+
+    def test_quality_review_repairs_missing_descriptions_and_title_paraphrases(self):
+        import copy
+        tasks=[dict(id=1,title='优化打点',status='ready_online',target_version='3.27.0'),
+               dict(id=2,title='修复安审漏洞',status='ready_online',target_version='3.27.0'),
+               dict(id=3,title='称呼与记忆统一连通',status='ready_online',target_version='3.27.0')]
+        good=dict(overview='本次聚焦数据采集、安全修复与个性化能力连通。',
+            conclusion='通过完善数据采集、修复安全审核漏洞及连通称呼和记忆，为功能分析与连贯的个性化表达提供支持。',items=[
+                dict(id=1,headline='优化打点',summary='优化埋点采集与上报，便于分析功能使用情况，为产品改进提供数据参考。',tags=['体验优化']),
+                dict(id=2,headline='修复安审漏洞',summary='修复安全审核中发现的漏洞问题，完善相关安全防护，降低潜在安全风险。',tags=['安全修复']),
+                dict(id=3,headline='称呼与记忆统一连通',summary='打通称呼与记忆之间的信息关联，让称呼在记忆相关场景中一致使用，保持表达连贯。',tags=['能力打通'])])
+        bad=copy.deepcopy(good)
+        bad['items'][0]['summary']=''
+        bad['items'][1]['summary']='针对安审漏洞进行修复。'
+        bad['items'][2]['tags']=[]
+        with patch('app.services.task_digest_summary.collect',side_effect=[good,bad,good]) as model:
+            report=service.generate_task_digest(self.payload(tasks))
+        self.assertEqual(model.call_count,3)
+        retry=model.call_args.args[1]
+        self.assertIn('条目 1 缺少说明',retry)
+        self.assertIn('条目 2 的说明只是标题同义复述',retry)
+        self.assertIn('条目 3 缺少贴切',retry)
+        self.assertIn(good['conclusion'],report['content'])
+        self.assertNotIn('本期重点：优化打点；',report['content'])
+        html=service.render_task_digest_html(report)
+        self.assertIn('<ul class="release-notes"><li>',html)
+        self.assertIn('安全修复',html)
+        self.assertNotIn('class="status-tag"',html)
+        with patch('app.services.task_digest_summary.collect',return_value=bad):
+            with self.assertRaises(HTTPException) as caught:
+                service.generate_task_digest(self.payload(tasks))
+        self.assertIn('内容质量',caught.exception.detail)
+
+    def test_version_composition_receives_only_its_titles_and_reviewed_prose(self):
+        from app.services import task_digest_summary as summaries
+        tasks=[dict(id=i,title=f'功能{i}',status='testing',target_version='私密版本甲' if i<3 else '私密版本乙',
+                    owners=['不得传入的人名']) for i in range(1,5)]
+        with patch.object(summaries,'collect',wraps=summaries.collect) as model:
+            report=service.generate_task_digest(self.payload(tasks))
+        self.assertEqual(model.call_count,4)
+        for call in model.call_args_list:
+            prompt=call.args[1]
+            self.assertNotIn('私密版本',prompt)
+            self.assertNotIn('不得传入的人名',prompt)
+        compositions=[json.loads(call.args[1].split('输入数据：\n',1)[1]) for call in model.call_args_list[2:]]
+        self.assertEqual([[t['id'] for t in part['tasks']] for part in compositions],[[1,2],[3,4]])
+        for part in compositions:
+            ids={t['id'] for t in part['tasks']}
+            self.assertEqual(ids,{i['id'] for i in part['batch_summaries'][0]['items']})
+        self.assertIn('版本概览：',report['content'])
+        self.assertIn('私密版本甲',report['content'])
 
     def test_archive_path_traversal_is_rejected(self):
         archive=Path(self.temp.name)/'invalid.zip'
