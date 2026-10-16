@@ -1,16 +1,18 @@
 ﻿param(
-  [ValidateSet('login','status','import','logout','preview','job','validate')][string]$Action = 'status',
+  [ValidateSet('login','status','import','logout','preview','job','validate','lint')][string]$Action = 'status',
   [string]$BaseUrl = 'https://qalab.claw.qihoo.net',
   [string]$PayloadPath,
-  [int]$JobId
+  [int]$JobId,
+  [string]$ReceiptPath,
+  [string]$ManifestPath
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'validate-payload.ps1')
-if ($Action -in @('validate','import','preview')) {
+if ($Action -in @('lint','validate','import','preview')) {
   if (!$PayloadPath) { throw '缺少 -PayloadPath' }
   $payload = Get-Content -LiteralPath $PayloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  Test-ImportPayload $payload
-  if ($Action -eq 'validate') { Write-Output '本地导入结构校验通过；未连接平台，不代表设备实测通过。'; exit }
+  Test-ImportPayload $payload -Draft:($Action -eq 'lint')
+  if ($Action -in @('lint','validate')) { Write-Output '本地导入结构校验通过；未连接平台，不代表设备实测通过。'; exit }
 }
 $origin = [Uri]$BaseUrl
 $localHttp = $origin.Scheme -eq 'http' -and $origin.DnsSafeHost.ToLowerInvariant() -in @('localhost','127.0.0.1','::1')
@@ -18,6 +20,18 @@ if (($origin.Scheme -ne 'https' -and !$localHttp) -or $origin.UserInfo -or $orig
   throw 'BaseUrl 必须是 HTTPS 平台源地址；本机 localhost、127.0.0.1、[::1] 可用 HTTP（不带路径、凭据或查询参数）'
 }
 $BaseUrl = $origin.GetLeftPart([System.UriPartial]::Authority)
+function Check-Delivery([string]$Stage, [string]$Receipt) {
+  $options=@($Stage,'--manifest',$ManifestPath,'--packet',$PayloadPath,'--platform',$BaseUrl)
+  if($Receipt){$options+=@('--receipt',$Receipt)}
+  $savedEncoding=$OutputEncoding
+  try {
+    $OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+    $result=& node (Join-Path $PSScriptRoot 'delivery.mjs') @options 2>&1
+    if($LASTEXITCODE -ne 0){throw ([string]::Join("`n",@($result)))}
+  } finally {$OutputEncoding=$savedEncoding}
+}
+if($Action -eq 'import' -and $ManifestPath){Check-Delivery 'ready' ''}
+
 $sha = [Security.Cryptography.SHA256]::Create()
 $key = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($BaseUrl)))).Replace('-','').Substring(0,24)
 $authDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'QALabSkill'
@@ -73,7 +87,8 @@ if ($Action -eq 'login') {
 }
 $me = Call-Api 'GET' '/api/auth/me' $null $session.access_token
 $projects = Call-Api 'GET' '/api/projects' $null $session.access_token
-$devices = Call-Api 'GET' '/api/devices' $null $session.access_token
+$devices = @()
+if ($Action -eq 'status' -or $payload.import_mode -ne 'codex') { $devices = Call-Api 'GET' '/api/devices' $null $session.access_token }
 $schema = Call-Api 'GET' '/openapi.json' $null ''
 $available = $null -ne $schema.paths.'/api/verified-imports'.post
 $asyncAvailable = $null -ne $schema.paths.'/api/verified-imports/jobs'.post
@@ -90,6 +105,11 @@ if ($Action -eq 'job') {
 if ($Action -eq 'import' -and !$asyncAvailable) { throw '线上尚未发布异步导入接口；保留报告，更新服务器后再提交，不退回同步导入' }
 if (!$PayloadPath) { throw '缺少 -PayloadPath' }
 $payload = Get-Content -LiteralPath $PayloadPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($payload.import_mode -eq 'codex') {
+  $codexCaps = Call-Api 'GET' '/api/verified-imports/capabilities' $null $session.access_token
+  if ('codex' -notin @($codexCaps.import_modes) -or $codexCaps.codex_evidence_protocol -ne 'qalab-codex-v1') { throw '平台尚未支持 Codex 实测导入；保留原包，更新平台后重试，不要求本机安装 Runner' }
+  if ($Action -eq 'preview') { throw 'Codex 实测使用异步 import，不调用旧 preview' }
+}
 if (@($payload.cases.title | Select-Object -Unique).Count -ne @($payload.cases).Count) { throw "同批用例标题须唯一" }
 if ($Action -eq 'preview') {
   Call-Api 'POST' '/api/verified-imports/preview' $payload $session.access_token | ConvertTo-Json -Depth 100
@@ -106,6 +126,11 @@ $receipt = Call-Api 'POST' '/api/verified-imports/jobs' $payload $session.access
 if ($receipt.accepted -ne $true -or $receipt.job_id -le 0 -or $receipt.project_id -ne $payload.project_id -or $receipt.external_id -cne $payload.external_id -or $receipt.case_count -ne @($payload.cases).Count) {
   throw '提交回执无法确认；保留原 external_id 和内容重试，勿生成新 ID；不宣称已经入库'
 }
+try {
+  if($ManifestPath -and !$ReceiptPath){$ReceiptPath=Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($ManifestPath))) ('receipt-'+$receipt.job_id+'.json')}
+  if ($ReceiptPath) { $receipt | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ReceiptPath -Encoding UTF8 }
+  if($ManifestPath){Check-Delivery 'submitted' $ReceiptPath}
+} catch { Write-Warning ('平台已接收，但本地回执/清单保存失败；保留下方回执，不要重新执行用例：'+$_.Exception.Message) }
 $receipt | ConvertTo-Json -Depth 12
 Write-Output '测试结果已提交，平台正在后台整理；无需等待。此回执不代表用例已入库。'
 Write-Output ($BaseUrl + '/verified-imports?project_id=' + $receipt.project_id + '&job_id=' + $receipt.job_id)

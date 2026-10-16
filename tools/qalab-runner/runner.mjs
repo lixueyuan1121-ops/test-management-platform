@@ -39,6 +39,7 @@ import { verifyImport, saveLocalReport } from './verify-import.mjs';
 import { createExecutionTimer } from './execution-timing.mjs';
 import { runCodex } from './codex-engine.mjs';
 import { createPollSchedule } from './runner-polling.mjs';
+import { publishResult } from './result-reporting.mjs';
 
 // 极简 .env 加载器(零依赖):把同目录 .env 的键值填入 process.env(不覆盖已有环境变量)。
 (function loadDotenv() {
@@ -111,7 +112,8 @@ async function api(method, path, body) {
 
 const fetchPending = () => api("GET", `/api/exec-queue?runner=${encodeURIComponent(RUNNER_ID)}&limit=5`);
 const claim        = (id) => api("POST", `/api/exec-queue/${id}/claim?runner=${encodeURIComponent(RUNNER_ID)}`);
-const report       = (id, r) => api("PATCH", `/api/exec-queue/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, r);
+const report       = (id, r) => publishResult({ runId: id, result: r, directory: join(__rdir, 'pending-reports'), log,
+  send: body => api("PATCH", `/api/exec-queue/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, body) });
 
 // ---- 设备探测队列(与 exec 队列并列,同一 runner token/契约)----
 // GET /api/probe/pending?runner= 拉本机 pending 探测(平台侧拉取即置 running);
@@ -770,13 +772,14 @@ async function tick() {
   const batch = [];   // 本批各条结果(供结束语汇总)
   for (const item of pending) {
     let claimed = false;
+    let result;
     try {
       await claim(item.run_id);
       claimed = true;
       const heartbeat = () => api("POST", `/api/exec-queue/${item.run_id}/heartbeat?runner=${encodeURIComponent(RUNNER_ID)}`);
       log(`执行 run_id=${item.run_id} kind=${item.kind} case=${item.case_id}`);
 
-      const result = await runInWorker({
+      result = await runInWorker({
         file: fileURLToPath(import.meta.url), item, heartbeat, log,
         args: DRY ? ["--dry"] : [],
         timeoutMs: Number(process.env.EXEC_TIMEOUT_MS || 900000),
@@ -797,6 +800,11 @@ async function tick() {
       batch.push(result);
     } catch (e) {
       if (!claimed) { log(`run_id=${item.run_id} 未认领，保留队列状态: ${e.message}`); continue; }
+      if (result) {
+        log(`run_id=${item.run_id} 已执行但结果回写失败，保留原结论 ${result.verdict}；报告: ${e.savedReport || '未能保存，请检查目录权限'}；${e.message}`);
+        batch.push(result);
+        continue; // A reporting failure must never overwrite a business result.
+      }
       log(`run_id=${item.run_id} 执行异常:`, e.message);
       // runner 侧异常(连接/客户端/网络类)属环境阻塞,归 selector(不计功能失败率)。
       if (claimed) {

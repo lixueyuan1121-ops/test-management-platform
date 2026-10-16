@@ -5,6 +5,10 @@ import importlib.util
 import json
 import sys
 import unittest
+import subprocess
+import tempfile
+from unittest.mock import patch
+from contextlib import redirect_stdout
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -40,11 +44,17 @@ class FakeApi:
         raise AssertionError(path)
 
 
+def seal_fixture(value):
+    # Synthetic offline fixture; FakeApi prevents any live submission.
+    result = subprocess.run(['node', str(ROOT / 'backend/scripts/skill_contract_fixture.mjs')], input=json.dumps(value), capture_output=True, text=True, encoding='utf-8', check=True)
+    return json.loads(result.stdout)
+
+
 def payload():
-    return {'project_id': 1, 'runner_device_id': 2, 'external_id': 'test-stable-id', 'cases': [{
+    return seal_fixture({'project_id': 1, 'runner_device_id': 2, 'external_id': 'test-stable-id', 'cases': [{
         'title': 'Logo', 'steps': 'Click and check home', 'expected': 'home', 'verdict': 'pass',
         'script': [{'action': 'assert_visible', 'target': {'selector': '.home'}, 'desc': 'check home'}],
-        'report': [{'action': 'assert_visible', 'ok': True, 'check': {'actual': True, 'expected': True}}]}]}
+        'report': [{'action': 'assert_visible', 'ok': True, 'check': {'actual': True, 'expected': True}}]}]})
 
 
 class TestMacHelper(unittest.TestCase):
@@ -59,6 +69,7 @@ class TestMacHelper(unittest.TestCase):
             {'action': 'watch_network', 'ok': True},
             {'action': 'assert_network_count', 'ok': True, 'check': {'actual': 0, 'expected': 0}},
         ]
+        source = seal_fixture(source)
         for mode in ('old', 'partial', 'current'):
             api = FakeApi()
             def request(method, path, body=None, token=None):
@@ -141,6 +152,36 @@ class TestMacHelper(unittest.TestCase):
         api.opener = Opener()
         with self.assertRaisesRegex(RuntimeError, 'HTTP 401') as raised: api('GET', '/api/projects', token='secret-token')
         self.assertNotIn('secret-token', str(raised.exception))
+
+    def test_cli_manifest_is_updated_after_acceptance_without_polling(self):
+        with tempfile.TemporaryDirectory(prefix='qalab-skill-cli-') as directory:
+            path = Path(directory)
+            source = payload()
+            packet = path / 'verified.json'
+            packet.write_text(json.dumps(source), encoding='utf-8')
+            plan = path / 'plan.json'
+            plan.write_text(json.dumps({'platform': qalab.DEFAULT_ORIGIN, 'application': 'fixture',
+                'requirement': 'fixture', 'project_id': 1, 'runner_device_id': 2,
+                'cases': [{'id': 'a', 'title': 'Logo', 'acceptance': ['home visible']},
+                          {'id': 'b', 'title': 'Retry', 'acceptance': ['retry once']}]}), encoding='utf-8')
+            manifest = path / 'delivery.json'
+            def delivery(*args):
+                subprocess.run(['node', str(SCRIPTS / 'delivery.mjs'), *args, '--manifest', str(manifest)], capture_output=True, check=True)
+            delivery('init', '--plan', str(plan))
+            delivery('record', '--id', 'a', '--status', 'verified', '--packet', str(packet))
+            self.store.value = {'access_token': 'fake'}
+            arguments = ['import', '--payload', str(packet), '--manifest', str(manifest)]
+            with patch.object(qalab, 'MacKeychain', return_value=self.store), patch.object(qalab, 'Api', return_value=self.api):
+                with self.assertRaisesRegex(RuntimeError, 'planned/draft'):
+                    qalab.main(arguments)
+                self.assertEqual(self.api.calls, [])
+                delivery('record', '--id', 'b', '--status', 'blocked', '--reason', 'fixture has no permission')
+                with redirect_stdout(io.StringIO()): qalab.main(arguments)
+            recorded = json.loads(manifest.read_text('utf-8'))
+            self.assertEqual([c['status'] for c in recorded['cases']], ['submitted', 'blocked'])
+            self.assertEqual(recorded['cases'][0]['job_id'], 7)
+            self.assertTrue((path / 'receipt-7.json').is_file())
+            self.assertEqual(self.api.calls[-1][1], '/api/verified-imports/jobs')
 
 
 if __name__ == '__main__': unittest.main()

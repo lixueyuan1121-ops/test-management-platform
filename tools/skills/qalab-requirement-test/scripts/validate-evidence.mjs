@@ -1,9 +1,10 @@
 import { validateNetworkScript } from './network-contract.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 // qalab-execution-v1; shared test vectors with the Runner and Python server.
-function fingerprint(value) {
+export function fingerprint(value) {
   const hash = createHash('sha256');
   const visit = v => {
     if (v === null) return hash.update('n');
@@ -17,16 +18,27 @@ function fingerprint(value) {
   visit(value); return hash.digest('hex');
 }
 
-try {
-  const payload = JSON.parse(readFileSync(0, 'utf8').replace(/^\uFEFF/, ''));
-  for (const c of payload.cases || []) {
-    if (['gui', 'e2e'].includes(c.exec_kind || 'e2e')) validateNetworkScript(c.script || []);
+export function validateEvidence(c, {strict = false} = {}) {
     const e = c.execution_evidence;
-    if (!e) continue;
+    if (strict && (!e || e.repeat_count !== 2 || e.strict_replay !== true || e.mode !== 'script' || e.reset !== true || e.precondition !== false || e.fallback_reason))
+      throw new Error(`${c.title}: 需要 Runner --verify-import 的两次完整严格实测证据`);
+    if (!e) return;
+    const hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+    if (!hash(e.runtime_sha256) || !e.node_version || !e.platform)
+      throw new Error(`${c.title}: 执行器版本证据不完整`);
+    if (strict && (!Array.isArray(e.repeat_report_sha256) || e.repeat_report_sha256.length !== 2 || !e.repeat_report_sha256.every(hash) || e.repeat_report_sha256[1] !== e.report_sha256))
+      throw new Error(`${c.title}: 缺少两次报告指纹或最后一次指纹不一致`);
     const script = c.script.map(s => ({ action: String(s.action || '').trim(), target: s.target || {}, args: s.args || {}, desc: Array.from(String(s.desc || '')).slice(0,200).join('') }));
     const contract = { script, precondition: (c.precondition || '').trim(), selector_registry: c.selector_registry || {} };
     if (e.version !== 'qalab-execution-v1' || e.script_sha256 !== fingerprint(script) || e.contract_sha256 !== fingerprint(contract) || e.report_sha256 !== fingerprint(c.report))
       throw new Error(`${c.title}: 脚本、选择器快照或报告与实测证据不一致，请重跑最终脚本；不要手改 Runner 回填包`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) try {
+  const payload = JSON.parse(readFileSync(0, 'utf8').replace(/^\uFEFF/, ''));
+  for (const c of payload.cases || []) {
+    if (['gui', 'e2e'].includes(c.exec_kind || 'e2e')) validateNetworkScript(c.script || []);
+    validateEvidence(c, {strict:['gui','e2e'].includes(c.exec_kind || 'e2e')});
   }
   process.stdout.write('执行证据指纹一致\n');
 } catch (error) { process.stderr.write(error.message + '\n'); process.exitCode = 1; }

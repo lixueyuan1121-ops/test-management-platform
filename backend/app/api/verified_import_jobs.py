@@ -9,7 +9,7 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import Project, User, VerifiedImportJob, VerifiedImportItem
 from app.schemas.common import ok
-from app.schemas.verified_import import DEFAULT_IMPORT_TASK, VerifiedImport, ImportResolution
+from app.schemas.verified_import import DEFAULT_IMPORT_TASK, VerifiedImport, CodexImport, ImportResolution
 from app.services.selector_device import owned_device
 from app.services.verified_dedup import digest
 
@@ -48,13 +48,20 @@ def summary(job, items, execution_user=None):
 
 
 @router.post("", status_code=202)
-def submit(body: VerifiedImport, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def submit(body: VerifiedImport | CodexImport, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
     if not db.get(Project, body.project_id):
         raise HTTPException(404, "项目不存在")
-    device = owned_device(db, user, "", body.runner_device_id)
-    if device.platform != "web":
-        raise HTTPException(422, "当前导入契约仅支持 web/PC 执行设备")
+    if isinstance(body, CodexImport):
+        from app.services.claude_runner import validate_script_for_edit
+        for case in body.cases:
+            _, error = validate_script_for_edit(case.exec_kind, case.script, body.project_id, db, body.sub_product)
+            if error:
+                raise HTTPException(422, f'{case.title}: {error}')
+    else:
+        device = owned_device(db, user, "", body.runner_device_id)
+        if device.platform != "web":
+            raise HTTPException(422, "当前导入契约仅支持 web/PC 执行设备")
     if any(c.resolution for c in body.cases):
         raise HTTPException(422, "异步提交无需查重确认；疑似重复由平台导入任务页处理")
     payload = body.model_dump(mode="json")

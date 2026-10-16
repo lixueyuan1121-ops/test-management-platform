@@ -5,8 +5,10 @@
             <el-select v-model="pid" placeholder="选择项目" size="small" style="width:180px" @change="load">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" size="small" style="width:150px" @change="load" />
-            <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid">复制昨日</el-button>
+            <div @keydown.capture="onDateKeydown">
+              <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" size="small" style="width:280px" clearable :editable="false" aria-label="筛选任务日期范围" start-placeholder="开始日期" end-placeholder="结束日期" range-separator="至" @change="load" />
+            </div>
+            <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid || !singleDate" :title="singleDate ? '' : '请选择一个日期作为复制目标'">复制昨日</el-button>
             <el-button type="primary" size="small" v-if="canManage" @click="openCreate" :disabled="!pid">新建任务</el-button>
       </template>
       <template #filters>
@@ -246,7 +248,21 @@ const canManage = computed(() => {
   const r = auth.roleIn(pid.value)
   return auth.isPlatformAdmin || r === 'admin' || r === 'member'
 })
-const date = ref(new Date().toISOString().slice(0, 10))
+function today() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+const dateRange = ref([today(), today()])
+const singleDate = computed(() => dateRange.value?.length === 2 && dateRange.value[0] === dateRange.value[1] ? dateRange.value[0] : '')
+function onDateKeydown(event) {
+  // 支持 Delete/Backspace 清空整个日期范围，与清空按钮行为一致。
+  if (event.target?.tagName === 'INPUT' && event.target.readOnly &&
+      ['Delete', 'Backspace'].includes(event.key) && dateRange.value?.length) {
+    event.preventDefault()
+    dateRange.value = null
+    load()
+  }
+}
 const tasks = ref([])
 const taskKeyword = ref('')
 const statusFilter = ref('')
@@ -267,22 +283,23 @@ onMounted(async () => {
   if (pid.value) await load()
 })
 
-async function loadMembers() {
-  if (!pid.value) { members.value = []; return }
-  members.value = await listMembers(pid.value)
-}
-
+let loadVersion = 0
 async function load() {
+  const version = ++loadVersion
   if (!pid.value) return
+  const project = pid.value
+  const filterDates = dateRange.value?.length === 2 ? { start_date: dateRange.value[0], end_date: dateRange.value[1] } : {}
   setLastProjectId(pid.value)   // 记住当前项目，供其他页面默认选中
-  await loadMembers()
   loading.value = true
   try {
     // 任务与验收汇总并行拉取；汇总失败不阻断表格，记 _summaryFailed 供展开区区分「无清单」与「汇总不可用」
-    const [rows, summaryResult] = await Promise.all([
-      listTasks({ project_id: pid.value, date: date.value }),
-      getChecklistSummary(pid.value, date.value).catch(() => null),
+    const [rows, summaryResult, projectMembers] = await Promise.all([
+      listTasks({ project_id: project, ...filterDates }),
+      getChecklistSummary(project, filterDates).catch(() => null),
+      listMembers(project),
     ])
+    if (version !== loadVersion) return
+    members.value = projectMembers
     const summary = summaryResult || {}
     const summaryFailed = summaryResult === null
     tasks.value = rows.map((t) => ({
@@ -295,7 +312,8 @@ async function load() {
       _checked: [],          // 展开区勾选的清单项
       _enqueuing: false,
     }))
-  } finally { loading.value = false }
+  } catch { /* 请求拦截器已提示，保留当前列表供重试。 */ }
+  finally { if (version === loadVersion) loading.value = false }
 }
 
 async function onExpandChange(row, expandedRows) {
@@ -337,7 +355,7 @@ function fmtExecAt(s) {
 function openCreate() {
   dialog.id = null
   // 新建入口仅 canManage(admin/member)可见,均可自由选指派人,默认不预填。
-  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: date.value, description: '', status: 'pending' })
+  Object.assign(form, { title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: singleDate.value || today(), description: '', status: 'pending' })
   dialog.visible = true
 }
 function openEdit(row) {
@@ -395,8 +413,12 @@ async function onDel(row) {
   await load()
 }
 async function onCopy() {
-  await ElMessageBox.confirm(`把 ${date.value} 前一天的任务复制到 ${date.value}？`, '复制昨日', { type: 'info' })
-  const r = await copyYesterday(pid.value, date.value)
+  const targetDate = singleDate.value
+  const project = pid.value
+  if (!project || !targetDate) { ElMessage.warning('请选择一个日期作为复制目标'); return }
+  try { await ElMessageBox.confirm(`把 ${targetDate} 前一天的任务复制到 ${targetDate}？`, '复制昨日', { type: 'info' }) }
+  catch { return }
+  const r = await copyYesterday(project, targetDate)
   ElMessage.success(`已复制 ${r.copied} 条`)
   await load()
 }

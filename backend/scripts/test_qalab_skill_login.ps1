@@ -39,8 +39,28 @@ try {
  $fixture=[IO.Path]::GetTempFileName()
  try {
    @{project_id=1;runner_device_id=1;external_id='stable-test-id';cases=@(@{title='中文主流程';steps='测试步骤';expected='测试预期';verdict='pass';script=@(@{action='assert_visible';target=@{selector='.home'}});report=@(@{action='assert_visible';ok=$true;check=@{actual=$true;expected=$true}})})} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $fixture -Encoding UTF8
+   $oldEncoding=$OutputEncoding
+   try {
+     $OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+     $sealed=(Get-Content -LiteralPath $fixture -Raw -Encoding UTF8) | & node (Join-Path $PSScriptRoot 'skill_contract_fixture.mjs')
+     if($LASTEXITCODE -ne 0){throw 'Fixture seal failed'}
+     $sealed | Set-Content -LiteralPath $fixture -Encoding UTF8
+   } finally {$OutputEncoding=$oldEncoding}
    $qalabTestRequests.Clear()
-   $result=& $scriptPath -Action import -BaseUrl $base -PayloadPath $fixture | Out-String
+   $ledger=$fixture+'.delivery.json';$planFile=$fixture+'.plan.json'
+   try {
+     @{platform=$base;application='fixture';requirement='fixture';project_id=1;runner_device_id=1;cases=@(@{id='main';title='中文主流程';acceptance=@('home visible')})} | ConvertTo-Json -Depth 8 | Set-Content $planFile -Encoding UTF8
+     $delivery=Join-Path $PSScriptRoot '../../tools/skills/qalab-requirement-test/scripts/delivery.mjs'
+     & node $delivery init --plan $planFile --manifest $ledger | Out-Null
+     if($LASTEXITCODE -ne 0){throw 'Ledger init failed'}
+     & node $delivery record --manifest $ledger --id main --status verified --packet $fixture | Out-Null
+     if($LASTEXITCODE -ne 0){throw 'Ledger record failed'}
+     $receiptFile=$fixture+'.receipt.json'
+     $result=& $scriptPath -Action import -BaseUrl $base -PayloadPath $fixture -ManifestPath $ledger -ReceiptPath $receiptFile | Out-String
+     $saved=Get-Content $ledger -Raw -Encoding UTF8 | ConvertFrom-Json
+     if($saved.cases[0].status -ne 'submitted' -or $saved.cases[0].job_id -ne 7){throw 'Ledger not updated after import'}
+   } finally {foreach($file in @($ledger,$planFile,($fixture+'.receipt.json'))){if(Test-Path -LiteralPath $file){Remove-Item -LiteralPath $file}}}
+
    if(!$result.Contains('job_id=7') -or !$result.Contains('无需等待')){throw 'Async acceptance receipt missing'}
    if($qalabTestRequests[$qalabTestRequests.Count-1] -ne '/api/verified-imports/jobs'){throw 'Import waited for completion'}
    if(@($qalabTestRequests | Where-Object {$_ -match 'preview|testcases|exec-queue'}).Count){throw 'Unexpected blocking check'}

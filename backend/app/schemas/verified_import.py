@@ -106,3 +106,51 @@ class VerifiedImport(BaseModel):
         if len({c.title for c in self.cases}) != len(self.cases):
             raise ValueError("同一批用例标题须唯一")
         return self
+
+
+class CodexArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=120)
+    kind: Literal['screenshot', 'trace', 'log']
+    reference: str = Field(min_length=1, max_length=2000)
+
+
+class CodexEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal['qalab-codex-v1']
+    tool: str = Field(min_length=1, max_length=200)
+    script_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    report_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    artifacts: list[CodexArtifact] = Field(min_length=1, max_length=200)
+
+
+class CodexCase(VerifiedCase):
+    verdict: Literal['pass', 'fail']
+    executor: Literal['codex'] = 'codex'
+    execution_evidence: None = None
+    selector_registry: None = None
+    codex_evidence: CodexEvidence
+
+    @model_validator(mode='after')
+    def complete_evidence(self):
+        # Override the Runner-only validator without weakening the legacy mode.
+        from app.services.codex_observation import validate_codex_observation
+        if self.exec_kind in ('gui', 'e2e'):
+            validate_targets(self.script, self.title)
+        if self.finished_at.tzinfo is None or self.finished_at.timestamp() > datetime.now(timezone.utc).timestamp() + 300:
+            raise ValueError('finished_at 必须包含时区且不能是未来执行结果')
+        for name in ('script', 'report', 'steps', 'expected'):
+            if len(json.dumps(getattr(self, name), ensure_ascii=False).encode()) > 60000:
+                raise ValueError(f'{name} 超过存储上限')
+        validate_codex_observation(self)
+        return self
+
+
+class CodexImport(VerifiedImport):
+    import_mode: Literal['codex']
+    runner_device_id: None = None
+    cases: list[CodexCase] = Field(min_length=1, max_length=20)
+
+
+def parse_import(payload):
+    return (CodexImport if payload.get('import_mode') == 'codex' else VerifiedImport).model_validate(payload)

@@ -14,7 +14,7 @@ from sqlalchemy.exc import OperationalError
 from starlette.responses import JSONResponse
 from app.db.session import SessionLocal
 from app.models import Project, User, VerifiedImportJob, VerifiedImportItem
-from app.schemas.verified_import import VerifiedImport
+from app.schemas.verified_import import parse_import
 
 logger = logging.getLogger(__name__)
 _stop = threading.Event()
@@ -48,7 +48,7 @@ def process_one(item_id, factory=SessionLocal):
             source["cases"] = [case]
             # Per-item stable identity. All writes, including receipt, share this transaction.
             source["external_id"] = f"queued-{job.id}-item-{item.position}"
-            body = VerifiedImport.model_validate(source)
+            body = parse_import(source)
             from app.api.verified_import import perform_import
             result = perform_import(body, db, user, commit=False)
             if isinstance(result, JSONResponse):

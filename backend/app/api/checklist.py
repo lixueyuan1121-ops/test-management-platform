@@ -4,17 +4,19 @@
 权限：清单项所属项目 member/admin 可写（不限 assigned_to，本版放开协作），guest 只读。
 """
 from datetime import date, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
-from app.core.enums import ChecklistStatus, IssueStatus, ProjectRole, ReviewStatus, TaskStatus
+from app.core.enums import ChecklistStatus, IssueStatus, ProjectRole, ReviewStatus
 from app.db.session import get_db
 from app.models import ChecklistItem, ExecRun, RemainingIssue, Task, TestCase, User
 from app.schemas.checklist import AttachChecklistIn, ChecklistToIssueIn, ChecklistTickIn
 from app.schemas.common import ok
+from app.services.task_dates import filter_task_dates
 
 router = APIRouter(prefix="/api", tags=["checklist"])
 
@@ -91,33 +93,24 @@ def _to_out_list(db: Session, rows: list[ChecklistItem]) -> list[dict]:
 @router.get("/tasks/checklist-summary")
 def list_checklist_summary(
     project_id: int = Query(...),
-    on_date: date = Query(..., alias="date"),
+    on_date: date | None = Query(None, alias="date"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    dates: Annotated[list[date] | None, Query()] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ):
-    """管理员任务表用：某项目某日各任务的验收进度汇总（只读，SQL 现算聚合）。
+    """任务表验收汇总；起止日期包含两端，兼容 date/dates，均不传则查询全部。
 
     返回 map：{ "<task_id>": {total, passed, failed, blocked, pending} }，
     只含有清单项的任务；无清单项的任务不出现（前端据此显示 —）。
 
-    顺延可见：与 list_tasks 口径一致——除当天派单的任务外，还带出更早日期但仍未完成
-    （status ∉ {online, closed}）的任务，否则顺延到次日的任务其清单/下发入口会消失。
+    与 list_tasks 口径一致：日期范围严格匹配分配日；旧 date/dates 查询保留顺延规则。
     """
     assert_project_role(db, user, project_id, _ALL_ROLES)
-    task_ids = [
-        tid for (tid,) in
-        db.query(Task.id)
-        .filter(
-            Task.project_id == project_id,
-            or_(
-                Task.assigned_date == on_date,
-                (Task.assigned_date < on_date) & Task.status.notin_(
-                    [TaskStatus.online, TaskStatus.closed]
-                ),
-            ),
-        )
-        .all()
-    ]
+    selected = sorted(set(dates or []) | ({on_date} if on_date else set()))
+    query = db.query(Task.id).filter(Task.project_id == project_id)
+    task_ids = [tid for (tid,) in filter_task_dates(query, selected, start_date, end_date).all()]
     if not task_ids:
         return ok({})
     rows = (

@@ -1,7 +1,8 @@
 from datetime import date, datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import assert_project_role, get_current_user
@@ -10,6 +11,7 @@ from app.db.session import get_db
 from app.models import Project, ProjectMember, Task, TaskAssignee, User
 from app.schemas.common import ok
 from app.schemas.task import TaskCreate, TaskOut, TaskUpdate
+from app.services.task_dates import filter_task_dates
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -97,8 +99,11 @@ def list_tasks(
     mine: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    dates: Annotated[list[date] | None, Query()] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ):
-    """查项目任务。mine=1 时只看指派给我的；date 过滤分配日期。
+    """查项目任务。start_date/end_date 严格过滤分配日期（含首尾）；兼容 date/dates。
 
     传 date 时，某天列表带出以下三类，使任务在「派单当天」与「实际完成当天」都可见：
     1. 当天派单的任务（assigned_date == date）；
@@ -106,22 +111,19 @@ def list_tasks(
     3. 在当天「变为完成」的任务：online_at 或 closed_at 落在 date 当天。
        故一个昨天派单、今天上线/关闭的顺延任务会出现在今天（完成当天），符合按完成日归集。
     """
+    # Preserve legacy day queries; no date parameters means all dates.
+    selected = sorted(set(dates or []) | ({date} if date else set()))
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     q = db.query(Task).filter(Task.project_id == project_id)
-    if date:
-        q = q.filter(or_(
-            Task.assigned_date == date,
-            (Task.assigned_date < date) & Task.status.notin_(
-                [TaskStatus.online, TaskStatus.closed]
-            ),
-            func.date(Task.online_at) == date,
-            func.date(Task.closed_at) == date,
-        ))
+    q = filter_task_dates(q, selected, start_date, end_date)
     if mine and not user.is_platform_admin:
         q = q.filter(or_(Task.assigned_to == user.id, Task.assignees.any(TaskAssignee.user_id == user.id)))
     rows = q.order_by(Task.assigned_date.desc(), Task.id.desc()).all()
     names = _name_map(db, [uid for t in rows for uid in (t.assigned_by, *t.assigned_to_ids)])
-    return ok([_to_out(db, t, on_date=date, names=names) for t in rows])
+    last_date = end_date or (max(selected) if selected else None)
+    def in_selection(task):
+        return start_date <= task.assigned_date <= end_date if start_date else task.assigned_date in selected
+    return ok([_to_out(db, t, on_date=None if in_selection(t) else last_date, names=names) for t in rows])
 
 
 @router.post("")

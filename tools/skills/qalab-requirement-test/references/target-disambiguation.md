@@ -22,8 +22,8 @@
 
 ## 确定性脚本优先
 
-完整 script 交给 StepExecutor，保留业务等待、复位和截图证据，不为“使用 Codex”把每一步改成模型调用。Runner 支持 `GUI_AI_ENGINE=codex` 时，动态前置导航、judge 或无脚本兜底可以使用 Codex；同样必须有真实定位和断言证据。
+首次由 Codex 使用可用工具实测并映射完整 script，保留等待、复位和证据；平台回归将 script 交给 StepExecutor。首次实测不要求本地安装 StepExecutor 或 Runner。Runner 支持 `GUI_AI_ENGINE=codex` 时，动态前置导航、judge 或无脚本兜底可以使用 Codex；同样必须有真实定位和断言证据。
 
-不要把“账号已登录、位于任意页面”等环境描述写成自然语言 precondition，触发多余模型导航。能确定性实现的导航放进 script。完整最终脚本连续执行两次验证独立性；不只在 Codex 对话里手动点通一次就回填。
+不要把“账号已登录、位于任意页面”等环境描述写成自然语言 precondition，触发多余模型导航。能确定性实现的导航放进 script。默认 Codex 模式实际执行并记录与完整脚本对应的观察证据；不得仅口头声称点通。用户明确选择 Runner 严格回归时才要求完整脚本连续执行两次。
 
 新 Runner 默认将执行队列空闲检查间隔缩短为 min(POLL_MS,1000) 毫秒，可用 EXEC_POLL_MS 覆盖；探测/perf 保持原 POLL_MS 节奏，一批完成后立即检查下一批。网络、客户端准备和正在执行的任务仍会增加等待，不能将轮询间隔变化宣称为整条用例的提速比例。使用 execution_timings 区分启动、复位、脚本、模型和上传耗时。

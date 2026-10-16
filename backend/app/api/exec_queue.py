@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from starlette.responses import FileResponse
 from sqlalchemy.orm import Session, defer
 from sqlalchemy import func, case
+from sqlalchemy.exc import OperationalError
 
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
@@ -979,8 +980,25 @@ def report(
     db: Session = Depends(get_db),
     ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
+    # MySQL rolls back a deadlock victim's whole transaction. Re-read the run
+    # and re-apply the SAME result, never reinterpret it as an execution error.
+    for attempt in range(3):
+        try:
+            return _report_once(run_id, body, runner, db, ctx)
+        except OperationalError as error:
+            db.rollback()
+            if getattr(error.orig, 'args', ())[:1] != (1213,) or attempt == 2:
+                raise
+            logger.warning('exec report deadlock run_id=%s retry=%s', run_id, attempt + 1)
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _report_once(run_id, body, runner, db, ctx):
     if ctx.device is not None:
         runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
+        # Match claim/heartbeat ordering: device first, then execution row.
+        from app.services.selector_device import lock_device
+        lock_device(db, ctx)
     r = db.query(ExecRun).filter(ExecRun.id == run_id).with_for_update().populate_existing().first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")

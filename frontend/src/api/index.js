@@ -22,7 +22,7 @@ export const updateUser = (id, data) => http.patch(`/users/${id}`, data)
 export const resetPassword = (id, data) => http.patch(`/users/${id}/password`, data)
 
 // ===== P1: 任务 / 日报 / 统计 =====
-export const listTasks = (params) => http.get('/tasks', { params })
+export const listTasks = (params) => http.get('/tasks', { params, paramsSerializer: { indexes: null } })
 export const createTask = (data) => http.post('/tasks', data)
 export const updateTask = (id, data) => http.patch(`/tasks/${id}`, data)
 export const deleteTask = (id) => http.delete(`/tasks/${id}`)
@@ -112,7 +112,10 @@ export async function genTestcaseScript(id, opts = {}) {
 }
 
 // ===== 验收清单（测试点回流任务）=====
-export const getChecklistSummary = (project_id, date) => http.get('/tasks/checklist-summary', { params: { project_id, date } })
+export const getChecklistSummary = (project_id, dates) => http.get('/tasks/checklist-summary', {
+  params: { project_id, ...(Array.isArray(dates) ? { dates } : dates && typeof dates === 'object' ? dates : { date: dates }) },
+  paramsSerializer: { indexes: null },
+})
 export const getTaskChecklist = (tid) => http.get(`/tasks/${tid}/checklist`)
 export const attachChecklist = (tid, testCaseIds) => http.post(`/tasks/${tid}/checklist`, { test_case_ids: testCaseIds })
 export const updateChecklistItem = (itemId, exec_status) => http.patch(`/checklist/${itemId}`, { exec_status })

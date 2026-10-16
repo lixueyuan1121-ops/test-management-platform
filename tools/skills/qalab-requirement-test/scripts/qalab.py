@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QA Lab macOS login/status/import helper; Python 3.9+, standard library only."""
+"""QA Lab macOS helper; Python 3.9+ stdlib, Node.js for script validation."""
 import argparse
 import getpass
 import json
@@ -71,42 +71,24 @@ class Api:
         return payload.get("data", payload)
 
 
-def validate_payload(payload):
-    cases = payload.get('cases', [])
-    if not isinstance(cases, list) or not cases or len(cases) > 20:
-        raise RuntimeError('导入包须包含 1–20 条真实执行通过的用例')
-    if any(c.get('execution_evidence') for c in payload.get('cases', []) if isinstance(c, dict)):
-        import subprocess
-        try:
-            result = subprocess.run(['node', str(Path(__file__).with_name('validate-evidence.mjs'))],
-                                    input=json.dumps(payload, ensure_ascii=False), text=True, encoding='utf-8', capture_output=True, timeout=15)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise RuntimeError('执行证据校验需要可用的 Node.js；请使用运行 Runner 的同一环境') from error
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or '执行证据指纹不一致')
-    if len({c.get("title") for c in cases}) != len(cases):
-        raise RuntimeError("同批用例标题须唯一")
-    for case in cases:
-        if case.get("resolution"):
-            raise RuntimeError("疑似重复由平台导入任务页集中确认，不在当前任务处理")
-        script, report = case.get("script"), case.get("report")
-        if case.get("verdict") != "pass" or not isinstance(script, list) or not script or not isinstance(report, list) or len(script) != len(report):
-            raise RuntimeError("只导入执行通过且逐步报告完整的用例")
-        if case.get("exec_kind", "e2e") in ("gui", "e2e"):
-            try:
-                validate_targets(script, case.get("title", ""))
-            except ValueError as error:
-                raise RuntimeError(str(error)) from None
-        if not any(str(step.get("action", "")).startswith("assert") or step.get("action") == "judge" for step in script):
-            raise RuntimeError("用例必须包含业务断言")
-        for step, result in zip(script, report):
-            if step.get("action") != result.get("action") or result.get("ok") is not True:
-                raise RuntimeError("报告须与完整脚本逐步对应且全部通过")
-            check = result.get("check")
-            if str(step.get("action", "")).startswith("assert") and (not isinstance(check, dict) or not {"actual", "expected"}.issubset(check)):
-                raise RuntimeError("断言缺少实际值或预期值")
-            if isinstance(check, dict) and check.get("pass") is False:
-                raise RuntimeError("报告包含失败断言")
+def validate_payload(payload, draft=False):
+    """Use the same offline action/evidence contract on Windows and macOS."""
+    import subprocess
+    try:
+        result = subprocess.run(['node', str(Path(__file__).with_name('validate-contract.mjs'))] + (['--draft'] if draft else []),
+                                input=json.dumps(payload, ensure_ascii=False), text=True, encoding='utf-8', capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError('离线协议校验需要可用 Node.js；无需安装 Runner 或配置设备 token') from error
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or '脚本/实测证据校验失败')
+
+
+def delivery_check(action, manifest, packet, platform, receipt=None):
+    import subprocess
+    args = ['node', str(Path(__file__).with_name('delivery.mjs')), action, '--manifest', str(manifest), '--packet', str(packet), '--platform', platform]
+    if receipt: args += ['--receipt', str(receipt)]
+    result = subprocess.run(args, text=True, encoding='utf-8', capture_output=True, timeout=30)
+    if result.returncode: raise RuntimeError(result.stderr.strip() or '场景清单校验失败')
 
 
 def normalize_script(script):
@@ -134,10 +116,10 @@ class Client:
             self.store.save(session)
         return session["access_token"]
 
-    def status(self, token):
+    def status(self, token, include_devices=True):
         me = self.api("GET", "/api/auth/me", token=token)
         projects = self.api("GET", "/api/projects", token=token)
-        devices = self.api("GET", "/api/devices", token=token)
+        devices = self.api("GET", "/api/devices", token=token) if include_devices else []
         schema = self.api("GET", "/openapi.json")
         fields = ("id", "runner_id", "name", "platform", "active_kinds", "last_seen_at")
         return {"platform": self.api.origin, "user": me["user"]["username"], "projects": projects,
@@ -148,10 +130,17 @@ class Client:
 
     def preview(self, payload, token):
         validate_payload(payload)
+        if payload.get('import_mode') == 'codex':
+            raise RuntimeError('Codex 实测使用异步 import，不调用旧 preview')
         return self.api("POST", "/api/verified-imports/preview", payload, token)
 
     def import_cases(self, payload, token):
         validate_payload(payload)
+        codex = payload.get('import_mode') == 'codex'
+        if codex:
+            caps = self.api('GET', '/api/verified-imports/capabilities', token=token)
+            if 'codex' not in caps.get('import_modes', []) or caps.get('codex_evidence_protocol') != 'qalab-codex-v1':
+                raise RuntimeError('平台尚未支持 Codex 实测导入；保留原包，更新平台后重试，不要求本机安装 Runner')
         from script_targets import NETWORK_ACTIONS
         required = {s.get('action') for c in payload['cases'] for s in c['script']} & NETWORK_ACTIONS
         if required:
@@ -161,12 +150,12 @@ class Client:
                 raise RuntimeError('目标平台尚未确认网络场景协议；请更新平台，保留原始实测包，不提交或改投其他环境') from exc
             if 'network-scenarios-v1' not in caps.get('replay_protocols', []) or not required.issubset(set(caps.get('actions', []))):
                 raise RuntimeError('目标平台不支持本批脚本的网络场景动作；请更新平台后重试原包')
-        status = self.status(token)
+        status = self.status(token, include_devices=False) if codex else self.status(token)
         if not status["async_import_available"]:
             raise RuntimeError("线上尚未发布异步导入接口；保留待导入包，请先更新服务器，不退回同步导入")
         if payload.get("project_id") not in {p["id"] for p in status["projects"]}:
             raise RuntimeError("无法访问导入包指定的线上项目")
-        if payload.get("runner_device_id") not in {d["id"] for d in status["devices"]}:
+        if not codex and payload.get("runner_device_id") not in {d["id"] for d in status["devices"]}:
             raise RuntimeError("须使用当前账号在同一线上平台登记的设备")
         receipt = self.api("POST", "/api/verified-imports/jobs", payload, token)
         if (receipt.get("accepted") is not True or type(receipt.get("job_id")) is not int or receipt["job_id"] <= 0 or
@@ -185,18 +174,22 @@ class Client:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("login", "status", "import", "logout", "doctor", "preview", "job", "validate"))
+    parser.add_argument("action", choices=("login", "status", "import", "logout", "doctor", "preview", "job", "validate", "lint"))
     parser.add_argument("--base-url", default=DEFAULT_ORIGIN)
     parser.add_argument("--payload", type=Path)
     parser.add_argument("--job-id", type=int)
+    parser.add_argument("--receipt-path", type=Path)
+    parser.add_argument("--manifest", type=Path)
     args = parser.parse_args(argv)
-    if args.action in ("validate", "import", "preview"):
+    if args.action in ("lint", "validate", "import", "preview"):
         if not args.payload: raise RuntimeError("需要 --payload <包.json>")
-        validate_payload(json.loads(args.payload.read_text(encoding="utf-8-sig")))
-        if args.action == "validate":
+        validate_payload(json.loads(args.payload.read_text(encoding="utf-8-sig")), draft=args.action == "lint")
+        if args.action in ("lint", "validate"):
             print("本地导入结构校验通过；未连接平台，不代表设备实测通过。")
             return
     origin = normalize_origin(args.base_url)
+    if args.action == "import" and args.manifest:
+        delivery_check("ready", args.manifest, args.payload, origin)
     if args.action == "doctor":
         store = MacKeychain(origin, suffix=":self-test-" + uuid.uuid4().hex)
         sample = {"access_token": "keychain-self-test-not-a-real-token"}
@@ -230,6 +223,12 @@ def main(argv=None):
     if args.action == "preview":
         print(json.dumps(client.preview(payload, token), ensure_ascii=False, indent=2)); return
     receipt = client.import_cases(payload, token)
+    receipt_path = args.receipt_path or (args.manifest.parent / ("receipt-" + str(receipt['job_id']) + ".json") if args.manifest else None)
+    try:
+        if receipt_path: receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.manifest: delivery_check("submitted", args.manifest, args.payload, origin, receipt_path)
+    except (RuntimeError, OSError) as error:
+        print("平台已接收；本地回执/清单保存失败，保留下方回执，不要重新执行用例：" + str(error), file=sys.stderr)
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
     print("测试结果已提交，平台正在后台整理；无需等待。此回执不代表用例已入库。")
     print(origin + "/verified-imports?project_id=" + str(receipt["project_id"]) + "&job_id=" + str(receipt["job_id"]))

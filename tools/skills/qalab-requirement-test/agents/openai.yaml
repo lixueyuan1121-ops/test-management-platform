@@ -1,4 +1,4 @@
 interface:
   display_name: "QA Lab 需求自动化测试"
-  short_description: "快捷填写需求与应用地址，回填默认线上、可选本地测试，实测通过后异步提交"
+  short_description: "Codex 实测、导入可回归用例并交付 HTML 测试报告，生成电脑无需 Runner"
   default_prompt: "使用 $qalab-requirement-test 开始一次需求测试。请显示输入卡片，收集需求、应用地址和回填环境（默认线上，可选本地测试），项目默认纳米Work PC端，关联任务默认codex导入用例；等待我提交卡片后继续。"

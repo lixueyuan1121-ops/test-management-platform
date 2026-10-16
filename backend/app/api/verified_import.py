@@ -12,7 +12,7 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import AiTask, ExecRun, Project, Requirement, TestCase, User
 from app.schemas.common import ok
-from app.schemas.verified_import import DEFAULT_IMPORT_TASK, VerifiedImport
+from app.schemas.verified_import import DEFAULT_IMPORT_TASK, VerifiedImport, CodexImport
 from app.services.verified_import_tasks import resolve_import_task
 from app.services.claude_runner import validate_script_for_edit
 from app.services.selector_device import owned_device
@@ -24,7 +24,8 @@ router = APIRouter(prefix="/api/verified-imports", tags=["verified-imports"])
 @router.get('/capabilities')
 def capabilities(user: User = Depends(get_current_user)):
     from app.services.script_targets import VALID_ACTIONS
-    return ok({'replay_protocols': ['network-scenarios-v1'], 'actions': sorted(VALID_ACTIONS)})
+    return ok({'replay_protocols': ['network-scenarios-v1'], 'actions': sorted(VALID_ACTIONS),
+               'import_modes': ['verified', 'codex'], 'codex_evidence_protocol': 'qalab-codex-v1'})
 
 
 def _authorize_and_lock(body, db, user):
@@ -34,6 +35,8 @@ def _authorize_and_lock(body, db, user):
     count = db.execute(update(Project).where(Project.id == body.project_id).values(id=Project.id, updated_at=Project.updated_at)).rowcount
     if not count:
         raise HTTPException(404, "项目不存在")
+    if isinstance(body, CodexImport):
+        return None
     device = owned_device(db, user, "", body.runner_device_id)
     if device.platform != "web":
         raise HTTPException(422, "当前导入契约仅支持 web/PC 执行设备")
@@ -87,6 +90,7 @@ def import_verified(body: VerifiedImport, db: Session = Depends(get_db), user: U
 def perform_import(body, db, user, *, commit=True):
     """Shared transaction: queued imports commit the receipt and item outcome together."""
     device = _authorize_and_lock(body, db, user)
+    codex = isinstance(body, CodexImport)
     marker = f"verified:{user.id}:{body.external_id}"
     sha = _request_digest(body)
     previous = (db.query(AiTask).filter_by(project_id=body.project_id, kind="verified_import", input_ref=marker)
@@ -129,7 +133,7 @@ def perform_import(body, db, user, *, commit=True):
                           steps=case.steps, expected=case.expected, precondition=case.precondition or None,
                           script=json.dumps(script, ensure_ascii=False), is_regression=False,
                           review_status="pending", adopted=False,
-                          kind_reason="外部实测导入；执行器、环境与验证范围见执行记录")
+                          kind_reason=("Codex 实测导入；平台 Runner 尚未回归验证" if codex else "外部实测导入；执行器、环境与验证范围见执行记录"))
             db.add(tc)
             db.flush()
         if tc.task_id is None:
@@ -148,16 +152,25 @@ def perform_import(body, db, user, *, commit=True):
                                       "task_id": linked_task.id, "task_name": linked_task.title,
                                       "executor": case.executor, "environment": case.environment, "scope": case.scope,
                                       "resolution": case.resolution.model_dump() if case.resolution else None}
+        if codex:
+            payload['verified_import'].update({'source': 'codex', 'codex_evidence': case.codex_evidence.model_dump()})
         end = case.finished_at.astimezone(timezone.utc).replace(tzinfo=None)
+        failed = case.verdict == 'fail'
+        failure = case.report[-1].get('error', '') if failed else ''
+        reason = (f"[Codex 实测导入] {'业务失败：' + failure if failed else '通过'}；环境：{case.environment}；范围：{case.scope}。不是平台 Runner 回归结果。"
+                  if codex else f"[外部实测导入] {case.executor}；环境：{case.environment}；范围：{case.scope}。不是线上队列执行记录。")
         run = ExecRun(project_id=body.project_id, test_case_id=tc.id, task_id=linked_task.id, kind=case.exec_kind,
-                      runner=device.runner_id, runner_device_id=device.id, status="passed", verdict="pass",
+                      runner='codex' if codex else device.runner_id, runner_device_id=None if codex else device.id,
+                      status="failed" if failed else "passed", verdict=case.verdict,
+                      fail_kind="business" if failed else None,
                       enqueued_by=user.id, batch_id=batch, payload=json.dumps(payload, ensure_ascii=False),
                       report=json.dumps(case.report, ensure_ascii=False), duration_ms=case.duration_ms,
                       started_at=end-timedelta(milliseconds=case.duration_ms), finished_at=end,
-                      reason=f"[外部实测导入] {case.executor}；环境：{case.environment}；范围：{case.scope}。不是线上队列执行记录。")
+                      reason=reason)
         db.add(run)
         db.flush()
         records.append({"case_id": tc.id, "run_id": run.id, "title": case.title,
+                        "source": "codex" if codex else "verified", "verdict": case.verdict,
                         "disposition": "reused" if reused else "created",
                         "task_id": linked_task.id, "task_name": linked_task.title, "case_task_id": tc.task_id})
     receipt = {"project_id": body.project_id, "requirement_id": req.id if req else None,

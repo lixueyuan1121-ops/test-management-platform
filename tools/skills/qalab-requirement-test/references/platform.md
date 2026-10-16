@@ -1,4 +1,10 @@
+# 原 Runner 实测导入接口
+
+本文件的设备 ID、Runner --verify-import 和双次通过要求只适用于用户明确选择的原 Runner 验证模式。默认使用 [Codex 实测交付](codex-import.md)，生成端不需要 Runner，业务失败也可导入；不要把下面旧模式约束套到 Codex 模式。
+
 # 平台接入与脚本约定
+
+每批测试先按 [交付工作流](workflow.md) 建立完整场景清单；下列接口示例须配合该工作流的 ManifestPath/manifest 与回执登记。脚本校验和导入在 Windows/macOS 上都需要 Node.js，建议使用 Runner 的 Node 环境。
 
 ## 回填环境选择
 
@@ -14,7 +20,7 @@ Windows 需要 PowerShell 5.1+；登录脚本只使用内置能力。macOS 使�
 ## 异步导入与后续处理
 
 提交阶段不扫描用例库；校验身份、项目、设备和报告结构后将原始包及逐条任务一起保存，返回 HTTP 202。接收回执含 accepted=true、job_id、project_id、external_id、case_count、status_url。相同用户/项目/external_id 重传相同内容返回同一个任务，内容不同返回 409，不能换 ID 绕过。
-成功接收后结束当前任务。不要 preview，不询问疑似重复，不轮询。后续处理由平台独立完成，即使 Codex 已关闭也会继续。
+成功接收后登记回执，按 [测试报告规范](test-report.md) 完成本地 HTML 报告后结束当前任务。不要 preview，不询问疑似重复，不轮询。后续处理由平台独立完成，即使 Codex 已关闭也会继续。
 后台按条处理，状态 pending / needs_confirmation / done / failed；同批某条待确认不阻塞其他条目。明确重复复用用例、追加本次实测结果；新场景新增待评审用例，不自动标记回归，并关联当前项目统一的“codex导入用例”需求；不确定项留在暂存区，未确认前不进入正式用例库。当前判重为保守规则，不能保证识别全部语义改写。
 项目管理员在 `/verified-imports?project_id=ID&job_id=JOB` 查看步骤、预期和候选，选择复用或不同场景新建并说明依据。后台复核候选版本，变化后重新待确认。重复确认/后台重试不会重复写入执行结果。原用例正文、脚本与评审状态不被复用操作覆盖。
 `GET /api/verified-imports/jobs?project_id=ID&page=1&status=needs_confirmation`：项目导入任务，每页20条；status 可省略。
