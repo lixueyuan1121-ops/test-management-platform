@@ -27,14 +27,15 @@ footer { text-align: center; color: #9ca3af; font-size: 12px; padding: 22px 0; o
 
 .version-block { margin-top: 22px; border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 2px 12px rgba(20,20,60,.06); }
 .version-head { padding: 24px 28px; color: #fff; background: linear-gradient(135deg, #0ea5e9, #4f46e5 55%, #7c3aed); }
-.version-head h2 { color: inherit; border: 0; margin: 0; padding: 0; font-size: 21px; display: block; }
+.version-head h2, .version-head h3 { color: inherit; border: 0; margin: 0; padding: 0; font-size: 21px; display: block; }
 .version-head .eyebrow { margin-bottom: 8px; }
 .mode-daily > .version-head, .report-header.mode-daily { background: linear-gradient(135deg, #0f766e, #0369a1); }
 .version-content section { margin: 0; border-radius: 0; box-shadow: none; }
+.version-content section.section-label { padding-bottom: 0; }
 .version-content section + section { padding-top: 10px; }
 h3 { font-size: 16px; color: #1e40af; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid #eef1f7; }
 .mode-daily h3 { color: #0f766e; }
-@media (max-width: 640px) { .version-head { padding: 20px 18px; } .version-head h2 { font-size: 18px; } }
+@media (max-width: 640px) { .version-head { padding: 20px 18px; } .version-head h2, .version-head h3 { font-size: 18px; } }
 
 /* Light gradient header and white cards, per the user's reporting prompt. */
 .report-header, .version-head { background: linear-gradient(135deg, #e0f2fe, #e8eaff 55%, #f3e8ff); color: #172554; box-shadow: 0 8px 24px rgba(79,70,229,.1); }
@@ -76,8 +77,8 @@ h4 { color: #0f766e; font-size: 14px; border-left: 3px solid #5eead4; padding-le
 .overview-kind { display: block; font-size: 12px; color: #64748b; font-weight: 400; margin-top: 2px; }
 .version-head { padding: 18px 28px; background: #f8faff; box-shadow: none; border-bottom: 1px solid #e8edf7; border-left: 4px solid #818cf8; }
 .mode-daily > .version-head { background: #f2fbfa; border-bottom-color: #e2f1ef; border-left-color: #2a9d8f; }
-.version-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-.version-head h2 { font-size: 19px; }
+.version-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 16px; }
+.version-head h2, .version-head h3 { font-size: 19px; }
 .back-overview { font-size: 12px; white-space: nowrap; color: #64748b; text-decoration: none; }
 .back-overview:hover { text-decoration: underline; }
 .version-head .status-bar { margin-top: 9px; gap: 6px 16px; }
@@ -86,16 +87,44 @@ h4 { color: #0f766e; font-size: 14px; border-left: 3px solid #5eead4; padding-le
 .version-block, .version-overview { scroll-margin-top: 20px; }
 a:focus-visible { outline: 2px solid #2563eb; outline-offset: 4px; border-radius: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+/* Attribution regions preserve original labels, separating them from version numbers. */
+.attribution-region { background: none; box-shadow: none; padding: 0; margin-top: 28px; }
+.region-title { color: #475569; font-size: 16px; border: 0; padding: 0 4px; margin: 0 0 10px; }
+.attribution-region > .version-block { margin-top: 14px; }
+.attribution-region > .version-block:first-of-type { margin-top: 0; }
+.attribution-region .version-content h4 { font-size: 16px; color: #1e40af; border: 0; border-bottom: 1px solid #eef1f7; padding: 0 0 10px; margin-bottom: 8px; }
+.attribution-region .mode-daily .version-content h4 { color: #0f766e; }
+.attribution-region .version-content h5 { color: #0f766e; font-size: 14px; border-left: 3px solid #5eead4; padding-left: 9px; margin-bottom: 8px; }
+.attribution-region .notes h4 { color: #92400e; border-bottom-color: #fde68a; }
+.version-overview .overview-category th { padding: 14px 10px 7px; background: #f8fafc; color: #64748b; font-size: 12px; font-weight: 600; }
+.count-unit, .mobile-state-label { display: none; }
 @media (max-width: 640px) {
-  .version-overview { padding: 18px 14px; }
+  .version-overview { padding: 18px 16px; }
   .overview-heading { display: block; }
   .overview-heading p { margin-top: 4px; }
-  .version-overview th, .version-overview td { padding: 10px 5px; font-size: 13px; }
-  .version-overview th:first-child { width: 34%; }
-  .version-overview th:nth-child(2) { width: 19%; }
-  .version-head { padding: 16px 18px; }
-  .version-head h2 { font-size: 17px; }
-  .version-heading { gap: 10px; }
+  .version-overview table, .version-overview tbody { display: block; width: 100%; }
+  .version-overview thead { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+  .version-overview .overview-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; padding: 10px 0 14px; border-bottom: 1px solid #eef1f7; }
+  .version-overview .overview-entry:last-child { border-bottom: 0; }
+  .version-overview .overview-entry > * { padding: 0; border: 0; width: auto; font-size: 14px; }
+  .version-overview .overview-entry > th { width: auto; min-width: 0; }
+  .version-overview .overview-entry a { display: flex; align-items: center; min-height: 44px; font-size: 15px; }
+  .overview-kind { margin: -4px 0 6px; }
+  .version-overview .overview-count { align-self: start; margin-top: 10px; padding: 1px 8px; border-radius: 6px; color: #475569; background: #f1f5f9; white-space: nowrap; font-size: 12px; }
+  .count-unit, .mobile-state-label { display: inline; }
+  .mobile-state-label { color: #64748b; }
+  .version-overview .overview-states { grid-column: 1 / -1; color: #475569; font-size: 13px; }
+  .version-overview .overview-category { display: block; margin: 10px -4px 0; }
+  .version-overview .overview-category th { display: block; width: auto; padding: 6px 8px; border: 0; border-radius: 5px; }
+  .version-head { padding: 14px 18px; }
+  .version-head h2, .version-head h3 { font-size: 17px; min-width: 0; overflow-wrap: anywhere; }
+  .version-heading { gap: 2px 12px; }
+  .back-overview { display: inline-flex; align-items: center; min-height: 44px; }
+  .version-head .status-bar { margin-top: 4px; gap: 4px 14px; }
+  .desc, .paragraph, .subitems { font-size: 15px; line-height: 1.8; }
+  .desc { padding-left: 0; }
+  .subitems { padding-left: 20px; }
+  .version-block, .version-overview { scroll-margin-top: 12px; }
 }
 @media print {
   body { padding: 0; background: #fff; }

@@ -5,7 +5,7 @@ _release_generate_report/_release_main. This extension prepares summary prompts 
 it never fetches or sends messages.
 """
 
-PLATFORM_ADAPTER_VERSION = 9
+PLATFORM_ADAPTER_VERSION = 10
 
 
 def _summary_input(summary):
@@ -299,7 +299,7 @@ def render_platform_html(report):
             else:
                 current['paragraphs'].append(line)
 
-    def render_group(group, nested=False):
+    def render_group(group, nested=False, region=False):
         if not group['items'] and not group['paragraphs'] and not group['heading']:
             return ''
         paragraphs = ''.join('<p class="paragraph">' + inline(line) + '</p>' for line in group['paragraphs'])
@@ -329,8 +329,12 @@ def render_platform_html(report):
                 '</span><span class="item-title">' + inline(value) + tag_html + '</span></div>' +
                 ''.join('<p class="desc">' + inline(line) + '</p>' for line in details) + bullet_html + '</div>')
         tag = ('h4' if group.get('level') == 4 else 'h3') if nested else 'h2'
+        if nested and region:
+            tag = 'h5' if tag == 'h4' else 'h4'
         heading = '<' + tag + '>' + escape(group['heading']) + '</' + tag + '>' if group['heading'] else ''
         notes = ' class="notes"' if group['heading'] in ('发布说明', '日报小结') else ''
+        if not notes and group['heading'] and not paragraphs and not rendered_items:
+            notes = ' class="section-label"'
         return '<section' + notes + '>' + heading + paragraphs + ''.join(rendered_items) + '</section>'
 
     def header_intro(block):
@@ -355,33 +359,55 @@ def render_platform_html(report):
             states += '（未记录分项数量）'
         return {'count': count, 'states': states, 'platforms': metadata.get('涉及平台', '')}
 
-    def header_facts(block):
+    def header_facts(block, include_attribution=False):
         facts = block['facts']
         values = ['状态：' + facts['states'], f"所选条目：{facts['count']}"]
+        if include_attribution and block['category'] != 'version':
+            values.insert(0, '原归属：' + block['version'])
         if facts['platforms']:
             values.append('涉及平台：' + facts['platforms'])
         return '<div class="status-bar">' + ''.join('<span class="status-pill">' + inline(value) + '</span>' for value in values) + '</div>'
 
-    def version_overview(versions):
+    def attribution_category(value):
+        # This is presentation metadata only. Never rewrite stored task fields or prose.
+        if value == '未填写规划版本':
+            return 'unset'
+        if re.fullmatch(r'[vV]?\d+(?:\.\d+)*(?:[-+][A-Za-z0-9][A-Za-z0-9.+-]*)?', value):
+            return 'version'
+        return 'other'
+
+    category_labels = {'version': '版本详情', 'other': '其他归属', 'unset': '未填写版本'}
+
+    def version_overview(versions, regions):
         if len(versions) <= 1:
             return ''
-        rows = []
+        rows, previous = [], None
         for block in versions:
-            facts = block['facts']
-            kind = '版本更新说明' if block['mode'] == 'release' else '测试日报'
-            rows.append('<tr><th scope="row"><a href="#' + block['anchor'] + '">' + escape(block['version']) +
-                        '</a><span class="overview-kind">' + kind + '</span></th><td>' + str(facts['count']) +
-                        '</td><td>' + escape(facts['states']) + '</td></tr>')
+            facts, category = block['facts'], block['category']
+            if regions and category != previous:
+                rows.append('<tr class="overview-category"><th colspan="3">' +
+                            ('版本号' if category == 'version' else category_labels[category]) + '</th></tr>')
+            previous = category
+            kind = ('版本更新说明' if block['mode'] == 'release' else '测试日报') if category == 'version' else '需求进展'
+            kind_html = '<span class="overview-kind">' + kind + '</span>' if category == 'version' else ''
+            rows.append('<tr class="overview-entry"><th scope="row"><a href="#' + block['anchor'] + '">' + escape(block['version']) +
+                        '</a>' + kind_html + '</th><td class="overview-count">' + str(facts['count']) +
+                        '<span class="count-unit"> 项</span></td><td class="overview-states"><span class="mobile-state-label" aria-hidden="true">状态分布 · </span>' +
+                        escape(facts['states']) + '</td></tr>')
         return ('<section class="version-overview" id="version-overview" aria-labelledby="overview-title">'
-                '<div class="overview-heading"><h2 id="overview-title">版本总览</h2><p>点击归属版本，直达详情</p></div>'
-                '<table><caption class="sr-only">本次筛选的归属版本、条目数及状态分布</caption>'
-                '<thead><tr><th scope="col">归属版本</th><th scope="col">所选条目</th><th scope="col">状态分布</th></tr></thead>'
+                '<div class="overview-heading"><h2 id="overview-title">版本与归属总览</h2><p>点击名称，直达详情</p></div>'
+                '<table role="table"><caption class="sr-only">本次筛选的归属、条目数及状态分布</caption>'
+                '<thead><tr><th scope="col">归属</th><th scope="col">所选条目</th><th scope="col">状态分布</th></tr></thead>'
                 '<tbody>' + ''.join(rows) + '</tbody></table></section>')
 
     overview, sections = [], []
     versions = [block for block in blocks if block['mode']]
     for index, block in enumerate(versions, 1):
+        # Preserve existing fragment identifiers when edited reports are regrouped.
         block['anchor'], block['facts'] = f'version-{index}', block_facts(block)
+        block['category'] = attribution_category(block['version'])
+    versions.sort(key=lambda block: {'version': 0, 'other': 1, 'unset': 2}[block['category']])
+    regions = any(block['category'] != 'version' for block in versions)
     scope = ''
     if versions:
         total = sum(block['facts']['count'] for block in versions)
@@ -396,12 +422,24 @@ def render_platform_html(report):
                     overview = group['paragraphs']
                 else:
                     sections.append(render_group(group))
-            continue
-        heading = '' if block is single else ('<header class="version-head"><div class="version-heading"><h2>' +
-            escape(block['heading']) + '</h2><a class="back-overview" href="#version-overview">返回总览 ↑</a></div>' +
+    previous = None
+    for block in versions:
+        category = block['category']
+        if regions and category != previous:
+            if previous is not None:
+                sections.append('</section>')
+            sections.append('<section class="attribution-region" aria-labelledby="region-' + category + '">' +
+                            '<h2 id="region-' + category + '" class="region-title">' + category_labels[category] + '</h2>')
+        previous = category
+        tag = 'h3' if regions else 'h2'
+        display_heading = block['heading'] if category == 'version' else block['version']
+        heading = '' if block is single else ('<header class="version-head"><div class="version-heading"><' + tag + '>' +
+            escape(display_heading) + '</' + tag + '><a class="back-overview" href="#version-overview">返回总览 ↑</a></div>' +
             header_facts(block) + header_intro(block) + '</header>')
-        sections.append('<article id="' + block['anchor'] + '" class="version-block mode-' + block['mode'] + '" data-report-type="' + block['mode'] + '">' +
-            heading + '<div class="version-content">' + ''.join(render_group({**group, 'paragraphs': [line for line in group['paragraphs'] if group['heading'] or not line.startswith(('版本概览：', '状态：', '状态分布：', '涉及平台：', '条目数：'))]}, True) for group in block['groups']) + '</div></article>')
+        sections.append('<article id="' + block['anchor'] + '" class="version-block mode-' + block['mode'] + '" data-report-type="' + block['mode'] + '" data-attribution="' + category + '">' +
+            heading + '<div class="version-content">' + ''.join(render_group({**group, 'paragraphs': [line for line in group['paragraphs'] if group['heading'] or not line.startswith(('版本概览：', '状态：', '状态分布：', '涉及平台：', '条目数：'))]}, True, regions and not single) for group in block['groups']) + '</div></article>')
+    if regions:
+        sections.append('</section>')
     label = ('RELEASE NOTES' if single['mode'] == 'release' else 'TEST DAILY') if single else 'VERSION REPORT' if versions else 'FEATURE NOTES'
     mode = ' mode-daily' if single and single['mode'] == 'daily' else ''
     return ('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
@@ -409,7 +447,7 @@ def render_platform_html(report):
             '<meta name="robots" content="noindex,nofollow"><title>' + escape(report['title']) + '</title><style>' +
             style + '</style></head><body><div class="wrap">'
             '<header class="report-header' + mode + '"><span class="eyebrow">' + label + '</span><h1>' + escape(report['title']) + '</h1>' +
-            ''.join('<p class="sub">' + inline(line) + '</p>' for line in overview) + (header_facts(single) if single else '') + scope + '</header>' + version_overview(versions) +
+            ''.join('<p class="sub">' + inline(line) + '</p>' for line in overview) + (header_facts(single, True) if single else '') + scope + '</header>' + version_overview(versions, regions) +
             ''.join(sections) + '<footer>' + escape(report['title']) + '</footer></div></body></html>')
 
 

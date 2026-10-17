@@ -199,7 +199,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 9)
+        self.assertEqual(upgraded['platform_adapter_version'], 10)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -282,7 +282,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertEqual(html.count('data-report-type="daily"'),2)
         self.assertNotIn('class="status-tag"',html)
         self.assertIn('测试完成 1 项 / 已上线 1 项', html)
-        self.assertIn('<h4>测试中</h4>',html)
+        self.assertIn('<h5>测试中</h5>',html)
         for task in tasks: self.assertIn(task['title'],html)
         self.assertEqual(html.count('class="upd"'),len(tasks))
 
@@ -501,6 +501,70 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertIn('本组另含 1 项其他需求或问题，详见对应小节',report['content'])
         self.assertNotIn('版本概览：', report['content'])  # Single-item groups need no duplicate intro.
         self.assertIn('⚠',service.render_task_digest_html(report))
+
+    def test_html_partitions_attribution_without_modifying_saved_report(self):
+        from copy import deepcopy
+        from html import escape
+        from html.parser import HTMLParser
+        labels = ['待定', '未填写规划版本', 'v3.28.0-beta.1', '前端', '前端+接口',
+                  '桌面版', '3.27.0', '<script>归属</script>']
+        report = dict(title='纳米Work PC端 人工标题', content='\n'.join(
+            f'## {label} 测试日报\n状态：测试中\n状态分布：测试中 1 项\n'
+            f'### 测试进展\n#### 测试中\n{i}. 功能{i}\n   原有说明{i}，不可丢失。'
+            for i, label in enumerate(labels, 1)))
+        original = deepcopy(report)
+        html = service.render_task_digest_html(report)
+        self.assertEqual(report, original)
+
+        class Articles(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.articles = []; self.ids = []; self.links = []
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if 'id' in attrs: self.ids.append(attrs['id'])
+                if tag == 'article': self.articles.append((attrs['id'], attrs['data-attribution']))
+                if tag == 'a' and attrs.get('href', '').startswith('#'): self.links.append(attrs['href'][1:])
+        parsed = Articles(); parsed.feed(html)
+        self.assertEqual(parsed.articles, [('version-3', 'version'), ('version-7', 'version'),
+            ('version-1', 'other'), ('version-4', 'other'), ('version-5', 'other'),
+            ('version-6', 'other'), ('version-8', 'other'), ('version-2', 'unset')])
+        self.assertEqual(len(parsed.ids), len(set(parsed.ids)))
+        self.assertTrue(all(link in parsed.ids for link in parsed.links))
+        self.assertLess(html.index('id="region-version"'), html.index('id="region-other"'))
+        self.assertLess(html.index('id="region-other"'), html.index('id="region-unset"'))
+        self.assertEqual(html.count('<h1>'), 1)
+        self.assertEqual(html.count('class="upd"'), len(labels))
+        for i, label in enumerate(labels, 1):
+            self.assertIn(escape(label), html)
+            self.assertIn(f'原有说明{i}，不可丢失。', html)
+            self.assertIn(f'<span class="no">{i}</span>', html)
+        self.assertIn('<h3>前端+接口</h3>', html)
+        self.assertNotIn('前端+接口 测试日报</h3>', html)
+        self.assertNotIn('<script>', html)
+
+    def test_single_other_or_unset_group_preserves_one_page_header(self):
+        for label, region in [('前端', 'other'), ('未填写规划版本', 'unset')]:
+            with self.subTest(label=label):
+                report = dict(title='人工标题', content=f'## {label} 测试日报\n状态：测试中\n### 测试进展\n1. 功能甲')
+                html = service.render_task_digest_html(report)
+                self.assertIn(f'id="region-{region}"', html)
+                self.assertIn('原归属：' + label, html)
+                self.assertEqual(html.count('<header '), 1)
+                self.assertNotIn('class="version-head"', html)
+                self.assertNotIn('返回总览 ↑</a>', html)
+                self.assertIn('<h3>测试进展</h3>', html)
+
+    def test_only_other_attributions_get_their_own_region(self):
+        report = dict(title='纳米Work PC端 需求汇总', content=(
+            '## 前端 版本更新说明\n状态：已上线\n### 更新内容\n1. 首页优化\n'
+            '## 桌面版 测试日报\n状态：测试中\n### 测试进展\n1. 文档划词'))
+        html = service.render_task_digest_html(report)
+        self.assertIn('id="region-other"', html)
+        self.assertNotIn('id="region-version"', html)
+        self.assertNotIn('id="region-unset"', html)
+        self.assertIn('<h3>前端</h3>', html)
+        self.assertIn('<h3>桌面版</h3>', html)
+        self.assertNotIn('前端 版本更新说明</h3>', html)
 
     def test_archive_path_traversal_is_rejected(self):
         archive=Path(self.temp.name)/'invalid.zip'

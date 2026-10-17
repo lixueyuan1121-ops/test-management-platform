@@ -70,7 +70,7 @@ def install(archive, destination=DEFAULT_DESTINATION, expected_sha256=None, upgr
     adapted = adapted.replace('def main():', 'def _release_main():', 1)
     adapted = adapted.replace(marker, adapter.decode('utf-8') + '\n\n' + marker, 1)
     compile(adapted, SCRIPT, 'exec')
-    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 9,
+    manifest = {'name': 'tuitui-daily-report', 'platform_adapter_version': 10,
                 'skill_sha256': sha256(files['SKILL.md']),
                 'template_sha256': sha256(files['references/template.html']),
                 'platform_style_sha256': sha256(platform_style),
