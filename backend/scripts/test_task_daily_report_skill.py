@@ -199,7 +199,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 10)
+        self.assertEqual(upgraded['platform_adapter_version'], 11)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -373,7 +373,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertIn('<h3>遗留问题 / 主要问题</h3>',html)
         self.assertIn('⚠',html)
         self.assertIn('msix 签名流程',html)
-        self.assertIn('class="notes"',html)
+        self.assertNotIn('class="notes"',html)
         self.assertIn('class="status-pill"',html)
         self.assertIn('class="type-tag"',html)
         import runpy
@@ -405,10 +405,10 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertIn('条目 1 缺少说明',retry)
         self.assertIn('条目 2 的说明只是标题同义复述',retry)
         self.assertIn('条目 3 缺少贴切',retry)
-        self.assertIn(good['conclusion'],report['content'])
+        self.assertNotIn(good['conclusion'],report['content'])
         self.assertNotIn('本期重点：优化打点；',report['content'])
         html=service.render_task_digest_html(report)
-        self.assertIn('<ul class="release-notes"><li>',html)
+        self.assertNotIn('class="notes"',html)
         self.assertIn('安全修复',html)
         self.assertNotIn('class="status-tag"',html)
         with patch('app.services.task_digest_summary.collect',return_value=bad):
@@ -471,7 +471,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertLess(html.index('id="version-overview"'), html.index('id="version-1"'))
         self.assertLess(report['content'].index('3.28.0 测试日报'), report['content'].index('3.27.0 版本更新说明'))
 
-    def test_edited_and_legacy_reports_preserve_notes_without_inventing_state_counts(self):
+    def test_edited_and_legacy_reports_hide_notes_without_mutating_source_or_state_counts(self):
         report=dict(title='手工改名',content='\n'.join([
             '**功能概览**', '人工概览', '## 3.27.0 版本更新说明',
             '状态：测试完成 / 已上线', '条目数：99', '### 更新内容', '1. 原功能甲', '2. 原功能乙',
@@ -479,14 +479,60 @@ class DailyReportSkillTests(unittest.TestCase):
             '## 3.28.0 测试日报', '状态：测试中 / 阻塞', '状态分布：测试中 8 项 / 阻塞 2 项',
             '条目数：10', '### 测试进展', '#### 测试中', '1. 原功能丙',
             '### 日报小结', '- 人工补充：msix 签名流程阻塞。']))
+        original = dict(report)
         html=service.render_task_digest_html(report)
+        self.assertEqual(report, original)
         self.assertIn('本次筛选共 3 项 · 2 个归属组', html)
         self.assertIn('未记录分项数量', html)
         self.assertIn('分项数量待核对', html)
         self.assertNotIn('测试中 8 项', html)
         self.assertNotIn('所选条目：99', html)
-        self.assertIn('人工补充：仍需等待发布通知', html)
-        self.assertIn('人工补充：msix 签名流程阻塞', html)
+        self.assertNotIn('人工补充：仍需等待发布通知', html)
+        self.assertNotIn('人工补充：msix 签名流程阻塞', html)
+
+    def test_single_version_generation_omits_repeated_notes_for_release_and_daily(self):
+        for status in ('ready_online', 'online', 'testing'):
+            with self.subTest(status=status):
+                tasks = [dict(id=1, title='功能甲', status=status, target_version='3.27.0')]
+                summary = dict(overview='本期功能主题。', conclusion='旧模型重复总结内容。',
+                               items=[dict(id=1, headline='功能甲', summary='原有功能说明。')])
+                with patch('app.services.task_digest_summary.collect', return_value=summary) as model:
+                    report = service.generate_task_digest(self.payload(tasks))
+                self.assertEqual(report['content'].count('原有功能说明。'), 1)
+                self.assertIn('状态分布：', report['content'])
+                self.assertNotIn('### 发布说明', report['content'])
+                self.assertNotIn('### 日报小结', report['content'])
+                self.assertNotIn(summary['conclusion'], report['content'])
+                prompt = model.call_args.args[1]
+                candidate = json.loads(prompt.split('输入数据：\n', 1)[1])['review_candidate']
+                self.assertNotIn('conclusion', candidate)
+                self.assertIn('不输出 conclusion', prompt)
+                html = service.render_task_digest_html(report)
+                self.assertEqual(html.count('class="upd"'), 1)
+                self.assertIn('所选条目：1', html)
+                self.assertNotIn('class="notes"', html)
+
+    def test_republication_omits_legacy_notes_but_preserves_followups_and_source(self):
+        for heading in ('### 发布说明', '**日报小结**'):
+            for note in ('- 重复小结正文。', '1. 重复小结正文。'):
+                with self.subTest(heading=heading, note=note):
+                    report = dict(title='人工修改的标题', content='\n'.join([
+                        '## 3.27.0 版本更新说明', '状态：测试完成', '状态分布：测试完成 3 项',
+                        '### 更新内容', '1. **功能甲**', '   原有正文。',
+                        heading, note,
+                        '### 其他需求', '2. 其他需求乙',
+                        '### 遗留问题 / 主要问题', '3. ⚠ msix 签名流程阻塞']))
+                    original = dict(report)
+                    html = service.render_task_digest_html(report)
+                    self.assertEqual(report, original)
+                    self.assertNotIn('重复小结正文', html)
+                    self.assertNotIn('class="notes"', html)
+                    self.assertIn('原有正文。', html)
+                    self.assertIn('其他需求乙', html)
+                    self.assertIn('msix 签名流程阻塞', html)
+                    self.assertIn('测试完成 3 项', html)
+                    self.assertEqual(html.count('class="upd"'), 3)
+                    self.assertEqual(html.count('<h1>'), 1)
 
     def test_multiple_versions_keep_followups_without_repeating_feature_descriptions(self):
         tasks=[dict(id=1,title='功能甲',status='testing',target_version='3.28.0'),
@@ -498,7 +544,9 @@ class DailyReportSkillTests(unittest.TestCase):
             report=service.generate_task_digest(self.payload(tasks))
         self.assertEqual(report['content'].count('明确功能说明。'),1)
         self.assertEqual(report['content'].count('签名问题仍需跟进。'),1)
-        self.assertIn('本组另含 1 项其他需求或问题，详见对应小节',report['content'])
+        self.assertNotIn('本组另含',report['content'])
+        self.assertNotIn('### 发布说明', report['content'])
+        self.assertNotIn('### 日报小结', report['content'])
         self.assertNotIn('版本概览：', report['content'])  # Single-item groups need no duplicate intro.
         self.assertIn('⚠',service.render_task_digest_html(report))
 

@@ -106,10 +106,10 @@ def compose_version_summaries(tasks, summary, provider=None, on_progress=None):
     for index, (version, source) in enumerate(groups.items(), 1):
         items = [by_id[task['id']] for task in source]
         if len(items) == 1:
-            result[version] = {'overview': items[0]['summary'] or items[0].get('headline', ''), 'conclusion': ''}
+            result[version] = {'overview': items[0]['summary'] or items[0].get('headline', '')}
             continue
         if on_progress:
-            on_progress(f'正在组织各版本的主题和发布小结（{index}/{len(groups)}）')
+            on_progress(f'正在组织各版本的主题导语（{index}/{len(groups)}）')
         part = {'tasks': source, 'overview_only': True,
                 'batch_summaries': [{'overview': '', 'items': items}]}
         prepared, _ = _invoke_skill(part, '--summary-prompt-json')
@@ -118,11 +118,11 @@ def compose_version_summaries(tasks, summary, provider=None, on_progress=None):
                 composed = collect(engine, prepared['prompt'])
                 composed['items'] = items
                 validated, _ = _invoke_skill({**part, 'summary': composed}, '--validate-summary-json')
-                result[version] = {key: validated['summary'].get(key, '') for key in ('overview', 'conclusion')}
+                result[version] = {'overview': validated['summary']['overview']}
                 break
             except (HTTPException, ValueError, TypeError, KeyError):
                 if attempt:
-                    raise HTTPException(502, detail='版本小结生成失败，请重试') from None
+                    raise HTTPException(502, detail='版本导语生成失败，请重试') from None
     return result
 
 
