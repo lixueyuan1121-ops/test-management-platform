@@ -8,7 +8,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft
 .report-header::before { right: 60px; bottom: -90px; width: 180px; height: 180px; background: rgba(255,255,255,.06); }
 .report-header > * { position: relative; z-index: 1; }
 .eyebrow { display: inline-block; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.3); font-size: 12px; letter-spacing: 1px; padding: 4px 14px; border-radius: 999px; margin-bottom: 14px; }
-h1 { font-size: 26px; font-weight: 800; letter-spacing: .5px; overflow-wrap: anywhere; }
+h1 { text-wrap: balance; font-size: 26px; font-weight: 800; letter-spacing: .5px; overflow-wrap: anywhere; }
 .sub { font-size: 14px; opacity: .94; margin-top: 8px; overflow-wrap: anywhere; }
 section { background: #fff; border-radius: 16px; padding: 24px 28px; margin-top: 18px; box-shadow: 0 2px 12px rgba(20,20,60,.06); }
 h2 { font-size: 17px; font-weight: 700; color: #1e40af; display: flex; align-items: center; gap: 9px; padding-bottom: 12px; border-bottom: 1px solid #eef1f7; margin-bottom: 16px; overflow-wrap: anywhere; }
@@ -54,3 +54,52 @@ h4 { color: #0f766e; font-size: 14px; border-left: 3px solid #5eead4; padding-le
 
 .release-notes { margin: 8px 0 0; padding-left: 20px; font-size: 14px; color: #4b5563; }
 .release-notes li { padding: 4px 0; }
+
+/* Multi-version reading: a single cover, an index, then compact version bars. */
+.report-scope { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(30,64,175,.13); font-size: 13px; }
+.report-scope strong { font-weight: 600; }
+.report-scope p { margin-top: 3px; color: #475569; }
+.version-overview { padding: 20px 28px; }
+.overview-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.overview-heading h2 { border: 0; margin: 0; padding: 0; }
+.overview-heading p { font-size: 12px; color: #64748b; }
+.version-overview table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 14px; }
+.version-overview th, .version-overview td { padding: 12px 10px; text-align: left; vertical-align: middle; border-bottom: 1px solid #eef1f7; overflow-wrap: anywhere; }
+.version-overview thead th { background: #f8fafc; color: #64748b; font-size: 12px; font-weight: 500; }
+.version-overview th:first-child { width: 35%; }
+.version-overview th:nth-child(2) { width: 16%; }
+.version-overview tbody th { font-weight: 600; }
+.version-overview tbody tr:last-child > * { border-bottom: 0; }
+.version-overview tbody tr:hover { background: #f8fafc; }
+.version-overview a { text-decoration: none; }
+.version-overview a:hover { text-decoration: underline; }
+.overview-kind { display: block; font-size: 12px; color: #64748b; font-weight: 400; margin-top: 2px; }
+.version-head { padding: 18px 28px; background: #f8faff; box-shadow: none; border-bottom: 1px solid #e8edf7; border-left: 4px solid #818cf8; }
+.mode-daily > .version-head { background: #f2fbfa; border-bottom-color: #e2f1ef; border-left-color: #2a9d8f; }
+.version-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.version-head h2 { font-size: 19px; }
+.back-overview { font-size: 12px; white-space: nowrap; color: #64748b; text-decoration: none; }
+.back-overview:hover { text-decoration: underline; }
+.version-head .status-bar { margin-top: 9px; gap: 6px 16px; }
+.version-head .status-pill { border: 0; background: none; border-radius: 0; padding: 0; font-size: 12px; color: #475569; }
+.version-head .sub { margin-top: 8px; color: #475569; font-size: 13px; }
+.version-block, .version-overview { scroll-margin-top: 20px; }
+a:focus-visible { outline: 2px solid #2563eb; outline-offset: 4px; border-radius: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+@media (max-width: 640px) {
+  .version-overview { padding: 18px 14px; }
+  .overview-heading { display: block; }
+  .overview-heading p { margin-top: 4px; }
+  .version-overview th, .version-overview td { padding: 10px 5px; font-size: 13px; }
+  .version-overview th:first-child { width: 34%; }
+  .version-overview th:nth-child(2) { width: 19%; }
+  .version-head { padding: 16px 18px; }
+  .version-head h2 { font-size: 17px; }
+  .version-heading { gap: 10px; }
+}
+@media print {
+  body { padding: 0; background: #fff; }
+  .report-header, section, .version-block { box-shadow: none; }
+  .back-overview { display: none; }
+  .upd { break-inside: avoid; }
+}

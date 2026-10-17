@@ -5,7 +5,7 @@ _release_generate_report/_release_main. This extension prepares summary prompts 
 it never fetches or sends messages.
 """
 
-PLATFORM_ADAPTER_VERSION = 8
+PLATFORM_ADAPTER_VERSION = 9
 
 
 def _summary_input(summary):
@@ -193,9 +193,11 @@ def generate_report(date_str=None, version=None, web_items=None, upgrade_items=N
         prose = group_summaries.get(group['version'], summary if len(groups) == 1 else {})
         lines.extend(['', '## ' + group['heading']])
         states = list(dict.fromkeys(status_labels.get(task.get('status'), '状态未记录') for task in group['tasks']))
-        if len(groups) > 1 and prose.get('overview'):
+        if len(groups) > 1 and len(group['tasks']) > 1 and prose.get('overview'):
             lines.append('版本概览：' + clean(prose['overview']))
         lines.append('状态：' + ' / '.join(states))
+        counts = {state: sum(status_labels.get(task.get('status'), '状态未记录') == state for task in group['tasks']) for state in states}
+        lines.append('状态分布：' + ' / '.join(f'{state} {count} 项' for state, count in counts.items()))
         platforms = list(dict.fromkeys(value for task in group['tasks'] for value in by_id[task['id']].get('platforms', [])))
         if platforms:
             lines.append('涉及平台：' + ' / '.join(clean(value) for value in platforms))
@@ -223,26 +225,24 @@ def generate_report(date_str=None, version=None, web_items=None, upgrade_items=N
                 if item.get('headline') and item['summary'].strip():
                     lines.append('   ' + clean(item['summary']))
                 lines.extend('   - ' + clean(bullet) for bullet in item.get('bullets', []))
-        lines.extend(['', '### ' + ('发布说明' if group['release'] else '日报小结')])
-        if group['release']:
-            if states == ['测试完成']:
-                status_note = f"{group['version']} 本次更新已测试完成。"
-            elif states == ['已上线']:
-                status_note = f"{group['version']} 本次更新已上线。"
-            else:
-                complete = sum(task.get('status') == 'ready_online' for task in group['tasks'])
-                online = len(group['tasks']) - complete
-                status_note = f"{group['version']} 本次更新中，{complete} 项测试完成，{online} 项已上线。"
-        else:
-            status_note = '本组任务当前状态为' + '、'.join(states) + '，按状态展示测试进展。'
-        lines.append('- ' + status_note)
-        conclusion = prose.get('conclusion') or prose.get('overview')
-        if conclusion:
-            lines.append('- ' + clean(conclusion))
-        followups = [clean(by_id[task['id']]['summary'] or by_id[task['id']].get('headline', '')) for task in group['tasks']
+        followups = [by_id[task['id']] for task in group['tasks']
                      if by_id[task['id']].get('section') in ('other', 'issues')]
+        # Multiple versions already expose states and themes above. Do not repeat
+        # every feature in another paragraph or duplicate a one-item description.
+        if len(groups) > 1:
+            if followups:
+                lines.extend(['', '### ' + ('发布说明' if group['release'] else '日报小结'),
+                              f'- 本组另含 {len(followups)} 项其他需求或问题，详见对应小节。'])
+            continue
+        lines.extend(['', '### ' + ('发布说明' if group['release'] else '日报小结')])
+        lines.append('- 本次所选条目中，' + '，'.join(f'{count} 项{state}' for state, count in counts.items()) + '。')
+        conclusion = clean(prose.get('conclusion') or '')
+        repeated = {clean(summary['overview'])}
+        repeated.update(clean(by_id[task['id']]['summary']) for task in group['tasks'])
+        if conclusion and conclusion not in repeated:
+            lines.append('- ' + conclusion)
         if followups:
-            lines.append('- 其他需求与问题：' + '；'.join(followups[:3]))
+            lines.append(f'- 本组另含 {len(followups)} 项其他需求或问题，详见对应小节。')
     return '\n'.join(lines)
 
 
@@ -275,7 +275,7 @@ def render_platform_html(report):
     for line_no, line in enumerate(report['content'].splitlines()):
         version = re.fullmatch(r'## (.+) (版本更新说明|测试日报)', line)
         if version:
-            block = {'heading': version.group(1) + ' ' + version.group(2),
+            block = {'heading': version.group(1) + ' ' + version.group(2), 'version': version.group(1),
                      'mode': 'release' if version.group(2) == '版本更新说明' else 'daily', 'groups': []}
             blocks.append(block)
             current = {'heading': '', 'items': [], 'paragraphs': []}
@@ -337,13 +337,56 @@ def render_platform_html(report):
         return ''.join('<p class="sub">' + inline(line.removeprefix('版本概览：')) + '</p>'
             for group in block['groups'] if not group['heading'] for line in group['paragraphs'] if line.startswith('版本概览：'))
 
+    def block_facts(block):
+        metadata = {line.split('：', 1)[0]: line.split('：', 1)[1] for group in block['groups']
+                    if not group['heading'] for line in group['paragraphs'] if '：' in line}
+        count = sum(len(group['items']) for group in block['groups'] if group['heading'] not in ('发布说明', '日报小结'))
+        distribution = metadata.get('状态分布', '')
+        parts = distribution.split(' / ') if distribution else []
+        parsed = [re.fullmatch(r'(.+?) (\d+) 项', part) for part in parts]
+        # Edited/legacy prose may not contain reliable per-state counts. Keep it
+        # readable without making up numbers or trusting stale generated totals.
+        valid = (parsed and all(parsed) and len({part[1] for part in parsed}) == len(parsed)
+                 and all(int(part[2]) > 0 for part in parsed) and sum(int(part[2]) for part in parsed) == count)
+        states = distribution if valid else metadata.get('状态', '状态未记录')
+        if distribution and not valid:
+            states += '（分项数量待核对）'
+        elif not distribution and ' / ' in states:
+            states += '（未记录分项数量）'
+        return {'count': count, 'states': states, 'platforms': metadata.get('涉及平台', '')}
+
     def header_facts(block):
-        facts = [line for group in block['groups'] if not group['heading'] for line in group['paragraphs']
-                 if line.startswith(('状态：', '涉及平台：', '条目数：'))]
-        return '<div class="status-bar">' + ''.join('<span class="status-pill">' + inline(line) + '</span>' for line in facts) + '</div>' if facts else ''
+        facts = block['facts']
+        values = ['状态：' + facts['states'], f"所选条目：{facts['count']}"]
+        if facts['platforms']:
+            values.append('涉及平台：' + facts['platforms'])
+        return '<div class="status-bar">' + ''.join('<span class="status-pill">' + inline(value) + '</span>' for value in values) + '</div>'
+
+    def version_overview(versions):
+        if len(versions) <= 1:
+            return ''
+        rows = []
+        for block in versions:
+            facts = block['facts']
+            kind = '版本更新说明' if block['mode'] == 'release' else '测试日报'
+            rows.append('<tr><th scope="row"><a href="#' + block['anchor'] + '">' + escape(block['version']) +
+                        '</a><span class="overview-kind">' + kind + '</span></th><td>' + str(facts['count']) +
+                        '</td><td>' + escape(facts['states']) + '</td></tr>')
+        return ('<section class="version-overview" id="version-overview" aria-labelledby="overview-title">'
+                '<div class="overview-heading"><h2 id="overview-title">版本总览</h2><p>点击归属版本，直达详情</p></div>'
+                '<table><caption class="sr-only">本次筛选的归属版本、条目数及状态分布</caption>'
+                '<thead><tr><th scope="col">归属版本</th><th scope="col">所选条目</th><th scope="col">状态分布</th></tr></thead>'
+                '<tbody>' + ''.join(rows) + '</tbody></table></section>')
 
     overview, sections = [], []
     versions = [block for block in blocks if block['mode']]
+    for index, block in enumerate(versions, 1):
+        block['anchor'], block['facts'] = f'version-{index}', block_facts(block)
+    scope = ''
+    if versions:
+        total = sum(block['facts']['count'] for block in versions)
+        scope = (f'<div class="report-scope"><strong>本次筛选共 {total} 项 · {len(versions)} 个归属组</strong>'
+                 '<p>以下状态仅对应所选条目，不代表整个版本的测试或发布结论。</p></div>')
     # A custom title must not turn a single-version report into two page headers.
     single = versions[0] if len(versions) == 1 else None
     for block in blocks:
@@ -354,11 +397,11 @@ def render_platform_html(report):
                 else:
                     sections.append(render_group(group))
             continue
-        label = 'RELEASE NOTES' if block['mode'] == 'release' else 'TEST DAILY'
-        heading = '' if block is single else ('<header class="version-head"><span class="eyebrow">' + label +
-            '</span><h2>' + escape(block['heading']) + '</h2>' + header_intro(block) + header_facts(block) + '</header>')
-        sections.append('<article class="version-block mode-' + block['mode'] + '" data-report-type="' + block['mode'] + '">' +
-            heading + '<div class="version-content">' + ''.join(render_group({**group, 'paragraphs': [line for line in group['paragraphs'] if group['heading'] or not line.startswith(('版本概览：', '状态：', '涉及平台：', '条目数：'))]}, True) for group in block['groups']) + '</div></article>')
+        heading = '' if block is single else ('<header class="version-head"><div class="version-heading"><h2>' +
+            escape(block['heading']) + '</h2><a class="back-overview" href="#version-overview">返回总览 ↑</a></div>' +
+            header_facts(block) + header_intro(block) + '</header>')
+        sections.append('<article id="' + block['anchor'] + '" class="version-block mode-' + block['mode'] + '" data-report-type="' + block['mode'] + '">' +
+            heading + '<div class="version-content">' + ''.join(render_group({**group, 'paragraphs': [line for line in group['paragraphs'] if group['heading'] or not line.startswith(('版本概览：', '状态：', '状态分布：', '涉及平台：', '条目数：'))]}, True) for group in block['groups']) + '</div></article>')
     label = ('RELEASE NOTES' if single['mode'] == 'release' else 'TEST DAILY') if single else 'VERSION REPORT' if versions else 'FEATURE NOTES'
     mode = ' mode-daily' if single and single['mode'] == 'daily' else ''
     return ('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
@@ -366,7 +409,7 @@ def render_platform_html(report):
             '<meta name="robots" content="noindex,nofollow"><title>' + escape(report['title']) + '</title><style>' +
             style + '</style></head><body><div class="wrap">'
             '<header class="report-header' + mode + '"><span class="eyebrow">' + label + '</span><h1>' + escape(report['title']) + '</h1>' +
-            ''.join('<p class="sub">' + inline(line) + '</p>' for line in overview) + (header_facts(single) if single else '') + '</header>' +
+            ''.join('<p class="sub">' + inline(line) + '</p>' for line in overview) + (header_facts(single) if single else '') + scope + '</header>' + version_overview(versions) +
             ''.join(sections) + '<footer>' + escape(report['title']) + '</footer></div></body></html>')
 
 

@@ -199,7 +199,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 8)
+        self.assertEqual(upgraded['platform_adapter_version'], 9)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -281,7 +281,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertEqual(html.count('data-report-type="release"'),1)
         self.assertEqual(html.count('data-report-type="daily"'),2)
         self.assertNotIn('class="status-tag"',html)
-        self.assertIn('状态：测试完成 / 已上线', html)
+        self.assertIn('测试完成 1 项 / 已上线 1 项', html)
         self.assertIn('<h4>测试中</h4>',html)
         for task in tasks: self.assertIn(task['title'],html)
         self.assertEqual(html.count('class="upd"'),len(tasks))
@@ -334,7 +334,7 @@ class DailyReportSkillTests(unittest.TestCase):
                     self.assertIn(f'<footer>{escape(title)}</footer>', html)
                     self.assertIn(label, html)
                     self.assertIn('class="status-pill"', html)
-                    self.assertIn('条目数：1', html)
+                    self.assertIn('所选条目：1', html)
                     self.assertIn('功能甲', html)
                     self.assertNotIn('class="version-head"', html)
 
@@ -434,6 +434,73 @@ class DailyReportSkillTests(unittest.TestCase):
             self.assertEqual(ids,{i['id'] for i in part['batch_summaries'][0]['items']})
         self.assertIn('版本概览：',report['content'])
         self.assertIn('私密版本甲',report['content'])
+
+    def test_multiversion_overview_has_exact_selected_counts_and_safe_navigation(self):
+        from html.parser import HTMLParser
+        tasks = [dict(id=1, title='完成项', target_version='3.27.0', status='ready_online'),
+                 dict(id=2, title='上线项', target_version='3.27.0', status='online'),
+                 dict(id=3, title='测试项', target_version='3.28.0', status='testing'),
+                 dict(id=4, title='阻塞项', target_version='3.28.0', status='blocked'),
+                 dict(id=5, title='未规划项', target_version=None, status='pending'),
+                 dict(id=6, title='安全标题项', target_version='<script>alert(1)</script>', status=None)]
+        report = service.generate_task_digest(dict(self.payload(tasks), product_name='纳米Work PC端'))
+        html = service.render_task_digest_html(report)
+        self.assertIn('本次筛选共 6 项 · 4 个归属组', html)
+        self.assertIn('不代表整个版本的测试或发布结论', html)
+        self.assertIn('测试完成 1 项 / 已上线 1 项', html)
+        self.assertIn('测试中 1 项 / 阻塞 1 项', html)
+        self.assertIn('状态未记录 1 项', html)
+        self.assertNotIn('<script>', html)
+        self.assertIn('&lt;script&gt;', html)
+        self.assertEqual(html.count('class="upd"'), 6)
+        self.assertNotIn('### 发布说明', report['content'])
+        self.assertNotIn('### 日报小结', report['content'])
+        self.assertNotIn('本次更新已上线', report['content'])
+        self.assertNotIn('class="status-tag"', html)
+        class Links(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.ids=[]; self.links=[]
+            def handle_starttag(self, tag, attrs):
+                attrs=dict(attrs)
+                if 'id' in attrs: self.ids.append(attrs['id'])
+                if tag=='a' and attrs.get('href','').startswith('#'): self.links.append(attrs['href'][1:])
+        parsed=Links(); parsed.feed(html)
+        self.assertEqual(len(parsed.ids), len(set(parsed.ids)))
+        self.assertEqual(len(parsed.links), 8)  # One entry and return link per version.
+        self.assertTrue(all(link in parsed.ids for link in parsed.links))
+        self.assertLess(html.index('id="version-overview"'), html.index('id="version-1"'))
+        self.assertLess(report['content'].index('3.28.0 测试日报'), report['content'].index('3.27.0 版本更新说明'))
+
+    def test_edited_and_legacy_reports_preserve_notes_without_inventing_state_counts(self):
+        report=dict(title='手工改名',content='\n'.join([
+            '**功能概览**', '人工概览', '## 3.27.0 版本更新说明',
+            '状态：测试完成 / 已上线', '条目数：99', '### 更新内容', '1. 原功能甲', '2. 原功能乙',
+            '### 发布说明', '- 人工补充：仍需等待发布通知。',
+            '## 3.28.0 测试日报', '状态：测试中 / 阻塞', '状态分布：测试中 8 项 / 阻塞 2 项',
+            '条目数：10', '### 测试进展', '#### 测试中', '1. 原功能丙',
+            '### 日报小结', '- 人工补充：msix 签名流程阻塞。']))
+        html=service.render_task_digest_html(report)
+        self.assertIn('本次筛选共 3 项 · 2 个归属组', html)
+        self.assertIn('未记录分项数量', html)
+        self.assertIn('分项数量待核对', html)
+        self.assertNotIn('测试中 8 项', html)
+        self.assertNotIn('所选条目：99', html)
+        self.assertIn('人工补充：仍需等待发布通知', html)
+        self.assertIn('人工补充：msix 签名流程阻塞', html)
+
+    def test_multiple_versions_keep_followups_without_repeating_feature_descriptions(self):
+        tasks=[dict(id=1,title='功能甲',status='testing',target_version='3.28.0'),
+               dict(id=2,title='主要问题：msix签名流程阻塞',status='blocked',target_version='3.27.0')]
+        summary=dict(overview='本次包括功能调整与签名问题。',items=[
+            dict(id=1,headline='功能甲',summary='明确功能说明。',section='updates'),
+            dict(id=2,headline='msix 签名流程阻塞',summary='签名问题仍需跟进。',section='issues')])
+        with patch('app.services.task_digest_summary.collect',return_value=summary):
+            report=service.generate_task_digest(self.payload(tasks))
+        self.assertEqual(report['content'].count('明确功能说明。'),1)
+        self.assertEqual(report['content'].count('签名问题仍需跟进。'),1)
+        self.assertIn('本组另含 1 项其他需求或问题，详见对应小节',report['content'])
+        self.assertNotIn('版本概览：', report['content'])  # Single-item groups need no duplicate intro.
+        self.assertIn('⚠',service.render_task_digest_html(report))
 
     def test_archive_path_traversal_is_rejected(self):
         archive=Path(self.temp.name)/'invalid.zip'
