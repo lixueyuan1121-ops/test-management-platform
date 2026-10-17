@@ -57,9 +57,6 @@ h4 { color: #0f766e; font-size: 14px; border-left: 3px solid #5eead4; padding-le
 .release-notes li { padding: 4px 0; }
 
 /* Multi-version reading: a single cover, an index, then compact version bars. */
-.report-scope { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(30,64,175,.13); font-size: 13px; }
-.report-scope strong { font-weight: 600; }
-.report-scope p { margin-top: 3px; color: #475569; }
 .version-overview { padding: 20px 28px; }
 .overview-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }
 .overview-heading h2 { border: 0; margin: 0; padding: 0; }

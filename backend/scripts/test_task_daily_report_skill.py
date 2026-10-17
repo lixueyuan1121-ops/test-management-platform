@@ -199,7 +199,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 11)
+        self.assertEqual(upgraded['platform_adapter_version'], 12)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -334,7 +334,7 @@ class DailyReportSkillTests(unittest.TestCase):
                     self.assertIn(f'<footer>{escape(title)}</footer>', html)
                     self.assertIn(label, html)
                     self.assertIn('class="status-pill"', html)
-                    self.assertIn('所选条目：1', html)
+                    self.assertIn('条目数：1', html)
                     self.assertIn('功能甲', html)
                     self.assertNotIn('class="version-head"', html)
 
@@ -445,8 +445,11 @@ class DailyReportSkillTests(unittest.TestCase):
                  dict(id=6, title='安全标题项', target_version='<script>alert(1)</script>', status=None)]
         report = service.generate_task_digest(dict(self.payload(tasks), product_name='纳米Work PC端'))
         html = service.render_task_digest_html(report)
-        self.assertIn('本次筛选共 6 项 · 4 个归属组', html)
-        self.assertIn('不代表整个版本的测试或发布结论', html)
+        self.assertNotIn('筛选', html)
+        self.assertNotIn('所选', html)
+        self.assertNotIn('归属组', html)
+        self.assertNotIn('点击名称，直达详情', html)
+        self.assertNotIn('不代表整个版本的测试或发布结论', html)
         self.assertIn('测试完成 1 项 / 已上线 1 项', html)
         self.assertIn('测试中 1 项 / 阻塞 1 项', html)
         self.assertIn('状态未记录 1 项', html)
@@ -482,11 +485,14 @@ class DailyReportSkillTests(unittest.TestCase):
         original = dict(report)
         html=service.render_task_digest_html(report)
         self.assertEqual(report, original)
-        self.assertIn('本次筛选共 3 项 · 2 个归属组', html)
-        self.assertIn('未记录分项数量', html)
-        self.assertIn('分项数量待核对', html)
+        self.assertEqual(html.count('class="upd"'), 3)
+        self.assertNotIn('report-scope', html)
+        self.assertNotIn('未记录分项数量', html)
+        self.assertIn('状态：测试完成 / 已上线', html)
+        self.assertNotIn('分项数量待核对', html)
+        self.assertIn('状态：测试中 / 阻塞', html)
         self.assertNotIn('测试中 8 项', html)
-        self.assertNotIn('所选条目：99', html)
+        self.assertNotIn('条目数：99', html)
         self.assertNotIn('人工补充：仍需等待发布通知', html)
         self.assertNotIn('人工补充：msix 签名流程阻塞', html)
 
@@ -509,7 +515,7 @@ class DailyReportSkillTests(unittest.TestCase):
                 self.assertIn('不输出 conclusion', prompt)
                 html = service.render_task_digest_html(report)
                 self.assertEqual(html.count('class="upd"'), 1)
-                self.assertIn('所选条目：1', html)
+                self.assertIn('条目数：1', html)
                 self.assertNotIn('class="notes"', html)
 
     def test_republication_omits_legacy_notes_but_preserves_followups_and_source(self):
@@ -533,6 +539,27 @@ class DailyReportSkillTests(unittest.TestCase):
                     self.assertIn('测试完成 3 项', html)
                     self.assertEqual(html.count('class="upd"'), 3)
                     self.assertEqual(html.count('<h1>'), 1)
+
+    def test_external_report_hides_internal_scope_in_single_and_multiple_versions(self):
+        for labels in (['3.27.0'], ['3.28.0', '3.27.0', '前端', '未填写规划版本']):
+            with self.subTest(labels=labels):
+                report = dict(title='纳米Work PC端 ' + (labels[0] + ' 测试日报' if len(labels) == 1 else '版本报告'), content='\n'.join(
+                    f'## {label} 测试日报\n状态：测试中\n状态分布：测试中 1 项\n'
+                    f'条目数：1\n### 测试进展\n#### 测试中\n{i}. 功能{i}\n   功能说明{i}。'
+                    for i, label in enumerate(labels, 1)))
+                original = dict(report)
+                html = service.render_task_digest_html(report)
+                self.assertEqual(report, original)
+                self.assertEqual(html.count('class="upd"'), len(labels))
+                self.assertEqual(html.count('<h1>'), 1)
+                self.assertIn('条目数：1', html)
+                self.assertIn('状态：测试中 1 项', html)
+                for text in ('筛选', '所选', '归属组', 'report-scope', '不代表整个版本',
+                             '点击名称，直达详情', '未记录分项数量', '分项数量待核对'):
+                    self.assertNotIn(text, html)
+                for i, label in enumerate(labels, 1):
+                    self.assertIn(label, html)
+                    self.assertIn(f'功能说明{i}。', html)
 
     def test_multiple_versions_keep_followups_without_repeating_feature_descriptions(self):
         tasks=[dict(id=1,title='功能甲',status='testing',target_version='3.28.0'),
@@ -596,7 +623,7 @@ class DailyReportSkillTests(unittest.TestCase):
                 report = dict(title='人工标题', content=f'## {label} 测试日报\n状态：测试中\n### 测试进展\n1. 功能甲')
                 html = service.render_task_digest_html(report)
                 self.assertIn(f'id="region-{region}"', html)
-                self.assertIn('原归属：' + label, html)
+                self.assertIn('归属：' + label, html)
                 self.assertEqual(html.count('<header '), 1)
                 self.assertNotIn('class="version-head"', html)
                 self.assertNotIn('返回总览 ↑</a>', html)
