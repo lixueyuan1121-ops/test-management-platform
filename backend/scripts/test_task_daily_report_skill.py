@@ -188,7 +188,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertIn('href="https://example.test/?a=1&amp;b=2"', html)
         self.assertIn('</a>（第 3 行）', html)
         self.assertIn('data-report-type="daily"',html)
-        self.assertIn('linear-gradient(135deg',html)
+        self.assertNotIn('linear-gradient',html)
         self.assertIn('class="no"',html)
         self.assertNotIn('class="stats"',html)
         self.assertNotIn('2026-10-16',html)
@@ -199,7 +199,7 @@ class DailyReportSkillTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(old))
         with self.assertRaises(ValueError): install(self.archive, self.skill)
         upgraded = install(self.archive, self.skill, upgrade=True)
-        self.assertEqual(upgraded['platform_adapter_version'], 12)
+        self.assertEqual(upgraded['platform_adapter_version'], 13)
         backups = list(self.skill.parent.glob('installed.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((backups[0]/'platform-install.json').read_text()), old)
@@ -243,7 +243,7 @@ class DailyReportSkillTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code,503)
         with self.assertRaises(ValueError): install(self.archive,self.skill)
         install(self.archive,self.skill,upgrade=True)
-        self.assertIn('linear-gradient',service.render_task_digest_html(dict(title='标题',content='正文')))
+        self.assertIn((self.skill/'references/platform.css').read_text(),service.render_task_digest_html(dict(title='标题',content='正文')))
 
     def test_legacy_saved_report_content_remains_renderable(self):
         report=dict(title='历史测试日报',report_date='2026-10-15',content='**测试中（1 项）**\n1. 老任务（测试：甲；版本：3.26.0）')

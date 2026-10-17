@@ -23,7 +23,7 @@ def _invoke_skill(payload, mode):
     try:
         manifest = json.loads((skill_dir / 'platform-install.json').read_text())
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
-        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 12
+        if (manifest['script_sha256'] != digest or manifest['platform_adapter_version'] != 13
                 or manifest.get('skill_sha256') != hashlib.sha256((skill_dir / 'SKILL.md').read_bytes()).hexdigest()
                 or manifest.get('template_sha256') != hashlib.sha256((skill_dir / 'references/template.html').read_bytes()).hexdigest()
                 or manifest.get('platform_style_sha256') != hashlib.sha256((skill_dir / 'references/platform.css').read_bytes()).hexdigest()):

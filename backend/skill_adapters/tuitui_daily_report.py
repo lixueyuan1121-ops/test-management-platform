@@ -5,7 +5,7 @@ _release_generate_report/_release_main. This extension prepares summary prompts 
 it never fetches or sends messages.
 """
 
-PLATFORM_ADAPTER_VERSION = 12
+PLATFORM_ADAPTER_VERSION = 13
 
 
 def _summary_input(summary):
