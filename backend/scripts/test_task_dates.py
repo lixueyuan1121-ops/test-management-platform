@@ -86,6 +86,34 @@ class TaskDatesTests(unittest.TestCase):
         new = self.check([('dates', '2026-10-11')], {1, 4, 6})
         self.assertEqual(old, new)
 
+    def test_unfinished_tasks_keep_carrying_until_online_or_closed(self):
+        # No copy or assigned-date update is needed, including after testing completes.
+        for status in TaskStatus:
+            if status in (TaskStatus.online, TaskStatus.closed):
+                continue
+            with self.subTest(status=status):
+                with self.factory() as db:
+                    db.get(Task, 1).status = status
+                    db.commit()
+                for day in ('2026-10-12', '2026-10-13'):
+                    rows = self.check([('date', day)], {1, 4, 5})
+                    self.assertTrue(rows[1]['is_carried'])
+                    self.assertEqual(rows[1]['assigned_date'], '2026-10-06')
+                    self.assertEqual(rows[1]['status'], status.value)
+
+        for status, field in ((TaskStatus.online, 'online_at'), (TaskStatus.closed, 'closed_at')):
+            with self.subTest(status=status):
+                with self.factory() as db:
+                    task = db.get(Task, 1)
+                    task.status = status
+                    task.online_at = task.closed_at = None
+                    setattr(task, field, datetime(2026, 10, 12, 12))
+                    db.commit()
+                rows = self.check([('date', '2026-10-12')], {1, 4, 5})
+                self.assertTrue(rows[1]['is_carried'])
+                self.assertEqual(rows[1]['assigned_date'], '2026-10-06')
+                self.check([('date', '2026-10-13')], {4, 5})
+
     def test_invalid_dates_rejected_by_both_endpoints(self):
         for path in ('/api/tasks', '/api/tasks/checklist-summary'):
             for invalid in ('invalid', '2026-02-30'):

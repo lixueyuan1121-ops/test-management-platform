@@ -25,6 +25,14 @@ export const localDate = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
+// A one-day selection is the daily follow-up view, including unfinished carryovers.
+// Wider ranges deliberately filter by assignment date.
+export function taskDateQuery(range) {
+  if (!Array.isArray(range) || range.length !== 2 || !range[0] || !range[1]) return {}
+  return range[0] === range[1]
+    ? { date: range[0] }
+    : { start_date: range[0], end_date: range[1] }
+}
 export const taskOwners = row => row.assigned_to_name || '—'
 export const hasRisk = row => ['red', 'yellow'].includes(row.risk_level) || ['blocked', 'at_risk'].includes(row.status) || row.affects_release === true
 export function filterLedger(tasks, filters) {

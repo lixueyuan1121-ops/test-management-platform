@@ -34,7 +34,7 @@
             <el-button v-if="auth.isPlatformAdmin" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
           </div>
         </div>
-        <p class="cl-hint">{{ dateRange?.length === 2 ? '按分配日期范围筛选（含起止日期）；清空日期可查看全部台账。' : '当前展示全部日期的任务台账。' }} 空白风险与发版影响表示未评估。</p>
+        <p class="cl-hint">{{ singleDate ? '单日跟踪包含当日任务、历史尚未上线/关闭的任务，以及当日上线或关闭的任务；历史任务标注顺延日期。' : dateRange?.length === 2 ? '按分配日期范围筛选（含起止日期）；清空日期可查看全部台账。' : '当前展示全部日期的任务台账。' }} 空白风险与发版影响表示未评估。</p>
       </template>
       <el-result v-if="loadError" icon="error" title="任务加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
       <el-table v-else ref="taskTable" :data="filteredTasks" v-loading="loading" size="small" empty-text="没有符合条件的任务" row-key="id" @expand-change="onExpandChange" @selection-change="selection = $event">
@@ -249,7 +249,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import TaskLedgerFields from '@/components/TaskLedgerFields.vue'
 import TaskDigestDialog from '@/components/TaskDigestDialog.vue'
 import TaskReleaseDialog from '@/components/TaskReleaseDialog.vue'
-import { TASK_STATUS, RISK_META, LEDGER_DEFAULTS, localDate, taskOwners, hasRisk, filterLedger } from '@/utils/taskLedger'
+import { TASK_STATUS, RISK_META, LEDGER_DEFAULTS, localDate, taskOwners, hasRisk, filterLedger, taskDateQuery } from '@/utils/taskLedger'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -314,7 +314,7 @@ const digestContext = ref(null), releaseVisible = ref(false), releaseRows = ref(
 watch(filters, () => { selection.value = []; taskTable.value?.clearSelection() })
 function resetFilters() { Object.assign(filters, initialFilters()) }
 function openDigest(history = false) {
-  const parts = [dateRange.value?.length === 2 ? `分配日期 ${dateRange.value[0]} 至 ${dateRange.value[1]}（含首尾）` : '全部日期']
+  const parts = [singleDate.value ? `单日跟踪 ${singleDate.value}（含历史顺延及当日上线/关闭任务）` : dateRange.value?.length === 2 ? `分配日期 ${dateRange.value[0]} 至 ${dateRange.value[1]}（含首尾）` : '全部日期']
   if (filters.keyword) parts.push(`关键词：${filters.keyword}`)
   if (filters.status.length) parts.push(`状态：${filters.status.map(status => STATUS_META[status].label).join('、')}`)
   if (filters.owner.length) parts.push(`负责人：${filters.owner.map(id => members.value.find(m => m.user_id === id)?.name || `#${id}`).join('、')}`)
@@ -343,7 +343,7 @@ onMounted(async () => {
 let loadVersion = 0
 async function load() {
   const seq = ++loadVersion, projectId = pid.value
-  const filterDates = dateRange.value?.length === 2 ? { start_date: dateRange.value[0], end_date: dateRange.value[1] } : {}
+  const filterDates = taskDateQuery(dateRange.value)
   tasks.value = []; selection.value = []; members.value = []; loadError.value = false
   if (!projectId) return
   setLastProjectId(projectId)

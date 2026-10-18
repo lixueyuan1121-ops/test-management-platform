@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { filterLedger, TASK_STATUS, hasRisk } from '../src/utils/taskLedger.js'
+import { filterLedger, TASK_STATUS, hasRisk, taskDateQuery } from '../src/utils/taskLedger.js'
 const defaults = { keyword:'', status:[], owner:[], priority:[], version:[], risk:'', impact:'', riskOnly:false }
 const rows = [
   {id:1,title:'文档划词',status:'testing',priority:'p1',assigned_to:2,assigned_to_ids:[2,4],assigned_to_name:'平台姓名',target_version:'3.27.0',risk_level:'red',affects_release:true},
@@ -26,3 +26,12 @@ assert.deepEqual(filterLedger(rows,{...defaults,status:['testing','online'],owne
 assert.deepEqual(filterLedger(rows,{...defaults,owner:[2,4]}).map(t=>t.id),[1,3])
 assert.equal(filterLedger([{id:4,assigned_to:null,assigned_to_ids:[]}],{...defaults,owner:[2,3]}).length,0)
 console.log('PASS task ledger multi-select OR/AND filters, legacy null values and Feishu statuses')
+
+// The default today-to-today picker must use the carryover-aware daily API.
+assert.deepEqual(taskDateQuery(['2026-10-18', '2026-10-18']), {date:'2026-10-18'})
+assert.deepEqual(taskDateQuery(['2026-10-11', '2026-10-11']), {date:'2026-10-11'})
+assert.deepEqual(taskDateQuery(['2026-10-09', '2026-10-18']), {start_date:'2026-10-09',end_date:'2026-10-18'})
+for (const range of [null, undefined, [], ['2026-10-18'], ['', '']]) {
+  assert.deepEqual(taskDateQuery(range), {})
+}
+console.log('PASS daily carryover query, explicit assignment range and cleared date selection')
