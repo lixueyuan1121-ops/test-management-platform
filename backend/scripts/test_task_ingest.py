@@ -46,6 +46,7 @@ class IngestTests(unittest.TestCase):
         self.patches = [patch.object(task_assignment, 'SessionLocal', self.sessions),
                         patch.object(task_assignment, 'send_tuitui_message', return_value=True),
                         patch.object(settings, 'TUITUI_TASK_ASSIGN_GROUP', '7652944526714832'),
+                        patch.object(settings, 'TUITUI_ACCOUNT_MAP', {'u2': 'domain2', 'u3': 'domain3', 'u6': 'domain6'}),
                         patch.object(settings, 'PLATFORM_BASE_URL', 'https://platform.example'),
                         patch.object(notify, '_tuitui_send')]
         for p in self.patches:
@@ -98,6 +99,7 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(self.sender.call_count, 1)
         content, group = self.sender.call_args.args
         self.assertEqual(group, '7652944526714832')
+        self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain3'])
         for fragment in ['【测试任务派单】', '用户3', '张三', self.payload['title'], self.payload['description'],
                          f'https://platform.example/tasks?project_id=1&task_id={tid}']:
             self.assertIn(fragment, content)
@@ -142,6 +144,7 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(response.json()['data']['assigned_to_ids'], [3, 6])
         self.assertEqual(self.sender.call_count, 1)
         self.assertIn('测试负责人：用户3、用户6', self.sender.call_args.args[0])
+        self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain3', 'domain6'])
         for body in [{'assigned_to_ids': [3, 6]}, {'assigned_to_ids': [6, 3]}, {'assigned_to': 6, 'title': '旧表单更新'}]:
             self.assertEqual(self.update(tid, body).status_code, 200)
         self.assertEqual(self.sender.call_count, 1)
@@ -167,8 +170,44 @@ class IngestTests(unittest.TestCase):
         task_assignment.dispatch_assignment_notices()
         task_assignment.dispatch_assignment_notices()
         self.assertEqual(self.sender.call_count, 2)
+        self.assertTrue(all(call.kwargs['at_accounts'] == ['domain3'] for call in self.sender.call_args_list))
         with self.sessions() as db:
             self.assertIsNotNone(db.query(TaskAssignmentNotice).one().sent_at)
+
+    def test_missing_owner_mapping_waits_then_retries_with_all_mentions(self):
+        tid = self.ingest()['task']['id']
+        with patch.object(settings, 'TUITUI_ACCOUNT_MAP', {'u3': 'domain3'}):
+            self.assertEqual(self.update(tid, {'assigned_to_ids': [3, 6]}).status_code, 200)
+        self.sender.assert_not_called()
+        with self.sessions() as db:
+            notice = db.query(TaskAssignmentNotice).one()
+            self.assertIsNone(notice.sent_at)
+            self.assertIn('#6', notice.last_error)
+            notice.next_attempt_at = datetime.utcnow() - timedelta(seconds=1)
+            db.commit()
+        task_assignment.dispatch_assignment_notices()
+        self.sender.assert_called_once()
+        self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain3', 'domain6'])
+
+    def test_invalid_or_all_member_mentions_are_not_sent(self):
+        for account in ['', '@用户3', 'all', 'domain3,domain6']:
+            with self.subTest(account=account), patch.object(settings, 'TUITUI_ACCOUNT_MAP', {'u3': account}):
+                tid = self.ingest(source_message_id='invalid-' + account)['task']['id']
+                self.assertEqual(self.update(tid, {'assigned_to': 3}).status_code, 200)
+        self.sender.assert_not_called()
+
+    def test_transport_uses_native_at_field_and_keeps_plain_messages_compatible(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {'errcode': 0}
+        with patch.object(settings, 'TUITUI_BOT_APPID', 'test'), patch.object(settings, 'TUITUI_BOT_SECRET', 'secret'), \
+                patch.object(notify.requests, 'post', return_value=response) as post:
+            self.assertTrue(notify.send_tuitui_message('派单', '7652944526714832', at_accounts=['domain3', 'domain6', 'domain3']))
+            self.assertEqual(post.call_args.kwargs['json'], {
+                'togroups': ['7652944526714832'], 'msgtype': 'text',
+                'text': {'content': '派单'}, 'at': ['domain3', 'domain6'],
+            })
+            self.assertTrue(notify.send_tuitui_message('普通通知', '7652944526714832'))
+            self.assertNotIn('at', post.call_args.kwargs['json'])
 
     def test_old_pending_notice_cancelled_on_reassignment_or_clear(self):
         self.sender.return_value = False

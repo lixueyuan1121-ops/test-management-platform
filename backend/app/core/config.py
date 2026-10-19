@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     TASK_INGEST_USER_ID: int = 0
     # 自动录入任务的人工派单走专用群，不受旧 NOTIFY_TASK_ASSIGN 开关影响。
     TUITUI_TASK_ASSIGN_GROUP: str = "7652944526714832"
+    # 平台用户名 -> 已核实的推推账号；账号可能不同，不按姓名或拼音猜测。
+    TUITUI_ACCOUNT_MAP: dict[str, str] = {}
     # ---- Nami 静态部署(综合评价 HTML → 公网在线报告)----
     # 一条龙生成综合评价后,把 HTML 上传 n.cn 网关,得公网直链(…/index.html)经推推推给人。
     # 依赖 nami cookie(与 skill nami-static-deploy 同源);两路径留空则用 skill 默认位置
