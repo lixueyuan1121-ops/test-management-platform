@@ -65,6 +65,11 @@
     <section v-show="activeView === 'list'" class="list-card">
         <div class="list-head">
           <span>版本列表<span v-if="!pid" class="dim"> · 请选择项目查看明细</span></span>
+          <form v-if="pid" class="release-search" role="search" aria-label="发版记录搜索" @submit.prevent="search">
+            <el-input v-model="searchInput" size="small" clearable maxlength="200"
+                      placeholder="搜索上线内容" aria-label="搜索上线内容" @clear="search" />
+            <el-button type="primary" size="small" native-type="submit">搜索</el-button>
+          </form>
         </div>
       <div v-if="pid" class="sub-tabs">
         <el-radio-group v-model="subProduct" size="small" @change="reload">
@@ -75,7 +80,7 @@
       </div>
       <el-alert v-if="pid && productsError" title="产品列表加载失败" type="warning" :closable="false" show-icon><el-button link type="primary" @click="loadProducts">重试产品列表</el-button></el-alert>
       <el-result v-if="listError" icon="error" title="版本列表加载失败"><template #extra><el-button @click="load">重试列表</el-button></template></el-result>
-      <el-table v-else-if="pid" :data="rows" v-loading="loading" size="small" border stripe empty-text="该项目暂无发版记录">
+      <el-table v-else-if="pid" :data="rows" v-loading="loading" size="small" border stripe :empty-text="keyword ? '未找到包含该关键词的发版记录' : '该项目暂无发版记录'">
         <el-table-column prop="version" label="版本号" width="140" />
         <el-table-column label="子产品" width="150">
           <template #default="{ row }">
@@ -214,6 +219,8 @@ const isAdmin = computed(() => auth.isPlatformAdmin)
 const projects = ref([])
 const pid = ref(null)
 const subProduct = ref('')
+const searchInput = ref('')
+const keyword = ref('')
 const rows = ref([])
 
 // 当前项目平台类型 → 决定子产品枚举、是否显示渠道列（从已缓存的 projects 里按 pid 取）
@@ -371,6 +378,10 @@ function renderChart() {
   }))
 }
 
+async function search() {
+  keyword.value = searchInput.value.trim()
+  await reload()
+}
 async function reload() { page.value = 1; await load() }
 async function load() {
   const version = ++listVersion
@@ -381,6 +392,7 @@ async function load() {
   try {
     const { items, total: t } = await listReleases({
       project_id: pid.value, sub_product: subProduct.value || undefined,
+      keyword: keyword.value || undefined,
       limit: pageSize.value, offset: (page.value - 1) * pageSize.value,
     })
     if (disposed || version !== listVersion) return
@@ -506,6 +518,9 @@ useChartTheme(renderChart)
 .list-head { margin-bottom: 12px; }
 @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .list-head { display: flex; justify-content: space-between; align-items: center; }
+.list-head { gap: 12px; flex-wrap: wrap; }
+.release-search { display: flex; align-items: center; gap: 8px; width: 360px; max-width: 100%; }
+.release-search .el-input { flex: 1; min-width: 0; }
 .sub-tabs { margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .chan-tag { margin: 0 4px 2px 0; }
 .dim { color: var(--tech-muted); font-weight: normal; font-size: 13px; }

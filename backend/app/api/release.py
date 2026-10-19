@@ -170,6 +170,7 @@ def _to_out(db: Session, r: ReleaseRecord, name_map: dict | None = None) -> dict
 def list_releases(
     project_id: int = Query(...),
     sub_product: str | None = Query(None),
+    keyword: str | None = Query(None, max_length=200),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -179,6 +180,10 @@ def list_releases(
     base = db.query(ReleaseRecord).filter(ReleaseRecord.project_id == project_id)
     if sub_product:
         base = base.filter(ReleaseRecord.sub_product == sub_product)
+    term = (keyword or '').strip()
+    if term:
+        # 搜索完整上线内容；将 %/_ 等按普通字符匹配，先筛选再统计和分页。
+        base = base.filter(ReleaseRecord.content.icontains(term, autoescape=True))
     total = base.with_entities(func.count(ReleaseRecord.id)).scalar() or 0
     rows = (base.order_by(ReleaseRecord.release_date.desc(), ReleaseRecord.id.desc())
             .limit(limit).offset(offset).all())
