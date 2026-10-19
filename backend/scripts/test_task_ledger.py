@@ -68,6 +68,10 @@ class LedgerTests(unittest.TestCase):
         app.dependency_overrides[get_db] = db_dep
         app.dependency_overrides[get_current_user] = lambda: self.db.get(User, self.user_id)
         self.client = TestClient(app)
+        # 台账测试只写隔离库；通知发送由 test_task_ingest 覆盖。
+        self.notice_patch = patch('app.services.task_assignment.dispatch_assignment_notices')
+        self.notice_patch.start()
+        self.addCleanup(self.notice_patch.stop)
         self.today = date.today().isoformat()
 
     def tearDown(self):
@@ -322,8 +326,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_digest_backfill_keep_all_platform_assignees_and_custom_products(self):
         from scripts.backfill_task_ledger import make_plan, apply_plan
-        with patch('app.services.notify.notify_task_assigned'):
-            task = self.task(title='多人测试任务', assigned_to_ids=[1,2], target_version='3.27.0')
+        task = self.task(title='多人测试任务', assigned_to_ids=[1,2], target_version='3.27.0')
         self.client.patch(f"/api/tasks/{task['id']}", json={'risk_level':'red','assigned_to':1})
         self.assertEqual(self.db.get(Task,task['id']).assigned_to_ids,[1,2])
         digest=self.generate({'project_id':1,'task_ids':[task['id']],'report_date':self.today})

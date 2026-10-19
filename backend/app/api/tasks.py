@@ -138,6 +138,7 @@ def create_task(
     body: TaskCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
 ):
     # 任务分配已放开到成员：admin/member 均可把任务指派给项目内任意人（不再限本人）。
     assert_project_role(db, user, body.project_id, (ProjectRole.admin, ProjectRole.member))
@@ -160,28 +161,17 @@ def create_task(
     )
     _set_assignees(t, ids)
     db.add(t)
+    if ids:
+        from app.services.task_assignment import queue_assignment
+        t.assignment_revision = 1
+        db.flush()
+        queue_assignment(db, t, user)
     db.commit()
     db.refresh(t)
-    # 任务指派通知：自己派给自己不发（常见自助加任务场景）
-    for uid in t.assigned_to_ids:
-        if uid == t.assigned_by:
-            continue
-        try:
-            from app.services.notify import notify_task_assigned
-            proj = db.get(Project, t.project_id)
-            assignee = db.get(User, uid)
-            assigner = db.get(User, t.assigned_by)
-            notify_task_assigned(
-                task_title=t.title,
-                project_name=proj.name if proj else f"项目#{t.project_id}",
-                assignee_name=assignee.name if assignee else f"用户#{uid}",
-                assigner_name=assigner.name if assigner else f"用户#{t.assigned_by}",
-                assigned_date=str(t.assigned_date),
-                priority=t.priority,
-            )
-        except Exception:
-            pass  # 通知失败不影响任务创建
-    return ok(_to_out(db, t))
+    if ids and background_tasks is not None:
+        from app.services.task_assignment import dispatch_assignment_notices
+        background_tasks.add_task(dispatch_assignment_notices, t.id)
+    return ok({**_to_out(db, t), 'assignment_notification_queued': bool(ids)})
 
 
 @router.patch("/{tid}")
@@ -198,7 +188,7 @@ def update_task(
     assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
     ids = _assignee_ids(db, body)
     # Existing forms may resend the primary owner without the additional owners.
-    if t.ingest_key and 'assigned_to' in body.model_fields_set and body.assigned_to is None and body.assigned_to_ids is None:
+    if 'assigned_to' in body.model_fields_set and body.assigned_to is None and body.assigned_to_ids is None:
         ids = []
     requested = ids is not None and (body.assigned_to_ids is not None or body.assigned_to != t.assigned_to)
     assignment_changed = requested and set(ids) != set(t.assigned_to_ids)
@@ -209,6 +199,8 @@ def update_task(
             member = db.query(ProjectMember).filter_by(project_id=t.project_id, user_id=uid).first()
             if not owner or owner.status.value != 'active' or not member or member.role == ProjectRole.guest:
                 raise HTTPException(400, detail='测试负责人必须是当前项目的有效管理员或成员')
+    # 普通录入和提测录入共用通知版本，负责人是否变更不依赖来源标记。
+    if assignment_changed:
         previous_revision = t.assignment_revision
         changed = db.query(Task).filter(Task.id == tid, Task.assignment_revision == previous_revision).update(
             {Task.assignment_revision: previous_revision + 1}, synchronize_session=False)
@@ -252,11 +244,11 @@ def update_task(
         _stamp_terminal(t, new_status)   # 变为 online/closed 刷新对应时间戳
         t.status = new_status
         t.status_locked = True  # 人工接管标记
-    if t.ingest_key and assignment_changed:
+    if assignment_changed:
         from app.services.task_assignment import queue_assignment
         queue_assignment(db, t, user)
     db.commit()
-    queued = bool(t.ingest_key and assignment_changed and t.assigned_to is not None)
+    queued = bool(assignment_changed and t.assigned_to is not None)
     if queued and background_tasks is not None:
         from app.services.task_assignment import dispatch_assignment_notices
         background_tasks.add_task(dispatch_assignment_notices, t.id)

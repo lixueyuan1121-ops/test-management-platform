@@ -31,7 +31,7 @@ class MultiAssigneeTests(unittest.TestCase):
         for router in (tasks.router,stats.router,reports.router):app.include_router(router)
         app.dependency_overrides[get_db]=session;app.dependency_overrides[get_current_user]=current
         self.client=TestClient(app)
-        self.notify=patch('app.services.notify.notify_task_assigned');self.notify.start()
+        self.notify=patch('app.services.task_assignment.dispatch_assignment_notices');self.notify.start()
     def tearDown(self):
         self.notify.stop();self.client.close();self.engine.dispose()
     def create(self,**extra):

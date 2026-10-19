@@ -72,6 +72,71 @@ class IngestTests(unittest.TestCase):
         return self.client.patch(f'/api/tasks/{tid}', json=body,
                                  headers={'Authorization': f'Bearer {create_access_token(str(uid))}'})
 
+    def create_manual(self, **overrides):
+        response = self.client.post('/api/tasks', headers=self.headers, json={
+            'project_id': 1, 'title': '普通入口录入的提测任务',
+            'assigned_date': date.today().isoformat(), **overrides,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()['data']
+
+    def test_manual_task_assignment_notifies_without_ingest_marker(self):
+        task = self.create_manual()
+        self.assertFalse(task['is_ingested'])
+        self.sender.assert_not_called()
+        response = self.update(task['id'], {'assigned_to_ids': [3, 6]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()['data']['assignment_notification_queued'])
+        self.sender.assert_called_once()
+        self.assertEqual(self.sender.call_args.args[1], '7652944526714832')
+        self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain3', 'domain6'])
+        for body in [{'assigned_to_ids': [3, 6]}, {'assigned_to_ids': [6, 3]},
+                     {'assigned_to': 6, 'title': '补充标题'}, {'status': 'testing'}]:
+            self.assertEqual(self.update(task['id'], body).status_code, 200)
+        self.assertEqual(self.sender.call_count, 1)
+        self.assertEqual(self.update(task['id'], {'assigned_to_ids': [6]}).status_code, 200)
+        self.assertEqual(self.sender.call_count, 2)
+        self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain6'])
+        with self.sessions() as db:
+            self.assertEqual(db.get(Task, task['id']).assignment_revision, 2)
+            self.assertTrue(all(n.sent_at for n in db.query(TaskAssignmentNotice).all()))
+
+    def test_manual_create_with_owners_uses_one_persistent_notice(self):
+        with patch.object(settings, 'NOTIFY_TASK_ASSIGN', False), \
+                patch.object(notify, 'notify_task_assigned') as legacy:
+            task = self.create_manual(assigned_to_ids=[2, 3])
+        self.assertTrue(task['assignment_notification_queued'])
+        self.sender.assert_called_once()
+        legacy.assert_not_called()
+        self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain2', 'domain3'])
+        self.assertIn(f'任务编号：#{task["id"]}', self.sender.call_args.args[0])
+        self.assertIn('测试负责人：用户2、用户3', self.sender.call_args.args[0])
+        self.update(task['id'], {'assigned_to_ids': [2, 3]})
+        task_assignment.dispatch_assignment_notices()
+        self.assertEqual(self.sender.call_count, 1)
+
+    def test_manual_failed_notice_retries_and_clear_cancels(self):
+        self.sender.return_value = False
+        task = self.create_manual(assigned_to=3)
+        with self.sessions() as db:
+            notice = db.query(TaskAssignmentNotice).one()
+            self.assertEqual(notice.attempts, 1)
+            self.assertIsNone(notice.sent_at)
+            notice.next_attempt_at = datetime.utcnow() - timedelta(seconds=1)
+            db.commit()
+        self.sender.return_value = True
+        task_assignment.dispatch_assignment_notices()
+        self.assertEqual(self.sender.call_count, 2)
+        self.sender.return_value = False
+        self.assertEqual(self.update(task['id'], {'assigned_to': 6}).status_code, 200)
+        self.assertEqual(self.update(task['id'], {'assigned_to': None}).status_code, 200)
+        with self.sessions() as db:
+            self.assertIsNone(db.get(Task, task['id']).assigned_to)
+            latest = db.query(TaskAssignmentNotice).order_by(TaskAssignmentNotice.id.desc()).first()
+            self.assertIsNotNone(latest.cancelled_at)
+        task_assignment.dispatch_assignment_notices()
+        self.assertEqual(self.sender.call_count, 3)
+
     def test_ingest_is_unassigned_idempotent_and_preserves_manual_edits(self):
         first = self.ingest()
         task = first['task']
