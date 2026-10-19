@@ -33,7 +33,7 @@ export function taskDateQuery(range) {
     ? { date: range[0] }
     : { start_date: range[0], end_date: range[1] }
 }
-export const taskOwners = row => row.assigned_to_name || '—'
+export const taskOwners = row => row.assigned_to_name || '待分配'
 export const hasRisk = row => ['red', 'yellow'].includes(row.risk_level) || ['blocked', 'at_risk'].includes(row.status) || row.affects_release === true
 export function filterLedger(tasks, filters) {
   const keyword = filters.keyword.trim().toLocaleLowerCase()
@@ -41,7 +41,7 @@ export function filterLedger(tasks, filters) {
     [row.title, row.description, row.assigned_to_name, row.developer, row.progress_note, row.next_action, row.action_owner]
       .filter(Boolean).join(' ').toLocaleLowerCase().includes(keyword) &&
     (!filters.status.length || filters.status.includes(row.status)) &&
-    (!filters.owner.length || filters.owner.some(id => (row.assigned_to_ids || [row.assigned_to]).includes(id))) &&
+    (!filters.owner.length || filters.owner.some(id => id === '__unset' ? !row.assigned_to_ids?.length && row.assigned_to == null : (row.assigned_to_ids || [row.assigned_to]).includes(id))) &&
     (!filters.priority.length || filters.priority.includes(row.priority)) &&
     (!filters.version.length || filters.version.some(version => version === '__unset' ? !row.target_version : row.target_version === version)) &&
     (!filters.risk || (filters.risk === '__unset' ? !row.risk_level : row.risk_level === filters.risk)) &&

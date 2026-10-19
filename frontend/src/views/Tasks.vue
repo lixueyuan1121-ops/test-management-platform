@@ -14,7 +14,7 @@
       <template #filters>
         <el-input v-model="filters.keyword" clearable aria-label="搜索任务名称或负责人" placeholder="搜索任务、负责人、开发或卡点" style="width:260px" />
         <el-select v-model="filters.status" multiple collapse-tags collapse-tags-tooltip clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:180px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
-        <el-select v-model="filters.owner" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:180px"><el-option v-for="m in members" :key="m.user_id" :label="m.name" :value="m.user_id" /></el-select>
+        <el-select v-model="filters.owner" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:180px"><el-option label="待分配" value="__unset" /><el-option v-for="m in members" :key="m.user_id" :label="m.name" :value="m.user_id" /></el-select>
         <el-select v-model="filters.version" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="归属版本" aria-label="筛选归属版本" style="width:180px"><el-option label="未填写版本" value="__unset" /><el-option v-for="v in versions" :key="v" :label="v" :value="v" /></el-select>
         <el-select v-model="filters.risk" clearable placeholder="风险等级" aria-label="筛选风险等级" style="width:150px"><el-option label="未评估" value="__unset" /><el-option v-for="(m,k) in RISK_META" :key="k" :label="m.label" :value="k" /></el-select>
         <el-select v-model="filters.priority" multiple collapse-tags collapse-tags-tooltip clearable placeholder="优先级" aria-label="筛选优先级" style="width:140px"><el-option v-for="p in ['p0','p1','p2','p3']" :key="p" :label="p.toUpperCase()" :value="p" /></el-select>
@@ -179,11 +179,12 @@
             <el-option label="P2" value="p2" /><el-option label="P3" value="p3" />
           </el-select>
         </el-form-item>
-        <el-form-item label="测试负责人" required>
-          <el-select v-model="form.assigned_to_ids" multiple filterable placeholder="选择项目成员（可多选或留空）" style="width:100%">
-            <el-option v-for="m in members" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
+        <el-form-item label="测试负责人">
+          <el-select v-model="form.assigned_to_ids" :disabled="dialog.ingested && !canAssignIngested" multiple filterable placeholder="选择项目成员（可多选或留空）" style="width:100%">
+            <el-option v-for="m in (dialog.ingested ? members.filter(m => m.role !== 'guest') : members)" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
         </el-form-item>
+        <p v-if="dialog.ingested" class="cl-hint">此任务由提测机器人自动录入；管理员填写测试负责人并保存后，系统会向派单群发送通知。</p>
         <el-form-item label="分配日期" required>
           <el-date-picker v-model="form.assigned_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
         </el-form-item>
@@ -204,6 +205,7 @@
     <!-- 任务详情抽屉（只读回溯）-->
     <el-drawer v-model="detail.visible" :title="`任务详情 · ${detail.row?.title || ''}`" size="min(640px, 100vw)">
       <div v-if="detail.row" class="detail">
+        <p v-if="detail.row.is_ingested" class="d-row"><span class="d-k">任务来源</span> 机器人自动录入</p>
         <p class="d-row"><span class="d-k">任务名称</span> {{ detail.row.title || '—' }}</p>
         <p class="d-row"><span class="d-k">状态</span>
           <el-tag :type="STATUS_META[detail.row.status]?.type || 'info'" effect="light" size="small">
@@ -216,7 +218,7 @@
         <p class="d-row"><span class="d-k">模块</span> {{ detail.row.module || '—' }}</p>
         <p class="d-row"><span class="d-k">开发</span> {{ detail.row.developer || '—' }}</p>
         <p class="d-row"><span class="d-k">优先级</span> {{ (detail.row.priority || '').toUpperCase() || '—' }}</p>
-        <p class="d-row"><span class="d-k">指派给</span> {{ detail.row.assigned_to_name || '—' }}</p>
+        <p class="d-row"><span class="d-k">指派给</span> {{ detail.row.assigned_to_name || '待分配' }}</p>
         <p class="d-row"><span class="d-k">分配日期</span> {{ detail.row.assigned_date || '—' }}</p>
         <p class="d-row"><span class="d-k">上线时间</span> {{ fmtDetailTime(detail.row.online_at) }}</p>
         <p v-if="detail.row.status === 'closed'" class="d-row"><span class="d-k">关闭时间</span> {{ fmtDetailTime(detail.row.closed_at) }}</p>
@@ -245,6 +247,7 @@
 </template>
 
 <script setup>
+import { useRoute } from 'vue-router'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import TaskLedgerFields from '@/components/TaskLedgerFields.vue'
 import TaskDigestDialog from '@/components/TaskDigestDialog.vue'
@@ -277,6 +280,7 @@ const KIND_ORDER = { gui: 0, e2e: 1, api: 2, cli: 3, manual: 4 }
 // 可下发的执行机 = 当前成员登记的"我的设备"(下发到自己的机器执行)。runner_id 为下发标识。
 const myDevices = ref([])
 
+const route = useRoute()
 const auth = useAuthStore()
 const app = useAppStore()
 const projects = ref([])
@@ -287,6 +291,7 @@ const canManage = computed(() => {
   const r = auth.roleIn(pid.value)
   return auth.isPlatformAdmin || r === 'admin' || r === 'member'
 })
+const canAssignIngested = computed(() => auth.isPlatformAdmin || auth.roleIn(pid.value) === 'admin')
 function today() {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -317,7 +322,7 @@ function openDigest(history = false) {
   const parts = [singleDate.value ? `单日跟踪 ${singleDate.value}（含历史顺延及当日上线/关闭任务）` : dateRange.value?.length === 2 ? `分配日期 ${dateRange.value[0]} 至 ${dateRange.value[1]}（含首尾）` : '全部日期']
   if (filters.keyword) parts.push(`关键词：${filters.keyword}`)
   if (filters.status.length) parts.push(`状态：${filters.status.map(status => STATUS_META[status].label).join('、')}`)
-  if (filters.owner.length) parts.push(`负责人：${filters.owner.map(id => members.value.find(m => m.user_id === id)?.name || `#${id}`).join('、')}`)
+  if (filters.owner.length) parts.push(`负责人：${filters.owner.map(id => id === '__unset' ? '待分配' : members.value.find(m => m.user_id === id)?.name || `#${id}`).join('、')}`)
   if (filters.priority.length) parts.push(`优先级：${filters.priority.map(p => p.toUpperCase()).join('、')}`)
   if (filters.version.length) parts.push(`版本：${filters.version.map(version => version === '__unset' ? '未填写' : version).join('、')}`)
   if (filters.risk) parts.push(`风险：${RISK_META[filters.risk]?.label || '未评估'}`)
@@ -328,7 +333,7 @@ function openDigest(history = false) {
 }
 const members = ref([])
 const loading = ref(false)
-const dialog = reactive({ visible: false, id: null, saving: false, linked: false })
+const dialog = reactive({ visible: false, id: null, saving: false, linked: false, ingested: false })
 const form = reactive({ ...LEDGER_DEFAULTS, title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: '', description: '', status: 'pending' })
 
 onMounted(async () => {
@@ -336,8 +341,12 @@ onMounted(async () => {
   const [devicesRes, projectsRes] = await Promise.allSettled([listMyDevices(), app.fetchProjects()])
   myDevices.value = devicesRes.status === 'fulfilled' ? devicesRes.value : []
   projects.value = projectsRes.status === 'fulfilled' ? projectsRes.value : []
-  pid.value = pickDefaultProjectId(projects.value)
+  const requestedProject = Number(route.query.project_id)
+  pid.value = projects.value.some(p => p.id === requestedProject) ? requestedProject : pickDefaultProjectId(projects.value)
+  if (route.query.task_id) dateRange.value = null
   if (pid.value) await load()
+  const linkedTask = tasks.value.find(t => t.id === Number(route.query.task_id))
+  if (linkedTask) openDetail(linkedTask)
 })
 
 let loadVersion = 0
@@ -403,6 +412,7 @@ function fmtExecAt(s) {
 function openCreate() {
   dialog.id = null
   dialog.linked = false
+  dialog.ingested = false
   // 新建入口仅 canManage(admin/member)可见,均可自由选指派人,默认不预填。
   Object.assign(form, { ...LEDGER_DEFAULTS, title: '', requirement_url: '', developer: '', module: '', priority: 'p2', assigned_to_ids: [], assigned_date: singleDate.value || localDate(), description: '', status: 'pending' })
   dialog.visible = true
@@ -410,6 +420,7 @@ function openCreate() {
 function openEdit(row) {
   dialog.id = row.id
   dialog.linked = !!row.release_record_id
+  dialog.ingested = !!row.is_ingested
   Object.assign(form, {
     ...Object.fromEntries(Object.entries(LEDGER_DEFAULTS).map(([k,v]) => [k, row[k] ?? v])),
     title: row.title, requirement_url: row.requirement_url || '', developer: row.developer || '',
@@ -431,9 +442,8 @@ async function submit() {
   dialog.saving = true
   try {
     const payload = { ...form, project_id: pid.value, risk_level: form.risk_level || null, expected_completion: form.expected_completion || null, feedback_due_at: form.feedback_due_at || null }
-    if (dialog.id) await updateTask(dialog.id, payload)
-    else await createTask(payload)
-    ElMessage.success('保存成功')
+    const result = dialog.id ? await updateTask(dialog.id, payload) : await createTask(payload)
+    ElMessage.success(result.assignment_notification_queued ? '保存成功，派单通知已进入发送队列' : '保存成功')
     dialog.visible = false
     await load()
   } catch { /* 请求拦截器提示错误，保留表单供重试。 */ }

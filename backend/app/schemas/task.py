@@ -72,5 +72,38 @@ class TaskOut(TaskLedgerFields):
     release_record_id: int | None = None
     created_at: datetime
 
+    source_group_id: str | None = None
+    source_message_id: str | None = None
+    is_ingested: bool = False
+
     class Config:
         from_attributes = True
+
+
+class TaskIngest(BaseModel):
+    """转发机器人提交已收集的提测信息；不接受负责人或工作流状态。"""
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    project_id: int = Field(gt=0)
+    source_group_id: Literal['7652669649127481'] = '7652669649127481'
+    source_message_id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=20000)
+    module: str | None = Field(default=None, max_length=128)
+    requirement_url: str | None = Field(default=None, max_length=512)
+    developer: str | None = Field(default=None, max_length=64)
+    priority: TaskPriority = TaskPriority.p2
+    assigned_date: date | None = None
+    target_version: str | None = Field(default=None, max_length=64)
+    expected_completion: date | None = None
+
+    @field_validator('requirement_url')
+    @classmethod
+    def validate_requirement_url(cls, value):
+        from urllib.parse import urlsplit
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            raise ValueError('需求地址必须为 http/https 链接')
+        return value

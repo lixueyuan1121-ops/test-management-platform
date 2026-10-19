@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { filterLedger, TASK_STATUS, hasRisk, taskDateQuery } from '../src/utils/taskLedger.js'
+import { filterLedger, TASK_STATUS, hasRisk, taskDateQuery, taskOwners } from '../src/utils/taskLedger.js'
 const defaults = { keyword:'', status:[], owner:[], priority:[], version:[], risk:'', impact:'', riskOnly:false }
 const rows = [
   {id:1,title:'文档划词',status:'testing',priority:'p1',assigned_to:2,assigned_to_ids:[2,4],assigned_to_name:'平台姓名',target_version:'3.27.0',risk_level:'red',affects_release:true},
@@ -35,3 +35,8 @@ for (const range of [null, undefined, [], ['2026-10-18'], ['', '']]) {
   assert.deepEqual(taskDateQuery(range), {})
 }
 console.log('PASS daily carryover query, explicit assignment range and cleared date selection')
+
+const pending = {id:4,title:'待录入',assigned_to:null,assigned_to_ids:[],status:'unassigned'}
+assert.equal(taskOwners(pending),'待分配')
+assert.deepEqual(filterLedger([...rows,pending], {...defaults,owner:['__unset']}).map(t=>t.id),[4])
+assert.deepEqual(filterLedger([...rows,pending], {...defaults,owner:['__unset',4]}).map(t=>t.id),[1,4])

@@ -116,6 +116,45 @@ def ensure_task_columns() -> None:
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE task ADD COLUMN {name} {sql_type} NULL"))
     _ensure_index("task", "idx_task_release_record", "release_record_id")
+    ensure_task_ingest_columns()
+
+
+def ensure_task_ingest_columns() -> None:
+    """保留历史任务及其关联，让机器人提测可在负责人未定时入库。"""
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    columns = {c['name']: c for c in inspect(engine).get_columns('task')}
+    owner = columns.get('assigned_to')
+    if owner and not owner['nullable']:
+        with engine.connect() as conn:
+            # SQLite 重建表时必须临时关闭 FK，避免 DROP 旧表级联删除日报/验收项。
+            fk_enabled = conn.exec_driver_sql('PRAGMA foreign_keys').scalar() if engine.dialect.name == 'sqlite' else None
+            conn.commit()
+            try:
+                if fk_enabled:
+                    conn.exec_driver_sql('PRAGMA foreign_keys=OFF')
+                    conn.commit()
+                with conn.begin():
+                    op = Operations(MigrationContext.configure(conn))
+                    with op.batch_alter_table('task') as batch:
+                        batch.alter_column('assigned_to', existing_type=owner['type'], nullable=True)
+            finally:
+                if fk_enabled:
+                    conn.exec_driver_sql('PRAGMA foreign_keys=ON')
+                    conn.commit()
+    additions = {'ingest_key': 'VARCHAR(64) NULL', 'source_group_id': 'VARCHAR(64) NULL',
+                 'source_message_id': 'VARCHAR(128) NULL', 'assignment_revision': 'INTEGER NOT NULL DEFAULT 0'}
+    with engine.begin() as conn:
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(text(f'ALTER TABLE task ADD COLUMN {name} {ddl}'))
+    inspector = inspect(engine)
+    unique_columns = [tuple(i['column_names']) for i in inspector.get_unique_constraints('task')]
+    unique_columns += [tuple(i['column_names']) for i in inspector.get_indexes('task') if i.get('unique')]
+    if ('ingest_key',) not in unique_columns:
+        with engine.begin() as conn:
+            conn.execute(text('CREATE UNIQUE INDEX uq_task_ingest_key ON task (ingest_key)'))
 
 
 def ensure_testcase_precondition_column() -> None:

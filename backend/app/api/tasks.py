@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,9 @@ from app.services.task_dates import filter_task_dates
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
-def _user_name(db: Session, uid: int) -> str:
+def _user_name(db: Session, uid: int | None) -> str:
+    if uid is None:
+        return ""
     u = db.get(User, uid)
     return u.name if u else ""
 
@@ -43,6 +45,9 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "assigned_to": t.assigned_to,
         "assigned_to_name": "、".join(nm(uid) for uid in t.assigned_to_ids),
         "assigned_to_ids": t.assigned_to_ids,
+        "is_ingested": bool(t.ingest_key),
+        "source_group_id": t.source_group_id,
+        "source_message_id": t.source_message_id,
         "title": t.title,
         "description": t.description,
         "module": t.module,
@@ -185,11 +190,32 @@ def update_task(
     body: TaskUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
 ):
     t = db.get(Task, tid)
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
+    ids = _assignee_ids(db, body)
+    # Existing forms may resend the primary owner without the additional owners.
+    if t.ingest_key and 'assigned_to' in body.model_fields_set and body.assigned_to is None and body.assigned_to_ids is None:
+        ids = []
+    requested = ids is not None and (body.assigned_to_ids is not None or body.assigned_to != t.assigned_to)
+    assignment_changed = requested and set(ids) != set(t.assigned_to_ids)
+    if t.ingest_key and assignment_changed:
+        assert_project_role(db, user, t.project_id, (ProjectRole.admin,))
+        for uid in ids:
+            owner = db.get(User, uid)
+            member = db.query(ProjectMember).filter_by(project_id=t.project_id, user_id=uid).first()
+            if not owner or owner.status.value != 'active' or not member or member.role == ProjectRole.guest:
+                raise HTTPException(400, detail='测试负责人必须是当前项目的有效管理员或成员')
+        previous_revision = t.assignment_revision
+        changed = db.query(Task).filter(Task.id == tid, Task.assignment_revision == previous_revision).update(
+            {Task.assignment_revision: previous_revision + 1}, synchronize_session=False)
+        if not changed:
+            db.rollback()
+            raise HTTPException(409, detail='任务负责人已被其他管理员更新，请刷新后重试')
+        t.assignment_revision = previous_revision + 1
     if "target_version" in body.model_fields_set and t.release_record_id:
         if (body.target_version or "").strip() != (t.target_version or "").strip():
             raise HTTPException(400, detail="任务已填写发版记录，不能修改归属版本")
@@ -200,10 +226,9 @@ def update_task(
         if field in body.model_fields_set:
             value = getattr(body, field)
             setattr(t, field, value.strip() or None if isinstance(value, str) else value)
-    ids = _assignee_ids(db, body)
     # Old forms resend the unchanged scalar assignee while editing other fields.
     # Preserve co-assignees unless the assignment is actually changed.
-    if ids is not None and (body.assigned_to_ids is not None or body.assigned_to != t.assigned_to):
+    if requested:
         _set_assignees(t, ids)
     # 非 status 字段照常更新（派单同步与人工都可写）
     for f in ("title", "description", "module", "requirement_url", "developer",
@@ -215,6 +240,11 @@ def update_task(
     if body.close_note is not None:
         t.close_note = body.close_note.strip() or None
     new_status = getattr(body, "status", None)
+    if t.ingest_key and assignment_changed:
+        if t.assigned_to is not None and t.status == TaskStatus.unassigned and new_status in (None, TaskStatus.unassigned):
+            new_status = TaskStatus.pending
+        elif t.assigned_to is None:
+            new_status = TaskStatus.unassigned
     # 人工端点：管理员可随时改状态（本端点仅前端 UI 调用，agent 走 /sync）。
     # 人工真正改变 status 即置锁，标记已被人工接管——此后 agent 的 /sync 不再覆盖，
     # 人工自己仍可继续经本端点修改。编辑任务带原状态值提交（未变）不置锁，避免误锁。
@@ -222,8 +252,15 @@ def update_task(
         _stamp_terminal(t, new_status)   # 变为 online/closed 刷新对应时间戳
         t.status = new_status
         t.status_locked = True  # 人工接管标记
+    if t.ingest_key and assignment_changed:
+        from app.services.task_assignment import queue_assignment
+        queue_assignment(db, t, user)
     db.commit()
-    return ok(_to_out(db, t))
+    queued = bool(t.ingest_key and assignment_changed and t.assigned_to is not None)
+    if queued and background_tasks is not None:
+        from app.services.task_assignment import dispatch_assignment_notices
+        background_tasks.add_task(dispatch_assignment_notices, t.id)
+    return ok({**_to_out(db, t), 'assignment_notification_queued': queued})
 
 
 @router.patch("/{tid}/sync")
@@ -277,7 +314,7 @@ def copy_yesterday(
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member))
     yesterday = target_date - timedelta(days=1)
     src = db.query(Task).filter(
-        Task.project_id == project_id, Task.assigned_date == yesterday
+        Task.project_id == project_id, Task.assigned_date == yesterday, Task.assigned_to.isnot(None),
     ).all()
     created = 0
     for s in src:

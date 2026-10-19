@@ -242,7 +242,7 @@ def workload_stats(
                         (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     # 聚合下推 SQL:不再全量拉 Task 到内存。online 用条件求和(status==online 计 1)。
     online_sum = func.sum(case((Task.status.in_([TaskStatus.online, TaskStatus.closed]), 1), else_=0))
-    base = [Task.project_id == project_id,
+    base = [Task.project_id == project_id, Task.assigned_to.isnot(None),
             Task.assigned_date >= from_date,
             Task.assigned_date <= to_date]
 

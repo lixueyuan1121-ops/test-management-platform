@@ -1,5 +1,6 @@
 """集中注册所有路由。"""
 from fastapi import APIRouter
+from app.api import task_ingest
 
 from app.api import auth, issues, members, projects, reports, stats, tasks, tools, users, ai, checklist, exec_queue, devices, release, selectors, probe, api_env, perf, ai_eval, eval_queue, eval_judge, eval_export, eval_devices, eval_task, eval_report, feedback, release_checklist, runner_update, test_plan, hooks, requirement, ai_jobs, fail_cluster, rts, commander, record, modules
 
@@ -14,6 +15,7 @@ api_router.include_router(geelib_account.router)
 api_router.include_router(projects.router)
 api_router.include_router(members.router)
 api_router.include_router(users.router)
+api_router.include_router(task_ingest.router)
 api_router.include_router(tasks.router)
 api_router.include_router(reports.router)
 api_router.include_router(stats.router)

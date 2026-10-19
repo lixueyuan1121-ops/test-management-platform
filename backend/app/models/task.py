@@ -19,6 +19,11 @@ class Task(Base):
     )
     assigned_by: Mapped[int] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"))
     assigned_to: Mapped[int | None] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), nullable=True, index=True)
+    # 机器人提测的来源键；同一来源消息重试只录入一次，人工任务保留 NULL。
+    ingest_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    source_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    assignment_revision: Mapped[int] = mapped_column(default=0, server_default="0")
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     module: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 被测项目/模块

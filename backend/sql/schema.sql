@@ -71,6 +71,10 @@ CREATE TABLE `task` (
   `team_id` BIGINT DEFAULT NULL,
   `assigned_by` BIGINT NOT NULL,
   `assigned_to` BIGINT NULL,
+  `ingest_key` VARCHAR(64) DEFAULT NULL,
+  `source_group_id` VARCHAR(64) DEFAULT NULL,
+  `source_message_id` VARCHAR(128) DEFAULT NULL,
+  `assignment_revision` INT NOT NULL DEFAULT 0,
   `title` VARCHAR(255) NOT NULL,
   `description` TEXT,
   `module` VARCHAR(128) DEFAULT NULL,
@@ -99,10 +103,30 @@ CREATE TABLE `task` (
   KEY `idx_project_date` (`project_id`,`assigned_date`),
   KEY `idx_assignee` (`assigned_to`,`assigned_date`),
   KEY `idx_task_release_record` (`release_record_id`),
+  UNIQUE KEY `uq_task_ingest_key` (`ingest_key`),
   CONSTRAINT `fk_task_project` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_task_team` FOREIGN KEY (`team_id`) REFERENCES `team`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_task_by` FOREIGN KEY (`assigned_by`) REFERENCES `user`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_task_to` FOREIGN KEY (`assigned_to`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------- 提测任务人工派单通知（持久重试） ----------
+CREATE TABLE `task_assignment_notice` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `task_id` BIGINT NOT NULL,
+  `revision` INT NOT NULL,
+  `group_id` VARCHAR(64) NOT NULL,
+  `content` TEXT NOT NULL,
+  `attempts` INT NOT NULL DEFAULT 0,
+  `next_attempt_at` DATETIME NOT NULL,
+  `sent_at` DATETIME DEFAULT NULL,
+  `cancelled_at` DATETIME DEFAULT NULL,
+  `last_error` VARCHAR(255) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_task_assignment_revision` (`task_id`, `revision`),
+  KEY `idx_assignment_notice_due` (`next_attempt_at`),
+  CONSTRAINT `fk_assignment_notice_task` FOREIGN KEY (`task_id`) REFERENCES `task`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------- 日报反馈 ----------

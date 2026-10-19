@@ -41,6 +41,32 @@ def _link(path: str) -> str | None:
     return f"{base}{path}" if base else None
 
 
+def send_tuitui_message(content: str, group: str) -> bool:
+    """同步发送并确认机器人回执，供需要持久重试的通知使用。"""
+    appid = (settings.TUITUI_BOT_APPID or '').strip()
+    secret = (settings.TUITUI_BOT_SECRET or '').strip()
+    if not (appid and secret and group.strip()):
+        return False
+    base = (settings.TUITUI_BASE_URL or 'https://alarm.im.qihoo.net').rstrip('/')
+    try:
+        resp = requests.post(f'{base}/message/custom/send',
+                             params={'appid': appid, 'secret': secret},
+                             json={'togroups': [group], 'msgtype': 'text', 'text': {'content': content[:50000]}},
+                             timeout=_TIMEOUT)
+        if resp.status_code != 200:
+            logger.warning('推推通知发送失败：HTTP %s', resp.status_code)
+            return False
+        data = resp.json()
+        if not isinstance(data, dict) or str(data.get('errcode')) != '0':
+            logger.warning('推推通知未收到成功回执')
+            return False
+        return True
+    except (requests.RequestException, ValueError):
+        # requests 异常可能带有含 secret 的请求 URL，不把异常内容写日志。
+        logger.warning('推推通知网络异常或返回非 JSON')
+        return False
+
+
 def _tuitui_send(content: str, group: str | None = None) -> None:
     """推推机器人发群消息：POST /message/custom/send，appid+secret URL 鉴权。异步、静默降级。"""
     appid = (settings.TUITUI_BOT_APPID or "").strip()

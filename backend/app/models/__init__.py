@@ -5,6 +5,7 @@ from app.models.user import User
 from app.models.geelib_account import GeelibAccount
 from app.models.project import Project, Team, ProjectMember
 from app.models.task import Task, TaskAssignee
+from app.models.task_assignment_notice import TaskAssignmentNotice
 from app.models.task_digest import TaskDigest
 from app.models.report import DailyReport
 from app.models.issue import RemainingIssue
@@ -43,6 +44,7 @@ __all__ = [
     "ProjectMember",
     "Task",
     "TaskAssignee",
+    "TaskAssignmentNotice",
     "DailyReport",
     "RemainingIssue",
     "Integration",

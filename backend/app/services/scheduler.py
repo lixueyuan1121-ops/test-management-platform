@@ -471,6 +471,9 @@ def start_scheduler() -> None:
         timezone="Asia/Shanghai",
     )
     _scheduler.start()
+    from app.services.task_assignment import dispatch_assignment_notices
+    _scheduler.add_job(dispatch_assignment_notices, 'interval', seconds=30,
+                       id='task_assignment_notices', replace_existing=True, max_instances=1)
     logger.info("定时回归调度器已启动")
 
     # 固定周期 job:自动收口超龄 running 的测评 run(每分钟;replace_existing 幂等,重启不重复)
