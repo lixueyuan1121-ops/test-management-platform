@@ -10,9 +10,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.api import tasks, checklist
 from app.core.deps import get_current_user
-from app.core.enums import TaskStatus
+from app.core.enums import TaskStatus, ProjectRole
 from app.db.session import Base, get_db
-from app.models import User, Project, Task, ChecklistItem
+from app.models import User, Project, ProjectMember, Task, ChecklistItem
 
 
 class TaskDatesTests(unittest.TestCase):
@@ -73,6 +73,23 @@ class TaskDatesTests(unittest.TestCase):
     def test_clear_dates_returns_all_project_tasks_and_summaries(self):
         rows = self.check([], {1, 2, 3, 4, 5, 6})
         self.assertFalse(any(t['is_carried'] for t in rows.values()))
+
+    def test_version_options_include_historical_completed_tasks_and_deduplicate(self):
+        with self.factory() as db:
+            for tid, version in [(1, '3.28.0'), (2, '3.26.0'), (3, '3.26.0'), (4, ''), (7, 'other-project')]:
+                db.get(Task, tid).target_version = version
+            db.commit()
+        response = self.client.get('/api/tasks/versions', params={'project_id': 1})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['data'], ['3.26.0', '3.28.0'])
+
+    def test_version_options_require_project_access(self):
+        with self.factory() as db:
+            db.get(User, 1).is_platform_admin = False
+            db.add(ProjectMember(project_id=1, user_id=1, role=ProjectRole.guest))
+            db.commit()
+        self.assertEqual(self.client.get('/api/tasks/versions', params={'project_id': 1}).status_code, 200)
+        self.assertEqual(self.client.get('/api/tasks/versions', params={'project_id': 2}).status_code, 403)
 
     def test_nonconsecutive_dates_union_deduplicates_and_keeps_completion_day(self):
         rows = self.check([('dates', '2026-10-11'), ('dates', '2026-10-09'), ('dates', '2026-10-09')], {1, 2, 4, 6})

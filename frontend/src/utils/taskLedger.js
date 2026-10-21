@@ -27,7 +27,9 @@ export const localDate = () => {
 }
 // A one-day selection is the daily follow-up view, including unfinished carryovers.
 // Wider ranges deliberately filter by assignment date.
-export function taskDateQuery(range) {
+export function taskDateQuery(range, versions = []) {
+  // Version selection covers the complete version, including historical completed tasks.
+  if (versions.length) return {}
   if (!Array.isArray(range) || range.length !== 2 || !range[0] || !range[1]) return {}
   return range[0] === range[1]
     ? { date: range[0] }

@@ -23,6 +23,7 @@ export const resetPassword = (id, data) => http.patch(`/users/${id}/password`, d
 
 // ===== P1: 任务 / 日报 / 统计 =====
 export const listTasks = (params) => http.get('/tasks', { params, paramsSerializer: { indexes: null } })
+export const listTaskVersions = (project_id) => http.get('/tasks/versions', { params: { project_id } })
 export const createTask = (data) => http.post('/tasks', data)
 export const updateTask = (id, data) => http.patch(`/tasks/${id}`, data)
 export const deleteTask = (id) => http.delete(`/tasks/${id}`)

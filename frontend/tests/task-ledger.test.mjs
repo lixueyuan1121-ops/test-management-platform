@@ -36,6 +36,16 @@ for (const range of [null, undefined, [], ['2026-10-18'], ['', '']]) {
 }
 console.log('PASS daily carryover query, explicit assignment range and cleared date selection')
 
+// A selected version bypasses both daily tracking and explicit ranges; clearing restores them.
+const savedRange = ['2026-10-09', '2026-10-18']
+for (const versions of [['3.27.0'], ['3.27.0', '3.26.0'], ['__unset']]) {
+  assert.deepEqual(taskDateQuery(savedRange, versions), {})
+  assert.deepEqual(taskDateQuery(['2026-10-18', '2026-10-18'], versions), {})
+}
+assert.deepEqual(taskDateQuery(savedRange, []), {start_date:'2026-10-09',end_date:'2026-10-18'})
+assert.deepEqual(savedRange, ['2026-10-09', '2026-10-18'])
+console.log('PASS version selection ignores dates without losing the saved date range')
+
 const pending = {id:4,title:'待录入',assigned_to:null,assigned_to_ids:[],status:'unassigned'}
 assert.equal(taskOwners(pending),'待分配')
 assert.deepEqual(filterLedger([...rows,pending], {...defaults,owner:['__unset']}).map(t=>t.id),[4])

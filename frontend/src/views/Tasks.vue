@@ -6,7 +6,7 @@
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <div @keydown.capture="onDateKeydown">
-              <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" size="small" style="width:280px" clearable :editable="false" aria-label="筛选任务日期范围" start-placeholder="开始日期" end-placeholder="结束日期" range-separator="至" @change="load" />
+              <el-date-picker v-model="dateRange" :disabled="versionFiltering" type="daterange" value-format="YYYY-MM-DD" size="small" style="width:280px" clearable :editable="false" aria-label="筛选任务日期范围" start-placeholder="开始日期" end-placeholder="结束日期" range-separator="至" @change="load" />
             </div>
             <el-button v-if="canManage" size="small" @click="onCopy" :disabled="!pid || !singleDate" :title="singleDate ? '' : '请选择一个日期作为复制目标'">复制昨日</el-button>
             <el-button type="primary" size="small" v-if="canManage" @click="openCreate" :disabled="!pid">新建任务</el-button>
@@ -34,7 +34,7 @@
             <el-button v-if="auth.isPlatformAdmin" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
           </div>
         </div>
-        <p class="cl-hint">{{ singleDate ? '单日跟踪包含当日任务、历史尚未上线/关闭的任务，以及当日上线或关闭的任务；历史任务标注顺延日期。' : dateRange?.length === 2 ? '按分配日期范围筛选（含起止日期）；清空日期可查看全部台账。' : '当前展示全部日期的任务台账。' }} 空白风险与发版影响表示未评估。</p>
+        <p class="cl-hint">{{ versionFiltering ? '当前按归属版本查询全部日期的任务，日期范围不生效；清空归属版本后恢复日期筛选。' : singleDate ? '单日跟踪包含当日任务、历史尚未上线/关闭的任务，以及当日上线或关闭的任务；历史任务标注顺延日期。' : dateRange?.length === 2 ? '按分配日期范围筛选（含起止日期）；清空日期可查看全部台账。' : '当前展示全部日期的任务台账。' }} 空白风险与发版影响表示未评估。</p>
       </template>
       <el-result v-if="loadError" icon="error" title="任务加载失败"><template #extra><el-button @click="load">重试</el-button></template></el-result>
       <el-table v-else ref="taskTable" :data="filteredTasks" v-loading="loading" size="small" empty-text="没有符合条件的任务" row-key="id" @expand-change="onExpandChange" @selection-change="selection = $event">
@@ -258,7 +258,7 @@ import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import { useAppStore } from '@/store/app'
-import { listMembers, listTasks, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec, listMyDevices } from '@/api'
+import { listMembers, listTasks, listTaskVersions, createTask, updateTask, deleteTask, copyYesterday, getChecklistSummary, getTaskChecklist, enqueueExec, listMyDevices } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 
@@ -299,6 +299,7 @@ function today() {
 const dateRange = ref([today(), today()])
 const singleDate = computed(() => dateRange.value?.length === 2 && dateRange.value[0] === dateRange.value[1] ? dateRange.value[0] : '')
 function onDateKeydown(event) {
+  if (versionFiltering.value) return
   // 支持 Delete/Backspace 清空整个日期范围，与清空按钮行为一致。
   if (event.target?.tagName === 'INPUT' && event.target.readOnly &&
       ['Delete', 'Backspace'].includes(event.key) && dateRange.value?.length) {
@@ -310,16 +311,18 @@ function onDateKeydown(event) {
 const tasks = ref([]), taskTable = ref(null), selection = ref([]), loadError = ref(false)
 const initialFilters = () => ({ keyword: '', status: [], owner: [], priority: [], version: [], risk: '', impact: '', riskOnly: false })
 const filters = reactive(initialFilters())
+const versionFiltering = computed(() => filters.version.length > 0)
 const filteredTasks = computed(() => filterLedger(tasks.value, filters))
-const versions = computed(() => [...new Set(tasks.value.map(t => t.target_version).filter(Boolean))].sort())
+const versions = ref([])
 const selectedTasks = computed(() => filteredTasks.value.filter(t => selection.value.some(s => s.id === t.id)))
 const actionTasks = computed(() => selectedTasks.value.length ? selectedTasks.value : filteredTasks.value)
 const releasableTasks = computed(() => actionTasks.value.filter(t => t.status === 'online' && t.target_version && !t.release_record_id))
 const digestContext = ref(null), releaseVisible = ref(false), releaseRows = ref([])
 watch(filters, () => { selection.value = []; taskTable.value?.clearSelection() })
+watch(versionFiltering, () => load())
 function resetFilters() { Object.assign(filters, initialFilters()) }
 function openDigest(history = false) {
-  const parts = [singleDate.value ? `单日跟踪 ${singleDate.value}（含历史顺延及当日上线/关闭任务）` : dateRange.value?.length === 2 ? `分配日期 ${dateRange.value[0]} 至 ${dateRange.value[1]}（含首尾）` : '全部日期']
+  const parts = [versionFiltering.value ? '全部日期（按归属版本筛选）' : singleDate.value ? `单日跟踪 ${singleDate.value}（含历史顺延及当日上线/关闭任务）` : dateRange.value?.length === 2 ? `分配日期 ${dateRange.value[0]} 至 ${dateRange.value[1]}（含首尾）` : '全部日期']
   if (filters.keyword) parts.push(`关键词：${filters.keyword}`)
   if (filters.status.length) parts.push(`状态：${filters.status.map(status => STATUS_META[status].label).join('、')}`)
   if (filters.owner.length) parts.push(`负责人：${filters.owner.map(id => id === '__unset' ? '待分配' : members.value.find(m => m.user_id === id)?.name || `#${id}`).join('、')}`)
@@ -352,19 +355,21 @@ onMounted(async () => {
 let loadVersion = 0
 async function load() {
   const seq = ++loadVersion, projectId = pid.value
-  const filterDates = taskDateQuery(dateRange.value)
+  const filterDates = taskDateQuery(dateRange.value, filters.version)
   tasks.value = []; selection.value = []; members.value = []; loadError.value = false
   if (!projectId) return
   setLastProjectId(projectId)
   loading.value = true
   try {
-    const [rows, summaryResult, projectMembers] = await Promise.all([
+    const [rows, summaryResult, projectMembers, projectVersions] = await Promise.all([
       listTasks({ project_id: projectId, ...filterDates }),
       getChecklistSummary(projectId, filterDates).catch(() => null),
       listMembers(projectId),
+      listTaskVersions(projectId),
     ])
     if (seq !== loadVersion) return
     members.value = projectMembers
+    versions.value = projectVersions
     const summary = summaryResult || {}
     tasks.value = rows.map(t => ({ ...t, _summary: summary[String(t.id)] || null,
       _summaryFailed: summaryResult === null, _items: null, _itemsLoading: false,

@@ -133,6 +133,20 @@ def list_tasks(
     return ok([_to_out(db, t, on_date=None if in_selection(t) else last_date, names=names) for t in rows])
 
 
+@router.get("/versions")
+def list_task_versions(
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """归属版本选项来自项目全部任务，避免历史版本被日期范围隐藏。"""
+    assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    rows = db.query(Task.target_version).filter(
+        Task.project_id == project_id, Task.target_version.isnot(None), Task.target_version != '',
+    ).distinct().order_by(Task.target_version).all()
+    return ok([version for (version,) in rows])
+
+
 @router.post("")
 def create_task(
     body: TaskCreate,
