@@ -35,7 +35,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listReleases, listReleaseProducts } from '@/api'
 import { fillTaskRelease } from '@/api/taskLedger'
-import { localDate, taskOwners } from '@/utils/taskLedger'
+import { localDate } from '@/utils/taskLedger'
 const props = defineProps({ rows: Array, projectId: Number, platform: String })
 const emit = defineEmits(['close', 'saved'])
 const versions = [...new Set(props.rows.map(t => t.target_version).filter(Boolean))].sort()
@@ -47,7 +47,7 @@ const matchingReleases = computed(() => releases.value.filter(r => r.version ===
 const targetRelease = computed(() => releases.value.find(r => r.id === form.release_id))
 const versionTasks = computed(() => props.rows.filter(t => t.target_version === version.value))
 function rebuildContent() {
-  form.content = versionTasks.value.filter(t => selectedIds.value.includes(t.id)).map((t, i) => `${i + 1}. ${t.title}（测试负责人：${taskOwners(t)}）${t.conclusion ? `\n   ${t.conclusion}` : ''}`).join('\n')
+  form.content = versionTasks.value.filter(t => selectedIds.value.includes(t.id)).map((t, i) => `${i + 1}. ${t.title}${t.conclusion ? `\n   ${t.conclusion}` : ''}`).join('\n')
 }
 function selectVersion() {
   selectedIds.value = versionTasks.value.map(t => t.id); form.release_id = 0; rebuildContent()
