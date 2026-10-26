@@ -30,6 +30,7 @@
           <span v-if="selectedTasks.length">已选 {{ selectedTasks.length }} 项 <el-button link @click="taskTable?.clearSelection()">清除选择</el-button></span>
           <div class="ledger-actions">
             <el-button v-if="canManage" size="small" :disabled="!actionTasks.length || loading" @click="openDigest(false)">编写日报{{ selectedTasks.length ? '（已选）' : '（筛选结果）' }}</el-button>
+            <el-button v-if="canManage" size="small" :disabled="!selectedTasks.length || loading" :loading="copyingRequirements" title="复制勾选项的功能/需求，每项一行" @click="copySelectedRequirements">复制</el-button>
             <el-button v-if="canManage" size="small" :disabled="!pid" @click="openDigest(true)">历史日报</el-button>
             <el-button v-if="auth.isPlatformAdmin" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
           </div>
@@ -315,6 +316,38 @@ const versionFiltering = computed(() => filters.version.length > 0)
 const filteredTasks = computed(() => filterLedger(tasks.value, filters))
 const versions = ref([])
 const selectedTasks = computed(() => filteredTasks.value.filter(t => selection.value.some(s => s.id === t.id)))
+const copyingRequirements = ref(false)
+async function copySelectedRequirements() {
+  const rows = selectedTasks.value
+  if (!rows.length || loading.value || copyingRequirements.value) return
+  const text = rows.map(row => row.title || row.description || '—').join('\n')
+  copyingRequirements.value = true
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // HTTP deployments may not expose the Clipboard API.
+      const previousFocus = document.activeElement
+      const input = document.createElement('textarea')
+      input.value = text
+      input.readOnly = true
+      input.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+      document.body.appendChild(input)
+      try {
+        input.select()
+        if (!document.execCommand('copy')) throw new Error('Copy unavailable')
+      } finally {
+        input.remove()
+        previousFocus?.focus({ preventScroll: true })
+      }
+    }
+    ElMessage.success(`已复制 ${rows.length} 项功能/需求`)
+  } catch {
+    ElMessage.error('复制失败，请检查浏览器剪贴板权限后重试')
+  } finally {
+    copyingRequirements.value = false
+  }
+}
 const actionTasks = computed(() => selectedTasks.value.length ? selectedTasks.value : filteredTasks.value)
 const releasableTasks = computed(() => actionTasks.value.filter(t => t.status === 'online' && t.target_version && !t.release_record_id))
 const digestContext = ref(null), releaseVisible = ref(false), releaseRows = ref([])
