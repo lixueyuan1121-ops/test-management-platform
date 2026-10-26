@@ -111,7 +111,7 @@ async function api(method, path, body) {
 }
 
 const fetchPending = () => api("GET", `/api/exec-queue?runner=${encodeURIComponent(RUNNER_ID)}&limit=5`);
-const claim        = (id) => api("POST", `/api/exec-queue/${id}/claim?runner=${encodeURIComponent(RUNNER_ID)}`);
+const claim        = (id) => api("POST", `/api/exec-queue/${id}/claim?runner=${encodeURIComponent(RUNNER_ID)}&script_flow=1`);
 const report       = (id, r) => publishResult({ runId: id, result: r, directory: join(__rdir, 'pending-reports'), log,
   send: body => api("PATCH", `/api/exec-queue/${id}?runner=${encodeURIComponent(RUNNER_ID)}`, body) });
 

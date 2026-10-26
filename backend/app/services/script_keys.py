@@ -15,6 +15,9 @@ def referenced_keys(script):
                 found.append(key)
             target = target.get("within")
         args = step.get("args")
+        if step.get("action") == "probe" and isinstance(args, dict):
+            for key in referenced_keys([{"target": args.get("ready")}]):
+                if key not in found: found.append(key)
         if step.get("action") == "wait_response" and isinstance(args, dict):
             for name in ("stop_key", "complete_key"):
                 key = args.get(name)
@@ -28,6 +31,8 @@ def remap_key(script, source, destination):
     import copy
     result = copy.deepcopy(script)
     for step in result:
+        if step.get("action") == "probe" and isinstance(step.get("args"), dict):
+            step["args"]["ready"] = remap_key([{"target": step["args"].get("ready")}], source, destination)[0]["target"]
         target = step.get("target")
         while isinstance(target, dict):
             if target.get("key") == source:

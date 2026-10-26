@@ -142,6 +142,11 @@ class Client:
             if 'codex' not in caps.get('import_modes', []) or caps.get('codex_evidence_protocol') != 'qalab-codex-v1':
                 raise RuntimeError('平台尚未支持 Codex 实测导入；保留原包，更新平台后重试，不要求本机安装 Runner')
         from script_targets import NETWORK_ACTIONS
+        from script_flow import uses_flow
+        if any(uses_flow(c['script']) for c in payload['cases']):
+            flow_caps = self.api('GET', '/api/verified-imports/capabilities', token=token)
+            if 'script-flow-v1' not in flow_caps.get('replay_protocols', []):
+                raise RuntimeError('平台尚未支持 script-flow-v1；保留原包，更新平台后导入，不要求生成电脑安装 Runner')
         required = {s.get('action') for c in payload['cases'] for s in c['script']} & NETWORK_ACTIONS
         if required:
             try:

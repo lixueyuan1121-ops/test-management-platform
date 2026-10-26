@@ -2037,6 +2037,18 @@ def _validate_script(script, valid_keys: set[str] | None = None) -> tuple[list, 
     """
     if not isinstance(script, list) or not script:
         return [], "script 缺失或非数组"
+    from app.services.script_flow import uses_flow
+    if all(isinstance(s, dict) for s in script) and uses_flow(script):
+        from app.services.script_targets import validate_targets
+        from app.services.execution_evidence import normalize_script
+        try:
+            validate_targets(script)
+            for key in referenced_keys(script):
+                if valid_keys is not None and key not in valid_keys:
+                    raise ValueError(f'条件脚本用了未注册的 key「{key}」')
+            return normalize_script(script), None
+        except (ValueError, TypeError, KeyError) as exc:
+            return [], str(exc)
     has_assert = False
     norm = []
     for st in script:

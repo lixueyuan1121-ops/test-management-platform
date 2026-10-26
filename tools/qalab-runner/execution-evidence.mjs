@@ -27,7 +27,7 @@ export function fingerprint(value) {
 
 export function normalizeScript(script) {
   if (!Array.isArray(script) || !script.length) throw new Error('需要非空平台 script 数组');
-  return script.map(s => ({ action: String(s.action || '').trim(), target: s.target || {}, args: s.args || {}, desc: Array.from(String(s.desc || '')).slice(0, 200).join('') }));
+  return script.map(s => ({ action: String(s.action || '').trim(), target: s.target || {}, args: s.args || {}, desc: Array.from(String(s.desc || '')).slice(0, 200).join(''), ...Object.fromEntries(['when','phase'].filter(k=>Object.hasOwn(s,k)).map(k=>[k,s[k]])) }));
 }
 
 export function executionContract(payload) {

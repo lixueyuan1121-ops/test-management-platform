@@ -166,12 +166,17 @@
           <li v-for="(s, i) in (rep.row.report || [])" :key="i" class="step">
             <span v-if="s.duration_ms != null" class="rep-meta">步骤耗时 {{ (s.duration_ms / 1000).toFixed(1) }}s</span>
             <div class="step-line">
-              <el-icon v-if="s.ok" class="ok"><CircleCheck /></el-icon>
+              <el-tag v-if="s.skipped" type="info" size="small">未执行</el-tag>
+              <el-icon v-else-if="s.ok" class="ok"><CircleCheck /></el-icon>
               <el-icon v-else class="ng"><CircleClose /></el-icon>
               <span class="step-no">{{ s.no ?? i + 1 }}</span>
               <span class="step-act">{{ s.action }}</span>
               <span class="step-desc">{{ s.desc || '' }}</span>
+              <el-tag v-if="s.phase === 'cleanup'" type="info" size="small">收尾</el-tag>
             </div>
+            <div v-if="s.skipped" class="rep-meta">{{ s.skip_reason === 'previous_failure' ? '前序失败，未执行此步骤' : s.skip_reason === 'condition_false' ? '条件不满足，未执行此分支' : '可选目标未出现' }}</div>
+            <div v-if="s.condition" class="rep-meta">分支条件：{{ JSON.stringify(s.condition) }}</div>
+            <div v-if="s.saved_as" class="step-check">本次捕获 {{ s.saved_as }}：<code>{{ s.value ?? s.text }}</code></div>
             <div v-if="s.error" class="step-err">{{ s.error }}</div>
             <div v-if="s.diagnostic" class="step-check">
               <div>诊断：{{ s.diagnostic.code }}<template v-if="s.diagnostic.match_count != null"> · 匹配 {{ s.diagnostic.match_count }} 个元素</template></div>

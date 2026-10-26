@@ -5,6 +5,11 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
 
 def validate_text_captures(script):
+    from app.services.script_flow import validate_flow
+    try:
+        if validate_flow(script): return None
+    except (ValueError, TypeError, KeyError) as e:
+        return str(e)
     defined = set()
     for i, step in enumerate(script):
         if not isinstance(step, dict) or not isinstance(step.get("args", {}), dict):

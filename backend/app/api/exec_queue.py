@@ -877,6 +877,7 @@ def list_pending(
 def claim(
     run_id: int,
     runner: str = Query(...),
+    script_flow: int = Query(0),
     db: Session = Depends(get_db),
     ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
@@ -893,6 +894,9 @@ def claim(
     # （设备 token 下 runner 已锁定为设备 runner_id;共享 token 下靠 query runner 区分）。
     if r.runner != runner or not db.query(ExecRun.id).filter(ExecRun.id == run_id, _device_run_filter(db, ctx)).first():
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
+    from app.services.script_flow import uses_flow
+    if uses_flow(json.loads(r.payload or '{}').get('script') or []) and script_flow != 1:
+        raise HTTPException(409, detail="该用例需要 script-flow-v1，请更新此设备 Runner 后执行")
     changed = db.query(ExecRun).filter(
         ExecRun.id == run_id, ExecRun.runner == runner, ExecRun.status == ExecStatus.pending,
     ).update({ExecRun.status: ExecStatus.running, ExecRun.started_at: func.now(),

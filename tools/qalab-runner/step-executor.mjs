@@ -17,6 +17,8 @@
 import { responseArgsBeforeAction, createTextCaptures } from "./gui-mcp/runtime-loader.mjs";
 import { boundedDiagnostic, safeUrl } from './execution-diagnostics.mjs';
 import { NETWORK_ACTIONS, validateNetworkScript } from './gui-mcp/network-scenarios.mjs';
+import { randomUUID } from 'node:crypto';
+import { FLOW_ACTIONS, usesFlow, createFlow } from './script-flow.mjs';
 
 const DETERMINISTIC = new Set([
   "connect", "click", "hover", "fill", "type", "press", "set_checked", "select_option",
@@ -24,27 +26,33 @@ const DETERMINISTIC = new Set([
   "assert_text", "assert_visible", "assert_absent", "judge",
   "mock_route", "unmock_route",
   ...NETWORK_ACTIONS,
+  ...FLOW_ACTIONS,
 ]);
 
 // gui: createGuiCore() 实例;script: 步骤数组;log: 进度回调;judgeFn: 可选,judge 步调它降级 claude
-export async function runScript(gui, script, log = () => {}, judgeFn = null) {
+export async function runScript(gui, script, log = () => {}, judgeFn = null, internal = null) {
   if (!Array.isArray(script) || script.length === 0) {
     return { needClaude: true, reason: "用例无结构化 script,退回 claude 执行" };
   }
   // 预检:未知 action → 整条退回 claude;judge 但没注入 judgeFn → 也退回(无法单步判定)
   for (const st of script) {
     const a = String(st?.action || "");
-    if (!DETERMINISTIC.has(a)) return { needClaude: true, reason: `未知 step action「${a}」,退回 claude` };
+    if (!DETERMINISTIC.has(a)) return usesFlow(script)
+      ? {verdict:'fail',fail_kind:'selector',reason:`条件脚本含不支持的 action「${a}」，未执行操作`,report:[],steps:[]}
+      : { needClaude: true, reason: `未知 step action「${a}」,退回 claude` };
     if (a === "judge" && typeof judgeFn !== "function") return { needClaude: true, reason: "含 judge 步但未注入 judgeFn,整条退回 claude" };
   }
-  if (!script.some((step) => step.action.startsWith("assert_") || step.action === "judge")) {
+  if (!internal && !script.some((step) => step.action.startsWith("assert_") || step.action === "judge")) {
     return { verdict: "fail", fail_kind: "selector", reason: "用例缺少断言，未执行操作", report: [], steps: [] };
   }
 
-  let textCaptures;
+  let textCaptures, flow;
   try {
-    textCaptures = createTextCaptures(script);
-    validateNetworkScript(script);
+    flow = internal?.flow || (usesFlow(script) ? createFlow(script) : null);
+    textCaptures = flow || internal?.textCaptures || createTextCaptures(script);
+    if (!internal) validateNetworkScript(script);
+    if (flow && script.some(s => s.action === 'probe' && typeof gui.probe !== 'function' || s.action === 'get_attribute' && typeof gui.getAttribute !== 'function'))
+      throw Error('Runner 缺少 script-flow-v1 页面能力，请更新 Runner');
     if (script.some(s => NETWORK_ACTIONS.has(s.action)) && (typeof gui.networkStep !== 'function' || typeof gui.cleanupNetworkScenarios !== 'function'))
       throw new Error('Runner 缺少网络场景执行能力，请更新 Runner；未执行任何步骤');
   }
@@ -66,7 +74,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   };
   // 记一步到 report(desc 缺省用 action);返回该 report 条目供后续挂截图。
   const rec = (i, action, desc, ok, error) => {
-    const rep = { no: i + 1, action, desc: desc || action, ok, ...(error ? { error } : {}) };
+    const rep = { no: i + 1, action, desc: desc || action, ok, ...(script[i]?.phase ? { phase: script[i].phase } : {}), ...(error ? { error } : {}) };
     report.push(rep);
     return rep;
   };
@@ -77,17 +85,40 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   //     这正是 mock 不生效最常见的形态(URL 模式没匹配上真实请求),不点名就只剩一句看不出所以然的断言失败。
   // 老 gui 没有 mockStats/unmockAll → 各自跳过(向后兼容)。
   const finish = async (result) => {
+    if (internal) return result;
+    const cleanupError = message => {
+      if (flow) { result.cleanup_errors ||= []; result.cleanup_errors.push(message); }
+      if (!flow || result.verdict === 'pass') { result.verdict = 'fail'; result.fail_kind = 'selector'; }
+      result.reason += `；${message}`;
+    };
+    if (flow) {
+      // Keep an explicit full report: unexecuted main steps are skipped, not passed.
+      // Always run declared cleanup, preserving the primary failure.
+      for (let i = report.length; i < script.length; i++) {
+        const st = script[i];
+        if (st.phase !== 'cleanup') {
+          Object.assign(rec(i, st.action, st.desc, true), { skipped: true, skip_reason: 'previous_failure' });
+          continue;
+        }
+        const cleaned = await runScript(gui, [st], log, judgeFn, { flow, textCaptures });
+        for (const row of cleaned.report || []) report.push({ ...row, no: i + 1, phase: 'cleanup' });
+        if (cleaned.verdict !== 'pass') {
+          result.cleanup_errors ||= [];
+          result.cleanup_errors.push(cleaned.reason);
+          if (result.verdict === 'pass') { result.verdict = 'fail'; result.fail_kind = 'selector'; result.reason = '业务验证通过，但收尾失败：' + cleaned.reason; }
+        }
+      }
+      result.duration_ms = Date.now() - started;
+    }
     try { await gui.cleanupNetworkScenarios?.(); }
     catch (e) {
-      result.verdict = 'fail'; result.fail_kind = 'selector';
-      result.reason += `；网络场景未生效或恢复失败：${e.message}`;
+      cleanupError(`网络场景未生效或恢复失败：${e.message}`);
     }
     try {
       const restored = await gui.restoreViewport?.();
       if (restored) { result.viewport_cleanup = restored; log(`  视口恢复: ${JSON.stringify(restored)}`); }
     } catch (e) {
-      result.verdict = 'fail'; result.fail_kind = 'selector';
-      result.reason += `；视口恢复失败：${e.message || e}`;
+      cleanupError(`视口恢复失败：${e.message || e}`);
     }
     // 收尾时仍存活的拦截器命中数以 gui 为准(它一直在计数);已被 unmock_route 撤掉的以 mocksSeen 记的为准。
     // 老 gui 不会计数,此时 hits 恒 0 并不代表"没拦到",不能据此报警 —— 整块统计一并跳过。
@@ -98,9 +129,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
     }
     if (typeof gui.unmockAll === "function") {
       try { await gui.unmockAll(); } catch (e) {
-        result.verdict = "fail";
-        result.fail_kind = "selector";
-        result.reason += `；mock 清理失败：${e.message || e}`;
+        cleanupError(`mock 清理失败：${e.message || e}`);
       }
     }
     if (!counted || !mocksSeen.size) return result;
@@ -137,19 +166,48 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
 
   for (let i = 0; i < script.length; i++) {
     const st = script[i];
-    const { action, target = {}, args = {}, desc = "" } = st;
+    if (!internal && st.phase === 'cleanup') break;
+    let { action, target = {}, args = {}, desc = "" } = st;
     let operationArgs;
     const tag = `step${i + 1}/${script.length} ${action}${desc ? "(" + desc + ")" : ""}`;
     const stepStarted = performance.now();
     log(`  [+${sec()}s] ▶ ${tag}`);
     try {
+      if (flow && !flow.enabled(st)) {
+        Object.assign(rec(i, action, desc, true), { skipped: true, skip_reason: 'condition_false', condition: st.when });
+        continue;
+      }
+      if (flow) target = flow.resolve(target);
       operationArgs = { ...target, ...textCaptures.argsFor(args) };
-      const responseArgs = responseArgsBeforeAction(script, i);
+      let responseArgs = null;
+      if (!flow) responseArgs = responseArgsBeforeAction(script, i);
+      else if (['click','press'].includes(action)) {
+        for (let next = i + 1; next < script.length; next++) {
+          const candidate = script[next];
+          if (candidate.phase === 'cleanup' || FLOW_ACTIONS.has(candidate.action) || candidate.args?.save_as) break;
+          if (!flow.enabled(candidate)) continue;
+          if (candidate.action === 'wait_response') { responseArgs = flow.argsFor(candidate.args); break; }
+          if (['click','press','goto'].includes(candidate.action)) break;
+        }
+      }
       if (responseArgs !== null) await gui.captureResponse(responseArgs);
       switch (action) {
+        case 'flow_start': rec(i, action, desc, true); break;
+        case 'set_var': {
+          const value = flow.assign(args, `${args.prefix || 'qa-'}${randomUUID()}`);
+          Object.assign(rec(i, action, desc, true), { value, saved_as: args.name });
+          break;
+        }
+        case 'probe': case 'get_attribute': {
+          const r = await gui[action === 'probe' ? 'probe' : 'getAttribute'](operationArgs);
+          textCaptures.record(args, r);
+          steps.push({ action, ...r });
+          Object.assign(rec(i, action, desc, true), { value: r.value, saved_as: args.save_as, via: r.via });
+          break;
+        }
         case 'watch_network': case 'fault_route': case 'release_fault': case 'wait_network':
         case 'assert_network_count': case 'assert_fault_hits': case 'assert_list_from_response': {
-          const r = await gui.networkStep(action, args, target);
+          const r = await gui.networkStep(action, flow ? flow.argsFor(args) : args, target);
           steps.push({ action, ...r });
           const rep = rec(i, action, desc, r.pass !== false, r.pass === false ? `step${i + 1} ${action} 断言失败` : undefined);
           if (action.startsWith('assert_')) {
@@ -198,7 +256,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
           rec(i, action, desc, true);
           break;
         }
-        case "get_text": { const r = await gui.getText(operationArgs); textCaptures.record(args, r); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); rec(i, action, desc, true); break; }
+        case "get_text": { const r = await gui.getText(operationArgs); textCaptures.record(args, r); captured.push(`[文本] ${desc || target.key || target.selector}: ${r.text}`); steps.push({ action, ok: true, ...r }); Object.assign(rec(i, action, desc, true), {text:r.text, ...(args.save_as ? {saved_as:args.save_as} : {})}); break; }
         case "screenshot": {
           // 显式截图步:既落本地文件(兼容旧证据),又挂 Buffer 进报告。
           const r = await gui.screenshot(args.path || `evidence/step${i + 1}.png`);
@@ -267,6 +325,7 @@ export async function runScript(gui, script, log = () => {}, judgeFn = null) {
   }
   // 所有步骤(含断言/judge)通过
   const checks = steps.filter((s) => s.action.startsWith("assert") || s.action === "judge").length;
+  if (flow && !internal && checks === 0) return finish({verdict:'fail', fail_kind:'selector', reason:'本次分支没有执行任何业务断言', report, steps, duration_ms:Date.now()-started});
   return finish({
     verdict: "pass",
     reason: `结构化执行通过:${script.length} 步,${checks} 处判定全部满足`,

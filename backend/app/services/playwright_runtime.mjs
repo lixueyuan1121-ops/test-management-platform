@@ -145,6 +145,8 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     if ("state" in target || "selectedState" in target) throw error("INVALID_TARGET", "状态断言需要单独的状态选择器 key；不能忽略 state/selectedState");
     if (target.nth !== undefined && (!Number.isInteger(target.nth) || target.nth < 0)) throw error("INVALID_TARGET", "nth 必须是非负整数");
     if (target.has_text !== undefined && typeof target.has_text !== "string") throw error("INVALID_TARGET", "has_text 必须是字符串");
+    if (target.attribute && (!/^(data-[\w-]+|aria-[\w-]+|id|title|href|src|value)$/.test(target.attribute.name) || typeof target.attribute.value !== 'string'))
+      throw error('INVALID_TARGET', 'attribute 需要安全属性名和字符串值');
     if (target.has_text_exact !== undefined && (typeof target.has_text_exact !== 'boolean' || typeof target.has_text !== 'string' || !target.has_text.trim()))
       throw error('INVALID_TARGET', 'has_text_exact 必须为布尔值，且同时填写非空 has_text');
     if (target.key && !registry()?.[target.key]) throw error("UNKNOWN_KEY", `未定义语义 key "${target.key}"`);
@@ -171,6 +173,10 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
         if (cand.has_text !== undefined) loc = loc.filter({ hasText: cand.has_text });
         if (cand.nth !== undefined) loc = loc.nth(cand.nth);
         if (target.has_text !== undefined) loc = loc.filter({ hasText: target.has_text_exact ? exactTextPattern(target.has_text) : target.has_text });
+        if (target.attribute) {
+          const cssValue = target.attribute.value.replace(/[\\"\n\r\f\0]/g, c => c === '\\' || c === '"' ? '\\' + c : `\\${c === '\0' ? 'fffd' : c.codePointAt(0).toString(16)} `);
+          loc = loc.and(s.scope.locator(`[${target.attribute.name}="${cssValue}"]`));
+        }
         if (target.visible !== undefined) loc = loc.filter({ visible: !!target.visible });
         if (target.nth !== undefined) loc = loc.nth(target.nth);
         const count = await loc.count(); // 无效语法/失联 frame 不能变成“元素不存在”。
@@ -459,6 +465,31 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     async hover(args) { const r = await resolve(args); await r.loc.hover({ timeout: Math.max(1, limit(args)) }); return { hovered: args.key || args.selector, via: r.hit }; },
     async type(args) { const r = await resolve(args); await r.loc.pressSequentially(String(args.text ?? ""), { timeout: Math.max(1, limit(args)) }); return { typed: args.key || args.selector, via: r.hit }; },
     async getText(args) { const r = await resolve(args, { requireVisible: false }); return { text: await r.loc.evaluate(elementTextValue, undefined, { timeout: Math.max(1, limit(args)) }), via: r.hit }; },
+    async getAttribute(args) {
+      if (!/^(data-[\w-]+|aria-[\w-]+|id|title|href|src|value)$/.test(args.attribute_name)) throw error('INVALID_ATTRIBUTE', '不支持的捕获属性');
+      const r = await resolve(args);
+      const value = await r.loc.getAttribute(args.attribute_name, { timeout: Math.max(1, limit(args)) });
+      if (value === null) throw error('ATTRIBUTE_MISSING', `目标缺少属性 ${args.attribute_name}`);
+      return { value, via: r.hit };
+    },
+    async probe(args) {
+      // A valid loaded-state marker is mandatory; broken selectors/frame/network readiness
+      // must not silently become "no data" and trigger creation.
+      await resolve({ ...args.ready, timeout_ms: args.timeout_ms });
+      const end = Date.now() + args.timeout_ms;
+      let absentSince = null;
+      for (;;) {
+        const ready = await inspect(args.ready, { requireVisible: true });
+        if (!ready.count || !await ready.loc.isVisible()) throw error('DATA_NOT_READY', '数据就绪标记已消失，停止数据构造');
+        const r = await inspect(args, { requireVisible: true });
+        if (r.containerMissing) throw error('CONTAINER_MISSING', '探测的数据容器不存在');
+        if (r.count && await r.loc.isVisible()) return { value: true, via: r.hit };
+        absentSince ??= Date.now();
+        if (Date.now() - absentSince >= args.settle_ms) return { value: false, via: r.hit };
+        if (Date.now() >= end) throw error('DATA_NOT_READY', '未能确认稳定的空数据状态');
+        await sleep(Math.min(pollMs, Math.max(1, end - Date.now())));
+      }
+    },
     async waitFor(args) { const r = await resolve(args); return { visible: args.key || args.selector, via: r.hit }; },
   };
 }

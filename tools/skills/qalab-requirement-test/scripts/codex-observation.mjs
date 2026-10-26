@@ -1,7 +1,8 @@
 import { fingerprint } from './validate-evidence.mjs';
+import { usesFlow, validateFlowReport } from './script-flow.mjs';
 const need=(v,m)=>{if(!v)throw new Error(m);};
 const text=v=>typeof v==='string' && !!v.trim();
-export const normalizeScript=script=>script.map(s=>({action:String(s.action||'').trim(),target:s.target||{},args:s.args||{},desc:Array.from(String(s.desc||'')).slice(0,200).join('')}));
+export const normalizeScript=script=>script.map(s=>({action:String(s.action||'').trim(),target:s.target||{},args:s.args||{},desc:Array.from(String(s.desc||'')).slice(0,200).join(''),...Object.fromEntries(['when','phase'].filter(k=>Object.hasOwn(s,k)).map(k=>[k,s[k]]))}));
 
 export function validateCodexObservation(c) {
   need(['pass','fail'].includes(c.verdict) && c.executor==='codex','Codex 实测须明确 pass/fail 及 executor=codex');
@@ -14,6 +15,7 @@ export function validateCodexObservation(c) {
   const refs=new Set();
   for(const a of e.artifacts){need(text(a.id) && !refs.has(a.id) && ['log','trace','screenshot'].includes(a.kind) && text(a.reference),'证据引用须有唯一 id、kind 和 reference');refs.add(a.id);}
   need(e.script_sha256===fingerprint(normalizeScript(c.script)) && e.report_sha256===fingerprint(c.report),'脚本或报告与 Codex 实测包不一致；请核对真实操作并重验改动后的流程');
+  if (usesFlow(c.script)) { validateFlowReport(c,refs); return; }
   need(Array.isArray(c.report) && c.report.length>0 && c.report.length<=c.script.length && (c.verdict!=='pass' || c.report.length===c.script.length),'通过须覆盖全部步骤；失败只记录执行到失败处的前缀');
   const captures=new Map();
   c.report.forEach((r,i)=>{

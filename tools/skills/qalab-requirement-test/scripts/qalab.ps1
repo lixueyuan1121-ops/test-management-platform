@@ -116,6 +116,11 @@ if ($Action -eq 'preview') {
   exit
 }
 $networkActions = @('watch_network','fault_route','release_fault','wait_network','assert_network_count','assert_fault_hits','assert_list_from_response')
+$flowSteps = @($payload.cases | ForEach-Object { $_.script } | Where-Object { $_.action -eq 'flow_start' })
+if ($flowSteps.Count) {
+  $flowCaps = Call-Api 'GET' '/api/verified-imports/capabilities' $null $session.access_token
+  if ('script-flow-v1' -notin @($flowCaps.replay_protocols)) { throw '平台尚未支持 script-flow-v1；保留原包，更新平台后导入，不要求生成电脑安装 Runner' }
+}
 $required = @($payload.cases | ForEach-Object { $_.script } | Where-Object { $_.action -in $networkActions } | Select-Object -ExpandProperty action -Unique)
 if ($required.Count) {
   try { $caps = Call-Api 'GET' '/api/verified-imports/capabilities' $null $session.access_token }

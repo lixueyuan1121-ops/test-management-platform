@@ -31,6 +31,8 @@ node scripts/delivery.mjs init --plan plan.json --manifest delivery.json
 
 ## 3. 静态校验与封存
 
+使用 `script-flow-v1` 时，按 [数据准备契约](data-preparation.md) 记录完整序列、分支跳过和收尾；这是上节“失败仅前缀”的明确例外。执行过的业务失败仍原样保留，未执行主流程标记 previous_failure，收尾单独标记 phase。条件与 phase 参与脚本指纹，至少执行一个业务断言。
+
 Windows `scripts/qalab.ps1 -Action lint -BaseUrl <origin> -PayloadPath observed.json`；macOS `python3 scripts/qalab.py lint --base-url <origin> --payload observed.json`。lint 可在实测前检查草稿，不代表通过。
 
 ```sh

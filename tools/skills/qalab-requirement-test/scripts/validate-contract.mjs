@@ -5,27 +5,30 @@ import { isDeepStrictEqual } from 'node:util';
 import { validateNetworkScript, NETWORK_ACTIONS } from './network-contract.mjs';
 import { validateEvidence } from './validate-evidence.mjs';
 import { validateCodexObservation } from './codex-observation.mjs';
+import { FLOW_ACTIONS, validateFlow, isRef, validateAttribute } from './script-flow.mjs';
 
 const object = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = v => typeof v === 'string' && !!v.trim();
 const has = (v, k) => Object.hasOwn(v, k);
 const integer = (v, min = 0) => Number.isSafeInteger(v) && v >= min;
-const targeted = new Set(['click','hover','fill','type','set_checked','select_option','wait_for','get_text','assert_text','assert_visible','assert_absent','assert_list_from_response']);
-const actions = new Set([...targeted, ...NETWORK_ACTIONS, 'connect','press','wait_response','screenshot','mock_route','unmock_route']);
+const targeted = new Set(['click','hover','fill','type','set_checked','select_option','wait_for','get_text','get_attribute','probe','assert_text','assert_visible','assert_absent','assert_list_from_response']);
+const actions = new Set([...targeted, ...NETWORK_ACTIONS, ...FLOW_ACTIONS, 'connect','press','wait_response','screenshot','mock_route','unmock_route']);
 const ensure = (yes, message) => { if (!yes) throw new Error(message); };
 
 function targetCheck(t, label, depth = 0) {
   ensure(object(t) && (text(t.key) || text(t.selector)), `${label} 缺 target.key/selector`);
   ensure(depth <= 3, `${label} within 最多三层`);
   for (const k of ['key','selector','frame']) if (has(t,k)) ensure(text(t[k]), `${label} ${k} 必须为非空字符串`);
-  if (has(t,'has_text')) ensure(typeof t.has_text === 'string', `${label} has_text 必须为字符串`);
-  if (has(t,'has_text_exact')) ensure(typeof t.has_text_exact === 'boolean' && text(t.has_text), `${label} has_text_exact 需要布尔值及非空 has_text`);
+  if (has(t,'has_text')) ensure(typeof t.has_text === 'string' || isRef(t.has_text), `${label} has_text 必须为字符串`);
+  if (has(t,'has_text_exact')) ensure(typeof t.has_text_exact === 'boolean' && (text(t.has_text) || isRef(t.has_text)), `${label} has_text_exact 需要布尔值及非空 has_text`);
+  if (has(t,'attribute')) validateAttribute(t.attribute);
   if (has(t,'nth')) ensure(integer(t.nth), `${label} nth 必须是非负整数`);
   if (t.within != null) targetCheck(t.within, label, depth + 1);
 }
 
 export function validateScript(script, title = '') {
   ensure(Array.isArray(script) && script.length > 0, `${title} script 必须为非空数组`);
+  const flow = validateFlow(script);
   const captured = new Set();
   script.forEach((s, i) => {
     const label = `${title} 第${i+1}步「${s?.action || '?'}」`;
@@ -34,20 +37,21 @@ export function validateScript(script, title = '') {
     ensure(object(a), `${label} args 必须为对象`);
     ensure(s.target == null || object(s.target), `${label} target 必须为对象`);
     if (targeted.has(s.action) || (s.action === 'press' && s.target && Object.keys(s.target).length)) targetCheck(s.target,label);
+    if (s.action === 'probe') targetCheck(a.ready,label+' ready');
     if (has(a,'timeout_ms')) ensure(integer(a.timeout_ms), `${label} timeout_ms 必须是非负整数`);
     for (const k of ['contains','negate','if_visible']) if (has(a,k)) ensure(typeof a[k] === 'boolean', `${label} ${k} 必须为布尔值`);
-    if (['fill','type'].includes(s.action)) ensure(typeof a.text === 'string', `${label} 缺 args.text（空字符串可用于清空）`);
+    if (['fill','type'].includes(s.action)) ensure(typeof a.text === 'string' || isRef(a.text), `${label} 缺 args.text（空字符串可用于清空）`);
     if (s.action === 'press') ensure(text(a.key_name), `${label} 缺 args.key_name；不能用 args.key`);
-    if (s.action === 'set_checked') ensure(typeof a.checked === 'boolean', `${label} 缺布尔值 args.checked`);
-    if (s.action === 'select_option') ensure(typeof a.values === 'string' || (Array.isArray(a.values) && a.values.every(v=>typeof v==='string')), `${label} 缺 args.values`);
+    if (s.action === 'set_checked') ensure(typeof a.checked === 'boolean' || isRef(a.checked), `${label} 缺布尔值 args.checked`);
+    if (s.action === 'select_option') ensure(typeof a.values === 'string' || isRef(a.values) || (Array.isArray(a.values) && a.values.every(v=>typeof v==='string' || isRef(v))), `${label} 缺 args.values`);
     if (s.action === 'click' && has(a,'click_count')) ensure(integer(a.click_count,1), `${label} click_count 必须为正整数`);
     if (['mock_route','unmock_route'].includes(s.action)) ensure(text(a.url), `${label} 缺 args.url`);
-    if (has(a,'save_as')) {
+    if (!flow && has(a,'save_as')) {
       ensure(s.action === 'get_text' && typeof a.save_as === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(a.save_as) && !captured.has(a.save_as), `${label} save_as 无效或重复`);
       captured.add(a.save_as);
     }
-    if (has(a,'expected_from')) ensure(s.action === 'assert_text' && captured.has(a.expected_from) && !has(a,'expected'), `${label} expected_from 必须引用之前 get_text 保存的值，且不能同时提供 expected`);
-    else if (s.action === 'assert_text') ensure(typeof a.expected === 'string', `${label} 缺字符串 args.expected 或有效 expected_from`);
+    if (!flow && has(a,'expected_from')) ensure(s.action === 'assert_text' && captured.has(a.expected_from) && !has(a,'expected'), `${label} expected_from 必须引用之前 get_text 保存的值，且不能同时提供 expected`);
+    else if (s.action === 'assert_text' && !has(a,'expected_from')) ensure(typeof a.expected === 'string' || isRef(a.expected), `${label} 缺字符串 args.expected 或有效 expected_from`);
   });
   validateNetworkScript(script);
   ensure(script.some(s=>s.action.startsWith('assert_')), `${title} 缺少业务断言`);

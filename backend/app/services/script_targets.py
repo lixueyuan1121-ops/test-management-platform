@@ -1,12 +1,14 @@
 """Offline GUI target shape checks; no DOM lookup, key registry or script rewriting.
 Keep the standalone skill copy and backend copy behavior aligned by contract tests.
 """
+from app.services.script_flow import validate_flow, is_ref, validate_attribute
 TARGET_ACTIONS = frozenset(("click", "hover", "fill", "type", "set_checked", "select_option",
-                            "wait_for", "get_text", "assert_text", "assert_visible", "assert_absent", "assert_list_from_response"))
+                            "wait_for", "get_text", "get_attribute", "probe", "assert_text", "assert_visible", "assert_absent", "assert_list_from_response"))
 
 VALID_ACTIONS = TARGET_ACTIONS | {"connect", "press", "wait_response", "screenshot", "mock_route", "unmock_route"}
 NETWORK_ACTIONS = {"watch_network", "fault_route", "release_fault", "wait_network", "assert_network_count", "assert_fault_hits", "assert_list_from_response"}
 VALID_ACTIONS |= NETWORK_ACTIONS
+VALID_ACTIONS |= {"flow_start", "set_var"}
 
 def validate_network_script(script):
     import re
@@ -70,6 +72,7 @@ def validate_targets(script, title=""):
     if not isinstance(script, list) or not script:
         raise ValueError(f"{title}: script 必须是非空数组")
     if all(isinstance(s, dict) for s in script):
+        validate_flow(script)
         validate_network_script(script)
     for index, step in enumerate(script, 1):
         prefix = f"{title}: 第 {index} 步"
@@ -86,6 +89,22 @@ def validate_targets(script, title=""):
             raise ValueError(f"{prefix}「{action}」target 必须是对象，定位写入 target.selector 或 target.key")
         if step.get("args") is not None and not isinstance(step["args"], dict):
             raise ValueError(f"{prefix}「{action}」args 必须是对象")
+        args = step.get('args') or {}
+        if action == 'probe':
+            ready, ready_depth = args.get('ready'), 0
+            while ready is not None:
+                if not isinstance(ready, dict) or not any(isinstance(ready.get(k), str) and ready[k].strip() for k in ('key','selector')) or ready_depth > 3:
+                    raise ValueError(f'{prefix} ready 缺少有效定位')
+                if 'attribute' in ready: validate_attribute(ready['attribute'])
+                if 'has_text' in ready and not (isinstance(ready['has_text'], str) or is_ref(ready['has_text'])):
+                    raise ValueError(f'{prefix} ready.has_text 无效')
+                ready, ready_depth = ready.get('within'), ready_depth + 1
+        if action in ('fill', 'type') and not (isinstance(args.get('text'), str) or is_ref(args.get('text'))):
+            raise ValueError(f'{prefix} 缺 args.text')
+        if action == 'assert_text' and 'expected_from' not in args and not (isinstance(args.get('expected'), str) or is_ref(args.get('expected'))):
+            raise ValueError(f'{prefix} 缺 args.expected')
+        if action == 'set_checked' and not (type(args.get('checked')) is bool or is_ref(args.get('checked'))):
+            raise ValueError(f'{prefix} 缺 args.checked')
         if action.strip() not in TARGET_ACTIONS and not (action.strip() == "press" and target):
             continue
         current, depth = target, 0
@@ -96,10 +115,12 @@ def validate_targets(script, title=""):
             for key in ("key", "selector"):
                 if key in current and (not isinstance(current[key], str) or not current[key].strip()):
                     raise ValueError(f"{prefix}「{action}」{key} 必须为非空字符串")
-            if "has_text" in current and not isinstance(current["has_text"], str):
+            if "has_text" in current and not isinstance(current["has_text"], str) and not is_ref(current["has_text"]):
                 raise ValueError(f"{prefix} has_text 必须是字符串")
-            if "has_text_exact" in current and (type(current["has_text_exact"]) is not bool or not isinstance(current.get("has_text"), str) or not current["has_text"].strip()):
+            if "has_text_exact" in current and (type(current["has_text_exact"]) is not bool or not (is_ref(current.get("has_text")) or isinstance(current.get("has_text"), str) and current["has_text"].strip())):
                 raise ValueError(f"{prefix} has_text_exact 必须为布尔值，且同时填写非空 has_text")
+            if "attribute" in current:
+                validate_attribute(current["attribute"])
             current = current.get("within")
             if current is None:
                 break

@@ -28,7 +28,7 @@ export function validateEvidence(c, {strict = false} = {}) {
       throw new Error(`${c.title}: 执行器版本证据不完整`);
     if (strict && (!Array.isArray(e.repeat_report_sha256) || e.repeat_report_sha256.length !== 2 || !e.repeat_report_sha256.every(hash) || e.repeat_report_sha256[1] !== e.report_sha256))
       throw new Error(`${c.title}: 缺少两次报告指纹或最后一次指纹不一致`);
-    const script = c.script.map(s => ({ action: String(s.action || '').trim(), target: s.target || {}, args: s.args || {}, desc: Array.from(String(s.desc || '')).slice(0,200).join('') }));
+    const script = c.script.map(s => ({ action: String(s.action || '').trim(), target: s.target || {}, args: s.args || {}, desc: Array.from(String(s.desc || '')).slice(0,200).join(''), ...Object.fromEntries(['when','phase'].filter(k=>Object.hasOwn(s,k)).map(k=>[k,s[k]])) }));
     const contract = { script, precondition: (c.precondition || '').trim(), selector_registry: c.selector_registry || {} };
     if (e.version !== 'qalab-execution-v1' || e.script_sha256 !== fingerprint(script) || e.contract_sha256 !== fingerprint(contract) || e.report_sha256 !== fingerprint(c.report))
       throw new Error(`${c.title}: 脚本、选择器快照或报告与实测证据不一致，请重跑最终脚本；不要手改 Runner 回填包`);

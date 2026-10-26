@@ -30,7 +30,8 @@ def fingerprint(value):
 def normalize_script(script):
     if not isinstance(script, list) or not script: raise ValueError('需要非空平台 script 数组')
     return [dict(action=str(s.get('action') or '').strip(), target=s.get('target') or {},
-                 args=s.get('args') or {}, desc=str(s.get('desc') or '')[:200]) for s in script]
+                 args=s.get('args') or {}, desc=str(s.get('desc') or '')[:200],
+                 **{k: s[k] for k in ('when', 'phase') if k in s}) for s in script]
 
 
 def execution_contract(payload):

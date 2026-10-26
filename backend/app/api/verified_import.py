@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/verified-imports", tags=["verified-imports"])
 @router.get('/capabilities')
 def capabilities(user: User = Depends(get_current_user)):
     from app.services.script_targets import VALID_ACTIONS
-    return ok({'replay_protocols': ['network-scenarios-v1'], 'actions': sorted(VALID_ACTIONS),
+    return ok({'replay_protocols': ['network-scenarios-v1', 'script-flow-v1'], 'actions': sorted(VALID_ACTIONS),
                'import_modes': ['verified', 'codex'], 'codex_evidence_protocol': 'qalab-codex-v1'})
 
 

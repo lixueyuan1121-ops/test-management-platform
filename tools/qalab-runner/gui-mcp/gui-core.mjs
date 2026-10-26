@@ -531,6 +531,8 @@ export function createGuiCore(opts = {}) {
       return { escaped: os, layer: "os" };
     },
     async getText(args) { await ensureConnected(); return runtime.getText(args); },
+    async getAttribute(args) { await ensureConnected(); return runtime.getAttribute(args); },
+    async probe(args) { await ensureConnected(); return runtime.probe(args); },
     async waitFor(args) { await ensureConnected(); return runtime.waitFor(args); },
     async captureResponse(args) { await ensureConnected(); return runtime.captureResponse(args); },
     async waitResponse(args) { await ensureConnected(); return runtime.waitResponse(args); },

@@ -15,6 +15,10 @@ def validate_codex_observation(case):
     refs = {a.id for a in evidence.artifacts}
     if len(refs) != len(evidence.artifacts):
         raise ValueError('证据 id 必须唯一')
+    from app.services.script_flow import uses_flow, validate_flow_report
+    if uses_flow(case.script):
+        validate_flow_report(case, refs)
+        return
     if len(case.report) > len(case.script) or (case.verdict == 'pass' and len(case.report) != len(case.script)):
         raise ValueError('通过须覆盖全部步骤；失败仅记录实际执行到失败处的前缀')
     captures = {}
