@@ -337,6 +337,16 @@ test('upstream XPath candidates and form values survive the shared runtime and e
 });
 
 
+test('rich text captures, assertions and exports preserve logical newlines', async () => {
+  await page.setContent('<div id="editor" contenteditable="true"><p>x = 667</p><p><br></p><p>    print(x)<br>done</p></div>');
+  const expected = 'x = 667\n\n    print(x)\ndone';
+  const rt = createAutomationRuntime({ page, timeout: 500, pollMs: 15 });
+  assert.equal((await rt.getText({ selector: '#editor' })).text, expected);
+  assert.equal((await rt.assertText({ selector: '#editor', expected })).pass, true);
+  assert.equal((await rt.assertText({ selector: '#editor', expected: 'x = 667print(x)done', timeout_ms: 30 })).pass, false);
+  await runExport(await exported([{ action:'assert_text', target:{selector:'#editor'}, args:{expected} }], {}));
+});
+
 test('表单状态动作在导出脚本中等价执行', async () => {
   await page.setContent('<input type="checkbox" data-testid="check"><select data-testid="select"><option value="a">A</option><option value="b">B</option></select>');
   const reg = {check:{frame:'shell',candidates:[{by:'testid',value:'check'}]}, select:{frame:'shell',candidates:[{by:'testid',value:'select'}]}};

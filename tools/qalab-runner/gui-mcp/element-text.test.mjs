@@ -27,3 +27,24 @@ test("null/缺字段兜底空串,不抛错", () => {
   assert.equal(elementTextValue({ tagName: "DIV" }), "");
   assert.equal(elementTextValue({}), "");
 });
+
+const textNode = textContent => ({ nodeType: 3, textContent });
+const node = (tagName, ...childNodes) => ({ nodeType: 1, tagName, childNodes });
+const editor = (...children) => ({ ...node("DIV", ...children), isContentEditable: true });
+
+test("rich editor preserves paragraph breaks and empty lines without CSS paragraph spacing", () => {
+  assert.equal(elementTextValue(editor(node("P", textNode("x = 667")), node("P", textNode("print(x)")))), "x = 667\nprint(x)");
+  assert.equal(elementTextValue(editor(node("P", textNode("a")), node("P", node("BR")), node("P", textNode("b")))), "a\n\nb");
+  assert.equal(elementTextValue(editor(node("P", node("BR")))), "");
+});
+
+test("rich editor preserves explicit BRs, indentation and inline formatting", () => {
+  assert.equal(elementTextValue(editor(node("P", node("STRONG", textNode("if ok:")), node("BR"), textNode("    run()")))), "if ok:\n    run()");
+  const trailing = { ...node("BR"), classList: { contains: name => name === "ProseMirror-trailingBreak" } };
+  assert.equal(elementTextValue(editor(node("P", textNode("a"), node("BR"), trailing))), "a\n");
+});
+
+test("non-waiting assertion snapshots use the same rich text and form semantics", () => {
+  assert.deepEqual(elementTextValue([editor(node("P", textNode("a")), node("P", textNode("b"))), {tagName:"INPUT",value:"23"}]), ["a\nb", "23"]);
+  assert.deepEqual(elementTextValue([]), []);
+});

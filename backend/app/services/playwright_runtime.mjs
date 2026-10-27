@@ -44,11 +44,34 @@ export function mergeCandidates(...groups) {
 }
 
 export function elementTextValue(el) {
+  // Also usable as evaluateAll's callback, so assertions and captures share
+  // identical semantics without a waiting locator read at the timeout boundary.
+  if (Array.isArray(el)) return el.map(elementTextValue);
   if (!el) return "";
   const tag = String(el.tagName || "").toUpperCase();
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
     // 表单控件:值在 .value(空串是合法值,直接返回,不回落 textContent 以免读到无关文本)
     return el.value == null ? "" : String(el.value);
+  }
+  if (el.isContentEditable && el.childNodes) {
+    // Rich editors encode line breaks as paragraphs or BRs. textContent joins
+    // paragraphs; innerText can add two newlines for a single paragraph break.
+    // Read the logical lines, preserving intentional empty paragraphs and BRs.
+    const block = node => /^(P|DIV|LI|UL|OL|PRE|BLOCKQUOTE|H[1-6])$/.test(node.tagName || "");
+    const read = node => {
+      if (node.nodeType === 3) return node.textContent || "";
+      if (node.tagName === "BR") return node.classList?.contains("ProseMirror-trailingBreak") ? "" : "\n";
+      const children = Array.from(node.childNodes || []);
+      if (children.length === 1 && children[0].tagName === "BR") return "";
+      let text = "", previous = null;
+      for (const child of children) {
+        if (previous && (block(previous) || block(child))) text += "\n";
+        text += read(child);
+        previous = child;
+      }
+      return text;
+    };
+    return read(el);
   }
   return el.textContent == null ? "" : String(el.textContent);
 }
@@ -322,11 +345,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
             // Read a fresh non-waiting snapshot. Giving textContent the last 1ms
             // of the assertion budget can turn a normal failed assertion into an
             // infrastructure timeout, even when the node exists.
-            const texts = await r.loc.evaluateAll((elements) => elements.map((el) => {
-              // Browser snapshots must also preserve upstream form-value assertions.
-              const isInput = ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
-              return String((isInput ? el.value : el.textContent) ?? "").trim();
-            }));
+            const texts = (await r.loc.evaluateAll(elementTextValue)).map(text => text.trim());
             if (texts.length > 1) throw error("AMBIGUOUS_TARGET", "断言过程中目标变为多个匹配");
             actual = texts[0] ?? null;
             locatable = texts.length === 1;
