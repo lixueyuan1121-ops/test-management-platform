@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import String, Text, Date, DateTime, Enum, ForeignKey, Numeric, Boolean, func
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.enums import TaskStatus, TaskPriority
@@ -24,8 +25,9 @@ class Task(Base):
     source_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     assignment_revision: Mapped[int] = mapped_column(default=0, server_default="0")
-    title: Mapped[str] = mapped_column(String(255))
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 20000 个字符可能超过 MySQL TEXT 的 64 KiB（例如四字节字符）。
+    title: Mapped[str] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"))
+    description: Mapped[str | None] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=True)
     module: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 被测项目/模块
     requirement_url: Mapped[str | None] = mapped_column(String(512), nullable=True)  # 需求地址
     developer: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 开发

@@ -82,6 +82,7 @@ def ensure_task_columns() -> None:
     cols = _columns("task")
     if not cols:
         return  # 表尚未建，交给 create_all
+    ensure_task_text_capacity()
     if engine.dialect.name == "mysql":
         owner_column = next(c for c in inspect(engine).get_columns("task") if c["name"] == "assigned_to")
         if not owner_column["nullable"]:
@@ -117,6 +118,19 @@ def ensure_task_columns() -> None:
                 conn.execute(text(f"ALTER TABLE task ADD COLUMN {name} {sql_type} NULL"))
     _ensure_index("task", "idx_task_release_record", "release_record_id")
     ensure_task_ingest_columns()
+
+
+def ensure_task_text_capacity() -> None:
+    """只扩大 MySQL 文本容量；不改写历史任务，也不重建 SQLite 关联表。"""
+    if engine.dialect.name != 'mysql':
+        return
+    columns = {c['name']: c for c in inspect(engine).get_columns('task')}
+    for name in ('title', 'description'):
+        column = columns.get(name)
+        if column and str(column['type']).upper() not in ('MEDIUMTEXT', 'LONGTEXT'):
+            nullable = 'NULL' if column['nullable'] else 'NOT NULL'
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE task MODIFY COLUMN {name} MEDIUMTEXT {nullable}'))
 
 
 def ensure_task_ingest_columns() -> None:

@@ -1,0 +1,94 @@
+--- a/lib/platform-report.ts
++++ b/lib/platform-report.ts
+@@ -23,21 +23,28 @@
+   return ['p0', 'p1', 'p2', 'p3'].includes(v) ? v : 'p2';
+ }
+ 
+-/** board entry 无 title，用「模块」+ 提测单号拼一个可读标题 */
++/** 功能/需求使用任务说明全文；说明缺失时保留原来的模块/单号兜底。 */
+ export function buildTaskTitle(entry: BoardEntry): string {
+-  return `【${entry.module}】提测 ${entry.ticketId}`;
++  return entry.description?.trim() ? entry.description : `【${entry.module}】提测 ${entry.ticketId}`;
+ }
+ 
+ /**
+  * 把一条 board entry 组装成平台建任务入参。
+  * assignedToId 由调用方按 assignee(=平台 username) 查得后传入。
+- * 需求说明→description、需求地址→requirement_url、提测人→developer。
++ * 需求说明全文→title/description，单号保留在说明尾部用于重复同步定位。
++ * 需求地址→requirement_url、提测人→developer。
+  */
+ export function entryToTaskPayload(
+   entry: BoardEntry,
+   projectId: number,
+   assignedToId: number | null,
+ ): Record<string, unknown> {
++  const description = entry.description || `由 qa-dispatch-agent 自动派单同步。提测单：${entry.ticketId}`;
++  // 标题不再含单号，仍需让原有去重与状态同步找到同一任务。
++  const tracedDescription = description.includes(entry.ticketId)
++    ? description : `${description}
++
++提测单：${entry.ticketId}`;
+   return {
+     project_id: projectId,
+     title: buildTaskTitle(entry),
+@@ -45,7 +52,7 @@
+     priority: toPlatformPriority(entry.priority),
+     assigned_to: assignedToId,
+     assigned_date: entry.assignedAt,
+-    description: entry.description || `由 qa-dispatch-agent 自动派单同步。提测单：${entry.ticketId}`,
++    description: tracedDescription,
+     requirement_url: entry.requirementUrl ?? null,
+     developer: entry.requester ?? null,
+   };
+--- a/lib/platform-report.test.ts
++++ b/lib/platform-report.test.ts
+@@ -54,7 +54,8 @@
+     requester: '谢淼',
+   };
+   const payload = entryToTaskPayload(full, 7, 42);
+-  assert.equal(payload.description, '任务分享页优化，统一框架与排版修复');
++  assert.equal(payload.title, full.description);
++  assert.equal(payload.description, full.description + '\n\n提测单：JIRA-123');
+   assert.equal(
+     payload.requirement_url,
+     'https://geelib.qihoo.net/geelib/project/matterType/19262?subId=6548&matterId=963849&typeId=19262',
+@@ -223,3 +224,38 @@
+     server.close();
+   }
+ });
++
++
++test('完整说明成为标题并在重复同步时按单号去重', async () => {
++  const description = '问题与修复说明\n' + '中'.repeat(19992);
++  const tasks: any[] = [];
++  const server = http.createServer(async (req, res) => {
++    res.setHeader('Content-Type', 'application/json');
++    let data: any;
++    if (req.url === '/api/auth/login') data = { access_token: 'test-token' };
++    else if (req.url === '/api/projects') data = [{ id: 1, code: 'nami_pc' }];
++    else if (req.method === 'GET' && req.url === '/api/tasks?project_id=1') data = tasks;
++    else if (req.method === 'POST' && req.url === '/api/tasks') {
++      const chunks = [];
++      for await (const chunk of req) chunks.push(chunk);
++      const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
++      data = { ...payload, id: 51 }; tasks.push(data);
++    } else { res.statusCode = 404; res.end('{}'); return; }
++    res.end(JSON.stringify({ code: 0, data }));
++  });
++  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
++  const cfg: PlatformConfig = { enabled: true, baseUrl: `http://127.0.0.1:${(server.address() as any).port}`,
++    projectCode: 'nami_pc', username: 'user', password: 'test' };
++  const item = { ...entry, assignee: 'unassigned', description };
++  try {
++    assert.equal((await reportEntries(cfg, [item])).created, 1);
++    assert.equal(tasks[0].title, description);
++    assert.equal(tasks[0].assigned_to, null);
++    assert.equal(findTaskIdByTicketId(tasks, entry.ticketId), 51);
++    const repeated = await reportEntries(cfg, [item]);
++    assert.equal(repeated.created, 0);
++    assert.deepEqual(repeated.alreadyExists, [entry.ticketId]);
++    assert.equal(tasks.length, 1);
++    assert.equal(buildTaskTitle({ ...entry, description: '  ' }), '【支付】提测 JIRA-123');
++  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
++});

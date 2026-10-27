@@ -25,7 +25,7 @@ class TaskLedgerFields(BaseModel):
 
 class TaskCreate(TaskLedgerFields):
     project_id: int
-    title: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=20000)
     description: str | None = None
     module: str | None = None
     requirement_url: str | None = None
@@ -37,7 +37,7 @@ class TaskCreate(TaskLedgerFields):
 
 
 class TaskUpdate(TaskLedgerFields):
-    title: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=20000)
     description: str | None = None
     module: str | None = None
     requirement_url: str | None = None
@@ -87,7 +87,7 @@ class TaskIngest(BaseModel):
     project_id: int = Field(gt=0)
     source_group_id: Literal['7652669649127481'] = '7652669649127481'
     source_message_id: str = Field(min_length=1, max_length=128)
-    title: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=20000)
     description: str = Field(min_length=1, max_length=20000)
     module: str | None = Field(default=None, max_length=128)
     requirement_url: str | None = Field(default=None, max_length=512)

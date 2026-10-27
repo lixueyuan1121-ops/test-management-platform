@@ -170,7 +170,7 @@
 
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="min(720px, 96vw)" :close-on-click-modal="false" :show-close="!dialog.saving" :close-on-press-escape="!dialog.saving">
       <el-form :model="form" :disabled="dialog.saving" label-width="116px">
-        <el-form-item label="功能/需求" required><el-input v-model="form.title" maxlength="255" /></el-form-item>
+        <el-form-item label="功能/需求" required><el-input v-model="form.title" type="textarea" :autosize="{ minRows: 2, maxRows: 8 }" maxlength="20000" show-word-limit /></el-form-item>
         <el-form-item label="需求文档"><el-input v-model="form.requirement_url" placeholder="http://..." /></el-form-item>
         <el-form-item label="开发负责人"><el-input v-model="form.developer" placeholder="开发人员姓名" /></el-form-item>
         <el-form-item label="模块"><el-input v-model="form.module" /></el-form-item>
@@ -204,10 +204,11 @@
     </el-dialog>
 
     <!-- 任务详情抽屉（只读回溯）-->
-    <el-drawer v-model="detail.visible" :title="`任务详情 · ${detail.row?.title || ''}`" size="min(640px, 100vw)">
+    <el-drawer v-model="detail.visible" title="任务详情" size="min(640px, 100vw)">
       <div v-if="detail.row" class="detail">
         <p v-if="detail.row.is_ingested" class="d-row"><span class="d-k">任务来源</span> 机器人自动录入</p>
-        <p class="d-row"><span class="d-k">任务名称</span> {{ detail.row.title || '—' }}</p>
+        <p class="d-row"><span class="d-k">功能/需求</span></p>
+        <pre class="d-pre">{{ detail.row.title || '—' }}</pre>
         <p class="d-row"><span class="d-k">状态</span>
           <el-tag :type="STATUS_META[detail.row.status]?.type || 'info'" effect="light" size="small">
             {{ STATUS_META[detail.row.status]?.label || detail.row.status }}

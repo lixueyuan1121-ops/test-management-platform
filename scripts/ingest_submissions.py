@@ -58,6 +58,8 @@ def ingest_batch(config, entries, probe_only=False):
         try:
             # 仅用已配置的项目，输入不允许切换目的平台/项目或设置负责人。
             payload = dict(entry)
+            if isinstance(entry.get('description'), str) and entry['description'].strip():
+                payload['title'] = entry['description']
             payload['project_id'] = project['id']
             payload['source_group_id'] = '7652669649127481'
             data = request(base, '/api/tasks/ingest', token=token, body=payload)

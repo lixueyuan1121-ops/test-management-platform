@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -144,6 +144,7 @@ class IngestTests(unittest.TestCase):
         self.assertIsNone(task['assigned_to'])
         self.assertEqual(task['status'], 'unassigned')
         self.assertEqual(task['description'], self.payload['description'])
+        self.assertEqual(task['title'], self.payload['description'])
         self.assertEqual(task['source_message_id'], self.payload['source_message_id'])
         self.sender.assert_not_called()
         result = self.update(task['id'], {'title': '管理员修订', 'assigned_to': 3})
@@ -165,7 +166,7 @@ class IngestTests(unittest.TestCase):
         content, group = self.sender.call_args.args
         self.assertEqual(group, '7652944526714832')
         self.assertEqual(self.sender.call_args.kwargs['at_accounts'], ['domain3'])
-        for fragment in ['【测试任务派单】', '用户3', '张三', self.payload['title'], self.payload['description'],
+        for fragment in ['【测试任务派单】', '用户3', '张三', self.payload['description'],
                          f'https://platform.example/tasks?project_id=1&task_id={tid}']:
             self.assertIn(fragment, content)
         for body in [{'assigned_to': 3}, {'progress_note': '补充信息'}, {'status': 'testing'}]:
@@ -191,6 +192,55 @@ class IngestTests(unittest.TestCase):
         for extra in [{'assigned_to': 3}, {'status': 'testing'}, {'source_group_id': 'wrong'},
                       {'source_message_id': 7652944526719730123}, {'title': '  '}, {'requirement_url': 'javascript:alert(1)'}]:
             self.assertEqual(self.client.post('/api/tasks/ingest', json={**self.payload, **extra}, headers=self.headers).status_code, 422)
+
+    def test_full_description_survives_ingest_list_and_edit(self):
+        content = '第一行\n' + '🙂' * 19996
+        task = self.ingest(description=content)['task']
+        self.assertEqual(task['title'], content)
+        self.assertEqual(task['description'], content)
+        listed = self.client.get('/api/tasks?project_id=1', headers=self.headers).json()['data']
+        self.assertEqual(next(t for t in listed if t['id'] == task['id'])['title'], content)
+        response = self.update(task['id'], {'title': content, 'progress_note': '保留原文'})
+        self.assertEqual(response.status_code, 200, response.text)
+        with self.sessions() as db:
+            self.assertEqual(db.get(Task, task['id']).title, content)
+        self.sender.assert_not_called()
+
+    def test_manual_create_accepts_long_title_without_overriding_it(self):
+        content = '功能说明\n' + '中文🙂' * 400
+        task = self.create_manual(title=content, description='补充任务说明')
+        self.assertEqual(task['title'], content)
+        self.assertEqual(task['description'], '补充任务说明')
+        for body in ({'title': '字' * 20001}, {'title': ''}):
+            self.assertEqual(self.update(task['id'], body).status_code, 422)
+        self.assertEqual(self.client.post('/api/tasks', headers=self.headers, json={
+            'project_id': 1, 'title': '字' * 20001, 'assigned_date': date.today().isoformat(),
+        }).status_code, 422)
+        self.assertEqual(self.client.post('/api/tasks/ingest', headers=self.headers, json={
+            **self.payload, 'description': '字' * 20001,
+        }).status_code, 422)
+
+    def test_mysql_text_capacity_expands_without_rewriting_rows(self):
+        from sqlalchemy import String, Text
+        from sqlalchemy.dialects.mysql import MEDIUMTEXT, LONGTEXT, dialect
+        fake_engine = MagicMock()
+        fake_engine.dialect.name = 'mysql'
+        columns = [dict(name='title', type=String(255), nullable=False),
+                   dict(name='description', type=Text(), nullable=True)]
+        with patch.object(migrate, 'engine', fake_engine), patch.object(migrate, 'inspect') as inspector:
+            inspector.return_value.get_columns.return_value = columns
+            migrate.ensure_task_text_capacity()
+            executed = fake_engine.begin.return_value.__enter__.return_value.execute.call_args_list
+            self.assertEqual([str(c.args[0]) for c in executed], [
+                'ALTER TABLE task MODIFY COLUMN title MEDIUMTEXT NOT NULL',
+                'ALTER TABLE task MODIFY COLUMN description MEDIUMTEXT NULL',
+            ])
+            columns[0]['type'], columns[1]['type'] = MEDIUMTEXT(), LONGTEXT()
+            fake_engine.reset_mock()
+            migrate.ensure_task_text_capacity()
+            fake_engine.begin.assert_not_called()
+        for name in ('title', 'description'):
+            self.assertEqual(Task.__table__.c[name].type.compile(dialect=dialect()), 'MEDIUMTEXT')
 
     def test_only_admin_may_assign_and_only_valid_project_members(self):
         tid = self.ingest()['task']['id']

@@ -61,6 +61,8 @@ def ingest_task(body: TaskIngest, db: Session = Depends(get_db), user: User = De
     if existing:
         return ok({'created': False, 'task': _to_out(db, existing)})
     values = body.model_dump(exclude={'assigned_date'})
+    # 提测内容直接作为功能/需求，避免调用方的摘要丢掉完整任务说明。
+    values['title'] = body.description
     task = Task(**values, ingest_key=key, assigned_by=user.id, assigned_to=None,
                 assigned_date=body.assigned_date or datetime.now(ZoneInfo('Asia/Shanghai')).date(),
                 status=TaskStatus.unassigned)

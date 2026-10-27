@@ -5,6 +5,7 @@
 ## 行为
 
 - 原机器人继续识别并转发提测内容，同时提交 `POST /api/tasks/ingest`。
+- 新同步任务的“功能/需求”（title）填写“任务说明”（description）完整原文，保留换行，不做摘要或截断，最多 20000 字。录入接口统一应用此映射，Mac 桥接脚本同步映射；历史记录及重复同步时的人工修改保持原样。
 - 入库时负责人为空、状态为 `unassigned`（待分配），不创建派单、验收或执行流程。
 - 按项目、转发群与原消息 ID 去重。重复提交返回已有任务，不覆盖人工编辑或负责人。
 - 项目/平台管理员在任务编辑中填写或更换有效项目成员后保存，发送一条任务派单消息。支持多人负责人，合并为一条通知；相同负责人重复保存、普通字段修改、自动录入均不发送。
@@ -17,6 +18,10 @@
 
 ## 自动录入接口
 
+2026-10-27 字段调整：先部署平台容量扩展，再更新 Mac 的同步脚本。`task.title` 和 `task.description` 在 MySQL 中使用 MEDIUMTEXT，覆盖 20000 字的四字节字符；迁移仅扩容，不回写历史内容。普通任务创建/编辑同样支持长功能说明，人工填写的标题不会被 description 覆盖。
+
+当前云端登记后的 Mac 回填还使用 `/Users/lixueyuan/code/daily_test/qa-dispatch-agent/lib/platform-report.ts` 的普通任务入口。此入口的 `buildTaskTitle` 应优先返回 `entry.description` 全文，无说明才沿用模块/单号兜底。原先去重和状态查找依赖标题里的单号，因此单号改留在任务说明末尾；业务原文不截断。对应变更见 `qa-dispatch-description-title.patch`，发布平台后应用到 `qa-dispatch-agent`；不要运行全量补报来验证，也不要修改自动化周期。
+
 使用现有平台管理员账号 Bearer access token，或配置专用 `TASK_INGEST_TOKEN`、`TASK_INGEST_USER_ID` 后传 `X-Task-Ingest-Token`。专用令牌仅适用于录入接口，关联账号必须对目标项目有管理员权限。
 
 ```json
@@ -24,7 +29,7 @@
   "project_id": 1,
   "source_group_id": "7652669649127481",
   "source_message_id": "原始源消息ID（字符串）",
-  "title": "搜索功能提测",
+  "title": "来源群、发送人、北京时间、原消息ID及完整提测原文",
   "description": "来源群、发送人、北京时间、原消息ID及完整提测原文",
   "developer": "原消息中的开发负责人",
   "requirement_url": "https://example.com/需求文档",

@@ -37,5 +37,20 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(request.call_count, 3)
 
 
+    def test_description_becomes_title_without_truncation_or_mutating_input(self):
+        config = dict(baseUrl='http://localhost', username='u', password='test', projectCode='nami_pc')
+        content = '问题与修复说明\n' + '中文🙂' * 1000
+        entry = {'source_message_id': '123', 'title': '旧摘要', 'description': content}
+        replies = [{'paths': {'/api/tasks/ingest': {'post': {}}}}, {'access_token': 'test-token'},
+                   [{'id': 7, 'code': 'nami_pc'}], {'task': {'id': 10}, 'created': True}]
+        with patch.object(bridge, 'request', side_effect=replies) as request:
+            self.assertTrue(bridge.ingest_batch(config, [entry])['ok'])
+            payload = request.call_args.kwargs['body']
+            self.assertEqual(payload['title'], content)
+            self.assertEqual(payload['description'], content)
+            self.assertNotIn('assigned_to', payload)
+            self.assertEqual(entry['title'], '旧摘要')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -21,7 +21,7 @@
 
 第四步：先为每条新识别提测建立独立待录入记录，再转发。
 在 qa-dispatch-agent/runs/platform_ingest_queue.json 保存记录数组。每项以 source_message_id 精确去重，结构为 {"source_message_id":"原msgid","forwarded":false,"ingested":false,"payload":{...}}。读取/更新队列应加互斥锁，并用临时文件+原子替换保存。若找不到目录或无法写入队列，明确报告，不凭记忆标记成功。
-payload 包含 source_group_id="7652669649127481"、source_message_id=原消息 data.msgid 字符串、title=提测主题（最多255字）、description=来源群名称及号、发送人、北京时间、原消息ID与完整原文。原文明确给出的开发负责人/需求链接/版本/预计完成可填 developer/requirement_url/target_version/expected_completion；未知则省略。不得填 assigned_to/status/co_testers 或编造人员、日期、流程。project_id 由本地脚本按已有项目配置解析。
+payload 包含 source_group_id="7652669649127481"、source_message_id=原消息 data.msgid 字符串、description=来源群名称及号、发送人、北京时间、原消息ID与完整原文；title 与 description 使用同一份完整任务说明（最多20000字），保留原文和换行，不提炼摘要、不截断。原文明确给出的开发负责人/需求链接/版本/预计完成可填 developer/requirement_url/target_version/expected_completion；未知则省略。不得填 assigned_to/status/co_testers 或编造人员、日期、流程。project_id 由本地脚本按已有项目配置解析。
 
 对尚未转发且群历史、forwarded_msgs.json 都没有该原msgid的记录，发送：
 openclaw tuitui-tool send_message，JSON 参数 agentId=namiwork，chatId="7652669649127481"，chatType=group，content 为：
