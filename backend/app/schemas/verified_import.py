@@ -135,6 +135,8 @@ class CodexCase(VerifiedCase):
     def complete_evidence(self):
         # Override the Runner-only validator without weakening the legacy mode.
         from app.services.codex_observation import validate_codex_observation
+        from app.services.case_steps import validate_case_steps
+        validate_case_steps(self.steps, self.title)
         if self.exec_kind in ('gui', 'e2e'):
             validate_targets(self.script, self.title)
         if self.finished_at.tzinfo is None or self.finished_at.timestamp() > datetime.now(timezone.utc).timestamp() + 300:

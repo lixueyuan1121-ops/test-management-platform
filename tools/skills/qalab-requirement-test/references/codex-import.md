@@ -31,6 +31,19 @@ node scripts/delivery.mjs init --plan plan.json --manifest delivery.json
 
 ## 3. 静态校验与封存
 
+### 可读用例说明
+
+`steps` 是供平台用户阅读的业务操作，`script` 是供执行器回归的完整动作。根据已执行脚本逐项归纳，不能用 `script.map(s => s.desc || s.action)` 生成展示步骤，也不能把空 desc 变成空序号。每步包含具体页面或控件、操作与要检查的状态；纯连接、关闭遮挡和变量初始化可合并为准备说明。缺数据时如何创建、动态选取哪个对象、测试后如何恢复状态，需在展示步骤中说明。预期只涵盖脚本实际检查的行为，不把按钮可见写成下载成功，不把已删除场景写成权限撤销已覆盖。
+
+例如「AI文件不新增批量删除」应写为：
+
+1. 连接纳米 Work，关闭遮挡页面的搜索和详情弹窗。
+2. 点击左侧「文件」，切换到「AI文件」，检查页签已选中。
+3. 检查文件列表无多选复选框，页面无「批量删除」按钮。
+4. 保存页面截图作为证据。
+
+新编写的 script.desc 要能解释实际操作，例如「关闭已打开的技能详情弹窗」，不能只写「click」。仅修改已有用例的展示文案时，只更新 steps/expected 并核对 script 未变；不改历史结果或将文案修订当成重新执行。离线校验及平台 Codex 导入会拒绝纯动作名、纯「点击」和空序号；它们不能替代人工核对文案与实际脚本是否一致。
+
 使用 `script-flow-v1` 时，按 [数据准备契约](data-preparation.md) 记录完整序列、分支跳过和收尾；这是上节“失败仅前缀”的明确例外。执行过的业务失败仍原样保留，未执行主流程标记 previous_failure，收尾单独标记 phase。条件与 phase 参与脚本指纹，至少执行一个业务断言。
 
 Windows `scripts/qalab.ps1 -Action lint -BaseUrl <origin> -PayloadPath observed.json`；macOS `python3 scripts/qalab.py lint --base-url <origin> --payload observed.json`。lint 可在实测前检查草稿，不代表通过。

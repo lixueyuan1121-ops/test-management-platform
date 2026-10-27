@@ -15,6 +15,16 @@ const targeted = new Set(['click','hover','fill','type','set_checked','select_op
 const actions = new Set([...targeted, ...NETWORK_ACTIONS, ...FLOW_ACTIONS, 'connect','press','wait_response','screenshot','mock_route','unmock_route']);
 const ensure = (yes, message) => { if (!yes) throw new Error(message); };
 
+export function validateReadableSteps(value, title = '') {
+  ensure(text(value), `${title} 步骤须写明操作对象、操作及检查点`);
+  const bare = new Set([...actions, 'goto', 'judge', '点击', '单击', '双击', '输入', '等待', '连接', '按键', '断言', '操作', 'click()', 'press()', '待补充', '...', '…']);
+  for (const [i, line] of value.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    const content = line.replace(/^\s*(?:\d+[.、)）．]\s*|[-*•]\s+|第\s*\d+\s*步[：:、.．]?\s*)/, '').trim().replace(/[。.;；:：]+$/, '').trim();
+    ensure(content && !bare.has(content.toLowerCase()), `${title} 步骤第 ${i+1} 行缺少可读说明；请写明操作对象和检查点，不能仅填动作名或空序号`);
+  }
+}
+
 function targetCheck(t, label, depth = 0) {
   ensure(object(t) && (text(t.key) || text(t.selector)), `${label} 缺 target.key/selector`);
   ensure(depth <= 3, `${label} within 最多三层`);
@@ -97,6 +107,7 @@ export function validatePayload(p, {draft = false} = {}) {
   const titles=new Set();
   for (const c of p.cases) {
     ensure(object(c) && text(c.title) && !titles.has(c.title), '用例标题必须非空且同批唯一'); titles.add(c.title);
+    if (codex) validateReadableSteps(c.steps, c.title);
     ensure(!c.resolution, '疑似重复由平台集中确认，不允许提交 resolution');
     const kind=c.exec_kind || 'e2e';
     ensure(['gui','e2e','api'].includes(kind), `${c.title} exec_kind 仅支持 gui/e2e/api`);
