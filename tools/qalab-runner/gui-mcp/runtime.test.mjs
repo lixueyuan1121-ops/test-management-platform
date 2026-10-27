@@ -113,6 +113,22 @@ test('empty-URL Electron preview frames resolve by visible iframe src, never by 
   await page.locator('iframe').evaluateAll(es => es.forEach(el => el.setAttribute('inert', '')));
   await assert.rejects(rt.assertAbsent({ selector: 'h1', frame: 'url:preview.invalid/file.html' }), { code: 'INVALID_FRAME' });
 });
+test('inline text fixture fills a hidden file input with unique portable data', async () => {
+  await page.setContent('<input type="file" hidden><textarea></textarea>');
+  const args = { selector: 'input[type=file]', text: '独立标记\nREFERENCE-123', file: { name: 'qa-reference.txt', unique: true } };
+  const a = await runtime.fill(args);
+  assert.match(a.file_name, /^qa-reference-[0-9a-f-]{36}\.txt$/);
+  const file = await page.locator('input').evaluate(async el => ({name: el.files[0].name, text: await el.files[0].text()}));
+  assert.deepEqual(file, {name:a.file_name, text:args.text});
+  const b = await runtime.fill(args);
+  assert.notEqual(a.file_name, b.file_name);
+  await assert.rejects(runtime.fill({...args, selector:'textarea'}), {code:'INVALID_FILE_INPUT'});
+  for (const name of ['../secret.txt', 'C:\\secret.txt', 'test.exe', 'https://example.com/a.txt'])
+    await assert.rejects(runtime.fill({...args, file:{name}}), {code:'INVALID_FILE_FIXTURE'});
+  await assert.rejects(runtime.fill({...args, text:'x'.repeat(1048577)}), {code:'INVALID_FILE_FIXTURE'});
+  await runtime.fill({selector:'textarea',text:'ordinary text'});
+  assert.equal(await page.locator('textarea').inputValue(), 'ordinary text');
+});
 
 test('targeted press focuses the specified input, and fill preserves multiline text', async () => {
   await page.setContent('<input id="other"><textarea data-testid="input"></textarea>');

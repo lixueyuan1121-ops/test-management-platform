@@ -396,6 +396,26 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     }
   }
   async function fill(args) {
+    // An explicit inline text fixture fills a real file input. No machine-local
+    // paths or remote downloads are accepted; each replay can prepare its data.
+    if (args.file !== undefined) {
+      const f = args.file;
+      const text = args.text;
+      if (!f || typeof f !== 'object' || Array.isArray(f) ||
+          Object.keys(f).some(k => !['name', 'unique'].includes(k)) ||
+          typeof f.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\.(txt|md|csv|json)$/.test(f.name) ||
+          f.name.includes('..') || (f.unique !== undefined && typeof f.unique !== 'boolean') ||
+          typeof text !== 'string' || new TextEncoder().encode(text).length > 1048576) {
+        throw error('INVALID_FILE_FIXTURE', 'file 需要安全的文本文件名，text 不超过 1MiB；不接受路径或下载地址');
+      }
+      const { loc, hit } = await resolve(args, { requireVisible: false });
+      if (!await loc.evaluate(el => el.tagName === 'INPUT' && el.type === 'file'))
+        throw error('INVALID_FILE_INPUT', 'file 填充只能用于真实 input[type=file]');
+      const name = f.unique ? f.name.replace(/(\.[^.]+)$/, `-${globalThis.crypto.randomUUID()}$1`) : f.name;
+      const buffer = Buffer.from(text, 'utf8');
+      await loc.setInputFiles({ name, mimeType: 'text/plain', buffer }, { timeout: Math.max(1, limit(args)) });
+      return { filled: args.key || args.selector, via: hit, file_name: name, size_bytes: buffer.length };
+    }
     const { loc, hit } = await resolve(args);
     const text = String(args.text ?? "");
     try { await loc.fill(text, { timeout: Math.max(1, limit(args)) }); }
