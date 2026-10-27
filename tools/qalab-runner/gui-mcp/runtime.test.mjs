@@ -95,6 +95,25 @@ test('raw selectors and vm keys use the same iframe; explicit URL frames do not 
   await assert.rejects(rt.assertAbsent({ selector: '.target', frame: 'url:missing-frame' }), { code: 'INVALID_FRAME' });
 });
 
+test('empty-URL Electron preview frames resolve by visible iframe src, never by staging or shell', async () => {
+  await page.route('https://preview.invalid/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>preview body</h1>' }));
+  await page.setContent('<h1>shell</h1><iframe id="active" src="https://preview.invalid/file.html"></iframe><iframe id="staging" hidden aria-hidden="true" inert src="https://preview.invalid/file.html"></iframe>');
+  await page.frameLocator('#active').locator('h1').waitFor();
+  const emptyUrlPage = new Proxy(page, { get(target, prop) {
+    if (prop === 'frames') return () => target.frames().map(frame => frame === target.mainFrame() ? frame : new Proxy(frame, { get(f, key) {
+      if (key === 'url') return () => '';
+      const value = Reflect.get(f, key); return typeof value === 'function' ? value.bind(f) : value;
+    } }));
+    const value = Reflect.get(target, prop); return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const rt = createAutomationRuntime({ page: emptyUrlPage, registry: {}, timeout: 60, pollMs: 10 });
+  assert.equal((await rt.getText({ selector: 'h1', frame: 'url:preview.invalid/file.html' })).text, 'preview body');
+  await page.locator('#staging').evaluate(el => { el.hidden = false; el.removeAttribute('aria-hidden'); el.removeAttribute('inert'); });
+  await assert.rejects(rt.getText({ selector: 'h1', frame: 'url:preview.invalid/file.html' }), { code: 'INVALID_FRAME' });
+  await page.locator('iframe').evaluateAll(es => es.forEach(el => el.setAttribute('inert', '')));
+  await assert.rejects(rt.assertAbsent({ selector: 'h1', frame: 'url:preview.invalid/file.html' }), { code: 'INVALID_FRAME' });
+});
+
 test('targeted press focuses the specified input, and fill preserves multiline text', async () => {
   await page.setContent('<input id="other"><textarea data-testid="input"></textarea>');
   await page.locator('#other').focus();

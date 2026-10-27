@@ -327,6 +327,9 @@ export function createGuiCore(opts = {}) {
 
     async connect(args = {}) {
       await ensureConnected();
+      // Clipboard APIs require an active document. Only activate at the explicit
+      // connect step; later background/minimization checks retain their focus.
+      await page.bringToFront();
       const viewport = args.viewport === undefined ? undefined : await viewportSession.set(page, args.viewport);
       const f = await waitForContentFrame();
       return { connected: true, title: await page.title(), url: page.url(), frame_url: f.url(), in_iframe: f !== page.mainFrame(), ...(viewport ? { viewport } : {}) };

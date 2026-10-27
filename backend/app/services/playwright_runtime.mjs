@@ -121,7 +121,24 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     if (typeof frame === "string" && frame.startsWith("url:")) {
       const pattern = frame.slice(4);
       if (!pattern) throw error("INVALID_FRAME", "url: 必须指定 frame URL 子串");
-      const frames = page().frames().filter((f) => f.url().includes(pattern));
+      let frames = page().frames().filter((f) => f.url().includes(pattern));
+      // Electron's local preview can expose an empty Frame.url() even after its
+      // iframe has loaded. Resolve its declared URL without picking a staging
+      // iframe or silently falling back to the application shell.
+      if (!frames.length) {
+        frames = [];
+        for (const candidate of page().frames()) {
+          if (candidate === page().mainFrame() || candidate.url()) continue;
+          const element = await candidate.frameElement().catch(() => null);
+          if (!element) continue;
+          try {
+            const src = await element.getAttribute('src');
+            if (src?.includes(pattern) && await element.isVisible() &&
+                await element.getAttribute('aria-hidden') !== 'true' &&
+                await element.getAttribute('inert') === null) frames.push(candidate);
+          } finally { await element.dispose(); }
+        }
+      }
       if (frames.length !== 1) throw error("INVALID_FRAME", `frame ${frame} 匹配 ${frames.length} 个目标，必须唯一`);
       return [{ scope: frames[0], name: frame }];
     }
