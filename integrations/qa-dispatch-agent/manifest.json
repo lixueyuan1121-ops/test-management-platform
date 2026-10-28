@@ -1,0 +1,18 @@
+{
+  "platform-report.ts": {
+    "before_sha256": "12af50f045f14795e0b41c40d66fc3a63c136ba4718b25bccd9b7189d1de6141",
+    "after_sha256": "4a767f53650f317d92666209c3675388850ba80fdb31d931bbf48235e16eb0a0"
+  },
+  "platform-report.test.ts": {
+    "before_sha256": "d7e92ce5871985903b89c839fe7b018a13932597b493113f2565cd22fa745bf2",
+    "after_sha256": "95f536bb7eaf5d5bc512591ef88179fe7b34347e1c2b071c9f52a37517baa062"
+  },
+  "sync-platform.ts": {
+    "before_sha256": "b53632adce12ea44042904f3f6948d5e2a7080b917075e2d0ea497d9edb8fb82",
+    "after_sha256": "96c9b32fee256ec3f3aeeac7d360aad80dcc75af80495df7845d32110baae09b"
+  },
+  "backfill-report.ts": {
+    "before_sha256": "3ed8c321d2ba9553bc5e42c47e88f62e4f793c64beb73f017e95e5ab3eb97b19",
+    "after_sha256": "636117edd5cf2dc508371a5e40426982639d6b83e308caff74d26ffe18f25f1c"
+  }
+}

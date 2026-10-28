@@ -20,7 +20,7 @@
 
 2026-10-27 字段调整：先部署平台容量扩展，再更新 Mac 的同步脚本。`task.title` 和 `task.description` 在 MySQL 中使用 MEDIUMTEXT，覆盖 20000 字的四字节字符；迁移仅扩容，不回写历史内容。普通任务创建/编辑同样支持长功能说明，人工填写的标题不会被 description 覆盖。
 
-当前云端登记后的 Mac 回填还使用 `/Users/lixueyuan/code/daily_test/qa-dispatch-agent/lib/platform-report.ts` 的普通任务入口。此入口的 `buildTaskTitle` 应优先返回 `entry.description` 全文，无说明才沿用模块/单号兜底。原先去重和状态查找依赖标题里的单号，因此单号改留在任务说明末尾；业务原文不截断。对应变更见 `qa-dispatch-description-title.patch`，发布平台后应用到 `qa-dispatch-agent`；不要运行全量补报来验证，也不要修改自动化周期。
+2026-10-28 回填入口修复：Mac 实际执行的 `/Users/lixueyuan/code/daily_test/qa-dispatch-agent/lib/platform-report.ts` 仍是另一目录的旧代码，仅更新平台不会更新它。现在统一调用 `/api/tasks/ingest`，功能/需求与任务说明都使用说明全文，原消息 ID 独立用于去重；缺少说明时保留待回填，不再生成单号标题。完整源码和带备份、哈希校验的安装器见 [Mac 回填入口](../integrations/qa-dispatch-agent/README.md)。发布平台后必须更新实际 Mac 入口；不要运行全量补报来验证，也不要修改自动化周期。
 
 使用现有平台管理员账号 Bearer access token，或配置专用 `TASK_INGEST_TOKEN`、`TASK_INGEST_USER_ID` 后传 `X-Task-Ingest-Token`。专用令牌仅适用于录入接口，关联账号必须对目标项目有管理员权限。
 
