@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import subprocess
+import sys
 
 from app.services import nami_auth_recovery as recovery
 from app.services import nami_deploy as deploy
@@ -141,6 +142,13 @@ class RecoveryTests(unittest.TestCase):
 
 
 class WorkerBoundaryTests(unittest.TestCase):
+    def test_standalone_worker_imports_in_the_full_application_directory(self):
+        result = subprocess.run([sys.executable, '-I', str(Path(worker.__file__).resolve())],
+                                capture_output=True, text=True, timeout=15)
+        # Missing arguments are handled by main; imports must not crash first.
+        self.assertEqual(result.returncode, 22)
+        self.assertEqual(result.stdout + result.stderr, '')
+
     def test_terms_approval_uses_a_private_temporary_config(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -150,10 +158,11 @@ class WorkerBoundaryTests(unittest.TestCase):
             config = {'python_path': str(runtime_python), 'password': 'fake-password'}
             recovery._atomic_json(config_path, config)
             def launch(argv, **kwargs):
-                temporary = Path(argv[2])
+                self.assertEqual(argv[1], '-I')
+                temporary = Path(argv[3])
                 self.assertNotEqual(temporary, config_path)
                 self.assertTrue(recovery._private_json(temporary)['_accept_current_terms_once'])
-                recovery._atomic_json(Path(argv[3]), {'cookie': 'Q=fake; T=fake'})
+                recovery._atomic_json(Path(argv[4]), {'cookie': 'Q=fake; T=fake'})
                 return Mock(wait=Mock(return_value=0))
             with patch.object(recovery.subprocess, 'Popen', side_effect=launch):
                 recovery._run_worker(config_path, config, accept_terms_once=True)
@@ -167,12 +176,13 @@ class WorkerBoundaryTests(unittest.TestCase):
             runtime_python = root / 'python'
             runtime_python.touch()
             def launch(argv, **kwargs):
-                self.assertEqual(argv[2], str(config_path))
+                self.assertEqual(argv[1], '-I')
+                self.assertEqual(argv[3], str(config_path))
                 self.assertNotIn('fake-password', ' '.join(argv))
                 self.assertEqual(kwargs['stdout'], subprocess.DEVNULL)
                 self.assertEqual(kwargs['stderr'], subprocess.DEVNULL)
                 self.assertTrue(kwargs['start_new_session'])
-                recovery._atomic_json(Path(argv[3]), {'cookie': 'Q=fake; T=fake'})
+                recovery._atomic_json(Path(argv[4]), {'cookie': 'Q=fake; T=fake'})
                 return Mock(wait=Mock(return_value=0))
             with patch.object(recovery.subprocess, 'Popen', side_effect=launch):
                 self.assertEqual(recovery._run_worker(config_path, {'python_path': str(runtime_python), 'password': 'fake-password'}), 'Q=fake; T=fake')

@@ -80,7 +80,8 @@ def _run_worker(path, config, *, accept_terms_once=False):
             worker_config_path = Path(folder) / 'login.json'
             _atomic_json(worker_config_path, {**config, '_accept_current_terms_once': True})
         worker = Path(__file__).with_name('nami_login_worker.py')
-        process = subprocess.Popen([str(python), str(worker), str(worker_config_path), str(output)],
+        # The application has selectors.py; never let it shadow Python's stdlib.
+        process = subprocess.Popen([str(python), '-I', str(worker), str(worker_config_path), str(output)],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, start_new_session=True)
         try:
