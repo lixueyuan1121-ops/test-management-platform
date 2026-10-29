@@ -624,12 +624,20 @@ def review_testcase(
             tc.exec_kind = "manual"
             keys_txt = ", ".join(missing)
             tc.kind_reason = f"{_SELECTOR_FIX_MARK} 补齐选择器 key:{keys_txt} 后即可执行 {eff_kind}"[:500]
-            tc.script = json.dumps(norm2, ensure_ascii=False)
+            from app.services.script_storage import encode_script_for_storage
+            try:
+                tc.script = encode_script_for_storage(norm2)
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
             p = pages_for_script(norm2, tc.project_id, tc.sub_product)
             if p:
                 tc.page = p
         else:
-            tc.script = json.dumps(norm, ensure_ascii=False)
+            from app.services.script_storage import encode_script_for_storage
+            try:
+                tc.script = encode_script_for_storage(norm)
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
             p = pages_for_script(norm, tc.project_id, tc.sub_product)
             if p:
                 tc.page = p   # 按新 script 的 key 重推页面(推断为空则保留原页面,不清)

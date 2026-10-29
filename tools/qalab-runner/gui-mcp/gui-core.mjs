@@ -10,6 +10,7 @@ import { pageDiagnostics } from '../execution-diagnostics.mjs';
 // 依赖:playwright-core。前提:namiclaw 已带 --remote-debugging-port 启动。
 import { chromium } from "playwright-core";
 import { connectApplication } from './cdp-connection.mjs';
+import { createDesktopOverlay } from './desktop-overlay.mjs';
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -115,8 +116,10 @@ export function createGuiCore(opts = {}) {
     await injectTestIdMode(ctx, page, { reloadTimeout: PAGE_READY_TIMEOUT });
     testidInjected = true;
   }
+  const desktopOverlay = createDesktopOverlay({ chromium, cdpUrl: CDP_URL, getMainPage: () => page });
   const runtime = createAutomationRuntime({
     page: () => page, registry: () => REGISTRY, vmIframe: () => VM_IFRAME,
+    auxiliaryScopes: () => desktopOverlay.scopes(),
     timeout: DEFAULT_TIMEOUT,
   });
   const networkScenarios = createNetworkScenarios(() => page, runtime);
@@ -127,6 +130,7 @@ export function createGuiCore(opts = {}) {
       return;
     }
     if (browser) {
+      await desktopOverlay.close();
       try { await runtime.unmockAll(); } catch {}
       try { await browser.close(); } catch {}
       runtime.resetConnection();
@@ -167,6 +171,7 @@ export function createGuiCore(opts = {}) {
   }
 
   async function waitForContentFrame(timeoutMs = 8000) {
+    if (!VM_IFRAME) return page.mainFrame();
     const start = Date.now();
     for (;;) {
       const f = await contentFrame();
@@ -581,6 +586,7 @@ export function createGuiCore(opts = {}) {
       try { await networkScenarios.cleanup(); } catch { /* reported by StepExecutor; disconnect still required */ }
       try { await runtime.unmockAll(); } catch { /* disconnected context */ }
       if (traceContext) { try { await traceContext.tracing.stop(); } catch {} }
+      try { await desktopOverlay.close(); } catch { /* auxiliary transport already closed */ }
       if (browser) { try { await browser.close(); } catch { /* 已断开 */ } }
       traceContext = null;
       runtime.resetConnection();

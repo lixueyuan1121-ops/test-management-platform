@@ -109,7 +109,7 @@ export function isDirectBusinessPage(url, iframeSelector) {
   } catch { return false; }
 }
 
-export function createAutomationRuntime({ page: getPage, registry: getRegistry, vmIframe: getVmIframe = "", timeout = 10000, pollMs = 100 } = {}) {
+export function createAutomationRuntime({ page: getPage, registry: getRegistry, vmIframe: getVmIframe = "", auxiliaryScopes = async () => [], timeout = 10000, pollMs = 100 } = {}) {
   const page = () => typeof getPage === "function" ? getPage() : getPage;
   const registry = () => typeof getRegistry === "function" ? getRegistry() : getRegistry;
   const vmIframe = () => typeof getVmIframe === "function" ? getVmIframe() : getVmIframe;
@@ -140,7 +140,7 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
   }
   async function scopes(frame) {
     const shell = { scope: page(), name: "shell" };
-    if (frame === "shell") return [shell];
+    if (frame === "shell") return [shell, ...await auxiliaryScopes()];
     if (typeof frame === "string" && frame.startsWith("url:")) {
       const pattern = frame.slice(4);
       if (!pattern) throw error("INVALID_FRAME", "url: 必须指定 frame URL 子串");
@@ -175,9 +175,9 @@ export function createAutomationRuntime({ page: getPage, registry: getRegistry, 
     if (frame === "vm" || frame === "content") {
       if (vmIframe() && !vm && !isDirectBusinessPage(page().url(), vmIframe()))
         throw error('INVALID_FRAME', '已配置的业务 iframe 尚未出现，且当前顶层不是匹配的业务页面');
-      return [vm || shell];
+      return vm ? [vm] : [shell, ...await auxiliaryScopes()];
     }
-    return vm ? [shell, vm] : [shell];
+    return vm ? [shell, vm, ...await auxiliaryScopes()] : [shell, ...await auxiliaryScopes()];
   }
   function validateTarget(target, depth = 0) {
     if (!target || typeof target !== "object" || !(target.key || target.selector)) throw error("INVALID_TARGET", "需要 key 或 selector");

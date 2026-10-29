@@ -5,9 +5,11 @@ export function selectBusinessTarget(targets, targetId = '') {
     if (t.type !== 'page') return false;
     try { const u = new URL(t.url); return ['http:', 'https:'].includes(u.protocol)
       && (u.hostname === 'work.n.cn' || u.hostname.endsWith('.work.n.cn'))
-      // The desktop voice surface shares the business origin but is not the
-      // main application. Never select it, even when it is the only page ready.
-      && u.searchParams.get('namiwork_surface') !== 'desktop_voice'; }
+      // Desktop utility windows share the business origin. Exclude their exact
+      // entry points before checking uniqueness; never fall back to them while
+      // the main renderer is starting, including with an explicit target ID.
+      && u.searchParams.get('namiwork_surface') !== 'desktop_voice'
+      && u.pathname !== '/desktop-overlay.html'; }
     catch { return false; }
   }).filter(t => !targetId || t.id === targetId);
   if (matches.length !== 1) {

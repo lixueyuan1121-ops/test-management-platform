@@ -70,6 +70,28 @@ test('waits for main renderer registration while only voice is ready',async()=>{
  });
  assert.equal(polls,3);assert.equal(selected,'app');
 });
+test('desktop overlay is auxiliary even without a surface query parameter',()=>{
+ const overlay={...target,id:'overlay',url:target.url+'desktop-overlay.html?mode=selection'};
+ assert.equal(selectBusinessTarget([overlay,target]).id,'app');
+ assert.throws(()=>selectBusinessTarget([overlay]),{code:'CDP_TARGET_NOT_READY'});
+ assert.throws(()=>selectBusinessTarget([overlay,target],'overlay'),{code:'CDP_TARGET_NOT_READY'});
+ assert.throws(()=>selectBusinessTarget([overlay,target,{...target,id:'second'}]),{code:'CDP_TARGET_AMBIGUOUS'});
+ // A business route mentioning the overlay is still a real main-page candidate.
+ const route={...target,id:'route',url:target.url+'?redirect=desktop-overlay.html'};
+ assert.equal(selectBusinessTarget([overlay,route]).id,'route');
+});
+test('waits for main renderer when voice and overlay windows register first',async()=>{
+ let polls=0,selected;
+ const auxiliary=[{...target,id:'voice',url:target.url+'?namiwork_surface=desktop_voice'},
+  {...target,id:'overlay',url:target.url+'desktop-overlay.html'}];
+ await connectApplication({connectOverCDP:async()=>({})},'http://127.0.0.1:9222',{
+  timeout:1000,pollIntervalMs:1,
+  fetchImpl:async url=>({ok:true,json:async()=>url.endsWith('version')?{'User-Agent':'Electron/42',webSocketDebuggerUrl:'ws://localhost/browser'}:
+   ++polls<3?auxiliary:[...auxiliary,target]}),
+  transportFactory:async(url,id)=>{selected=id;return {close(){}}}
+ });
+ assert.equal(polls,3);assert.equal(selected,'app');
+});
 test('missing renderer has a bounded wait and never attaches auxiliary targets',async()=>{
  let attached=false;
  await assert.rejects(connectApplication({connectOverCDP:async()=>{}},'http://127.0.0.1:9222',{
