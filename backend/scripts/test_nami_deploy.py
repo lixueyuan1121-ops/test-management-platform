@@ -12,6 +12,7 @@
 import io
 import json
 import zipfile
+from unittest.mock import patch
 
 from app.services import nami_deploy as nd
 
@@ -97,7 +98,8 @@ def test_short_unauthorized_falls_back_indexurl():
     nd.settings.NAMI_SHORTLINK_ENABLED = True
     _scenario["upload"] = _Resp(200, {"code": 0, "data": {"base_url": "https://ns.chat.360.cn/zhaomi-so/client-up/abc"}})
     _scenario["short"] = _Resp(200, {"code": 110005, "msg": "Unauthorized request", "data": None})
-    url = nd.deploy_html("<p>报告</p>")
+    with patch('app.services.nami_auth_recovery.renew_cookie', side_effect=nd.NamiDeployError('test: recovery disabled')):
+        url = nd.deploy_html("<p>报告</p>")
     assert url == "https://ns.chat.360.cn/zhaomi-so/client-up/abc/index.html", url
     print("OK 开短链但 110005(cookie 过期)→ 回落 index.html 直链")
 
@@ -128,11 +130,11 @@ def test_upload_fail_raises():
 def test_upload_http_error_raises():
     _scenario["upload"] = _Resp(401, {"msg": "unauthorized"})
     try:
-        nd.deploy_html("<p>报告</p>")
-        assert False, "HTTP 401 应抛 NamiDeployError"
-    except nd.NamiDeployError as e:
-        assert "401" in str(e), str(e)
-    print("OK 上传 HTTP 401 → NamiDeployError")
+        nd._upload("<p>报告</p>", "test-cookie")
+        assert False, "HTTP 401 应识别为鉴权失效"
+    except nd.NamiAuthError:
+        pass
+    print("OK 上传 HTTP 401 → NamiAuthError（由部署层触发一次补救）")
 
 
 def test_empty_html_raises():

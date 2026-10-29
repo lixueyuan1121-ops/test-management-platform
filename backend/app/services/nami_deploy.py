@@ -42,6 +42,10 @@ class NamiDeployError(Exception):
     """部署/取短链失败(缺凭据、cookie 过期、网关错误等)。调用方应回落自托管短链。"""
 
 
+class NamiAuthError(NamiDeployError):
+    """Provider explicitly rejected authentication; other failures must not relogin."""
+
+
 def _cookie_path() -> Path:
     p = (settings.NAMI_COOKIE_PATH or "~/.openclaw/workspace/config/.cookie.json")
     return Path(p).expanduser()
@@ -153,6 +157,8 @@ def _html_to_zip_bytes(html: str) -> bytes:
 
 def _extract_uploaded_url(resp: dict) -> str:
     """从上传响应取目录级 URL(短链接口要不带 /index.html 的 base_url)。移植自 skill。"""
+    if resp.get("code") == 110005:
+        raise NamiAuthError("Nami 登录态已失效")
     if resp.get("code") != 0:
         raise NamiDeployError(f"上传失败:code={resp.get('code')} msg={resp.get('msg')}")
     data = resp.get("data")
@@ -189,6 +195,8 @@ def _upload(html: str, cookie: str) -> str:
         r = requests.post(_UPLOAD_API_URL, data=body, headers=headers, timeout=_TIMEOUT)
     except requests.RequestException as e:
         raise NamiDeployError(f"上传网络异常:{e}")
+    if r.status_code == 401:
+        raise NamiAuthError("Nami 登录态已失效")
     if r.status_code != 200:
         raise NamiDeployError(f"上传 HTTP {r.status_code}:{r.text[:200]}")
     try:
@@ -204,12 +212,16 @@ def _get_short(vm_id: str, base_url: str, cookie: str) -> str:
                           timeout=15)
     except requests.RequestException as e:
         raise NamiDeployError(f"取短链网络异常:{e}")
+    if r.status_code == 401:
+        raise NamiAuthError("Nami 登录态已失效")
     if r.status_code != 200:
         raise NamiDeployError(f"取短链 HTTP {r.status_code}:{r.text[:200]}")
     try:
         data = r.json()
     except ValueError:
         raise NamiDeployError(f"取短链响应非 JSON:{r.text[:200]}")
+    if isinstance(data, dict) and data.get("code") == 110005:
+        raise NamiAuthError("Nami 登录态已失效")
     if not isinstance(data, dict) or data.get("code") != 0:
         code = data.get("code") if isinstance(data, dict) else "?"
         msg = data.get("msg") if isinstance(data, dict) else ""
@@ -218,6 +230,16 @@ def _get_short(vm_id: str, base_url: str, cookie: str) -> str:
     if not is_short_url(short):
         raise NamiDeployError("取短链响应未返回有效的 zhaomi.cn 短链")
     return short.strip()
+
+
+def _short_with_recovery(vm_id: str, base_url: str, cookie: str) -> str:
+    try:
+        return _get_short(vm_id, base_url, cookie)
+    except NamiAuthError:
+        from app.services.nami_auth_recovery import renew_cookie
+        # Recovery validates against this same uploaded report and returns its URL.
+        _, short = renew_cookie(cookie, probe_base_url=base_url, vm_id=vm_id)
+        return short
 
 
 def is_short_url(url: str | None) -> bool:
@@ -253,7 +275,7 @@ def shorten_uploaded_url(url: str) -> str:
     vm_id = _read_vm_id()
     if not vm_id:
         raise NamiDeployError('短链配置缺少有效 vm_id')
-    return _get_short(vm_id, base_url, _read_cookie())
+    return _short_with_recovery(vm_id, base_url, _read_cookie())
 
 
 def _dir_index_url(base_url: str) -> str:
@@ -272,7 +294,12 @@ def deploy_html(html: str, *, prefer_shortlink: bool | None = None) -> str:
     if not html or not html.strip():
         raise NamiDeployError("HTML 为空,不部署")
     cookie = _read_cookie()
-    base_url = _upload(html, cookie)
+    try:
+        base_url = _upload(html, cookie)
+    except NamiAuthError:
+        from app.services.nami_auth_recovery import renew_cookie
+        cookie, _ = renew_cookie(cookie)
+        base_url = _upload(html, cookie)  # Retry once only; never recurse.
     short_enabled = settings.NAMI_SHORTLINK_ENABLED if prefer_shortlink is None else prefer_shortlink
     if not short_enabled:
         return _dir_index_url(base_url)
@@ -283,7 +310,7 @@ def deploy_html(html: str, *, prefer_shortlink: bool | None = None) -> str:
                        _cloud_config_path(), _dir_index_url(base_url))
         return _dir_index_url(base_url)
     try:
-        return _get_short(vm_id, base_url, cookie)
+        return _short_with_recovery(vm_id, base_url, cookie)
     except NamiDeployError as e:
         logger.warning("nami 取短链失败(%s),回落 index.html 直链;若持续失败请刷新 %s 的登录 cookie",
                        e, _cookie_path())

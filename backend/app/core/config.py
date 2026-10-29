@@ -152,6 +152,8 @@ class Settings(BaseSettings):
     NAMI_SHORTLINK_ENABLED: bool = False
     NAMI_COOKIE_PATH: str = ""         # nami cookie json 路径;空=skill 默认
     NAMI_CLOUD_CONFIG_PATH: str = ""   # cloud_config.json(含 vm_id)路径;空=skill 默认
+    # 独立的账号凭据/启用开关文件；不配置或 enabled=false 时不自动登录。
+    NAMI_LOGIN_CONFIG_PATH: str = ""
     # auto/ci 批次 business 失败自动生成 RemainingIssue 草稿（与飞书通道独立，false 关闭）。
     AUTO_ISSUE_ON_FAIL: bool = True
     # auto/ci 批次失败自动重试次数上限（0=关闭；1=失败补发一次，重试通过标 flaky）。
