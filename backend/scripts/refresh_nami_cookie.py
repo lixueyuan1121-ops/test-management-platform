@@ -14,6 +14,7 @@ cookie 从哪来:浏览器登录 https://www.n.cn 后,DevTools → Network → �
 的请求 → Request Headers → cookie,整串复制。允许带 "cookie:" 前缀/引号,脚本会清洗。
 """
 import argparse
+import getpass
 import json
 import shutil
 import sys
@@ -89,9 +90,8 @@ def main() -> int:
             print(f"✗ 读 {args.from_file} 失败:{e}")
             return 1
     else:
-        print("请粘贴新 cookie(浏览器 DevTools → Network → www.n.cn 请求 → Request Headers → cookie 整串),")
-        print("粘贴后回车:")
-        raw = sys.stdin.readline()
+        print("请粘贴新 cookie(浏览器 DevTools → Network → www.n.cn 请求 → Request Headers → cookie 整串)。")
+        raw = getpass.getpass("Cookie（输入不回显，粘贴后回车）: ")
 
     cookie = _clean(raw)
     if not cookie or "=" not in cookie:

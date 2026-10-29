@@ -15,6 +15,7 @@ from app.db.session import get_db
 from app.models import Project, ReleaseRecord, Task, TaskDigest, User
 from app.schemas.common import ok
 from app.schemas.task_ledger import DigestGenerate, DigestSave, TaskReleaseCreate
+from app.services.nami_deploy import is_short_url
 
 router = APIRouter(prefix="/api/task-ledger", tags=["task-ledger"])
 READ_ROLES = (ProjectRole.admin, ProjectRole.member, ProjectRole.guest)
@@ -49,7 +50,9 @@ def digest_out(row, db=None):
             "title": row.title, "content": row.content, "task_ids": json.loads(row.task_ids),
             "filter_summary": row.filter_summary, "updated_at": row.updated_at,
             "share_path": deployment.url if deployment else f"/d/{publication.code}" if publication else None,
-            "share_hosting": deployment.hosting if deployment else "platform"}
+            "share_hosting": deployment.hosting if deployment else "platform",
+            "share_link_type": ('short' if is_short_url(deployment.url) else 'direct')
+                if deployment and deployment.hosting == 'nami' else 'platform'}
 
 
 @router.post("/digests/generate")
@@ -131,16 +134,18 @@ def publish_digest(body: DigestSave, db: Session = Depends(get_db), user: User =
     db.flush()
     publication_id, digest_id, fallback = publication.id, row.id, f'/d/{publication.code}'
     deployed = db.get(TaskDigestDeployment, publication_id)
-    has_cloud_url = deployed is not None and deployed.hosting == 'nami'
+    existing_url = deployed.url if deployed is not None and deployed.hosting == 'nami' else None
+    has_short_url = is_short_url(existing_url)
     db.commit()  # Do not hold a DB connection during the shared service's upload.
-    if not has_cloud_url:
+    if not has_short_url:
         from app.services.report_publishing import publish_html
-        published = publish_html(html, fallback, prefer_shortlink=True)
+        published = publish_html(html, fallback, prefer_shortlink=True, existing_url=existing_url)
         deployed = db.get(TaskDigestDeployment, publication_id)
         if deployed is None:
             deployed = TaskDigestDeployment(publication_id=publication_id, **published)
             db.add(deployed)
-        else:
+        elif not is_short_url(deployed.url):
+            # 另一次发布已换得短链时，迟到的失败结果不能把它覆盖成长链。
             deployed.url, deployed.hosting = published['url'], published['hosting']
         db.commit()
     return ok(digest_out(db.get(TaskDigest, digest_id), db))

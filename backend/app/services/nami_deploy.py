@@ -17,10 +17,12 @@ import logging
 import os
 import platform
 import random
+import re
 import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -213,9 +215,45 @@ def _get_short(vm_id: str, base_url: str, cookie: str) -> str:
         msg = data.get("msg") if isinstance(data, dict) else ""
         raise NamiDeployError(f"取短链失败:code={code} msg={msg}")
     short = data.get("data", {}).get("shor_url") if isinstance(data.get("data"), dict) else ""
-    if not isinstance(short, str) or not short.strip():
-        raise NamiDeployError("取短链响应缺 data.shor_url")
+    if not is_short_url(short):
+        raise NamiDeployError("取短链响应未返回有效的 zhaomi.cn 短链")
     return short.strip()
+
+
+def is_short_url(url: str | None) -> bool:
+    """只认 HTTPS 的 zhaomi.cn 子域名首页，不把上传目录或任意 URL 当作短链。"""
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlsplit(url.strip())
+        return bool(parsed.scheme == 'https' and
+                    re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.zhaomi\.cn', parsed.netloc) and
+                    parsed.path in ('', '/') and not parsed.query and not parsed.fragment)
+    except ValueError:
+        return False
+
+
+def shorten_uploaded_url(url: str) -> str:
+    """为已经上传的 HTML 换短链；重试不重新上传同一份报告。"""
+    if is_short_url(url):
+        return url
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != 'https' or parsed.netloc != 'ns.chat.360.cn' or
+                not parsed.path.startswith('/zhaomi-so/client-up/') or parsed.query or parsed.fragment):
+            raise ValueError('不是已有静态报告的上传地址')
+        path = parsed.path.rstrip('/')
+        if path.endswith('/index.html'):
+            path = path[:-len('/index.html')]
+        if not re.fullmatch(r'/zhaomi-so/client-up/[A-Za-z0-9_-]+', path):
+            raise ValueError('静态报告目录格式错误')
+        base_url = urlunsplit((parsed.scheme, parsed.netloc, path, '', ''))
+    except (TypeError, ValueError):
+        raise NamiDeployError('无法为此地址生成 Nami 短链') from None
+    vm_id = _read_vm_id()
+    if not vm_id:
+        raise NamiDeployError('短链配置缺少有效 vm_id')
+    return _get_short(vm_id, base_url, _read_cookie())
 
 
 def _dir_index_url(base_url: str) -> str:

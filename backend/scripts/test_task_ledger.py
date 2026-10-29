@@ -143,15 +143,55 @@ class LedgerTests(unittest.TestCase):
     def test_online_publication_reuses_evaluation_service_and_existing_url(self):
         task = self.task()
         draft = dict(project_id=1, task_ids=[task['id']], report_date=self.today, title='在线日报', content='总结正文')
-        with patch('app.services.report_publishing.publish_html', return_value={'url':'https://example.test/report/index.html','hosting':'nami'}) as publish:
+        with patch('app.services.report_publishing.publish_html', return_value={'url':'https://report.zhaomi.cn/','hosting':'nami'}) as publish:
             first = self.client.post('/api/task-ledger/digests/publish', json=draft).json()['data']
             second = self.client.post('/api/task-ledger/digests/publish', json=first).json()['data']
-            self.assertEqual(first['share_path'], 'https://example.test/report/index.html')
+            self.assertEqual(first['share_path'], 'https://report.zhaomi.cn/')
             self.assertEqual(second['share_hosting'], 'nami')
+            self.assertEqual(second['share_link_type'], 'short')
             publish.assert_called_once()
             self.assertIn('总结正文', publish.call_args.args[0])
             self.assertTrue(publish.call_args.args[1].startswith('/d/'))
             self.assertTrue(publish.call_args.kwargs['prefer_shortlink'])
+
+    def test_cached_long_link_is_retried_then_short_link_is_reused(self):
+        from app.models.task_digest import TaskDigestPublication, TaskDigestDeployment
+        task = self.task()
+        draft = dict(project_id=1, task_ids=[task['id']], report_date=self.today, title='已有长链的日报', content='完整日报内容')
+        long_url = 'https://ns.chat.360.cn/zhaomi-so/client-up/abc/index.html'
+        short_url = 'https://report.zhaomi.cn/'
+        with patch('app.services.report_publishing.publish_html', side_effect=[
+            {'url': long_url, 'hosting': 'nami'},
+            {'url': long_url, 'hosting': 'nami'},
+            {'url': short_url, 'hosting': 'nami'},
+        ]) as publish:
+            first = self.client.post('/api/task-ledger/digests/publish', json=draft).json()['data']
+            self.assertEqual(first['share_link_type'], 'direct')
+            self.assertIsNone(publish.call_args.kwargs['existing_url'])
+            failed_retry = self.client.post('/api/task-ledger/digests/publish', json=first).json()['data']
+            self.assertEqual(failed_retry['id'], first['id'])
+            self.assertEqual(failed_retry['share_path'], long_url)
+            self.assertEqual(publish.call_args.kwargs['existing_url'], long_url)
+            success = self.client.post('/api/task-ledger/digests/publish', json=first).json()['data']
+            self.assertEqual(success['share_path'], short_url)
+            self.assertEqual(success['share_link_type'], 'short')
+            self.assertEqual(success['content'], draft['content'])
+            repeat = self.client.post('/api/task-ledger/digests/publish', json=success).json()['data']
+            self.assertEqual(repeat['share_path'], short_url)
+            self.assertEqual(publish.call_count, 3)
+            self.assertEqual(self.db.query(TaskDigestPublication).count(), 1)
+            self.assertEqual(self.db.query(TaskDigestDeployment).count(), 1)
+            self.assertEqual(self.client.get('/api/task-ledger/digests', params={'project_id': 1}).json()['data'][0]['share_link_type'], 'short')
+
+    def test_changed_digest_does_not_shorten_the_previous_content_url(self):
+        task = self.task()
+        draft = dict(project_id=1, task_ids=[task['id']], report_date=self.today, title='日报', content='第一版')
+        with patch('app.services.report_publishing.publish_html', return_value={'url': 'https://ns.chat.360.cn/zhaomi-so/client-up/abc/index.html', 'hosting': 'nami'}) as publish:
+            first = self.client.post('/api/task-ledger/digests/publish', json=draft).json()['data']
+            first['content'] = '修改后的第二版'
+            self.client.post('/api/task-ledger/digests/publish', json=first)
+            self.assertEqual(publish.call_count, 2)
+            self.assertIsNone(publish.call_args.kwargs['existing_url'])
 
     def test_generation_keeps_input_snapshot_and_is_private_to_author(self):
         from app.services import ai_jobs

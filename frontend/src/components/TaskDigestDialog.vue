@@ -20,12 +20,13 @@
       <span class="share-note">{{ draft.share_hosting === 'nami' ? '与测评报告使用同一在线发布服务，持有链接可查看' : '登录平台后，项目成员可查看本次发布内容' }}</span>
     </div>
     <div v-else-if="draft.share_path" class="share-note">正文已修改，请重新发布 HTML 生成新链接。</div>
+    <el-alert v-if="shareUrl && draft.share_link_type !== 'short'" class="shortlink-warning" type="warning" :closable="false" title="短链尚未生成，日报已保存。当前链接可临时查看，稍后可重试生成短链；持续失败请联系管理员。" />
     <template #footer>
       <span v-if="savedAt" class="saved-at">已保存 {{ savedAt }}</span>
       <el-button :disabled="publishing" @click="close">关闭</el-button>
       <el-button :disabled="!draft.content || loading" @click="exportDraft('md')">导出 Markdown</el-button>
       <el-button :disabled="!draft.content || loading" @click="exportDraft('txt')">导出文本</el-button>
-      <el-button type="success" :disabled="loading || saving || !draft.content" :loading="publishing" @click="publish">发布 HTML 报告</el-button>
+      <el-button type="success" :disabled="loading || saving || !draft.content" :loading="publishing" @click="publish">{{ shareUrl && draft.share_link_type !== 'short' ? '重试生成短链' : '发布 HTML 报告' }}</el-button>
       <el-button type="primary" :disabled="loading || publishing || !draft.content" :loading="saving" @click="save">保存日报</el-button>
     </template>
     <el-dialog v-model="historyVisible" title="我的已保存日报" width="min(720px, 92vw)" append-to-body>
@@ -68,10 +69,11 @@ async function publish() {
   const requestedSnapshot = snapshot()
   try {
     const result = await publishTaskDigest(data)
-    draft.id = result.id; draft.share_path = result.share_path; draft.share_hosting = result.share_hosting
+    draft.id = result.id; draft.share_path = result.share_path; draft.share_hosting = result.share_hosting; draft.share_link_type = result.share_link_type
     publishedSnapshot.value = requestedSnapshot; savedSnapshot = requestedSnapshot
     savedAt.value = new Date().toLocaleTimeString()
-    ElMessage.success('日报已保存，HTML 在线链接已生成')
+    if (result.share_link_type === 'short') ElMessage.success('日报已保存，HTML 短链已生成')
+    else ElMessage.warning('日报已保存，但短链暂未生成，请稍后重试')
   } finally { publishing.value = false }
 }
 async function allowDiscard() {
@@ -119,5 +121,6 @@ onMounted(() => props.context.history ? showHistory() : generate())
 .digest-preview { max-height:55vh; overflow:auto; padding:12px; background:var(--tech-panel-2); }
 .digest-share { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:16px; }
 .share-note { color:var(--tech-muted); font-size:12px; }
+.shortlink-warning { margin-top:12px; }
 .saved-at { margin-right:12px; color:var(--tech-muted); font-size:12px; }
 </style>
