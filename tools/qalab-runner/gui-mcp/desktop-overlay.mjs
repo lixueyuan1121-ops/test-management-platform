@@ -1,5 +1,26 @@
 import { createScopedTransport } from './cdp-connection.mjs';
 
+// Native WebContentsView visibility is not reflected by an element's CSS
+// visibility. A parked 1–2px view can still contain dialogs/input editors.
+export async function desktopOverlayState(page) {
+  return page.evaluate(() => {
+    const width = window.innerWidth, height = window.innerHeight;
+    // Every root can retain an SVG sprite even after its portal is unmounted.
+    // Only interactive/modal content is residue; decorative defs are not.
+    const populated = [...document.querySelectorAll('.desktop-overlay-root')]
+      .some(root => root.querySelector('button,input,textarea,select,[contenteditable],iframe,[role="dialog"],[role="menu"],[role="listbox"]'));
+    return { width, height, populated,
+      active: document.visibilityState === 'visible' && width > 2 && height > 2 };
+  });
+}
+
+export function annotateOverlayTimeout(error, state) {
+  if (error?.code !== 'TARGET_TIMEOUT' || !state?.populated || state.active) return error;
+  error.diagnostic = { ...error.diagnostic, desktop_overlay: state };
+  error.message += `；同时检测到原生弹层不可交互（视口 ${state.width}×${state.height}），请确认客户端主窗口已恢复且未隐藏。CDP 能读取页面不代表原生弹层可点击`;
+  return error;
+}
+
 // A desktop portal belongs to the selected main window only when its exact
 // entry point and origin agree. Voice, other tenants and arbitrary tabs cannot
 // participate in a locator lookup.
@@ -28,14 +49,12 @@ export function createDesktopOverlay({ chromium, cdpUrl, getMainPage, fetchImpl 
   const close = async () => {
     try { await browser?.close(); } finally { browser = null; targetId = null; cachedAt = 0; cachedOrigin = ''; }
   };
-  return {
-    close,
-    async scopes() {
+  async function overlayPage() {
       const main = getMainPage();
-      if (!main || main.isClosed() || !/^https?:/.test(cdpUrl)) return [];
+      if (!main || main.isClosed() || !/^https?:/.test(cdpUrl)) return null;
       const origin = new URL(main.url()).origin;
       if (electron === undefined) electron = /Electron\//i.test((await get('/json/version'))['User-Agent'] || '');
-      if (!electron) return [];
+      if (!electron) return null;
       if (origin !== cachedOrigin || Date.now() - cachedAt > 750 || (browser && !browser.isConnected())) {
         const target = selectDesktopOverlay(await get('/json/list'), main.url());
         if (target?.id !== targetId || (browser && !browser.isConnected())) {
@@ -43,20 +62,33 @@ export function createDesktopOverlay({ chromium, cdpUrl, getMainPage, fetchImpl 
           if (target) {
             const version = await get('/json/version');
             const transport = await transportFactory(version.webSocketDebuggerUrl, target.id, { timeout: 5000 });
-            try { browser = await chromium.connectOverCDP(transport, { timeout: 5000 }); }
+            // Preserve native focus/visibility. Focus emulation would make a
+            // hidden WebContentsView report itself as a visible document.
+            try { browser = await chromium.connectOverCDP(transport, { timeout: 5000, noDefaults: true }); }
             catch (error) { transport.close(); throw error; }
             targetId = target.id;
           }
         }
         cachedAt = Date.now(); cachedOrigin = origin;
       }
-      if (!browser) return [];
+      if (!browser) return null;
       const pages = browser.contexts().flatMap(c => c.pages()).filter(p => !p.isClosed());
-      if (pages.length !== 1 || !selectDesktopOverlay([{id:targetId,type:'page',url:pages[0].url()}], main.url())) return [];
+      if (pages.length !== 1 || !selectDesktopOverlay([{id:targetId,type:'page',url:pages[0].url()}], main.url())) return null;
+      return pages[0];
+  }
+  return {
+    close,
+    async state() {
+      const page = await overlayPage();
+      return page ? desktopOverlayState(page) : { active: false, populated: false };
+    },
+    async scopes() {
+      const page = await overlayPage();
+      if (!page || !(await desktopOverlayState(page)).active) return [];
       // Search descendants, excluding the overlay document's body/html. This
       // keeps main-document assertions unique while still detecting duplicate
       // menu controls across the main document and the desktop portal.
-      return [{ scope: pages[0].locator('body'), name: 'desktop-overlay' }];
+      return [{ scope: page.locator('body'), name: 'desktop-overlay' }];
     },
   };
 }

@@ -10,7 +10,7 @@ import { pageDiagnostics } from '../execution-diagnostics.mjs';
 // 依赖:playwright-core。前提:namiclaw 已带 --remote-debugging-port 启动。
 import { chromium } from "playwright-core";
 import { connectApplication } from './cdp-connection.mjs';
-import { createDesktopOverlay } from './desktop-overlay.mjs';
+import { createDesktopOverlay, annotateOverlayTimeout } from './desktop-overlay.mjs';
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -212,6 +212,9 @@ export function createGuiCore(opts = {}) {
     await ensureConnected();
     try { return await runtime[method](args); }
     catch (e) {
+      if (e.code === "TARGET_TIMEOUT") {
+        try { annotateOverlayTimeout(e, await desktopOverlay.state()); } catch { /* retain the original failure */ }
+      }
       if (e.code === "TARGET_TIMEOUT" && args?.key && !args.within) await suggestMissingKey(args.key).catch(() => {});
       throw e;
     }
@@ -260,7 +263,12 @@ export function createGuiCore(opts = {}) {
     },
     ensureConnected,
     contentFrame,
-    diagnostics(target) { return pageDiagnostics(page, { cdpUrl: CDP_URL, vmIframe: VM_IFRAME, target }); },
+    async diagnostics(target) {
+      const result = await pageDiagnostics(page, { cdpUrl: CDP_URL, vmIframe: VM_IFRAME, target });
+      try { result.desktop_overlay = await desktopOverlay.state(); }
+      catch (error) { result.desktop_overlay = { error: error.message }; }
+      return result;
+    },
     // 取走并清空本轮自愈记录(runner 每条用例执行完调用,POST /api/selectors/learned 上报评审)。
     drainHeals() { return HEALS.splice(0); },
 
@@ -493,18 +501,21 @@ export function createGuiCore(opts = {}) {
       await waitForContentFrame().catch(() => {});
       return { url: page.url(), title: await page.title() };
     },
-    // 用例间硬复位:reload 顶层清前端瞬态(选中/展开/弹窗/输入残留/焦点),等 vm iframe 就绪,再**主动
-    // 导航回首页**——reload 只重载当前 SPA 路由(客户端常驻),上一条用例可能把路由停在任务详情/其它 Tab,
-    // 故 reload 后探首页锚点、不在首页就点『首页』导航回去(见 ensureOnHome)。串行执行每条 gui/e2e 前调,
-    // 让进入段自导航从首页开始。首页锚点尽力等,探不到不抛(交上层就绪门禁/自愈裁决)。
+    // 用例间先导航回首页；上一条留下原生弹层时重载清理瞬态，再核对弹层已移除。
+    // 首页锚点仍交上层就绪门禁裁决，不能因为它在弹窗背后可见就认定复位成功。
     async resetHome({ readyKey = "homepageTitle", readyTimeout = 8000, hard = false } = {}) {
       await ensureConnected();
       await runtime.unmockAll();   // 清上一条遗留拦截，失败时阻塞复位
       runtime.resetResponse();
+      // A home anchor can be visible behind a native modal. CSS visibility in
+      // a parked portal is also insufficient: reload only at the case boundary
+      // when portal content survived the previous case, never during a step.
+      const overlayBefore = await desktopOverlay.state();
+      const reloadRequired = hard || overlayBefore.populated;
       // Prefer the same navigation a user performs. Reload is recovery, not a prerequisite
       // of every case: reloading reinitializes cloud capability flags and websocket state.
       const homeKeys = homeRoleKeys(REGISTRY, "ready", [readyKey]);
-      for (const navKey of (hard ? [] : homeRoleKeys(REGISTRY, "navigation"))) {
+      for (const navKey of (reloadRequired ? [] : homeRoleKeys(REGISTRY, "navigation"))) {
         try {
           await page.keyboard.press("Escape");
           await runtime.click({ key: navKey, timeout_ms: 4000 });
@@ -514,10 +525,13 @@ export function createGuiCore(opts = {}) {
           }
         } catch { /* blocked navigation: fall back to the existing hard reset */ }
       }
+      await desktopOverlay.close();
       await page.reload({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
       await waitForContentFrame();
       await ensureOnHome(homeKeys, readyTimeout);
-      return { reset: true, url: page.url() };
+      const overlayAfter = await desktopOverlay.state();
+      if (overlayAfter.populated) throw new Error("复位后仍有原生弹层内容，停止执行以免残留弹窗影响下一条用例");
+      return { reset: true, mode: "reload", reason: hard ? "requested" : overlayBefore.populated ? "desktop_overlay_residue" : "navigation_unavailable", url: page.url() };
     },
     click: (args) => operate("click", args),
     hover: (args) => operate("hover", args),
@@ -538,10 +552,10 @@ export function createGuiCore(opts = {}) {
       const os = await pressOsEscape();
       return { escaped: os, layer: "os" };
     },
-    async getText(args) { await ensureConnected(); return runtime.getText(args); },
+    getText: (args) => operate("getText", args),
     async getAttribute(args) { await ensureConnected(); return runtime.getAttribute(args); },
     async probe(args) { await ensureConnected(); return runtime.probe(args); },
-    async waitFor(args) { await ensureConnected(); return runtime.waitFor(args); },
+    waitFor: (args) => operate("waitFor", args),
     async captureResponse(args) { await ensureConnected(); return runtime.captureResponse(args); },
     async waitResponse(args) { await ensureConnected(); return runtime.waitResponse(args); },
     async assertText(args) { await ensureConnected(); return runtime.assertText(args); },
