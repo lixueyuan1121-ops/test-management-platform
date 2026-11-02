@@ -13,12 +13,34 @@ from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 from starlette.responses import JSONResponse
 from app.db.session import SessionLocal
-from app.models import Project, User, VerifiedImportJob, VerifiedImportItem
+from app.models import Project, User, TestCase, VerifiedImportJob, VerifiedImportItem
 from app.schemas.verified_import import parse_import
+from app.services.verified_dedup import revision
 
 logger = logging.getLogger(__name__)
 _stop = threading.Event()
 _thread = None
+
+
+def confirmed_sibling_revisions(db, item, project_id, context):
+    """Only unchanged cases created by this server-issued bulk confirmation are exempt from fuzzy matching."""
+    if not context:
+        return {}
+    siblings = (db.query(VerifiedImportItem).join(VerifiedImportJob)
+                .filter(VerifiedImportJob.project_id == project_id,
+                        VerifiedImportItem.id.in_(context["item_ids"]),
+                        VerifiedImportItem.status == "done")
+                .with_for_update().all())
+    result = {}
+    for sibling in siblings:
+        resolution = json.loads(sibling.resolution) if sibling.resolution else {}
+        if (sibling.resolved_by != item.resolved_by or
+                resolution.get("_bulk_create", {}).get("id") != context["id"]):
+            continue
+        receipt = json.loads(sibling.receipt) if sibling.receipt else {}
+        if receipt.get("disposition") == "created" and receipt.get("created_revision"):
+            result[receipt["case_id"]] = receipt["created_revision"]
+    return result
 
 
 def process_one(item_id, factory=SessionLocal):
@@ -44,13 +66,16 @@ def process_one(item_id, factory=SessionLocal):
                 raise HTTPException(403, "提交账号已禁用或不存在")
             source = json.loads(job.payload)
             case = source["cases"][item.position]
-            case["resolution"] = json.loads(item.resolution) if item.resolution else None
+            resolution = json.loads(item.resolution) if item.resolution else None
+            bulk_context = resolution.pop("_bulk_create", None) if resolution else None
+            case["resolution"] = resolution
             source["cases"] = [case]
             # Per-item stable identity. All writes, including receipt, share this transaction.
             source["external_id"] = f"queued-{job.id}-item-{item.position}"
             body = parse_import(source)
             from app.api.verified_import import perform_import
-            result = perform_import(body, db, user, commit=False)
+            confirmed = confirmed_sibling_revisions(db, item, job.project_id, bulk_context)
+            result = perform_import(body, db, user, commit=False, confirmed_different_revisions=confirmed)
             if isinstance(result, JSONResponse):
                 plan = json.loads(result.body)["data"]["cases"][0]
                 item.plan = json.dumps(plan, ensure_ascii=False)
@@ -58,7 +83,10 @@ def process_one(item_id, factory=SessionLocal):
                 item.error = plan.get("conflict")
             else:
                 receipt = result["data"]
-                item.receipt = json.dumps({**receipt["records"][0], "batch_id": receipt["batch_id"]}, ensure_ascii=False)
+                record = {**receipt["records"][0], "batch_id": receipt["batch_id"]}
+                if bulk_context and record["disposition"] == "created":
+                    record["created_revision"] = revision(db.get(TestCase, record["case_id"]))
+                item.receipt = json.dumps(record, ensure_ascii=False)
                 item.status = "done"
                 item.error = None
                 # Audit the actual submitter and administrator separately in the run snapshot.

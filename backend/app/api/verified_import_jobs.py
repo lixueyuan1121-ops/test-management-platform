@@ -1,5 +1,6 @@
 """Fast durable acceptance. Matching happens exclusively in the background worker."""
 import json
+import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
@@ -9,7 +10,10 @@ from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import Project, User, VerifiedImportJob, VerifiedImportItem
 from app.schemas.common import ok
-from app.schemas.verified_import import DEFAULT_IMPORT_TASK, VerifiedImport, CodexImport, ImportResolution
+from app.schemas.verified_import import (
+    DEFAULT_IMPORT_TASK, VerifiedImport, CodexImport, ImportResolution,
+    BulkImportCreatePreview, BulkImportCreate,
+)
 from app.services.selector_device import owned_device
 from app.services.verified_dedup import digest
 
@@ -103,7 +107,7 @@ def submit(body: VerifiedImport | CodexImport, db: Session = Depends(get_db), us
 @router.get("")
 def listing(project_id: int, page: int = Query(1, ge=1), status: str = "",
             db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    authorize(db, user, project_id)
+    role = authorize(db, user, project_id)
     if status and status not in ("pending", "needs_confirmation", "done", "failed"):
         raise HTTPException(422, "未知导入状态")
     query = db.query(VerifiedImportJob).filter_by(project_id=project_id)
@@ -115,7 +119,54 @@ def listing(project_id: int, page: int = Query(1, ge=1), status: str = "",
     # Import submission validates device ownership: job.user_id is the execution account.
     # Fetch display fields once per page; keep large scripts/reports deferred.
     users = {u.id: u for u in db.query(User.id, User.name, User.username).filter(User.id.in_({j.user_id for j in jobs})).all()} if jobs else {}
-    return ok({"items": [summary(j, [i for i in items if i.job_id == j.id], users.get(j.user_id)) for j in jobs], "total": total, "page": page, "page_size": 20})
+    return ok({"items": [summary(j, [i for i in items if i.job_id == j.id], users.get(j.user_id)) for j in jobs], "total": total, "page": page, "page_size": 20,
+               "can_manage": role.role == ProjectRole.admin})
+
+
+@router.post("/bulk-create/preview")
+def preview_bulk_create(body: BulkImportCreatePreview, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authorize(db, user, body.project_id, admin=True)
+    ids = set(body.job_ids)
+    jobs = db.query(VerifiedImportJob).filter(VerifiedImportJob.project_id == body.project_id, VerifiedImportJob.id.in_(ids)).all()
+    if len(jobs) != len(ids):
+        raise HTTPException(404, "所选导入任务不存在或不属于当前项目")
+    sources = {job.id: json.loads(job.payload)["cases"] for job in jobs}
+    items = db.query(VerifiedImportItem).filter(VerifiedImportItem.job_id.in_(ids), VerifiedImportItem.status == "needs_confirmation").order_by(VerifiedImportItem.job_id, VerifiedImportItem.position).all()
+    result = []
+    for item in items:
+        plan = json.loads(item.plan) if item.plan else {}
+        candidates = plan.get("candidates", [])
+        exact = any(c.get("reason") == "脚本与验收条件一致" for c in candidates)
+        source = sources[item.job_id][item.position]
+        result.append({"id": item.id, "job_id": item.job_id, "title": item.title,
+                       "token": plan.get("confirmation_token"), "candidates": candidates,
+                       "source": {key: source.get(key, "") for key in ("precondition", "steps", "expected")},
+                       "can_create": bool(plan.get("confirmation_token")) and not exact,
+                       "error": "脚本与验收条件一致，请逐条复用已有用例" if exact else ("缺少确认信息，请刷新任务" if not plan.get("confirmation_token") else "")})
+    return ok({"project_id": body.project_id, "items": result})
+
+
+@router.post("/bulk-create")
+def bulk_create(body: BulkImportCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authorize(db, user, body.project_id, admin=True)
+    ids = [entry.item_id for entry in body.items]
+    items = db.query(VerifiedImportItem).join(VerifiedImportJob, VerifiedImportItem.job_id == VerifiedImportJob.id).filter(
+        VerifiedImportJob.project_id == body.project_id, VerifiedImportItem.id.in_(ids)).all()
+    if len(items) != len(ids):
+        raise HTTPException(404, "所选条目不存在或不属于当前项目")
+    by_id = {item.id: item for item in items}
+    bulk_context = {"id": uuid.uuid4().hex, "item_ids": ids}
+    results = []
+    for entry in body.items:
+        choice = ImportResolution(action="create", token=entry.token, reason=body.reason)
+        try:
+            queue_resolution(db, user, by_id[entry.item_id], choice, bulk_context=bulk_context)
+            results.append({"item_id": entry.item_id, "accepted": True})
+        except HTTPException as exc:
+            results.append({"item_id": entry.item_id, "accepted": False, "error": exc.detail})
+    db.commit()
+    accepted = sum(row["accepted"] for row in results)
+    return ok({"accepted_count": accepted, "rejected_count": len(results) - accepted, "results": results})
 
 
 @router.get("/{job_id}")
@@ -144,22 +195,30 @@ def item_detail(job_id: int, item_id: int, db: Session = Depends(get_db), user: 
 def resolve(job_id: int, item_id: int, choice: ImportResolution, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     get_job(db, user, job_id, admin=True)
     item = db.query(VerifiedImportItem).filter_by(id=item_id, job_id=job_id).first()
+    queue_resolution(db, user, item, choice)
+    db.commit()
+    return ok({"accepted": True, "message": "已确认，后台将复核并继续处理"})
+
+
+def queue_resolution(db, user, item, choice, *, bulk_context=None):
     if not item or item.status != "needs_confirmation":
         raise HTTPException(409, "条目已变化，请刷新后再处理")
-    plan = json.loads(item.plan)
-    if choice.token != plan["confirmation_token"]:
+    plan = json.loads(item.plan) if item.plan else {}
+    if choice.token != plan.get("confirmation_token"):
         raise HTTPException(409, "候选已更新，请刷新后确认")
     if choice.action == "reuse" and choice.case_id not in {c["case_id"] for c in plan["candidates"]}:
         raise HTTPException(422, "请选择候选中的用例")
     if choice.action == "create" and any(c["reason"] == "脚本与验收条件一致" for c in plan["candidates"]):
         raise HTTPException(409, "相同场景不能强制新建")
-    count = db.query(VerifiedImportItem).filter_by(id=item_id, status="needs_confirmation", plan=item.plan).update(
-        {"status": "pending", "resolution": choice.model_dump_json(), "resolved_by": user.id,
+    resolution = choice.model_dump()
+    if bulk_context:
+        # Server-owned context: siblings were explicitly confirmed as separate scenarios together.
+        resolution["_bulk_create"] = bulk_context
+    count = db.query(VerifiedImportItem).filter_by(id=item.id, status="needs_confirmation", plan=item.plan).update(
+        {"status": "pending", "resolution": json.dumps(resolution, ensure_ascii=False), "resolved_by": user.id,
          "resolved_at": datetime.utcnow(), "attempts": 0, "next_attempt_at": datetime.utcnow(), "error": None}, synchronize_session=False)
     if not count:
         raise HTTPException(409, "条目已被其他人处理，请刷新")
-    db.commit()
-    return ok({"accepted": True, "message": "已确认，后台将复核并继续处理"})
 
 
 @router.post("/{job_id}/items/{item_id}/retry")

@@ -28,7 +28,7 @@
       <div class="page-bar">
         <span class="sel-hint">共 {{ total }} 条回归用例{{ pageFilter ? `（页面：${pageFilter}）` : '' }}</span>
         <el-button
-          size="small" :disabled="!displayRows.length"
+          size="small" :disabled="!displayRows.length || loading || removing"
           @click="toggleSelectAll"
         >{{ allSelected ? '取消全选' : '全选本页' }}</el-button>
       </div>
@@ -43,12 +43,13 @@
         <el-button type="success" size="small" :loading="dispatching" @click="openOrderDialog">执行回归</el-button>
         <el-button type="primary" size="small" :loading="addingChecklist" @click="addToChecklist">加入上线checklist</el-button>
         <el-button size="small" :loading="exporting" @click="exportSelected">导出选中脚本</el-button>
+        <el-button type="danger" plain size="small" :loading="removing" :disabled="loading" @click="removeSelected">批量移除</el-button>
         <span class="sel-hint">随选随跑,仅跳过 manual(不可自动化)用例</span>
       </div>
       </template>
-      <el-table ref="tableRef" :data="displayRows" v-loading="loading" size="small" border stripe empty-text="暂无回归用例（去「用例库」标记）"
+      <el-table ref="tableRef" :data="displayRows" row-key="id" v-loading="loading" size="small" border stripe empty-text="暂无回归用例（去「用例库」标记）"
                 @selection-change="(s) => (selected = s)">
-        <el-table-column type="selection" width="42" />
+        <el-table-column type="selection" width="42" :selectable="() => !loading && !removing" />
         <el-table-column label="类型" width="72" align="center">
           <template #default="{ row }">
             <el-tag :type="KIND_TYPE[row.exec_kind || 'gui'] || 'info'" size="small" effect="plain">{{ KIND_LABEL[row.exec_kind || 'gui'] }}</el-tag>
@@ -127,9 +128,9 @@ import { Search } from '@element-plus/icons-vue'
 const inspectedCase = ref(null)
 const detailVisible = ref(false)
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { listCases, listTasks, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, addReleaseChecklist, _blobErrorMsg } from '@/api'
+import { listCases, listTasks, listMyDevices, listSelectors, enqueueCases, exportPlaywrightOne, exportPlaywrightBulk, addReleaseChecklist, bulkSetRegression, _blobErrorMsg } from '@/api'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import TaskPicker from '@/components/TaskPicker.vue'
 
@@ -165,7 +166,9 @@ const dispatching = ref(false)
 const orderDlg = reactive({ on: false, items: [] })   // 执行前排序弹窗:items=[{id,title}] 有序
 const exporting = ref(false)
 const addingChecklist = ref(false)
+const removing = ref(false)
 const tableRef = ref(null)
+let loadGeneration = 0, projectGeneration = 0
 
 // 分页(后端分页:total 为过滤后总数)
 const page = ref(1)
@@ -191,6 +194,9 @@ onMounted(async () => {
 })
 
 async function onProjectChange() {
+  const version = ++projectGeneration, projectId = pid.value
+  ++loadGeneration; loading.value = false; rows.value = []; selected.value = []; total.value = 0
+  tableRef.value?.clearSelection(); orderDlg.on = false
   pageFilter.value = null
   pageOptions.value = []
   taskId.value = null
@@ -200,10 +206,15 @@ async function onProjectChange() {
   setLastProjectId(pid.value)
   // 页面候选:从项目选择器(共享域)派生 distinct page;任务候选供关联任务筛选。均失败不影响列表。
   try {
-    const data = await listSelectors(pid.value)
+    const data = await listSelectors(projectId)
+    if (version !== projectGeneration) return
     pageOptions.value = [...new Set((data.shared || []).map((k) => k.page).filter(Boolean))].sort()
-  } catch { pageOptions.value = [] }
-  try { tasks.value = await listTasks({ project_id: pid.value }) } catch { tasks.value = [] }
+  } catch { if (version !== projectGeneration) return; pageOptions.value = [] }
+  try {
+    const data = await listTasks({ project_id: projectId })
+    if (version !== projectGeneration) return
+    tasks.value = data
+  } catch { if (version !== projectGeneration) return; tasks.value = [] }
   await reload()
 }
 
@@ -213,11 +224,13 @@ async function reload() {
 }
 
 async function load() {
+  const version = ++loadGeneration, projectId = pid.value
+  selected.value = []; tableRef.value?.clearSelection()
   if (!pid.value) return
   loading.value = true
   try {
     const { items, total: t } = await listCases({
-      project_id: pid.value,
+      project_id: projectId,
       is_regression: true,               // 本页固定只看回归用例
       page: pageFilter.value || undefined,
       task_id: taskId.value || undefined,
@@ -227,9 +240,30 @@ async function load() {
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
     })
+    if (version !== loadGeneration || projectId !== pid.value) return
     rows.value = items || []
     total.value = t || 0
-  } finally { loading.value = false }
+    if (!rows.value.length && page.value > 1) {
+      page.value = Math.max(1, Math.ceil(total.value / pageSize.value))
+      await load()
+    }
+  } finally { if (version === loadGeneration) loading.value = false }
+}
+
+async function removeSelected() {
+  if (removing.value || loading.value || !selected.value.length || !pid.value) return
+  const projectId = pid.value, ids = selected.value.map(row => row.id)
+  removing.value = true
+  try {
+    await ElMessageBox.confirm(`将选中的 ${ids.length} 条用例移出回归用例库？原用例和执行记录仍会保留。`, '批量移除回归用例', {
+      type: 'warning', confirmButtonText: '确认移除', cancelButtonText: '取消',
+    })
+    if (pid.value !== projectId) { ElMessage.info('项目已切换，请重新选择用例'); return }
+    const result = await bulkSetRegression(projectId, ids, false)
+    ElMessage.success(`已移出回归用例库 ${result.updated} 条`)
+    if (pid.value === projectId) await load()
+  } catch { /* Cancellation is a no-op; request errors use the shared HTTP handler. */ }
+  finally { removing.value = false }
 }
 
 // 执行回归:先校验,再让用户确认/调整执行顺序,最后按序下发(不依赖任务/采纳,不挂清单;只发非 manual)。

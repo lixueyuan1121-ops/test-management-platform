@@ -69,7 +69,7 @@ def related(a, b):
     return False
 
 
-def plans_for(body, scripts, rows):
+def plans_for(body, scripts, rows, *, confirmed_different_revisions=None):
     from types import SimpleNamespace
     incoming = [SimpleNamespace(**{**c.model_dump(), "script": s}) for c, s in zip(body.cases, scripts)]
     # Resolve intra-batch duplication before writing anything; do not silently discard evidence.
@@ -78,11 +78,15 @@ def plans_for(body, scripts, rows):
             if identity(item) == identity(incoming[j]):
                 raise ValueError(f"同批第 {j+1}、{i+1} 条为相同场景，请拆成独立验证批次追加结果")
     row_identities = {r.id: identity(r) for r in rows}
+    confirmed_different_revisions = confirmed_different_revisions or {}
     plans = []
     for i, (item, original) in enumerate(zip(incoming, body.cases)):
         fingerprint = identity(item)
         exact = [r for r in rows if fingerprint == row_identities[r.id]]
-        candidates = exact or [r for r in rows if related(item, r)]
+        # A bulk confirmation must not invalidate itself as its siblings are created.
+        # Exact matches and changed sibling cases still require the usual checks.
+        candidates = exact or [r for r in rows if related(item, r) and
+                              confirmed_different_revisions.get(r.id) != revision(r)]
         candidates.sort(key=lambda r: r.id)
         kind = "exact" if len(exact) == 1 else ("ambiguous" if candidates else "new")
         token = digest([body.project_id, body.sub_product, original.model_dump(mode="json", exclude={"resolution"}),

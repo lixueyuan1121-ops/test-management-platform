@@ -300,5 +300,176 @@ class AsyncTests(ApiTests):
             self.assertNotIn('payload',response.text);self.assertNotIn('report',response.text)
         self.assertEqual(self.client.get('/api/verified-imports/jobs',params={'project_id':1,'status':'bad'}).status_code,422)
 
+    def waiting_job(self, external, project_id=1):
+        body = self.ambiguous()
+        body.update(external_id=external, project_id=project_id)
+        jid = self.submit(body, 2).json()['data']['job_id']
+        drain_once(self.factory)
+        item = self.job(jid)['items'][0]
+        return jid, self.item(jid, item['id'])
+
+    def bulk_preview(self, job_ids, user=1, project_id=1):
+        return self.client.post('/api/verified-imports/jobs/bulk-create/preview', json={
+            'project_id': project_id, 'job_ids': job_ids,
+        }, headers={'x-user': str(user)})
+
+    def test_create_reason_optional_but_reuse_still_requires_explanation(self):
+        cid = self.baseline()
+        jid, item = self.waiting_job('optional-create-reason')
+        url = f"/api/verified-imports/jobs/{jid}/items/{item['id']}/resolve"
+        token = item['plan']['confirmation_token']
+        self.assertEqual(self.client.post(url, json={'action': 'reuse', 'case_id': cid, 'token': token}).status_code, 422)
+        response = self.client.post(url, json={'action': 'create', 'token': token})
+        self.assertEqual(response.status_code, 200, response.text)
+        drain_once(self.factory)
+        final = self.item(jid, item['id'])
+        self.assertEqual(final['status'], 'done', final)
+        self.assertEqual(final['resolution']['reason'], '')
+        self.assertEqual(final['resolved_by'], 1)
+        self.assertEqual(final['receipt']['disposition'], 'created')
+        from app.schemas.verified_import import ImportResolution
+        self.assertEqual(ImportResolution(action='create', token=token, reason=' 简 ').reason, '简')
+
+    def test_bulk_preview_permission_scope_and_exact_match_exclusion(self):
+        self.baseline()
+        jid, item = self.waiting_job('preview-permission')
+        with self.factory() as db:
+            db.add(ProjectMember(project_id=1, user_id=3, role=ProjectRole.member))
+            db.commit()
+        listing = self.client.get('/api/verified-imports/jobs', params={'project_id': 1}, headers={'x-user': '3'}).json()['data']
+        self.assertFalse(listing['can_manage'])
+        self.assertEqual(self.bulk_preview([jid], user=3).status_code, 403)
+        self.assertEqual(self.bulk_preview([jid], project_id=2).status_code, 404)
+        response = self.bulk_preview([jid])
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()['data']['items'][0]
+        self.assertTrue(row['can_create'])
+        self.assertNotIn('script', row['source'])
+        with self.factory() as db:
+            record = db.get(VerifiedImportItem, item['id'])
+            plan = json.loads(record.plan)
+            plan['candidates'][0]['reason'] = '脚本与验收条件一致'
+            record.plan = json.dumps(plan, ensure_ascii=False)
+            db.commit()
+        row = self.bulk_preview([jid]).json()['data']['items'][0]
+        self.assertFalse(row['can_create'])
+        result = self.client.post('/api/verified-imports/jobs/bulk-create', json={
+            'project_id': 1, 'items': [{'item_id': row['id'], 'token': row['token']}],
+        }).json()['data']
+        self.assertEqual(result['accepted_count'], 0)
+        self.assertIn('相同场景', result['results'][0]['error'])
+        self.assertEqual(self.job(jid)['items'][0]['status'], 'needs_confirmation')
+
+    def test_bulk_create_partial_conflict_and_duplicate_submission(self):
+        self.baseline()
+        first, a = self.waiting_job('bulk-first')
+        second, b = self.waiting_job('bulk-second')
+        rows = self.bulk_preview([first, second]).json()['data']['items']
+        entries = [{'item_id': row['id'], 'token': row['token']} for row in rows]
+        entries[1]['token'] = '0' * 64
+        request = {'project_id': 1, 'items': entries, 'reason': ''}
+        response = self.client.post('/api/verified-imports/jobs/bulk-create', json=request)
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()['data']
+        self.assertEqual((result['accepted_count'], result['rejected_count']), (1, 1))
+        self.assertEqual(self.job(second)['items'][0]['status'], 'needs_confirmation')
+        repeat = self.client.post('/api/verified-imports/jobs/bulk-create', json=request).json()['data']
+        self.assertEqual(repeat['accepted_count'], 0)
+        drain_once(self.factory)
+        self.assertEqual(self.count(TestCase), 2)
+        self.assertEqual(self.count(ExecRun), 2)
+        self.assertEqual(self.item(first, a['id'])['resolution']['reason'], '')
+
+    def test_bulk_create_checks_all_items_project_before_mutating(self):
+        self.baseline()
+        jid, item = self.waiting_job('bulk-project-one')
+        other = source('bulk-project-two', 2)
+        other['project_id'] = 2
+        other_jid = self.submit(other, 2).json()['data']['job_id']
+        other_item = self.job(other_jid)['items'][0]
+        entries = [{'item_id': item['id'], 'token': item['plan']['confirmation_token']},
+                   {'item_id': other_item['id'], 'token': '0' * 64}]
+        response = self.client.post('/api/verified-imports/jobs/bulk-create', json={'project_id': 1, 'items': entries})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.job(jid)['items'][0]['status'], 'needs_confirmation')
+        self.assertEqual(self.client.post('/api/verified-imports/jobs/bulk-create', json={'project_id': 1, 'items': entries[:1]}, headers={'x-user': '3'}).status_code, 403)
+        self.assertEqual(self.client.post('/api/verified-imports/jobs/bulk-create', json={'project_id': 1, 'items': entries[:1] * 2}).status_code, 422)
+
+    def test_bulk_create_worker_rechecks_candidate_changes(self):
+        cid = self.baseline()
+        jid, item = self.waiting_job('bulk-candidate-recheck')
+        response = self.client.post('/api/verified-imports/jobs/bulk-create', json={
+            'project_id': 1, 'items': [{'item_id': item['id'], 'token': item['plan']['confirmation_token']}],
+        })
+        self.assertEqual(response.json()['data']['accepted_count'], 1)
+        with self.factory() as db:
+            db.get(TestCase, cid).expected = '候选用例验收点变化'
+            db.commit()
+        drain_once(self.factory)
+        self.assertEqual(self.job(jid)['items'][0]['status'], 'needs_confirmation')
+        self.assertEqual(self.count(TestCase), 1)
+
+    def confirm_two_similar(self, identical=False):
+        self.baseline()
+        job_ids = []
+        for index in range(2):
+            body = self.ambiguous()
+            body['external_id'] = f'bulk-related-{index}'
+            if not identical:
+                body['cases'][0]['script'][0]['target']['selector'] = f'aside #logo-{index}'
+            job_ids.append(self.submit(body, 2).json()['data']['job_id'])
+        drain_once(self.factory)
+        rows = self.bulk_preview(job_ids).json()['data']['items']
+        self.assertEqual(len(rows), 2)
+        response = self.client.post('/api/verified-imports/jobs/bulk-create', json={
+            'project_id': 1, 'items': [{'item_id': row['id'], 'token': row['token']} for row in rows],
+        })
+        self.assertEqual(response.json()['data']['accepted_count'], 2, response.text)
+        return job_ids, [row['id'] for row in rows]
+
+    def test_bulk_confirmed_siblings_create_separately_without_reconfirmation(self):
+        job_ids, _ = self.confirm_two_similar()
+        drain_once(self.factory)
+        for job_id in job_ids:
+            result = self.job(job_id)['items'][0]
+            self.assertEqual(result['status'], 'done', result)
+            self.assertEqual(result['receipt']['disposition'], 'created')
+        self.assertEqual(self.count(TestCase), 3)
+        self.assertEqual(self.count(ExecRun), 3)
+
+    def test_bulk_confirmation_does_not_force_exact_sibling_duplicates(self):
+        job_ids, item_ids = self.confirm_two_similar(identical=True)
+        self.assertTrue(process_one(item_ids[0], self.factory))
+        self.assertTrue(process_one(item_ids[1], self.factory))
+        self.assertEqual(self.job(job_ids[0])['items'][0]['status'], 'done')
+        self.assertEqual(self.job(job_ids[1])['items'][0]['status'], 'needs_confirmation')
+        self.assertEqual(self.count(TestCase), 2)
+        self.assertFalse(self.bulk_preview([job_ids[1]]).json()['data']['items'][0]['can_create'])
+
+    def test_bulk_confirmation_rechecks_edited_sibling(self):
+        job_ids, item_ids = self.confirm_two_similar()
+        self.assertTrue(process_one(item_ids[0], self.factory))
+        created_id = self.job(job_ids[0])['items'][0]['receipt']['case_id']
+        with self.factory() as db:
+            db.get(TestCase, created_id).expected = '入库后人工修改了验收标准'
+            db.commit()
+        self.assertTrue(process_one(item_ids[1], self.factory))
+        self.assertEqual(self.job(job_ids[1])['items'][0]['status'], 'needs_confirmation')
+        self.assertEqual(self.count(TestCase), 2)
+
+    def test_remove_regression_keeps_case_and_execution_history(self):
+        cid = self.baseline()
+        with self.factory() as db:
+            db.get(TestCase, cid).is_regression = True
+            db.commit()
+        url = '/api/ai/testcases/regression?project_id=1'
+        self.assertEqual(self.client.patch(url, json={'ids': [cid], 'is_regression': False}, headers={'x-user': '3'}).status_code, 403)
+        result = self.client.patch(url, json={'ids': [cid], 'is_regression': False})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()['data']['updated'], 1)
+        self.assertEqual(self.count(TestCase), 1)
+        self.assertEqual(self.count(ExecRun), 1)
+        self.assertEqual(self.client.get('/api/ai/cases', params={'project_id': 1, 'is_regression': True}).json()['data']['total'], 0)
+
 
 if __name__=='__main__': unittest.main(defaultTest='AsyncTests')

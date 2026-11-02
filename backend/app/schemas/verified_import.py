@@ -13,14 +13,40 @@ class ImportResolution(BaseModel):
     action: Literal["reuse", "create"]
     case_id: int | None = Field(default=None, gt=0)
     token: str = Field(pattern=r"^[a-f0-9]{64}$")
-    reason: str = Field(min_length=5, max_length=1000)
+    reason: str = Field(default="", max_length=1000)
 
     @model_validator(mode="after")
     def target(self):
         if (self.action == "reuse") != (self.case_id is not None):
             raise ValueError("reuse 须指定 case_id，create 不得指定 case_id")
-        if len(self.reason.strip()) < 5:
-            raise ValueError("请说明复用或独立建例的依据")
+        self.reason = self.reason.strip()
+        if self.action == "reuse" and len(self.reason) < 5:
+            raise ValueError("请说明复用依据（至少 5 个字符）")
+        return self
+
+
+class BulkImportCreatePreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: int = Field(gt=0)
+    job_ids: list[int] = Field(min_length=1, max_length=20)
+
+
+class BulkImportCreateItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_id: int = Field(gt=0)
+    token: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class BulkImportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: int = Field(gt=0)
+    items: list[BulkImportCreateItem] = Field(min_length=1, max_length=400)
+    reason: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def unique_items(self):
+        if len({item.item_id for item in self.items}) != len(self.items):
+            raise ValueError("同一条目不能重复确认")
         return self
 
 

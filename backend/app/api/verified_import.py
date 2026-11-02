@@ -43,7 +43,7 @@ def _authorize_and_lock(body, db, user):
     return device
 
 
-def _prepare(body, db):
+def _prepare(body, db, *, confirmed_different_revisions=None):
     scripts = []
     for case in body.cases:
         script, error = validate_script_for_edit(case.exec_kind, case.script, body.project_id, db, body.sub_product)
@@ -53,7 +53,7 @@ def _prepare(body, db):
     rows = (db.query(TestCase).filter_by(project_id=body.project_id, sub_product=body.sub_product, platform="web")
             .with_for_update().populate_existing().all())
     try:
-        plans = plans_for(body, scripts, rows)
+        plans = plans_for(body, scripts, rows, confirmed_different_revisions=confirmed_different_revisions)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     return scripts, {r.id: r for r in rows}, plans
@@ -87,7 +87,7 @@ def import_verified(body: VerifiedImport, db: Session = Depends(get_db), user: U
     return perform_import(body, db, user)
 
 
-def perform_import(body, db, user, *, commit=True):
+def perform_import(body, db, user, *, commit=True, confirmed_different_revisions=None):
     """Shared transaction: queued imports commit the receipt and item outcome together."""
     device = _authorize_and_lock(body, db, user)
     codex = isinstance(body, CodexImport)
@@ -100,7 +100,7 @@ def perform_import(body, db, user, *, commit=True):
         if saved["sha256"] != sha:
             raise HTTPException(409, "相同 external_id 已导入不同内容")
         return ok({**saved["receipt"], "reused": True})
-    scripts, existing, plans = _prepare(body, db)
+    scripts, existing, plans = _prepare(body, db, confirmed_different_revisions=confirmed_different_revisions)
     if not all(p["ready"] for p in plans):
         if commit:
             db.rollback()

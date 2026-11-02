@@ -6,6 +6,7 @@
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
         <el-button :loading="loading" @click="refresh">刷新</el-button>
+        <el-button v-if="canManage" type="primary" :loading="bulkLoading" :disabled="!selectedJobs.length || loading || saving" @click="prepareBulk(selectedJobs.map(row => row.job_id))">批量确认为不同场景</el-button>
       </template>
       <template #filters>
         <el-select v-model="filter" clearable placeholder="全部状态" style="width:190px" @change="resetPage">
@@ -14,7 +15,8 @@
         <span>提交后由后台处理；疑似重复由项目管理员集中确认。</span>
       </template>
       <el-alert v-if="loadError" title="加载失败，请点击刷新重试" type="error" :closable="false" />
-      <el-table :data="rows" v-loading="loading" border empty-text="暂无导入任务">
+      <el-table ref="jobsTable" :data="rows" row-key="job_id" v-loading="loading" border empty-text="暂无导入任务" @selection-change="selectedJobs = $event">
+        <el-table-column v-if="canManage" type="selection" width="44" :selectable="row => !saving && row.counts.needs_confirmation > 0" />
         <el-table-column prop="job_id" label="任务编号" width="100" />
         <el-table-column prop="requirement" label="需求" min-width="220" show-overflow-tooltip />
         <el-table-column prop="executor_name" label="实测提交人" min-width="130" show-overflow-tooltip />
@@ -31,6 +33,7 @@
           <p>{{ job.requirement }} · 任务 #{{ job.job_id }} · 实测提交人：{{ job.executor_name }}</p>
           <el-alert v-if="!job.can_manage" type="info" title="疑似重复确认与失败重试由项目管理员处理" :closable="false" />
           <el-button @click="openJob(job.job_id)">刷新任务</el-button>
+          <el-button v-if="job.can_manage" type="primary" :loading="bulkLoading" :disabled="!job.counts.needs_confirmation || saving" @click="prepareBulk([job.job_id])">批量确认为不同场景</el-button>
           <el-table :data="job.items" border>
             <el-table-column prop="title" label="提交用例" min-width="200" />
             <el-table-column label="状态" width="130"><template #default="{ row }">{{ labels[row.status] }}</template></el-table-column>
@@ -66,16 +69,44 @@
         </section>
         <template v-if="canResolve">
           <el-button v-if="canCreate" :type="choice === 'create' ? 'primary' : 'default'" @click="choice = 'create'">确认为不同场景，单独新建</el-button>
-          <el-input v-model="reason" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="请说明复用或独立建例的依据（至少 5 个字符）" />
+          <el-input v-model="reason" type="textarea" :rows="3" maxlength="1000" show-word-limit :placeholder="choice === 'create' ? '说明（选填）' : '请说明复用依据（至少 5 个字符）'" />
           <p>确认后由后台重新检查；候选变化时会重新进入待确认，不覆盖已有用例。</p>
         </template>
       </div>
-      <template #footer><el-button @click="dialog = false">关闭</el-button><el-button v-if="canResolve" type="primary" :loading="saving" :disabled="choice == null || reason.trim().length < 5" @click="resolve">确认并交给后台</el-button></template>
+      <template #footer><el-button @click="dialog = false">关闭</el-button><el-button v-if="canResolve" type="primary" :loading="saving" :disabled="choice == null || (choice !== 'create' && reason.trim().length < 5)" @click="resolve">确认并交给后台</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="bulkDialog" title="批量确认为不同场景" width="min(1100px, 95vw)" :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving">
+      <el-alert type="info" :closable="false" title="核对并勾选需要单独新建的场景；提交后由后台复核。脚本与验收条件完全一致的条目需逐条复用，不能强制新建。" />
+      <p>共 {{ bulkRows.length }} 条待确认，已选 {{ bulkSelected.length }} 条。</p>
+      <el-table ref="bulkTable" :data="bulkRows" row-key="id" border max-height="440" @selection-change="bulkSelected = $event">
+        <el-table-column type="selection" width="44" :selectable="row => row.can_create && !saving" />
+        <el-table-column type="expand"><template #default="{ row }">
+          <div class="bulk-comparison compare">
+            <h4>本次提交</h4><p>前置：{{ row.source.precondition || '无' }}</p><p>步骤：{{ row.source.steps }}</p><p>预期：{{ row.source.expected }}</p>
+            <section v-for="candidate in row.candidates" :key="candidate.case_id" class="candidate">
+              <h4>已有用例 #{{ candidate.case_id }}：{{ candidate.title }}</h4>
+              <p>前置：{{ candidate.precondition || '无' }}</p><p>步骤：{{ candidate.steps }}</p><p>预期：{{ candidate.expected }}</p>
+            </section>
+          </div>
+        </template></el-table-column>
+        <el-table-column prop="job_id" label="任务编号" width="100" />
+        <el-table-column prop="title" label="提交用例" min-width="240" />
+        <el-table-column label="相似用例 / 处理情况" min-width="240"><template #default="{ row }">
+          <span v-if="row.error" class="bulk-error">{{ row.error }}</span>
+          <span v-else>{{ row.candidates.map(c => `#${c.case_id} ${c.title}`).join('；') || '无候选' }}</span>
+        </template></el-table-column>
+      </el-table>
+      <el-input v-model="bulkReason" type="textarea" :rows="2" maxlength="1000" show-word-limit placeholder="说明（选填，应用到本次勾选的场景）" :disabled="saving" />
+      <template #footer>
+        <el-button :disabled="saving" @click="bulkDialog = false">关闭</el-button>
+        <el-button :disabled="saving" :loading="bulkLoading" @click="prepareBulk(bulkJobIds)">重新加载待确认</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!bulkSelected.length || bulkLoading" @click="resolveBulk">确认并新建 {{ bulkSelected.length }} 条用例</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import WorkspacePage from '@/components/WorkspacePage.vue'
@@ -86,7 +117,9 @@ const app = useAppStore(), route = useRoute(), router = useRouter()
 const projects = ref([]), pid = ref(null), rows = ref([]), page = ref(1), total = ref(0), filter = ref('')
 const loading = ref(false), loadError = ref(false), drawer = ref(false), detailLoading = ref(false), job = ref(null)
 const dialog = ref(false), selected = ref(null), choice = ref(null), reason = ref(''), saving = ref(false)
-let generation = 0, detailGeneration = 0
+const jobsTable = ref(null), canManage = ref(false), selectedJobs = ref([])
+const bulkDialog = ref(false), bulkLoading = ref(false), bulkRows = ref([]), bulkSelected = ref([]), bulkTable = ref(null), bulkReason = ref(''), bulkJobIds = ref([])
+let generation = 0, detailGeneration = 0, bulkGeneration = 0
 const labels = { pending: '后台处理中', needs_confirmation: '待确认', done: '已入库', failed: '处理失败', completed: '全部入库' }
 const canResolve = computed(() => job.value?.can_manage && selected.value?.status === 'needs_confirmation')
 const canCreate = computed(() => !(selected.value?.plan?.candidates || []).some(c => c.reason === '脚本与验收条件一致'))
@@ -94,11 +127,12 @@ const typeOf = s => ({ completed: 'success', done: 'success', needs_confirmation
 async function load() {
   const version = ++generation
   if (!pid.value) return
+  selectedJobs.value = []; jobsTable.value?.clearSelection()
   loading.value = true; loadError.value = false
   try {
     const data = await http.get('/verified-imports/jobs', { params: { project_id: pid.value, page: page.value, status: filter.value } })
     if (version !== generation) return
-    rows.value = data.items; total.value = data.total
+    rows.value = data.items; total.value = data.total; canManage.value = !!data.can_manage
     if (!rows.value.length && page.value > 1) { page.value = Math.max(1, Math.ceil(total.value / 20)); await load() }
   } catch { if (version === generation) { loadError.value = true; rows.value = [] } }
   finally { if (version === generation) loading.value = false }
@@ -106,6 +140,7 @@ async function load() {
 function resetPage() { page.value = 1; load() }
 function changeProject() {
   ++detailGeneration; job.value = null; drawer.value = false; dialog.value = false; rows.value = []; total.value = 0
+  ++bulkGeneration; bulkDialog.value = false; bulkLoading.value = false; bulkRows.value = []; bulkSelected.value = []; selectedJobs.value = []; canManage.value = false
   setLastProjectId(pid.value); router.replace({ query: { project_id: pid.value } }); resetPage()
 }
 async function openJob(id) {
@@ -129,6 +164,7 @@ async function inspect(row) {
   } catch { /* shared HTTP handler displays error */ }
 }
 async function resolve() {
+  if (saving.value || !canResolve.value || choice.value == null || (choice.value !== 'create' && reason.value.trim().length < 5)) return
   saving.value = true
   const id = job.value.job_id
   try {
@@ -138,6 +174,45 @@ async function resolve() {
     })
     dialog.value = false; ElMessage.success('已提交确认，后台继续处理'); await openJob(id); await load()
   } catch { await inspect(selected.value) }
+  finally { saving.value = false }
+}
+async function prepareBulk(ids) {
+  if (saving.value || !ids.length) return
+  const projectId = pid.value, version = ++bulkGeneration
+  bulkLoading.value = true; bulkSelected.value = []
+  try {
+    const data = await http.post('/verified-imports/jobs/bulk-create/preview', { project_id: projectId, job_ids: ids })
+    if (version !== bulkGeneration || projectId !== pid.value) return
+    bulkJobIds.value = [...ids]; bulkRows.value = data.items; bulkReason.value = ''; bulkDialog.value = true
+    await nextTick()
+    bulkTable.value?.clearSelection()
+    for (const row of bulkRows.value) if (row.can_create) bulkTable.value?.toggleRowSelection(row, true)
+    if (!data.items.length) ElMessage.info('所选任务没有待确认场景')
+  } catch { /* shared HTTP handler displays error */ }
+  finally { if (version === bulkGeneration) bulkLoading.value = false }
+}
+async function resolveBulk() {
+  if (saving.value || bulkLoading.value || !bulkSelected.value.length) return
+  const projectId = pid.value, version = bulkGeneration
+  const items = bulkSelected.value.map(row => ({ item_id: row.id, token: row.token }))
+  saving.value = true
+  try {
+    const result = await http.post('/verified-imports/jobs/bulk-create', { project_id: projectId, items, reason: bulkReason.value.trim() })
+    if (version !== bulkGeneration || projectId !== pid.value) return
+    if (result.rejected_count) {
+      const outcomes = new Map(result.results.map(row => [row.item_id, row]))
+      bulkRows.value = bulkRows.value.filter(row => !outcomes.get(row.id)?.accepted).map(row => {
+        const rejected = outcomes.get(row.id)
+        return rejected ? { ...row, can_create: false, error: rejected.error } : row
+      })
+      bulkSelected.value = []; bulkTable.value?.clearSelection()
+      ElMessage.warning(`已提交 ${result.accepted_count} 条，${result.rejected_count} 条未提交，请查看原因并重新加载`)
+    } else {
+      bulkDialog.value = false
+      ElMessage.success(`已确认 ${result.accepted_count} 条不同场景，后台复核后分别新建`)
+    }
+    await refresh()
+  } catch { /* Keep choices available; the server rejects repeated/stale submissions. */ }
   finally { saving.value = false }
 }
 async function retry(row) {
@@ -164,4 +239,7 @@ onMounted(async () => {
 .candidate { border: 1px solid var(--el-border-color); border-radius: 8px; padding: 12px; margin: 12px 0; }
 .compare .el-textarea { margin-top: 12px; }
 .el-table { margin-top: 12px; }
+.bulk-comparison { padding: 8px 20px; }
+.bulk-error { color: var(--el-color-danger); }
+.el-textarea { margin-top: 12px; }
 </style>
