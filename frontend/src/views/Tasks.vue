@@ -458,6 +458,7 @@ function openCreate() {
 }
 function openEdit(row) {
   dialog.id = row.id
+  dialog.originalStatus = row.status
   dialog.linked = !!row.release_record_id
   dialog.ingested = !!row.is_ingested
   Object.assign(form, {
@@ -481,6 +482,11 @@ async function submit() {
   dialog.saving = true
   try {
     const payload = { ...form, project_id: pid.value, risk_level: form.risk_level || null, expected_completion: form.expected_completion || null, feedback_due_at: form.feedback_due_at || null }
+    if (dialog.id) {
+      // Editing notes must not resend a possibly stale status from another tab.
+      if (form.status === dialog.originalStatus) delete payload.status
+      else payload.expected_status = dialog.originalStatus
+    }
     const result = dialog.id ? await updateTask(dialog.id, payload) : await createTask(payload)
     ElMessage.success(result.assignment_notification_queued ? '保存成功，派单通知已进入发送队列' : '保存成功')
     dialog.visible = false
@@ -490,7 +496,7 @@ async function submit() {
 }
 async function changeStatus(row, s) {
   if (!canManage.value || s === row.status) return
-  const payload = { status: s }
+  const payload = { status: s, expected_status: row.status }
   // 关闭任务时收集关闭备注（可选，允许留空）
   if (s === 'closed') {
     try {

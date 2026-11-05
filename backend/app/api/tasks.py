@@ -196,10 +196,14 @@ def update_task(
     user: User = Depends(get_current_user),
     background_tasks: BackgroundTasks = None,
 ):
-    t = db.get(Task, tid)
+    # Lock and refresh before checking the client's snapshot, so concurrent saves
+    # cannot both validate an old status and then silently overwrite each other.
+    t = db.get(Task, tid, with_for_update=True, populate_existing=True)
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="任务不存在")
     assert_project_role(db, user, t.project_id, (ProjectRole.admin, ProjectRole.member))
+    if body.status is not None and body.expected_status is not None and body.expected_status != t.status:
+        raise HTTPException(409, detail='任务状态已更新，请刷新列表并重新打开编辑后重试')
     ids = _assignee_ids(db, body)
     # Existing forms may resend the primary owner without the additional owners.
     if 'assigned_to' in body.model_fields_set and body.assigned_to is None and body.assigned_to_ids is None:
@@ -253,7 +257,7 @@ def update_task(
             new_status = TaskStatus.unassigned
     # 人工端点：管理员可随时改状态（本端点仅前端 UI 调用，agent 走 /sync）。
     # 人工真正改变 status 即置锁，标记已被人工接管——此后 agent 的 /sync 不再覆盖，
-    # 人工自己仍可继续经本端点修改。编辑任务带原状态值提交（未变）不置锁，避免误锁。
+    # 人工自己仍可继续经本端点修改。只编辑备注的客户端不应传 status。
     if new_status is not None and new_status != t.status:
         _stamp_terminal(t, new_status)   # 变为 online/closed 刷新对应时间戳
         t.status = new_status

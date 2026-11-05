@@ -47,6 +47,7 @@ class TaskUpdate(TaskLedgerFields):
     assigned_to_ids: list[int] | None = Field(default=None, max_length=100)
     assigned_date: date | None = None
     status: TaskStatus | None = None
+    expected_status: TaskStatus | None = None  # 用户打开编辑器/状态菜单时看到的状态
     close_note: str | None = None   # 关闭任务时的备注（通常与 status='closed' 一起提交）
 
 
