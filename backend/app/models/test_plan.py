@@ -31,6 +31,8 @@ class TestPlan(Base):
     schedule_cron: Mapped[str | None] = mapped_column(String(64), nullable=True)   # 5 段 cron；空=未设
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     runner: Mapped[str] = mapped_column(String(64), default="mac-01", server_default="mac-01")
+    mobile_targets: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mobile_builds: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[int | None] = mapped_column(

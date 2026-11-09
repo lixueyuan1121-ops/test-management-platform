@@ -6,7 +6,7 @@ from app.core.deps import get_current_user, assert_project_role
 from app.core.enums import ALL_PROJECT_ROLES, WRITE_ROLES, ReviewStatus
 from app.db.session import get_db
 from app.models import (TestMission, MissionEvent, MissionRun, RequirementAnalysis, RequirementBaseline,
-                        RequirementCaseLink, TestCase, ExecRun, AiJob, AiTask, User, ProjectMember, RunnerDevice)
+                        RequirementCaseLink, TestCase, ExecRun, AiJob, AiTask, User, ProjectMember, RunnerDevice, TestPlan, TestPlanCase)
 from app.schemas.common import ok
 from app.schemas.test_mission import MissionCreate, MissionDecision
 from app.schemas.exec_queue import EnqueueCasesIn
@@ -70,7 +70,7 @@ def create(body: MissionCreate, db: Session = Depends(get_db), user: User = Depe
     m = TestMission(project_id=body.project_id, task_id=analysis.task_id, goal=body.goal.strip(),
         provider=analysis.provider, created_by=user.id, analysis_id=analysis.id,
         active_job_id=analysis.job_id, phase="analyzing", revision=1,
-        policy=encode({"max_cases": body.max_cases}), interventions=0)
+        policy=encode({"max_cases": body.max_cases, "mobile_dialog": body.mobile_dialog}), interventions=0)
     db.add(m); db.flush()
     if fresh_analysis and analysis.job_id:
         db.get(AiJob, analysis.job_id).input = encode({"analysis_id": analysis.id, "mission_id": m.id})
@@ -219,10 +219,12 @@ def decision(mid: int, body: MissionDecision, db: Session = Depends(get_db), use
     elif body.action == "approve":
         if m.phase != "awaiting_approval" or m.paused or not svc.baseline_current(db, m):
             raise HTTPException(409, "方案未就绪、已暂停或验收版本已变化，请刷新后重新规划")
-        if not body.reviewed or not body.runner.strip():
+        mobile = bool(svc.unpack(m.policy).get("mobile_dialog"))
+        if mobile != bool(body.mobile_targets) or (body.mobile_builds and not mobile):
+            raise HTTPException(422, "请按已审查方案选择双端真机或单执行设备")
+        if not body.reviewed or not (mobile or body.runner.strip()):
             raise HTTPException(422, "请核对所选用例及验收关联，并选择授权执行设备")
-        device = db.query(RunnerDevice).filter_by(owner_id=user.id, runner_id=body.runner.strip()).first()
-        if not device:
+        if not mobile and not db.query(RunnerDevice).filter_by(owner_id=user.id, runner_id=body.runner.strip()).first():
             raise HTTPException(422, "请选择自己已登记的执行设备")
         baseline = db.get(RequirementBaseline, m.baseline_id)
         locked = db.execute(update(RequirementAnalysis).where(RequirementAnalysis.id == m.analysis_id,
@@ -253,14 +255,33 @@ def decision(mid: int, body: MissionDecision, db: Session = Depends(get_db), use
                 if link:
                     link.reviewed_hash = case_hash(tc)
         from app.api.exec_queue import enqueue_case_runs
-        result = enqueue_case_runs(db, user, EnqueueCasesIn(project_id=m.project_id, runner=body.runner.strip(), test_case_ids=ids), commit=False)
+        if mobile:
+            from app.services.mobile_dispatch import bind_scenario
+            for cid in ids:
+                scenario = by_id[cid].get("mobile_scenario")
+                if not scenario or scenario != by_id[cid].get("reviewed_mobile_scenario"):
+                    raise HTTPException(422, f"用例 {cid} 缺少双端审查通过的对话场景，请重新规划")
+                bind_scenario(db.get(TestCase, cid), scenario)
+        result = enqueue_case_runs(db, user, EnqueueCasesIn(project_id=m.project_id, test_case_ids=ids,
+            runner=body.runner.strip() or "auto", mobile_targets=body.mobile_targets, mobile_builds=body.mobile_builds), commit=False)
         for run_id in result["run_ids"]:
             run = db.get(ExecRun, run_id)
             item = by_id[run.test_case_id]
             db.add(MissionRun(mission_id=m.id, run_id=run_id, case_hash=item["hash"],
                              criterion_ids=encode(item["criterion_ids"]), reviewed_by=user.id))
+        regression_plan_id = None
+        if mobile and body.save_mobile_plan:
+            regression = TestPlan(project_id=m.project_id, created_by=user.id,
+                                  name=f"对话回归 · {m.goal}"[:255], runner="auto",
+                                  mobile_targets=encode(body.mobile_targets), mobile_builds=encode(body.mobile_builds or {}))
+            db.add(regression)
+            db.flush()
+            regression_plan_id = regression.id
+            db.add_all([TestPlanCase(plan_id=regression.id, case_id=cid) for cid in ids])
         m.policy = encode({**svc.unpack(m.policy), "runner": body.runner.strip(), "max_retries": body.max_retries,
-            "time_budget_minutes": body.time_budget_minutes, "case_ids": ids})
+            "regression_plan_id": regression_plan_id,
+            "time_budget_minutes": body.time_budget_minutes, "case_ids": ids,
+            "mobile_targets": body.mobile_targets, "mobile_builds": body.mobile_builds})
         m.authorized_by = user.id; m.authorized_at = datetime.now(); m.phase = "executing"; m.active_job_id = None
         svc.event(db, m, "authorized", "已核对所选用例及验收关联，授权在指定设备与预算内执行", {**result,
             "max_retries": body.max_retries, "time_budget_minutes": body.time_budget_minutes, "note": body.note}, user.id)

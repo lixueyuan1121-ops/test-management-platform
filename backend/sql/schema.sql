@@ -270,6 +270,8 @@ CREATE TABLE `ai_task` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `test_case` (
+  `mobile_case_hash` VARCHAR(64) NULL,
+  `mobile_scenario` VARCHAR(24) NULL,
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `ai_task_id` BIGINT NOT NULL,
   `provider` VARCHAR(16) NOT NULL DEFAULT 'claude',
@@ -312,6 +314,7 @@ CREATE TABLE `test_case` (
 -- checklist_item_id 是回写落点：runner 判 pass/fail 后同步对应清单项的 exec_status。
 -- 放在 test_case / checklist_item 之后，保证被引用表先建。
 CREATE TABLE `exec_run` (
+  `native_mobile` TINYINT(1) NOT NULL DEFAULT 0,
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `checklist_item_id` BIGINT DEFAULT NULL,
   `test_case_id` BIGINT DEFAULT NULL,
@@ -484,6 +487,9 @@ CREATE TABLE `eval_client_device` (
 
 -- 执行设备:平台成员登记的自有执行机(runner);每设备独立 token,下发只选自己的设备。
 CREATE TABLE `runner_device` (
+  `mobile_device_id` VARCHAR(64) NULL UNIQUE,
+  `mobile_presence` TEXT NULL,
+  `mobile_seen_at` DATETIME NULL,
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `owner_id` BIGINT NOT NULL,
   `runner_id` VARCHAR(64) NOT NULL,
@@ -848,6 +854,8 @@ CREATE TABLE `test_case_link` (
 
 -- ---------- 测试计划（主用例库可保存集合 + 定时回归，对位 feedback_regression_set 泛化） ----------
 CREATE TABLE `test_plan` (
+  `mobile_targets` TEXT NULL,
+  `mobile_builds` TEXT NULL,
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `project_id` BIGINT NOT NULL,
   `name` VARCHAR(255) NOT NULL,

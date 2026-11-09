@@ -8,6 +8,7 @@ class MissionCreate(BaseModel):
     goal: str = Field(min_length=3, max_length=4000)
     analysis_id: int | None = None
     requirement: RequirementAnalyzeIn | None = None
+    mobile_dialog: bool = False
     max_cases: int = Field(20, ge=1, le=50)
 
     @model_validator(mode="after")
@@ -25,6 +26,9 @@ class MissionDecision(BaseModel):
     repair_case_id: int | None = None
     repair_finding_index: int = Field(0, ge=0, le=31)
     runner: str = Field("", max_length=64)
+    save_mobile_plan: bool = False
+    mobile_targets: dict[str, str] | None = None
+    mobile_builds: dict[str, str] | None = None
     max_retries: int = Field(0, ge=0, le=1)
     time_budget_minutes: int = Field(60, ge=5, le=240)
     case_ids: list[int] = Field(default_factory=list, max_length=50)

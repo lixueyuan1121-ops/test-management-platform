@@ -187,9 +187,10 @@
       <el-alert v-if="edit.error" :title="edit.error" type="error" :closable="false" show-icon />
       <p v-if="edit.progress" role="status">{{ edit.progress }}</p>
       <template #footer>
-        <span class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
+        <span v-if="edit.mobile" class="edit-hint">修改真机用例后，请在测试目标中重新审查步骤与预期。</span>
+        <span v-else class="edit-hint">改了步骤建议重生 script 同步;「待补选择器」的降级用例——在「选择器管理」补齐 key 后,点此即可一键恢复为可执行 gui/e2e</span>
         <el-button :disabled="edit.regen || edit.saving" @click="edit.visible = false">取消</el-button>
-        <el-button :loading="edit.regen" :disabled="edit.saving" @click="doEditAndRegen">保存并重生 script</el-button>
+        <el-button v-if="!edit.mobile" :loading="edit.regen" :disabled="edit.saving" @click="doEditAndRegen">保存并重生 script</el-button>
         <el-button type="primary" :loading="edit.saving" :disabled="edit.regen" @click="doEdit">保存</el-button>
       </template>
     </el-dialog>
@@ -327,6 +328,7 @@ const EXEC_KINDS = [
 ]
 const PLATFORMS = [
   { value: 'web', label: 'PC/Web' },
+  { value: 'mobile', label: '双端真机' },
   { value: 'android', label: 'Android' },
   { value: 'ios', label: 'iOS' },
 ]
@@ -639,6 +641,7 @@ async function bulkFixSelectors() {
 // ---- 编辑 ----
 const edit = reactive({ visible: false, id: null, title: '', precondition: '', steps: '', expected: '', category: null, priority: null, pages: [], is_regression: false, saving: false, regen: false, error: '', progress: '' })
 function openEdit(row) {
+  edit.mobile = row.platform === 'mobile'
   edit.error = ''
   edit.progress = ''
   edit.id = row.id

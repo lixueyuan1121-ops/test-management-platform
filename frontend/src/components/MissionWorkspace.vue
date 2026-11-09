@@ -22,6 +22,7 @@
             <p>{{ mission.events.at(-1)?.message || '目标已保存' }}</p>
             <div class="actions">
               <el-button size="small" @click="refresh">刷新</el-button><el-button v-if="mission.phase === 'completed' && mission.plan?.cases?.length" size="small" @click="showPlan = !showPlan">{{ showPlan ? '收起方案' : '查看本轮方案' }}</el-button>
+              <el-button v-if="mission.policy.regression_plan_id" size="small" @click="$router.push({ path: '/test-plans', query: { project_id: projectId, plan_id: mission.policy.regression_plan_id } })">双端回归计划 #{{ mission.policy.regression_plan_id }}</el-button>
               <el-button v-if="canWrite && mission.phase !== 'completed' && !mission.paused" size="small" :disabled="acting" @click="act('pause')">暂停后续推进</el-button>
               <el-button v-if="canWrite && (mission.paused || mission.phase === 'attention') && !mission.stale" size="small" :disabled="acting" @click="act('resume')">继续推进</el-button>
               <el-button v-if="canWrite && ['awaiting_approval', 'attention'].includes(mission.phase) && !mission.report?.runs.length" size="small" :disabled="acting" @click="act('replan')">重新准备方案</el-button>
@@ -47,18 +48,22 @@
             <article v-for="c in mission.plan.cases" :key="c.id" class="case-row">
               <el-checkbox v-if="mission.phase === 'awaiting_approval'" :model-value="selectedIds.includes(c.id)" :disabled="!canWrite || c.kind === 'manual' || !caseClear(c) || acting || mission.paused" @change="toggleCase(c.id, $event)">{{ c.kind === 'manual' ? '待人工处理' : '纳入本次执行' }}</el-checkbox>
               <h4>#{{ c.id }} {{ c.title }} <el-tag size="small" :type="c.reused ? 'success' : 'info'">{{ c.reused ? '复用已有用例' : '新补充用例' }}</el-tag></h4>
-              <p>{{ c.reason }}</p><p class="hint">{{ c.platform }} · {{ c.kind }} · 验收条件 {{ c.criterion_ids.join('、') }}</p>
-              <el-collapse><el-collapse-item title="核对前置、步骤、预期与来源" :name="c.id"><dl><dt>前置条件</dt><dd>{{ c.precondition || '未填写' }}</dd><dt>操作步骤</dt><dd>{{ c.steps }}</dd><dt>预期结果</dt><dd>{{ c.expected }}</dd><dt>覆盖关联来源</dt><dd v-for="p in c.provenance" :key="p.criterion_id">{{ p.criterion_id }} ← 版本 #{{ p.baseline_id }} / {{ p.source_criterion_id }}</dd></dl><el-button size="small" @click="openCases">在用例库查看或修订</el-button></el-collapse-item></el-collapse>
+              <p>{{ c.reason }}</p><p class="hint">{{ mission.policy.mobile_dialog ? (c.mobile_contract?.title || '缺少真机场景') : c.platform }} · {{ c.kind }} · 验收条件 {{ c.criterion_ids.join('、') }}</p>
+              <el-collapse><el-collapse-item title="核对前置、步骤、预期与来源" :name="c.id"><dl><dt>前置条件</dt><dd>{{ c.precondition || '未填写' }}</dd><dt>操作步骤</dt><dd>{{ c.steps }}</dd><dt>预期结果</dt><dd>{{ c.expected }}</dd><template v-if="c.mobile_scenario === 'script'"><dt>双端将执行的步骤</dt><dd><ol class="native-steps"><li v-for="(step, index) in c.script" :key="index"><code>{{ step.action }}</code><pre v-if="step.text !== undefined">{{ JSON.stringify(step.text) }}</pre><span v-if="step.turn"> 第 {{ step.turn }} 轮</span></li></ol></dd></template><dt>覆盖关联来源</dt><dd v-for="p in c.provenance" :key="p.criterion_id">{{ p.criterion_id }} ← 版本 #{{ p.baseline_id }} / {{ p.source_criterion_id }}</dd></dl><el-button size="small" @click="openCases">在用例库查看或修订</el-button></el-collapse-item></el-collapse>
             </article>
             <div v-if="mission.phase === 'awaiting_approval' && canWrite" class="authorization">
               <h4>执行授权</h4>
               <p class="hint">上限 {{ mission.policy.max_cases }} 条，已选 {{ selectedIds.length }} 条。用例内容改变后需要重新准备方案。</p>
               <el-form label-position="top" :disabled="acting || mission.paused">
-                <el-form-item label="执行设备"><el-select v-model="runner" placeholder="选择已登记的执行设备" aria-label="执行设备"><el-option v-for="d in devices" :key="d.id" :value="d.runner_id" :label="`${d.name} · ${d.platform}`" /></el-select><el-button link @click="$router.push('/my-devices')">管理设备</el-button></el-form-item>
+                <template v-if="mission.policy.mobile_dialog">
+                  <MobileTargets v-model="targets" v-model:builds="builds" :devices="devices" @update:model-value="reviewed = false" @update:builds="reviewed = false" />
+                  <el-checkbox v-model="saveMobilePlan">保存为双端测试计划，供后续版本回归</el-checkbox>
+                </template>
+                <el-form-item v-else label="执行设备"><el-select v-model="runner" placeholder="选择已登记的执行设备" aria-label="执行设备"><el-option v-for="d in devices" :key="d.id" :value="d.runner_id" :label="`${d.name} · ${d.platform}`" /></el-select><el-button link @click="$router.push('/my-devices')">管理设备</el-button></el-form-item>
                 <el-form-item label="执行预算（分钟，包含排队）"><el-input-number v-model="budget" :min="5" :max="240" aria-label="执行预算" /></el-form-item>
                 <el-checkbox v-model="retry">允许环境阻塞自动复测一次（仅 AI 高置信度归因，保留原失败）</el-checkbox>
-                <el-checkbox v-model="reviewed" class="reviewed-check">我已核对所选用例的前置、步骤、预期及验收关联，授权在该设备和预算内执行</el-checkbox>
-                <el-button type="primary" :loading="acting" :disabled="!reviewed || !runner || !selectedIds.length || selectedIds.some(id => !caseClear(mission.plan.cases.find(c => c.id === id)))" @click="act('approve')">确认方案并开始执行</el-button>
+                <el-checkbox v-model="reviewed" class="reviewed-check">我已核对所选用例的前置、步骤、预期及验收关联，授权在所选设备和预算内执行</el-checkbox>
+                <el-button type="primary" :loading="acting" :disabled="!reviewed || !readyTarget || !selectedIds.length || selectedIds.some(id => !caseClear(mission.plan.cases.find(c => c.id === id)))" @click="act('approve')">确认方案并开始执行</el-button>
               </el-form>
             </div>
           </section>
@@ -69,7 +74,7 @@
             <p class="hint">流程完成不等于可以发布。以下状态按当前版本与执行结果核对；重试通过保留为不稳定。</p>
             <el-table class="desktop-evidence" :data="mission.report.criteria" size="small" border><el-table-column prop="id" label="验收条件" width="110" /><el-table-column prop="text" label="产品预期" min-width="180" /><el-table-column label="证据状态" width="115"><template #default="{ row }">{{ evidenceLabel(row.state) }}</template></el-table-column><el-table-column label="追溯" min-width="150"><template #default="{ row }"><span>执行 {{ row.run_ids.map(i => `#${i}`).join('、') || '未执行' }}</span><p class="hint">{{ row.source_section }} {{ row.source_quote }}</p><CriterionEvidence :assessments="row.assessments" @open="showRunEvidence" /><span v-if="row.unexecuted_case_ids?.length">未执行用例：{{ row.unexecuted_case_ids.join('、') }}</span></template></el-table-column></el-table>
             <div class="mobile-evidence"><article v-for="c in mission.report.criteria" :key="c.id"><strong>{{ c.id }} · {{ evidenceLabel(c.state) }}</strong><p>{{ c.text }}</p><p class="hint">执行 {{ c.run_ids.map(i => `#${i}`).join('、') || '未执行' }} · {{ c.source_section }}</p><p class="hint">{{ c.source_quote }}</p><CriterionEvidence :assessments="c.assessments" @open="showRunEvidence" /></article></div>
-            <el-collapse><el-collapse-item v-if="mission.report.excluded_rules?.length" title="本期排除及原因" name="excluded"><p v-for="r in mission.report.excluded_rules" :key="r.id">{{ r.id }} · {{ r.reason }}</p></el-collapse-item><el-collapse-item title="执行记录、失败归因与重试链" name="runs"><article v-for="r in mission.report.runs" :key="r.id" class="run-row"><strong>#{{ r.id }} · {{ evidenceLabel(r.status) }} · 第 {{ r.attempt }} 次{{ r.retry_of ? ` · 复测自 #${r.retry_of}` : '' }}</strong><p>{{ r.reason }}</p><p v-if="r.triage?.kind">AI 归因参考：{{ r.triage.kind }} · {{ r.triage.reason }}<br />建议：{{ r.triage.suggestion }}</p><p v-if="r.assessment?.error">证据核验失败：{{ r.assessment.error }}</p><p v-if="r.triage_error">归因失败：{{ r.triage_error }}</p><el-button v-if="r.has_report" size="small" @click="showRunEvidence(r.id)">查看执行步骤</el-button><a v-if="safeEvidence(r.evidence_url)" :href="r.evidence_url" target="_blank" rel="noopener noreferrer">查看证据</a></article><el-button size="small" @click="openResults">打开执行结果详情</el-button></el-collapse-item>
+            <el-collapse><el-collapse-item v-if="mission.report.excluded_rules?.length" title="本期排除及原因" name="excluded"><p v-for="r in mission.report.excluded_rules" :key="r.id">{{ r.id }} · {{ r.reason }}</p></el-collapse-item><el-collapse-item title="执行记录、失败归因与重试链" name="runs"><article v-for="r in mission.report.runs" :key="r.id" class="run-row"><strong>#{{ r.id }} · {{ evidenceLabel(r.status) }} · {{ r.mobile_target ? (r.mobile_target.platform === 'ios' ? 'iPhone' : 'Android') + ' · ' + r.runner + ' · ' : '' }}第 {{ r.attempt }} 次{{ r.retry_of ? ` · 复测自 #${r.retry_of}` : '' }}</strong><p>{{ r.reason }}</p><p v-if="r.triage?.kind">AI 归因参考：{{ r.triage.kind }} · {{ r.triage.reason }}<br />建议：{{ r.triage.suggestion }}</p><p v-if="r.mobile_target">{{ [r.mobile_target.model, r.mobile_target.os_version, r.mobile_target.build].filter(Boolean).join(' · ') }}</p><p v-if="r.assessment?.error">证据核验失败：{{ r.assessment.error }}</p><p v-if="r.triage_error">归因失败：{{ r.triage_error }}</p><el-button v-if="r.has_report" size="small" @click="showRunEvidence(r.id)">查看执行步骤</el-button><a v-if="safeEvidence(r.evidence_url)" :href="r.evidence_url" target="_blank" rel="noopener noreferrer">查看证据</a></article><el-button size="small" @click="openResults">打开执行结果详情</el-button></el-collapse-item>
               <el-collapse-item v-if="mission.final_report?.generated_at" title="查看流程收口时的报告快照" name="snapshot"><p>{{ mission.final_report.generated_at }} · {{ mission.final_report.summary }}</p><p>{{ mission.final_report.verified }} / {{ mission.final_report.total }} 个验收条件；后续纠偏或版本变化会在上方当前证据中体现。</p></el-collapse-item></el-collapse>
           </section>
           <section class="timeline-card"><h3>推进记录与人工决定</h3><ol><li v-for="e in mission.events" :key="e.id"><time>{{ e.created_at?.replace('T', ' ') }}</time><span>{{ e.message }}</span><small v-if="e.actor_id">决定人 #{{ e.actor_id }}</small><small v-if="e.data?.job_id">AI 任务 #{{ e.data.job_id }}</small></li></ol></section>
@@ -79,7 +84,8 @@
     <el-dialog v-model="createOpen" title="新建测试目标" width="min(780px, 95vw)" :close-on-click-modal="false">
       <el-alert v-if="error" :title="error" type="error" :closable="false" />
       <el-form label-position="top" :disabled="creating || importing">
-        <el-form-item label="希望验证什么结果"><el-input v-model="goal" type="textarea" :rows="3" maxlength="4000" placeholder="例如：验证文件权限二期，重点检查保护目录删除确认、取消后文件保留和跨平台差异。" aria-label="测试目标描述" /></el-form-item>
+        <el-form-item label="希望验证什么结果"><el-input v-model="goal" type="textarea" :rows="3" maxlength="4000" placeholder="例如：验证 APP 双端对话，重点检查连续追问、停止生成和历史恢复。" aria-label="测试目标描述" /></el-form-item>
+        <el-form-item label="执行范围"><el-radio-group v-model="mobileDialog"><el-radio :value="false">常规功能测试</el-radio><el-radio :value="true">Android + iPhone 对话</el-radio></el-radio-group></el-form-item>
         <el-form-item label="需求来源"><el-radio-group v-model="sourceMode"><el-radio value="new">导入新需求</el-radio><el-radio value="existing">已有需求分析</el-radio></el-radio-group></el-form-item>
         <el-form-item v-if="sourceMode === 'existing'" label="选择需求分析"><el-select v-model="existingAnalysisId" filterable aria-label="已有需求分析"><el-option v-for="a in analyses" :key="a.id" :value="a.id" :label="`#${a.id} · ${a.source_title || '文本需求'} · ${a.baseline_id ? '已确认' : '待确认'}`" /></el-select></el-form-item>
         <template v-else>
@@ -95,7 +101,7 @@
           <div class="actions"><el-upload :auto-upload="false" :show-file-list="false" :on-change="importFile" accept=".docx,.pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp"><el-button>导入文档或图片</el-button></el-upload><el-upload v-if="sourceId" :auto-upload="false" :show-file-list="false" :on-change="appendImage" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp"><el-button>补充图片</el-button></el-upload></div>
           <p v-if="sourceId" class="hint">{{ sourceTitle }} · 已读取 {{ materials.length }} 张图片或页面</p>
           <el-alert v-for="w in warnings" :key="w" :title="w" type="warning" :closable="false" />
-          <el-form-item label="需求正文"><el-input v-model="requirement" type="textarea" :rows="6" maxlength="60000" placeholder="可直接粘贴需求；图片识别与图文冲突会在分析阶段处理。" aria-label="需求正文" /></el-form-item>
+          <el-form-item label="需求正文"><el-input v-model="requirement" type="textarea" :rows="6" maxlength="60000"  :placeholder="mobileDialog ? '可补充需求和边界条件，留空时根据测试目标分析。' : '可直接粘贴需求；图片识别与图文冲突会在分析阶段处理。'" aria-label="需求正文" /></el-form-item>
           <el-form-item label="分析与生成引擎"><el-select v-model="provider"><el-option v-for="p in providers" :key="p.id" :value="p.id" :label="p.id" :disabled="!p.available" /></el-select></el-form-item>
         </template>
         <el-form-item label="方案用例上限"><el-input-number v-model="maxCases" :min="1" :max="50" /></el-form-item>
@@ -108,6 +114,7 @@
   </WorkspacePage>
 </template>
 <script setup>
+import MobileTargets from './MobileTargets.vue'
 import MissionQualityReview from './MissionQualityReview.vue'
 import CriterionEvidence from './CriterionEvidence.vue'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
@@ -124,9 +131,11 @@ const tasks = ref([]), analyses = ref([]), devices = ref([]), providers = ref([]
 const createOpen = ref(false), reviewOpen = ref(false), finishOpen = ref(false), finishNote = ref(''), creating = ref(false), importing = ref(false), acting = ref(false)
 const goal = ref(''), sourceMode = ref('new'), existingAnalysisId = ref(null), taskId = ref(null), requirement = ref(''), sourceUrl = ref(''), importedUrl = ref(''), sourceId = ref(null), sourceTitle = ref(''), materials = ref([]), warnings = ref([]), provider = ref('claude'), maxCases = ref(20)
 const selectedIds = ref([]), runner = ref(''), budget = ref(60), retry = ref(false), reviewed = ref(false)
+const mobileDialog = ref(false), targets = ref({}), builds = ref({}), saveMobilePlan = ref(true)
+const readyTarget = computed(() => mission.value?.policy?.mobile_dialog ? targets.value.android && targets.value.ios : runner.value)
 let timer, disposed = false, selectionVersion = 0, projectVersion = 0, refreshing = false
 const canWrite = computed(() => auth.isPlatformAdmin || auth.memberships?.some(m => m.project_id === projectId.value && ['admin', 'member'].includes(m.role)))
-const canCreate = computed(() => canWrite.value && goal.value.trim().length >= 3 && (sourceMode.value === 'existing' ? !!existingAnalysisId.value : !!taskId.value && !!requirement.value.trim() && (!sourceUrl.value.trim() || sourceUrl.value === importedUrl.value) && providers.value.some(p => p.id === provider.value && p.available)))
+const canCreate = computed(() => canWrite.value && goal.value.trim().length >= 3 && (sourceMode.value === 'existing' ? !!existingAnalysisId.value : !!taskId.value && (mobileDialog.value || !!requirement.value.trim()) && (!sourceUrl.value.trim() || sourceUrl.value === importedUrl.value) && providers.value.some(p => p.id === provider.value && p.available)))
 const phaseLabel = p => ({ analyzing:'理解需求', clarifying:'待确认验收', generating:'补充用例', planning:'规划与独立审查', verifying:'核验证据', awaiting_approval:'待授权执行', executing:'执行中', triaging:'归因与复测', attention:'需要处理', completed:'已收口' }[p] || p)
 const evidenceLabel = s => ({ verified:'证据支持', verifying:'核验中', insufficient:'证据不足', contradicted:'证据冲突', missing:'待补验证', stale:'内容已变化', pending:'等待执行', running:'执行中', passed:'执行通过', failed:'执行失败', blocked:'执行阻塞', flaky:'重试后通过', unreviewed:'待核对用例', no_evidence:'缺少证据' }[s] || s)
 const progressMessage = computed(() => mission.value?.phase === 'awaiting_approval' && mission.value?.plan?.quality?.status !== 'passed' ? '需要处理用例审查问题，或重新准备方案完成审查' : ({ analyzing:'AI 正在理解正文、图片与历史项目规则', clarifying:'需要你确认业务意图', generating:'AI 正在为未覆盖的验收条件补充用例', planning:'AI 正在规划方案并独立检查用例质量', verifying:'AI 正在对照实际断言和截图核验产品预期', awaiting_approval:'需要你核对方案并授权执行', executing:'正在等待执行机回传结果', triaging:'AI 正在归因，并按授权条件决定是否复测', attention:'存在需要处理的阻碍', completed:'流程已收口，请查看质量结论与证据缺口' }[mission.value?.phase] || ''))
@@ -167,6 +176,10 @@ async function fetchSelected(id, version) {
   if (mission.value?.id !== id || mission.value?.plan?.baseline_id !== value.plan?.baseline_id || JSON.stringify(mission.value?.plan?.cases?.map(c => c.hash)) !== JSON.stringify(value.plan?.cases?.map(c => c.hash))) {
     selectedIds.value = (value.plan?.cases || []).filter(c => c.kind !== 'manual' && caseClear(c, value.plan)).map(c => c.id); reviewed.value = false
   }
+  if (mission.value?.id !== id) {
+    targets.value = { ...value.policy.mobile_targets }; builds.value = { ...value.policy.mobile_builds }
+    saveMobilePlan.value = true; reviewed.value = false
+  }
   const needsAnalysis = analysis.value?.id !== value.analysis_id || (value.phase === 'clarifying' && mission.value?.phase !== 'clarifying')
   mission.value = value
   if (needsAnalysis && value.analysis_id) {
@@ -181,8 +194,8 @@ async function selectMission(id) {
   try { await fetchSelected(id, v); if (!disposed && v === selectionVersion) await router.replace({ path:'/commander', query:{ mission:id, project_id:projectId.value } }) }
   catch(e) { if (v === selectionVersion) error.value = messageOf(e) }
 }
-function newGoal() { goal.value=''; sourceMode.value='new'; taskId.value=null; existingAnalysisId.value=null; sourceId.value=null; sourceTitle.value=''; requirement.value=''; sourceUrl.value=''; importedUrl.value=''; materials.value=[]; warnings.value=[]; error.value=''; createOpen.value=true; loadContext() }
-function newRound() { goal.value=mission.value.goal; sourceMode.value='existing'; existingAnalysisId.value=mission.value.analysis_id; createOpen.value=true; loadContext() }
+function newGoal() { mobileDialog.value=false; goal.value=''; sourceMode.value='new'; taskId.value=null; existingAnalysisId.value=null; sourceId.value=null; sourceTitle.value=''; requirement.value=''; sourceUrl.value=''; importedUrl.value=''; materials.value=[]; warnings.value=[]; error.value=''; createOpen.value=true; loadContext() }
+function newRound() { mobileDialog.value=!!mission.value.policy.mobile_dialog; goal.value=mission.value.goal; sourceMode.value='existing'; existingAnalysisId.value=mission.value.analysis_id; createOpen.value=true; loadContext() }
 function setSource(data) { requirement.value=data.text; sourceId.value=data.source_id; sourceTitle.value=data.title || data.filename || '需求资料'; materials.value=data.materials || []; warnings.value=data.warnings || [] }
 async function importUrl() { importing.value=true; error.value=''; try { setSource(await extractUrl(sourceUrl.value)); importedUrl.value=sourceUrl.value } catch(e){ error.value=messageOf(e) } finally { importing.value=false } }
 async function importFile(upload) { importing.value=true; error.value=''; try { setSource(await extractFile(upload.raw)); sourceUrl.value=''; importedUrl.value='' } catch(e){error.value=messageOf(e)} finally{importing.value=false} }
@@ -191,16 +204,17 @@ async function create() {
   if (!canCreate.value) return
   creating.value=true; error.value=''
   try {
-    const payload={ project_id:projectId.value, goal:goal.value.trim(), max_cases:maxCases.value }
+    const payload={ project_id:projectId.value, goal:goal.value.trim(), max_cases:maxCases.value, mobile_dialog:mobileDialog.value }
     if (sourceMode.value === 'existing') payload.analysis_id=existingAnalysisId.value
-    else payload.requirement={ project_id:projectId.value, task_id:taskId.value, requirement:requirement.value, provider:provider.value, source_id:sourceId.value, source_url:importedUrl.value, source_title:sourceTitle.value, input_type:sourceId.value ? (importedUrl.value ? 'url' : 'file') : 'text' }
+    else payload.requirement={ project_id:projectId.value, task_id:taskId.value, requirement:requirement.value.trim() || goal.value.trim(), provider:provider.value, source_id:sourceId.value, source_url:importedUrl.value, source_title:sourceTitle.value, input_type:sourceId.value ? (importedUrl.value ? 'url' : 'file') : 'text' }
     const value=await createTestMission(payload); createOpen.value=false; await selectMission(value.id); await refresh()
   } catch(e){ error.value=messageOf(e) } finally{ creating.value=false }
 }
 function toggleCase(id, checked) { selectedIds.value = checked ? [...new Set([...selectedIds.value, id])] : selectedIds.value.filter(i => i !== id); reviewed.value=false }
 async function act(action, extra = {}) {
   acting.value=true; error.value=''
-  try { const value=await decideTestMission(mission.value.id,{ ...extra, revision:mission.value.revision, action, runner:runner.value, max_retries:retry.value ? 1 : 0, time_budget_minutes:budget.value, case_ids:selectedIds.value, reviewed:reviewed.value, note:finishNote.value }); mission.value=value; finishOpen.value=false; await refresh() }
+  try { const value=await decideTestMission(mission.value.id,{ ...extra, revision:mission.value.revision, action, runner:mission.value.policy.mobile_dialog ? '' : runner.value,
+      ...(action === 'approve' && mission.value.policy.mobile_dialog ? { mobile_targets:targets.value, mobile_builds:Object.fromEntries(Object.entries(builds.value).filter(([, v]) => v)), save_mobile_plan:saveMobilePlan.value } : {}), max_retries:retry.value ? 1 : 0, time_budget_minutes:budget.value, case_ids:selectedIds.value, reviewed:reviewed.value, note:finishNote.value }); mission.value=value; finishOpen.value=false; await refresh() }
   catch(e) { error.value=messageOf(e); await refresh() }
   finally { acting.value=false }
 }
@@ -216,6 +230,7 @@ onMounted(async () => {
   try {
     projects.value=await app.fetchProjects(); projectId.value=projects.value.find(p => p.id === Number(route.query.project_id))?.id || app.resolveProjectId(projects.value)
     if (projectId.value) { await Promise.all([loadContext(), refresh()]); if (route.query.mission) await selectMission(Number(route.query.mission)) }
+    if (route.query.mobile_dialog === '1') { mobileDialog.value = true; createOpen.value = true }
     if (route.query.analysis_id) { sourceMode.value='existing'; existingAnalysisId.value=Number(route.query.analysis_id); createOpen.value=true }
   } catch(e){ error.value=messageOf(e) }
   if (!disposed) timer=setInterval(refresh, 4000)
@@ -226,7 +241,7 @@ onBeforeUnmount(() => { disposed=true; selectionVersion++; projectVersion++; cle
 .intro,.hint { color:var(--el-text-color-secondary); line-height:1.65; }.intro{max-width:900px;margin-bottom:24px}
 .mission-layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:24px;align-items:start}.mission-list{display:grid;gap:8px}.mission-item{text-align:left;border:1px solid var(--el-border-color-lighter);border-radius:var(--tech-radius);padding:14px;background:var(--el-bg-color);cursor:pointer;color:var(--el-text-color-primary);overflow-wrap:anywhere}.mission-item span{display:block;font-size:12px;color:var(--el-text-color-secondary);margin-bottom:8px}.mission-item strong{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.mission-item.selected{border-color:var(--el-color-primary);background:var(--el-color-primary-light-9)}
 .mission-main{min-width:0}.mission-heading{display:flex;gap:16px;justify-content:space-between;align-items:start}.mission-heading h2{font-size:22px;line-height:1.5;margin:10px 0 20px;overflow-wrap:anywhere}.mission-heading small{color:var(--el-text-color-secondary)}.progress-card,.plan-card,.report-card,.timeline-card{border:1px solid var(--el-border-color-lighter);padding:20px;border-radius:var(--tech-radius);margin-bottom:20px;background:var(--el-bg-color)}.progress-card{background:var(--el-color-primary-light-9)}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions .el-button+.el-button{margin-left:0}.case-row{border-top:1px solid var(--el-border-color-lighter);padding:16px 0}.case-row h4{margin:10px 0}.case-row p,.run-row p{white-space:pre-wrap;overflow-wrap:anywhere}dl{margin:0}dt{font-weight:600;margin-top:10px}dd{margin:5px 0 12px;white-space:pre-wrap;line-height:1.7}.authorization{background:var(--el-fill-color-light);padding:16px;border-radius:var(--tech-radius)}.reviewed-check{display:flex;margin:16px 0;height:auto}.reviewed-check :deep(.el-checkbox__label){white-space:normal;line-height:1.7}.source-detail{margin:16px 0}.timeline-card ol{padding-left:18px}.timeline-card li{padding:8px 0;line-height:1.6}.timeline-card time,.timeline-card small{display:block;color:var(--el-text-color-secondary);font-size:12px}.run-row{padding:12px 0;border-bottom:1px solid var(--el-border-color-lighter)}
-.mobile-evidence{display:none}.run-row pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.native-steps pre{display:inline;white-space:pre-wrap;overflow-wrap:anywhere;margin-left:8px}.mobile-evidence{display:none}.run-row pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .task-field-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 @media(max-width:600px){.desktop-evidence{display:none}.mobile-evidence{display:block}.mobile-evidence article{padding:14px 0;border-bottom:1px solid var(--el-border-color-lighter)}}
 @media(max-width:900px){.mission-layout{grid-template-columns:1fr}.mission-list{grid-template-columns:repeat(2,minmax(0,1fr));max-height:220px;overflow:auto}.mission-heading{flex-wrap:wrap}.progress-card,.plan-card,.report-card,.timeline-card{padding:14px}}

@@ -218,13 +218,17 @@ def reap_stale_exec_runs(session_factory=None) -> int:
             changed = db.query(ExecRun).filter(
                 ExecRun.id == r.id, expired_run_filter(ExecRun, _db_now(db)),
                 ExecRun.fail_kind == r.fail_kind,
-            ).update({ExecRun.status: ExecStatus.blocked if cancelled else ExecStatus.failed,
-                      ExecRun.verdict: "blocked" if cancelled else r.verdict,
+            ).update({ExecRun.status: ExecStatus.blocked if cancelled or r.native_mobile else ExecStatus.failed,
+                      ExecRun.verdict: "blocked" if cancelled or r.native_mobile else r.verdict,
                       ExecRun.fail_kind: "cancelled" if cancelled else "timeout",
                       ExecRun.finished_at: func.now(),
                       ExecRun.reason: "手动终止：执行机已失联，已释放占用" if cancelled else "自动收口:执行超 2 小时未回填(执行机中断),标记失败"},
                      synchronize_session=False)
             reaped += changed
+        from app.services.mobile_dispatch import block_lost_targets
+        blocked = block_lost_targets(db, _db_now(db))
+        reaped += len(blocked)
+        rows.extend(blocked)
         if rows:
             db.commit()
             logger.info("自动收口 %d 条超龄 running exec_run", reaped)

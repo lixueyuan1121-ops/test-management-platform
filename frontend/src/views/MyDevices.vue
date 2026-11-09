@@ -27,6 +27,16 @@
             <span v-if="!(row.active_kinds || []).length" class="mono idle">未启动</span>
           </template>
         </el-table-column>
+        <el-table-column v-if="devices.some(d => d.platform === 'android' || d.platform === 'ios')" label="真机状态" min-width="175">
+          <template #default="{ row }">
+            <template v-if="row.mobile_target">
+              <el-tag :type="row.mobile_target.online ? 'success' : 'info'" size="small">{{ row.mobile_target.online ? '在线' : '离线' }}</el-tag>
+              {{ row.mobile_target.model }} · {{ row.mobile_target.os_version }}
+              <div>{{ row.mobile_target.app_id }} · {{ row.mobile_target.build }}</div>
+            </template>
+            <span v-else>{{ row.platform === 'web' ? '—' : '等待真机上报' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="token" min-width="130">
           <template #default="{ row }"><span class="mono">{{ row.token }}</span></template>
         </el-table-column>

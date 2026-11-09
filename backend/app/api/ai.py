@@ -601,7 +601,16 @@ def review_testcase(
     # 并按新 script 用到的 key 重推关联页面(与重生逻辑一致)。
     # key 未注册 → 不拒绝,而是降级「选择器待补」保存(与生成侧一致:补齐 key 即可执行);
     # 其它硬错误(action 非法/无断言/非数组)→ 仍 400。
-    if body.script is not None:
+    if body.script is not None and tc.platform == "mobile":
+        from app.services.mobile_script import validate_script
+        try:
+            script = validate_script(body.script)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if tc.mobile_scenario != "script" or _load_script_list(tc.script) != script:
+            tc.script = json.dumps(script, ensure_ascii=False)
+            tc.mobile_scenario, tc.mobile_case_hash = "script", None
+    elif body.script is not None:
         eff_kind = getattr(tc, "exec_kind", "gui") or "gui"
         norm, verr = validate_script_for_edit(eff_kind, body.script, project_id=tc.project_id, db=db, sub_product=tc.sub_product)
         if verr is not None:
@@ -768,6 +777,8 @@ def gen_script(
     if not tc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测试点不存在")
     assert_project_role(db, user, tc.project_id, _WRITE_ROLES)
+    if tc.platform == "mobile":
+        raise HTTPException(422, "请从「测试目标 → Android + iPhone 对话」按新的步骤与预期生成并审查真机脚本")
     kind = getattr(tc, "exec_kind", "gui") or "gui"
     sel_fix, _keys, intended = selector_fix_info(getattr(tc, "kind_reason", None))
     if kind == "manual" and sel_fix and intended:
@@ -876,6 +887,8 @@ def run_script_gen_job(db: Session, job) -> dict:
         raise ValueError(f"生成 script 失败:{err}")
     if tc is None:
         raise ValueError("测试点已被删除")
+    if tc.platform == "mobile":
+        raise ValueError("真机用例需要从双端测试目标生成、核对脚本")
     tc.script = json.dumps(script, ensure_ascii=False)
     if kind in ("gui", "e2e"):
         tc.exec_kind = kind          # 降级用例重生成功 → 恢复可执行类型
@@ -966,7 +979,11 @@ def run_testcase_gen_job(db: Session, job) -> dict:
 
     t0 = _time.monotonic()
     if baseline_payload:
-        res = generate_from_baseline(engine, baseline_payload, project_id, pages, sub_product, scenario_only, progress=progress)
+        if inp.get("mobile_dialog"):
+            from app.services.test_missions import generate_mobile_cases
+            res = generate_mobile_cases(engine, baseline_payload, progress, goal=inp.get("mobile_goal", ""), max_cases=inp.get("max_cases", 20))
+        else:
+            res = generate_from_baseline(engine, baseline_payload, project_id, pages, sub_product, scenario_only, progress=progress)
         raw, meta, cases, part_errors = res["raw"], res["meta"], res["cases"], res["errors"]
         err = "；".join(part_errors) if not cases else None
     else:
@@ -1020,7 +1037,8 @@ def run_testcase_gen_job(db: Session, job) -> dict:
         new_objs = []
         for c in cases:
             tc = TestCase(
-                sub_product=sub_product,
+                sub_product=sub_product, platform="mobile" if inp.get("mobile_dialog") else "web",
+                mobile_scenario="script" if inp.get("mobile_dialog") and c.get("script") else None,
                 ai_task_id=ai_task_id, provider=provider_id, project_id=project_id, task_id=task_id,
                 requirement_id=requirement_id,
                 category=c["category"] or None, title=c["title"], steps=c["steps"] or None,

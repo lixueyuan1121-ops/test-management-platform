@@ -25,6 +25,8 @@ class EnqueueCasesIn(BaseModel):
     project_id: int
     runner: str = Field("mac-01", max_length=64)
     test_case_ids: list[int] = Field(..., min_length=1)
+    mobile_targets: dict[str, str] | None = None
+    mobile_builds: dict[str, str] | None = None
     auto_prepare: bool = False
     verification_runs: int = Field(default=1, ge=1, le=2)
     release_id: int | None = None

@@ -68,3 +68,22 @@ test('同名多轮会话在不同 trial 中保持隔离', () => {
   assert.equal(groups.length, 2)
   assert(groups.every(group => group.children.length === 2))
 })
+
+test('双真机按逻辑用例配对并保留分端重试，缺一端不能计为双端通过', () => {
+  const row = (id, case_id, platform, verdict, extra) => ({
+    run_id: id, case_id, batch_id: 'mobile', verdict, mobile_target: { platform }, ...extra,
+  })
+  const [batch] = execResultBatches([
+    row(6, 20, 'android', 'pass'),
+    row(4, 10, 'ios', 'pass', { retry_of: 3, flaky: true }),
+    row(3, 10, 'ios', 'fail'),
+    row(2, 10, 'android', 'pass'),
+  ])
+  assert.equal(batch.mobilePairs.length, 2)
+  assert.equal(batch.mobilePassed, 0)
+  assert.equal(batch.mobilePairs.find(r => r.caseId === 20).ios, undefined)
+  assert.equal(batch.mobilePairs.find(r => r.caseId === 10).ios.run_id, 4)
+  const [stable] = execResultBatches([row(3, 10, 'ios', 'pass', { retry_of: 2, flaky: false }),
+    row(2, 10, 'ios', 'pass'), row(1, 10, 'android', 'pass')])
+  assert.equal(stable.mobilePassed, 1)
+})

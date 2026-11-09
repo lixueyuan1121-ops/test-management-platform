@@ -11,6 +11,18 @@ export function execResultBatches(rows) {
   const out = []
   for (const [key, list] of map) {
     const eff = list.filter((r) => !r._superseded)
+    const pairs = new Map()
+    for (const row of eff) {
+      const platform = row.mobile_target?.platform
+      if (platform !== 'android' && platform !== 'ios') continue
+      const caseId = row.case_id ?? row.test_case_id
+      const pair = pairs.get(caseId) || { caseId, title: row.title || `#${caseId}` }
+      pair[platform] = row
+      pairs.set(caseId, pair)
+    }
+    const mobilePairs = [...pairs.values()]
+    const stablePass = row => row?.verdict === 'pass' && !row.flaky
+    const mobilePassed = mobilePairs.filter(pair => stablePass(pair.android) && stablePass(pair.ios)).length
     const passed = eff.filter((r) => r.verdict === 'pass').length
     const failed = eff.filter((r) => r.verdict === 'fail').length
     const cancelled = eff.filter((r) => r.fail_kind === 'cancelled').length
@@ -27,7 +39,7 @@ export function execResultBatches(rows) {
       id: key,
       label: key === '__none__' ? '(未分批 · 历史记录)' : `批次 ${key}`,
       rows: list,
-      total, passed, failed, blocked, cancelled, flaky,
+      total, passed, failed, blocked, cancelled, flaky, mobilePairs, mobilePassed,
       rate: fnDenom ? Math.round((passed / fnDenom) * 100) : 0,
       runner: [...new Set(list.map((r) => r.runner).filter(Boolean))].join(', ') || '—',
       durationText: durSum ? (durSum / 1000).toFixed(1) + 's' : '—',

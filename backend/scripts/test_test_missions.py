@@ -38,9 +38,19 @@ class MissionTests(unittest.TestCase):
         a['draft']['rules'][1].update(status='excluded',review_note='下期回收站')
         a=self.save(a); self.assertEqual(self.confirm(a).status_code,200)
 
-    def plan(self):
-        r=self.client.post('/api/test-missions',json={'project_id':1,'goal':'验证保护目录删除流程','requirement':{
-            'project_id':1,'task_id':1,'requirement':'保护目录删除必须确认'}})
+    def plan(self, mobile=False, script=None):
+        requirement = "保护目录删除必须确认"
+        if mobile:
+            requirement = "双端编辑区输入多行后保留原文，清空后不可发送"
+            baseline = draft()
+            baseline.update(scope="Android 和 iPhone", summary=requirement)
+            baseline["rules"][0].update(title="草稿输入", condition="新会话", action="输入多行文字并清空",
+                source_quote=requirement, expected="草稿保留原文且清空后不可发送",
+                criteria=[{"id":"R1-C1", "text":"多行文字按原样显示"}, {"id":"R1-C2", "text":"清空后不可发送"}])
+            baseline["scenarios"][0].update(actor="测试账号", given="新会话", when="输入并清空草稿", then="清空后不可发送")
+            self.fake.response = baseline
+        r=self.client.post('/api/test-missions',json={'project_id':1,'goal':requirement,'mobile_dialog':mobile,'requirement':{
+            'project_id':1,'task_id':1,'requirement':requirement}})
         self.assertEqual(r.status_code,200,r.text); m=r.json()['data']
         ai_jobs.run_job(self.Session,m['active_job_id']); self.tick()
         self.assertEqual(self.get(m['id'])['phase'],'clarifying')
@@ -49,8 +59,13 @@ class MissionTests(unittest.TestCase):
         generated={'raw':'[]','meta':{'cost_usd':.05},'errors':[],'cases':[{
             'title':'保护文件删除','steps':'点击删除后取消','expected':'确认弹窗，取消后文件保留','precondition':'保护目录内有文件',
             'priority':'P0','category':'功能','kind':'gui','criterion_ids':['R1-C1','R1-C2']}]}
-        with patch('app.services.requirement_analysis.generate_from_baseline',return_value=generated):
+        if mobile:
+            self.fake.response = {"cases": [{"title":"多行和清空", "steps":"输入并清空", "expected":"保留原文且清空后禁用发送",
+                "precondition":"已登录", "priority":"P0", "criterion_ids":["R1-C1","R1-C2"], "script":script}]} if script else {"cases":[]}
             ai_jobs.run_job(self.Session,m['active_job_id'])
+        else:
+            with patch('app.services.requirement_analysis.generate_from_baseline',return_value=generated):
+                ai_jobs.run_job(self.Session,m['active_job_id'])
         self.tick(); m=self.get(m['id']); self.assertEqual(m['phase'],'planning')
         options=svc.candidates(self.db,self.db.get(TestMission,m['id']))
         self.fake.response={'summary':'优先保护目录和取消分支','selected':[{'id':options[0]['id'],'reason':'验证确认与保留'}],'risks':[]}
@@ -88,6 +103,58 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/test-missions/{m['id']}/runs/99999").status_code, 404)
         tc=self.db.get(TestCase,run.test_case_id); tc.expected='直接删除'; self.db.commit()
         changed=self.get(m['id']); self.assertEqual(changed['report']['verified'],0); self.assertEqual(changed['final_report']['verified'],2)
+
+    def test_mobile_plan_requires_reviewed_executable_scenario(self):
+        m = self.plan(mobile=True)
+        self.assertTrue(m["policy"].get("mobile_dialog"))
+        item = m["plan"]["cases"][0]
+        self.assertFalse(item.get("mobile_scenario"))
+        self.assertFalse(svc.quality.case_is_clear(m["plan"], item))
+        self.device()
+        self.assertEqual(self.decide(m, "approve", reviewed=True, case_ids=[item["id"]],
+                                     runner="test-mac").status_code, 422)
+        self.assertEqual(self.db.query(ExecRun).count(), 0)
+
+    def test_mobile_target_pair_evidence_requires_both_phones(self):
+        script = [{"action":"new_chat"}, {"action":"compose","text":"Hello\n你好🌱"}, {"action":"assert_draft","text":"Hello\n你好🌱"},
+                  {"action":"clear_draft"}, {"action":"assert_send_unavailable"}]
+        m = self.plan(mobile=True, script=script)
+        item = m["plan"]["cases"][0]
+        self.assertEqual(item.get("mobile_scenario"), "script")
+        targets = {"android": "a-phone", "ios": "i-phone"}
+        devices = [RunnerDevice(owner_id=1, runner_id=rid, name=rid, token="test-" + rid, platform=plat)
+                   for plat, rid in targets.items()]
+        self.db.add_all(devices)
+        self.db.commit()
+        from app.services.mobile_dispatch import MobilePresence, record_presence
+        for index, device in enumerate(devices):
+            record_presence(self.db, device, MobilePresence(platform=device.platform, device_id=str(index + 1) * 64,
+                online=True, physical=True, app_id="demo.test", build="100", model="测试机", os_version="test"))
+        response = self.decide(m, "approve", reviewed=True, case_ids=[item["id"]],
+                               mobile_targets=targets, save_mobile_plan=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        runs = self.db.query(ExecRun).order_by(ExecRun.id).all()
+        self.assertEqual([json.loads(r.payload)["mobile_script"] for r in runs], [script, script])
+        self.assertEqual(len(runs), 2)
+        plan_id = response.json()["data"]["policy"]["regression_plan_id"]
+        saved = self.client.get(f"/api/test-plans/{plan_id}").json()["data"]
+        self.assertEqual(saved["mobile_targets"], targets)
+        self.assertEqual(saved["cases"][0]["id"], item["id"])
+        self.assertEqual(len({r.batch_id for r in runs}), 1)
+        for run in runs:
+            run.status = ExecStatus.passed
+            run.report = encode([{"ok": True, "action": "assert_text",
+                "check": {"actual": "完成", "expected": "完成", "mode": "equals"}}])
+        self.db.commit()
+        self.tick()
+        report = self.get(m["id"])["report"]
+        self.assertEqual(report["verified"], 2)
+        self.assertEqual({r["mobile_target"]["platform"] for r in report["runs"]}, {"android", "ios"})
+        self.db.query(MissionRun).filter_by(run_id=runs[1].id).delete()
+        self.db.commit()
+        incomplete = self.get(m["id"])["report"]
+        self.assertEqual(incomplete["verified"], 0)
+        self.assertEqual(incomplete["criteria"][0]["missing_mobile_targets"], [{"case_id": item["id"], "platform": "ios"}])
 
     def test_model_cannot_invent_ids_and_restart_recovers(self):
         m=self.plan(); r=self.decide(m,'replan'); self.assertEqual(r.status_code,200,r.text); m=r.json()['data']

@@ -20,6 +20,7 @@ from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ExecKind, ExecStatus, ProjectRole
 from app.db.session import get_db
 from app.models import ExecRun, TestCase, TestPlan, TestPlanCase, TestPlanRun, User
+from app.services import mobile_dispatch
 from app.schemas.common import ok
 from app.schemas.test_plan import (
     PlanCasesIn, PlanCreateIn, PlanRunIn, PlanScheduleIn, PlanUpdateIn,
@@ -40,6 +41,8 @@ def _plan_out(db: Session, p: TestPlan) -> dict:
         "name": p.name,
         "description": p.description,
         "runner": p.runner,
+        "mobile_targets": json.loads(p.mobile_targets) if p.mobile_targets else None,
+        "mobile_builds": json.loads(p.mobile_builds or "{}"),
         "schedule_cron": p.schedule_cron,
         "schedule_enabled": p.schedule_enabled,
         "case_count": case_count,
@@ -84,11 +87,14 @@ def _auto_case_ids_of_plan(db: Session, plan_id: int) -> list[int]:
             .join(TestCase, TestCase.id == TestPlanCase.case_id)
             .filter(TestPlanCase.plan_id == plan_id)
             .order_by(TestPlanCase.id).all())
+    plan = db.get(TestPlan, plan_id)
+    if plan and plan.mobile_targets:
+        return [cid for cid, _ in rows]  # Mobile batches report unsupported scenarios before dispatch.
     return [cid for cid, kind in rows if (kind or "gui") != "manual"]
 
 
 def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str,
-                   trigger: str, started_by: int | None) -> dict:
+                   trigger: str, started_by: int | None, mobile_builds=None) -> dict:
     """把计划内用例下发成一批 exec_run + 建 test_plan_run 元数据（手动/定时共用）。
 
     复用 exec_queue 的 payload 快照(_payload_of)/kind 判定/平台校验/批次号——
@@ -100,10 +106,21 @@ def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str
     )
 
     ids = list(dict.fromkeys(case_ids))
+    if plan.mobile_targets:
+        from app.api.exec_queue import _expand_with_prereqs
+        expanded = _expand_with_prereqs(db, ids)
+        if set(expanded) != set(ids):
+            raise HTTPException(422, "真机计划包含未纳入计划的前置用例，请补充并核对")
+        ids = expanded
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
     found = {c.id: c for c in cases}
     owner_id = started_by if started_by is not None else plan.created_by
-    auto_cache, resolved, devices = {}, {}, {}
+    auto_cache = {}
+    dispatches = []
+    targets = json.loads(plan.mobile_targets) if plan.mobile_targets else None
+    if mobile_builds is not None and not targets:
+        raise HTTPException(422, "指定构建号需要双真机计划")
+    builds = {**json.loads(plan.mobile_builds or "{}"), **(mobile_builds or {})}
     for cid in ids:
         tc = found.get(cid)
         if tc is None:
@@ -115,29 +132,31 @@ def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str
                 status.HTTP_400_BAD_REQUEST,
                 detail=f"用例 {cid} 为『人工/不可自动化(manual)』,不能下发到执行机",
             )
+        if targets:
+            for device, payload in mobile_dispatch.mobile_payloads(db, tc, plan.created_by, targets, builds):
+                dispatches.append((tc, device.runner_id, device.id, payload))
+            continue
         tc_platform = getattr(tc, "platform", "web") or "web"
         actual_runner = _resolve_runner(db, runner, tc_platform, auto_cache)
-        _check_platform(actual_runner, tc_platform, db, owner_id=owner_id)
+        _check_platform(actual_runner, tc_platform, db, owner_id=owner_id, kind=_kind_of(tc))
         _check_capability(actual_runner, db, owner_id=owner_id)
-        resolved[cid] = actual_runner
-        devices[cid] = _dispatch_device_id(db, actual_runner, owner_id)
+        dispatches.append((tc, actual_runner, _dispatch_device_id(db, actual_runner, owner_id), _payload_of(tc, db)))
 
     batch_id = _new_batch_id()
     run_ids = []
-    for cid in ids:
-        tc = found[cid]
+    for tc, actual_runner, device_id, payload in dispatches:
         row = ExecRun(
             checklist_item_id=None,          # 计划执行不挂清单项（与回归库执行一致）
             test_case_id=tc.id,
             task_id=getattr(tc, "task_id", None),
             project_id=tc.project_id,
             batch_id=batch_id,
-            runner=resolved[cid],
-            runner_device_id=devices[cid],
-            auto_reassign=runner == "auto",
+            runner=actual_runner,
+            runner_device_id=device_id,
+            auto_reassign=not targets and runner == "auto",
             kind=_kind_of(tc),
             status=ExecStatus.pending,
-            payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),
+            payload=json.dumps(payload, ensure_ascii=False),
             enqueued_by=started_by,
         )
         db.add(row)
@@ -152,7 +171,7 @@ def _dispatch_plan(db: Session, plan: TestPlan, case_ids: list[int], runner: str
     plan.last_run_at = datetime.utcnow()
     db.commit()
     db.refresh(pr)
-    return {"batch_id": batch_id, "run_ids": run_ids, "plan_run_id": pr.id}
+    return {"batch_id": batch_id, "run_ids": run_ids, "plan_run_id": pr.id, "case_count": len(ids), "run_count": len(run_ids)}
 
 
 # ==================== 执行历史（注册在 /{pid} 之前）====================
@@ -215,6 +234,7 @@ def get_run(
             "run_id": r.id,
             "test_case_id": r.test_case_id,
             "title": payload.get("title"),
+            "mobile_scenario": payload.get("mobile_scenario"), "mobile_target": payload.get("mobile_target"),
             "kind": getattr(r.kind, "value", r.kind),
             "status": getattr(r.status, "value", r.status),
             "verdict": r.verdict, "fail_kind": r.fail_kind, "reason": r.reason,
@@ -254,9 +274,29 @@ def create_plan(
     assert_project_role(db, user, body.project_id, _WRITE_ROLES)
     p = TestPlan(project_id=body.project_id, name=body.name,
                  description=body.description, runner=body.runner, created_by=user.id)
+    if body.mobile_targets is not None or body.mobile_builds or body.seed_mobile_smoke:
+        mobile_dispatch.owned_targets(db, user.id, body.mobile_targets, body.mobile_builds, require_online=False)
+        p.mobile_targets = json.dumps(body.mobile_targets)
+        p.mobile_builds = json.dumps(body.mobile_builds or {})
     db.add(p)
+    if body.seed_mobile_smoke:
+        db.flush()
+        mobile_dispatch.seed_smoke(db, p, user.id)
     db.commit()
     db.refresh(p)
+    return ok(_plan_out(db, p))
+
+
+@router.post("/{pid}/mobile-smoke")
+def add_mobile_smoke(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    p = db.get(TestPlan, pid)
+    if not p:
+        raise HTTPException(404, "计划不存在")
+    assert_project_role(db, user, p.project_id, _WRITE_ROLES)
+    if not p.mobile_targets:
+        raise HTTPException(422, "请先为计划设置 Android 和 iOS 真机")
+    mobile_dispatch.seed_smoke(db, p, user.id)
+    db.commit()
     return ok(_plan_out(db, p))
 
 
@@ -300,6 +340,17 @@ def update_plan(
     if not p:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="计划不存在")
     assert_project_role(db, user, p.project_id, _WRITE_ROLES)
+    clear_targets = "mobile_targets" in body.model_fields_set and body.mobile_targets is None
+    if (clear_targets and p.mobile_targets) or body.mobile_targets is not None or body.mobile_builds is not None:
+        if user.id != p.created_by:
+            raise HTTPException(403, "仅计划创建者可以变更绑定的真机配置")
+        if clear_targets and not body.mobile_builds:
+            p.mobile_targets, p.mobile_builds = None, None
+        else:
+            targets = body.mobile_targets if body.mobile_targets is not None else json.loads(p.mobile_targets or "{}")
+            builds = body.mobile_builds if body.mobile_builds is not None else json.loads(p.mobile_builds or "{}")
+            mobile_dispatch.owned_targets(db, user.id, targets, builds, require_online=False)
+            p.mobile_targets, p.mobile_builds = json.dumps(targets), json.dumps(builds)
     if body.name is not None:
         p.name = body.name
     if body.description is not None:
@@ -439,7 +490,10 @@ def run_plan(
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             detail="计划内无可自动化用例（manual 用例不下发）")
     runner = (body.runner if body and body.runner else None) or p.runner
-    res = _dispatch_plan(db, p, case_ids, runner, trigger="manual", started_by=user.id)
+    if p.mobile_targets and body and body.runner:
+        raise HTTPException(422, "双真机计划使用已绑定的设备，请勿覆盖为单台执行机")
+    res = _dispatch_plan(db, p, case_ids, runner, trigger="manual", started_by=user.id,
+                         mobile_builds=body.mobile_builds if body else None)
     return ok(res)
 
 

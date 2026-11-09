@@ -11,7 +11,7 @@ runner 用专属 token 鉴权 → 平台据 token 反查设备归属,天然只�
 """
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -37,6 +37,10 @@ class RunnerDevice(Base):
     capabilities: Mapped[str] = mapped_column(
         String(64), default="func,eval", server_default="func,eval"
     )
+    # Bound on the first native probe, independently of the host name and login.
+    mobile_device_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    mobile_presence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mobile_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True)  # 专属长期 token(runner 鉴权)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 最近一次该设备 runner 拉取(任意队列),在线判定用
     # 运行时 runner 类型感知:一台机同一时刻只能跑一类 runner(功能/测评,抢同一客户端不能并行)。

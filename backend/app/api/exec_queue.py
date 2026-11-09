@@ -12,6 +12,7 @@ import json
 import io
 import logging
 import os
+import re
 import secrets
 import time
 import zipfile
@@ -28,6 +29,7 @@ from app.core.enums import ChecklistStatus, ExecKind, ExecStatus, ProjectRole
 from app.db.session import get_db
 from app.models import ChecklistItem, ExecRun, RunnerDevice, TestCase, User
 from app.schemas.common import ok
+from app.services import mobile_dispatch
 from app.schemas.exec_queue import EnqueueExecIn, EnqueueCasesIn, ExecReportIn, ExecCorrectIn
 
 router = APIRouter(prefix="/api/exec-queue", tags=["exec-queue"])
@@ -395,24 +397,16 @@ def _get_runner_platform(db: Session, runner_id: str, owner_id: int | None = Non
     return rd.platform if rd else None
 
 
-def _check_platform(runner_id: str, tc_platform: str, db: Session, owner_id: int | None = None) -> None:
-    """派单前校验 runner 平台 vs 用例平台；仅在双方均为移动端且不一致时拒绝。
-
-    规则：
-    - 未登记设备（rd_platform=None）→ 不阻塞（旧 runner/外部 runner 向后兼容）
-    - 任一方为 web → 不阻塞（存量 PC 用例默认 web，不影响现有 PC 端流程）
-    - 双方都是移动端（android/ios）且不同 → 400 拒绝（如 android 用例发给 ios 设备）
-    """
+def _check_platform(runner_id: str, tc_platform: str, db: Session, owner_id: int | None = None,
+                    *, kind: ExecKind = ExecKind.gui) -> None:
+    """A platform label on an API signature is independent of a native GUI session."""
     rd_platform = _get_runner_platform(db, runner_id, owner_id)
-    if rd_platform is None:
-        return   # 未登记设备，不阻塞
-    if rd_platform == "web" or tc_platform == "web":
-        return   # 任一方为 PC/Web，不阻塞
-    if rd_platform != tc_platform:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=f"用例平台({tc_platform})与执行机平台({rd_platform})不匹配，请选择同平台设备",
-        )
+    if kind in (ExecKind.api, ExecKind.cli):
+        if tc_platform in mobile_dispatch.PLATFORMS and rd_platform in mobile_dispatch.PLATFORMS and tc_platform != rd_platform:
+            raise HTTPException(400, f"用例平台({tc_platform})与执行机平台({rd_platform})不匹配")
+        return
+    if rd_platform in mobile_dispatch.PLATFORMS or tc_platform in ("mobile", *mobile_dispatch.PLATFORMS):
+        raise HTTPException(422, "手机任务请使用带真机目标和场景的执行计划或双真机下发")
 
 
 def _check_capability(runner_id: str, db: Session, owner_id: int | None = None) -> None:
@@ -528,7 +522,8 @@ def _payload_of(tc: TestCase | None, db: Session) -> dict:
     return payload
 
 
-def _to_out(r: ExecRun, *, include_details=True) -> dict:
+def _to_out(r: ExecRun, *, include_details=True, mobile_snapshot=None) -> dict:
+    payload = json.loads(r.payload or "{}") if include_details else (mobile_snapshot or {})
     return {
         "run_id": r.id,
         "checklist_item_id": r.checklist_item_id,
@@ -543,7 +538,8 @@ def _to_out(r: ExecRun, *, include_details=True) -> dict:
         # 用 getattr 兼容两者,避免一行坏数据让 runner 的 GET 轮询整个 500(实测踩过)。
         "kind": getattr(r.kind, "value", r.kind),
         "status": getattr(r.status, "value", r.status),
-        **({"payload": json.loads(r.payload or "{}")} if include_details else {}),
+        **({"payload": payload} if include_details else {}),
+        "mobile_target": payload.get("mobile_target"), "mobile_scenario": payload.get("mobile_scenario"),
         "verdict": r.verdict,
         "fail_kind": r.fail_kind,
         "cancel_requested": r.fail_kind == "cancel_requested",
@@ -639,7 +635,7 @@ def enqueue(
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
         runner = _resolve_runner(db, body.runner, tc_platform, auto_cache)
-        _check_platform(runner, tc_platform, db, owner_id=user.id)
+        _check_platform(runner, tc_platform, db, owner_id=user.id, kind=_kind_of(tc))
         _check_capability(runner, db, owner_id=user.id)
         row = ExecRun(
             checklist_item_id=it.id,
@@ -683,20 +679,30 @@ def enqueue_case_runs(db, user, body, commit=True):
     release_id = _valid_release_id(db, body.project_id, body.release_id)
 
     ids = list(dict.fromkeys(body.test_case_ids))  # 去重保序
-    ids = _expand_with_prereqs(db, ids)            # 展开关联前置:前置在前、主用例在后(去重防环)
+    expanded = _expand_with_prereqs(db, ids)
+    if body.mobile_targets is not None and set(expanded) != set(ids):
+        raise HTTPException(422, "真机用例包含未选中的前置用例，请将其一并核对后下发")
+    ids = expanded
     repeats = getattr(body, 'verification_runs', 1)
-    if repeats == 2 and (len(ids) != 1 or body.auto_prepare):
+    if repeats == 2 and (len(ids) != 1 or body.auto_prepare or body.mobile_targets is not None):
         raise HTTPException(422, '回归验证一次只验证一条独立用例；请将必要前置操作固化到脚本')
     cases = db.query(TestCase).filter(TestCase.id.in_(ids)).all()
     found = {c.id: c for c in cases}
     auto_cache: dict = {}        # runner=auto 时按平台缓存所选设备(同批同平台落同一台)
-    resolved: dict[int, str] = {}   # cid → 实际 runner(auto 解析后)
+    dispatches = []
+    targets = body.mobile_targets
+    if body.mobile_builds is not None and targets is None:
+        raise HTTPException(422, "指定构建号需要真机目标")
     for cid in ids:
         tc = found.get(cid)
         if tc is None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {cid} 不存在")
         if tc.project_id != body.project_id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"用例 {cid} 不属于该项目")
+        if targets is not None:
+            for device, payload in mobile_dispatch.mobile_payloads(db, tc, user.id, targets, body.mobile_builds):
+                dispatches.append((tc, device.runner_id, device.id, payload))
+            continue
         if _dispatch_kind(tc, body.auto_prepare) == ExecKind.manual:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -704,20 +710,18 @@ def enqueue_case_runs(db, user, body, commit=True):
             )
         tc_platform = getattr(tc, "platform", "web") or "web"
         runner = _resolve_runner(db, body.runner, tc_platform, auto_cache)
-        _check_platform(runner, tc_platform, db, owner_id=user.id)
+        _check_platform(runner, tc_platform, db, owner_id=user.id, kind=_kind_of(tc))
         _check_capability(runner, db, owner_id=user.id)
-        resolved[cid] = runner
+        payload = _dispatch_payload(tc, db, body.auto_prepare)
         if repeats == 2:
-            p = _dispatch_payload(tc, db, False)
-            if _kind_of(tc) not in (ExecKind.gui, ExecKind.e2e) or not p.get('script') or p.get('precondition') or any(s.get('action') == 'judge' for s in p['script']):
+            if _kind_of(tc) not in (ExecKind.gui, ExecKind.e2e) or not payload.get('script') or payload.get('precondition') or any(s.get('action') == 'judge' for s in payload['script']):
                 raise HTTPException(422, '回归认证需要 GUI/E2E 完整脚本和确定性断言；请先将自然语言前置条件固化为步骤')
+            payload['strict_replay'] = True
+        dispatches.append((tc, runner, _dispatch_device_id(db, runner, user.id), payload))
 
     created = []
     batch_id = _new_batch_id()   # 回归批次号,该批所有 run 共享(结果页按批汇总)
-    for cid in ids * repeats:
-        tc = found[cid]
-        payload = _dispatch_payload(tc, db, body.auto_prepare)
-        if repeats == 2: payload['strict_replay'] = True
+    for tc, runner, device_id, payload in dispatches * repeats:
         row = ExecRun(
             checklist_item_id=None,          # 回归执行不挂清单项 → 回写不回流清单
             test_case_id=tc.id,
@@ -725,9 +729,9 @@ def enqueue_case_runs(db, user, body, commit=True):
             release_id=release_id,
             project_id=tc.project_id,
             batch_id=batch_id,
-            runner=resolved[cid],
-            runner_device_id=_dispatch_device_id(db, resolved[cid], user.id),
-            auto_reassign=body.runner == "auto",
+            runner=runner,
+            runner_device_id=device_id,
+            auto_reassign=not targets and body.runner == "auto",
             kind=_dispatch_kind(tc, body.auto_prepare),
             status=ExecStatus.pending,
             payload=json.dumps(payload, ensure_ascii=False),
@@ -796,9 +800,12 @@ def list_history(
         q = q.options(defer(ExecRun.payload), defer(ExecRun.report)).outerjoin(TestCase, TestCase.id == ExecRun.test_case_id)
         q = q.add_columns(TestCase.title, ExecRun.report.notin_(("", "[]", "{}", "null")).label("has_report"))
         rows = q.order_by(case((ExecRun.status.in_((ExecStatus.pending, ExecStatus.running)), 0), else_=1), ExecRun.id.desc()).limit(limit).offset(offset).all()
+        phone_ids = [r.id for r, _, _ in rows if r.native_mobile]
+        mobile_snapshots = {run_id: json.loads(payload) for run_id, payload in
+                            db.query(ExecRun.id, ExecRun.payload).filter(ExecRun.id.in_(phone_ids))} if phone_ids else {}
         out = []
         for r, title, has_report in rows:
-            d = _to_out(r, include_details=False)
+            d = _to_out(r, include_details=False, mobile_snapshot=mobile_snapshots.get(r.id))
             d.update(title=title, has_report=bool(has_report), enqueued_by=r.enqueued_by,
                      can_cancel=writable and r.status in (ExecStatus.pending, ExecStatus.running))
             out.append(d)
@@ -832,7 +839,7 @@ def get_run_detail(run_id: int, db: Session = Depends(get_db), user: User = Depe
         if r.finished_at and r.started_at:
             d['execution_timings']['server_wall_ms'] = max(0, round((r.finished_at - r.started_at).total_seconds() * 1000))
     tc = db.get(TestCase, r.test_case_id) if r.test_case_id else None
-    if tc and _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
+    if tc and not r.native_mobile and _kind_of(tc) in (ExecKind.gui, ExecKind.e2e):
         from app.services.execution_evidence import case_readiness
         d['replay_readiness'] = case_readiness(db, tc)
         current = d['replay_readiness'].get('contract_sha256')
@@ -849,6 +856,7 @@ def list_pending(
     limit: int = Query(5, le=20),
     db: Session = Depends(get_db),
     ctx: RunnerCtx = Depends(require_runner_ctx),
+    consumer: str = "desktop",
 ):
     # 设备 token:runner 锁定为该设备的 runner_id(忽略 query,防拿他人 token 冒充别的设备);
     # 共享 token(兜底):沿用 query 的 runner,并按 runner_id 反查登记设备刷心跳(在线判定统一口径)。
@@ -862,8 +870,11 @@ def list_pending(
     else:
         from app.services.dispatcher import touch_runner_heartbeat
         touch_runner_heartbeat(db, runner, kind="exec")
+    if consumer == "mobile" and (not ctx.device or ctx.device.platform not in mobile_dispatch.PLATFORMS):
+        raise HTTPException(403, "真机队列需要已登记的手机设备令牌")
     rows = (
         db.query(ExecRun)
+        .filter(ExecRun.native_mobile.is_(consumer == "mobile"))
         .filter(ExecRun.status == ExecStatus.pending, ExecRun.runner == runner, _device_run_filter(db, ctx))
         .order_by(ExecRun.id)
         .limit(limit)
@@ -880,6 +891,7 @@ def claim(
     script_flow: int = Query(0),
     db: Session = Depends(get_db),
     ctx: RunnerCtx = Depends(require_runner_ctx),
+    consumer: str = "desktop",
 ):
     if ctx.device is not None:
         runner = ctx.device.runner_id   # 设备 token:以设备身份为准,防冒充
@@ -897,10 +909,22 @@ def claim(
     from app.services.script_flow import uses_flow
     if uses_flow(json.loads(r.payload or '{}').get('script') or []) and script_flow != 1:
         raise HTTPException(409, detail="该用例需要 script-flow-v1，请更新此设备 Runner 后执行")
+    target = json.loads(r.payload or "{}").get("mobile_target")
+    desktop_ui_on_handset = (not target and r.kind in (ExecKind.gui, ExecKind.e2e)
+                             and ctx.device and ctx.device.platform in mobile_dispatch.PLATFORMS)
+    if (consumer == "mobile") != bool(target) or desktop_ui_on_handset:
+        raise HTTPException(409, "执行器与任务的真机能力不匹配")
+    if target:
+        if not ctx.device or ctx.device.id != r.runner_device_id:
+            raise HTTPException(403, "真机任务需要分配设备的专属令牌")
+        mobile_dispatch.assert_matches(ctx.device, target)
+    updates = {ExecRun.status: ExecStatus.running, ExecRun.started_at: func.now(),
+               ExecRun.runner_device_id: ctx.device.id if ctx.device else None}
+    if target:
+        updates[ExecRun.heartbeat_at] = func.now()
     changed = db.query(ExecRun).filter(
         ExecRun.id == run_id, ExecRun.runner == runner, ExecRun.status == ExecStatus.pending,
-    ).update({ExecRun.status: ExecStatus.running, ExecRun.started_at: func.now(),
-              ExecRun.runner_device_id: ctx.device.id if ctx.device else None}, synchronize_session=False)
+    ).update(updates, synchronize_session=False)
     if changed != 1:
         db.rollback()
         raise HTTPException(409, detail="该执行项已被认领或改派")
@@ -1021,6 +1045,32 @@ def _report_once(run_id, body, runner, db, ctx):
         raise HTTPException(403, detail="实际认领设备不匹配")
 
     payload = json.loads(r.payload or '{}')
+    target = payload.get("mobile_target")
+    if target:
+        if r.status != ExecStatus.running or not ctx.device or ctx.device.id != r.runner_device_id:
+            raise HTTPException(409, "真机运行须由已认领设备回报")
+        if body.verdict == "pass":
+            mobile_dispatch.assert_matches(ctx.device, target)
+            steps = body.report if isinstance(body.report, list) else []
+            from app.services.mission_quality import check_result
+            checks = [s for s in steps if isinstance(s, dict) and "check" in s]
+            valid_checks = all(s.get("ok") is True and isinstance(s["check"], dict)
+                               and isinstance(s["check"].get("mode", "equals"), str)
+                               and check_result(s["check"]) is True for s in checks)
+            shot_pattern = rf"/uploads/execs/{r.id}/([0-9]+)\.png"
+            shots = {}
+            for i, s in enumerate(steps, 1):
+                match = re.fullmatch(shot_pattern, str(s.get("shot") or "")) if isinstance(s, dict) else None
+                if match and os.path.isfile(os.path.join(_EXEC_SHOT_ROOT, str(r.id), match[1]+".png")):
+                    shots[i] = match[1]
+            if not checks or not valid_checks or not shots or any(not isinstance(s, dict) or s.get("ok") is False for s in steps):
+                raise HTTPException(422, "真机断言缺失、实际值与预期不符或未上传本次步骤截图")
+            if payload.get("mobile_scenario") == "script":
+                from app.services.mobile_script import verify_report
+                try:
+                    verify_report(payload.get("mobile_script"), steps, {i for i, filename in shots.items() if str(i) == filename})
+                except ValueError as exc:
+                    raise HTTPException(422, str(exc)) from exc
     if body.execution_evidence is not None:
         from app.services.execution_evidence import validate_evidence
         ev = body.execution_evidence.model_dump()
@@ -1061,7 +1111,8 @@ def _report_once(run_id, body, runner, db, ctx):
         r.report = json.dumps(body.report, ensure_ascii=False)   # 逐步执行报告(含截图 URL)
     # flaky 判定(Azure DevOps 同语义):重试行通过 = 首试失败重跑即过 → 抖动,非稳定通过。
     if is_pass and r.retry_of:
-        r.flaky = True
+        parent = db.get(ExecRun, r.retry_of) if target else None
+        r.flaky = parent is None or parent.status != ExecStatus.passed or bool(parent.flaky)
 
     # 闭环落点:把结果同步回验收清单项(pass 通过 / selector 阻塞记 blocked / 其余 fail 记 failed)。
     # 复用现有清单展示、checklist-summary 统计、失败转遗留问题等下游能力。
@@ -1152,6 +1203,8 @@ def correct_verdict(
     if r.status in (ExecStatus.pending, ExecStatus.running):
         raise HTTPException(409, detail="请先终止当前执行，再纠偏结果")
 
+    if r.native_mobile and body.verdict == "pass" and r.status != ExecStatus.passed:
+        raise HTTPException(422, "真机通过需要设备重新执行并上传端侧证据")
     is_pass = body.verdict == "pass"
     is_blocked = body.verdict == "blocked"
     # 与 report 端点一致:blocked→fail_kind=selector;fail→business;pass→None。
@@ -1201,18 +1254,38 @@ def retry_run(
             detail="该用例为『人工/不可自动化(manual)』,不能下发到执行机",
         )
     tc_platform = getattr(tc, "platform", "web") or "web"
-    _check_platform(r.runner, tc_platform, db, owner_id=user.id)
+    original = json.loads(r.payload or "{}")
+    target = original.get("mobile_target")
+    if target:
+        device = db.get(RunnerDevice, r.runner_device_id)
+        mobile_dispatch.assert_matches(device, target)
+        # Serialize retries on the source row. Double clicks reuse the same child.
+        locked = db.query(ExecRun).filter(ExecRun.id == r.id, ExecRun.status.in_(
+            [ExecStatus.passed, ExecStatus.failed, ExecStatus.blocked]
+        )).update({ExecRun.attempt: ExecRun.attempt}, synchronize_session=False)
+        if not locked:
+            raise HTTPException(409, "真机用例结束后才能重试")
+        child = db.query(ExecRun).filter_by(retry_of=r.id).order_by(ExecRun.id.desc()).first()
+        if child:
+            return ok({"run_id": child.id, "batch_id": child.batch_id})
+        payload, device_id = original, device.id
+    else:
+        _check_platform(r.runner, tc_platform, db, owner_id=user.id, kind=_effective_kind(tc))
+        payload, device_id = _payload_of(tc, db), _dispatch_device_id(db, r.runner, user.id)
     new = ExecRun(
         checklist_item_id=r.checklist_item_id,   # 沿用原清单项 → 回写照旧回流(无则裸执行)
         test_case_id=r.test_case_id,
         task_id=r.task_id,
         project_id=r.project_id,
-        batch_id=_new_batch_id(),                # 重试单独成批(结果页可区分为一次新执行)
+        batch_id=r.batch_id if target else _new_batch_id(),
+        retry_of=r.id if target else None,
+        attempt=(r.attempt or 1) + 1 if target else 1,
+        release_id=r.release_id if target else None,
         runner=r.runner,
-        runner_device_id=_dispatch_device_id(db, r.runner, user.id),
+        runner_device_id=device_id,
         kind=_effective_kind(tc),                # 待补按原意图 gui/e2e 派(见 _effective_kind)
         status=ExecStatus.pending,
-        payload=json.dumps(_payload_of(tc, db), ensure_ascii=False),   # 重新快照,跑最新用例
+        payload=json.dumps(payload, ensure_ascii=False),
         enqueued_by=user.id,
     )
     db.add(new)
@@ -1278,7 +1351,9 @@ async def upload_exec_screenshot(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="执行项不存在")
     if r.runner != runner or not db.query(ExecRun.id).filter(ExecRun.id == run_id, _device_run_filter(db, ctx)).first():
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="该执行项未派给此执行机")
-    data = await file.read()
+    if r.native_mobile and (r.status != ExecStatus.running or not ctx.device or r.runner_device_id != ctx.device.id):
+        raise HTTPException(409, "真机截图仅在设备认领后的执行期间接收")
+    data = await file.read(_MAX_SHOT_BYTES + 1)
     if len(data) > _MAX_SHOT_BYTES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"截图过大（>{_MAX_SHOT_BYTES // 1024 // 1024}MB）")
     if not data.startswith(_PNG_MAGIC):

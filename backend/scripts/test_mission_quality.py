@@ -42,7 +42,11 @@ class QualityTests(unittest.TestCase):
         self.fake.response['scenarios'][0]['reviewed']=True
         a=self.analyze(); self.assertFalse(a['draft']['scenarios'][0]['reviewed'])
         a['draft']['rules'][0]['status']='confirmed'; a=self.save(a)
-        self.assertEqual(self.raw_confirm(a).status_code,422)
+        # Scope confirmation covers complete scenarios; per-scenario review remains an optional annotation.
+        refused = self.client.post(f"/api/ai/requirements/analyses/{a['id']}/confirm", json={
+            "revision": a["revision"], "source_hash": a["source_hash"], "scope_reviewed": False})
+        self.assertEqual(refused.status_code, 422)
+        self.assertEqual(self.raw_confirm(a).status_code,200)
         a['draft']['scenarios'][0]['reviewed']=True; a=self.save(a); self.assertEqual(self.raw_confirm(a).status_code,200)
         a['draft']['scenarios'][0]['then']='取消后删除文件'; a=self.save(a)
         self.assertFalse(a['draft']['scenarios'][0]['reviewed'])
@@ -119,6 +123,36 @@ class QualityTests(unittest.TestCase):
             (folder/'1.png').unlink(); now=self.get(m['id']); self.assertEqual(now['report']['verified'],0); self.assertEqual(now['final_report']['verified'],2)
 
 class GroundingTests(unittest.TestCase):
+    def test_native_reply_and_stop_are_grounded_only_for_the_claimed_phone(self):
+        from types import SimpleNamespace
+
+        target = {"platform": "ios", "runner_id": "ios-qa", "physical": True,
+                  "device_id": "d" * 64, "app_id": "test.app", "build": "101", "online": True}
+        rule = {"id": "R1", "title": "对话", "status": "confirmed", "criteria": [{"id": "C1"}]}
+        baseline = SimpleNamespace(id=1, payload=encode({"rules": [rule]}))
+        link = SimpleNamespace(criterion_ids=encode(["C1"]), case_hash="case")
+        run = SimpleNamespace(id=9, status=ExecStatus.passed, runner="ios-qa", runner_device_id=4,
+                              native_mobile=True, payload=encode({"mobile_target": target}))
+        refs = {"criteria": [{"criterion_id": "C1", "verdict": "supported", "reason": "手机实际观测",
+                              "refs": [{"step_no": 1, "kind": "check", "quote": "actual"}]}]}
+        def verdict():
+            data, images, _ = quality.evidence_input(None, link, run, baseline)
+            return quality.validate_assessment(refs, data, images)["criteria"][0]["verdict"]
+
+        for action, check in [("wait_reply", {"mode": "neq", "actual": "完成", "expected": ""}),
+                              ("stop_generation", {"mode": "equals", "actual": True, "expected": True})]:
+            with self.subTest(action=action):
+                steps = [{"action": action, "ok": True, "check": check},
+                         {"action": "device_info", "ok": True, "device": dict(target)}]
+                run.report = encode(steps)
+                self.assertEqual(verdict(), "supported")
+                run.native_mobile = False
+                self.assertEqual(verdict(), "insufficient")
+                run.native_mobile = True
+                steps[1]["device"]["build"] = "other-build"
+                run.report = encode(steps)
+                self.assertEqual(verdict(), "insufficient")
+
     def test_invalid_refs_and_non_assertion_observations(self):
         data={'criteria':[{'id':'C1'}],'steps':[{'step_no':1,'action':'click','ok':True,'check':{'actual':'x','expected':'x'},'check_pass':True}]}
         obj={'criteria':[{'criterion_id':'C1','verdict':'supported','reason':'通过','refs':[{'step_no':1,'kind':'check','quote':'x'}]}]}

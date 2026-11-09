@@ -12,10 +12,11 @@
   从而复用现有清单展示 / checklist-summary 统计 / 失败转遗留问题等全部下游能力。
 - 启动时 Base.metadata.create_all 自动建表（新表，无需 migrate）。
 """
+import json
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 from sqlalchemy.dialects.mysql import LONGTEXT
 
 from app.core.enums import ExecKind, ExecStatus
@@ -57,6 +58,17 @@ class ExecRun(Base):
     status: Mapped[ExecStatus] = mapped_column(
         Enum(ExecStatus, length=16), default=ExecStatus.pending, server_default="pending", index=True
     )
+    native_mobile: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
+    @validates("payload")
+    def mark_native_payload(self, key, raw):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            data = None
+        self.native_mobile = isinstance(data, dict) and "mobile_target" in data
+        return raw
+
     payload: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"))  # 包含固定版本选择器快照
     # 批次号：一次 enqueue 生成一个，该批所有 run 共享（供执行结果页按批次汇总）。老库补列后为 NULL=未分批。
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)

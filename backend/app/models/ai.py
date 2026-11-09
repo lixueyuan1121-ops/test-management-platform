@@ -72,6 +72,8 @@ class TestCase(Base):
     # 平台：web(PC端) / android / ios。默认 web 保持 PC 端存量数据不变。
     # 控制用例派给哪类 runner；与 exec_kind 正交（web+gui、android+gui 都合法）。
     platform: Mapped[str] = mapped_column(String(16), default="web", server_default="web", index=True)
+    mobile_case_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mobile_scenario: Mapped[str | None] = mapped_column(String(24), nullable=True)
     # AI 判定该 kind 的理由（供人工复核参考；P2 由生成侧填充）
     kind_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 结构化可执行步骤 JSON（步骤 DSL；P3 由生成侧填充，runner 确定性执行）。存 Text-JSON 兼容 MySQL 5.6。

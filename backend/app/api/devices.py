@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user, require_platform_admin
+from app.core.deps import get_current_user, require_platform_admin, RunnerCtx, require_runner_ctx
+from app.services.mobile_dispatch import MobilePresence, device_target, record_presence
 from app.core.enums import EvalRunStatus
 from app.db.session import get_db
 from app.models import EvalRun, ExecRun, Project, RunnerDevice, TestCase, User
@@ -72,12 +73,19 @@ def _to_out(d: RunnerDevice, *, reveal_token: bool = False,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
+        "mobile_target": device_target(d),
         # 最近心跳类型，最多一个；旧 Runner 长任务无新心跳时才用执行中记录补偿。
         "active_kinds": _active_kinds(d, datetime.utcnow(), exec_running, eval_running),
         "token": d.token if reveal_token else _mask(d.token),  # 仅注册/重置时给明文
         "last_seen_at": (d.last_seen_at.isoformat() + "Z") if d.last_seen_at else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
+
+
+@router.post("/mobile-presence")
+def mobile_presence(body: MobilePresence, db: Session = Depends(get_db),
+                    ctx: RunnerCtx = Depends(require_runner_ctx)):
+    return ok({"mobile_target": record_presence(db, ctx.device, body)})
 
 
 @router.get("")
@@ -200,6 +208,7 @@ def _overview_device_out(d: RunnerDevice, owner_name: str, utc_now: datetime,
         "runner_id": d.runner_id,
         "name": d.name,
         "platform": d.platform,
+        "mobile_target": device_target(d),
         # 最近心跳类型，最多一个；当前执行任务独立显示在 active_runs，不合并成第二个类型。
         "active_kinds": _active_kinds(d, utc_now, exec_running_ids, eval_running_ids),
         "owner": {"id": d.owner_id, "name": owner_name},

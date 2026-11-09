@@ -12,6 +12,7 @@
 - 触发记 trigger=ci 的 test_plan_run：批次完成且有失败时同样走飞书批次告警
   （CI 批次和定时批次一样无人盯页面）。
 """
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -42,6 +43,7 @@ class RunPlanHookIn(BaseModel):
     project_code: str | None = Field(None, max_length=64)
     plan_name: str | None = Field(None, max_length=255)
     runner: str | None = Field(None, max_length=64)   # 临时换执行机；空用计划默认
+    mobile_builds: dict[str, str] | None = None
     note: str | None = Field(None, max_length=255)    # 流水线号/commit 等留痕（记日志）
 
 
@@ -70,9 +72,33 @@ def hook_run_plan(
     if not case_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="计划内无可自动化用例")
     runner = body.runner or plan.runner
-    res = _dispatch_plan(db, plan, case_ids, runner, trigger="ci", started_by=None)
+    if plan.mobile_targets and body.runner:
+        raise HTTPException(422, "双真机计划使用已绑定的设备，请勿覆盖为单台执行机")
+    res = _dispatch_plan(db, plan, case_ids, runner, trigger="ci", started_by=None, mobile_builds=body.mobile_builds)
     logger.info("CI 触发计划 plan=%s batch=%s note=%s", plan.id, res["batch_id"], body.note or "-")
     return ok({**res, "plan_id": plan.id, "plan_name": plan.name, "case_count": len(case_ids)})
+
+
+def _mobile_case_stats(rows):
+    # One logical scenario is complete only after both bound OS targets have results.
+    by_case = {}
+    for run in rows:
+        snapshot = json.loads(run.payload or "{}")
+        platform = (snapshot.get("mobile_target") or {}).get("platform")
+        by_case.setdefault(run.test_case_id or snapshot.get("test_case_id") or run.id, {})[platform] = run.status
+    counts = {"total": len(by_case), "passed": 0, "failed": 0, "blocked": 0, "pending": 0}
+    for results in by_case.values():
+        statuses = set(results.values())
+        if "pending" in statuses or "running" in statuses:
+            key = "pending"
+        elif "failed" in statuses:
+            key = "failed"
+        elif set(results) == {"android", "ios"} and statuses == {"passed"}:
+            key = "passed"
+        else:
+            key = "blocked"
+        counts[key] += 1
+    return counts
 
 
 @router.get("/gate")
@@ -96,6 +122,9 @@ def hook_gate(
     # 重试链聚合:被重试覆盖的原始行不计,以链上最终结果为准(失败重试后通过=flaky 通过,门禁放行)
     from app.api.exec_queue import effective_runs
     rows = effective_runs(rows)
+    mobile_batch = any(row.native_mobile for row in rows)
+    if mobile_batch:
+        strict = True
     total = len(rows)
     stat = {"passed": 0, "failed": 0, "blocked": 0, "pending": 0, "running": 0}
     flaky = 0
@@ -108,19 +137,23 @@ def hook_gate(
     failed_eff = stat["failed"] + (stat["blocked"] if strict else 0)
     denom = stat["passed"] + failed_eff
     pass_rate = round(stat["passed"] * 100.0 / denom, 1) if denom else 100.0
+    case_stats = _mobile_case_stats(rows) if mobile_batch else None
+    infrastructure_blocked = bool(case_stats and (case_stats["blocked"] or stat["blocked"]))
+    if case_stats:
+        completed = case_stats["total"] - case_stats["pending"]
+        pass_rate = round(case_stats["passed"] * 100.0 / completed, 1) if completed else 0.0
     if not finished:
         gate = "pending"
     else:
-        gate = "pass" if pass_rate >= min_pass_rate else "fail"
+        gate = "pass" if pass_rate >= min_pass_rate and not infrastructure_blocked else "fail"
     # 失败用例摘要（给流水线日志直接可读的定位信息）
     failures = []
     if finished and gate == "fail":
-        import json as _json
         for r in rows:
             key = r.status.value if hasattr(r.status, "value") else str(r.status)
             if key == "failed" or (strict and key == "blocked"):
                 try:
-                    title = _json.loads(r.payload or "{}").get("title")
+                    title = json.loads(r.payload or "{}").get("title")
                 except (ValueError, TypeError):
                     title = None
                 failures.append({"run_id": r.id, "title": title or f"run#{r.id}",
@@ -135,6 +168,7 @@ def hook_gate(
         **stat,
         "flaky": flaky,
         "pass_rate": pass_rate,
+        "mobile_case_stats": case_stats,
         "min_pass_rate": min_pass_rate,
         "strict": strict,
         "failures": failures[:20],

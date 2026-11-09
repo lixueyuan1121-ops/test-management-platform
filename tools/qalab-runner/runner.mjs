@@ -663,6 +663,7 @@ async function handlePerf() {
 
 // ---- 主循环 ----
 async function executeItem(item, { localEvidenceDir = null } = {}) {
+      if (item.payload?.mobile_target) return { verdict: "blocked", fail_kind: "selector", reason: "真机任务需要移动 Runner" };
       log(`执行上下文: run_id=${item.run_id} case=${item.case_id} runner=${RUNNER_ID} pid=${process.pid} cdp_port=${CDP_PORT}`);
       const timer = createExecutionTimer(undefined, log);
       let result;
@@ -771,6 +772,7 @@ async function tick() {
   log(`拉到 ${pending.length} 条待执行`);
   const batch = [];   // 本批各条结果(供结束语汇总)
   for (const item of pending) {
+    if (item.payload?.mobile_target) continue;
     let claimed = false;
     let result;
     try {

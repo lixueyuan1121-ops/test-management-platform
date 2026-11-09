@@ -2,15 +2,21 @@
 from pydantic import BaseModel, Field
 
 
-class PlanCreateIn(BaseModel):
+class MobilePlanConfig(BaseModel):
+    mobile_targets: dict[str, str] | None = None
+    mobile_builds: dict[str, str] | None = None
+
+
+class PlanCreateIn(MobilePlanConfig):
     """建测试计划。"""
+    seed_mobile_smoke: bool = False
     project_id: int
     name: str = Field(..., max_length=255)
     description: str | None = None
     runner: str = Field("mac-01", max_length=64)
 
 
-class PlanUpdateIn(BaseModel):
+class PlanUpdateIn(MobilePlanConfig):
     """改计划元信息（名/描述/runner）。"""
     name: str | None = Field(None, max_length=255)
     description: str | None = None
@@ -30,4 +36,5 @@ class PlanScheduleIn(BaseModel):
 
 class PlanRunIn(BaseModel):
     """手动整计划执行（可临时换 runner；不传用计划默认）。"""
+    mobile_builds: dict[str, str] | None = None
     runner: str | None = Field(None, max_length=64)

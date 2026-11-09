@@ -21,7 +21,7 @@
             <el-select v-model="verdict" placeholder="结果" size="small" clearable style="width:110px" @change="reload">
               <el-option label="通过" value="pass" />
               <el-option label="失败" value="fail" />
-              <el-option label="选择器阻塞" value="blocked" />
+              <el-option label="执行阻塞" value="blocked" />
             </el-select>
       </template>
 
@@ -35,21 +35,36 @@
         <el-collapse-item v-for="b in batches" :key="b.id" :name="b.id">
           <template #title>
             <div class="batch-head">
-              <el-tag :type="b.failed ? 'danger' : (b.blocked ? 'warning' : (b.total > 0 && b.passed === b.total ? 'success' : 'info'))" size="small" effect="dark">
+              <el-tag v-if="!b.mobilePairs.length" :type="b.failed ? 'danger' : (b.blocked ? 'warning' : (b.total > 0 && b.passed === b.total ? 'success' : 'info'))" size="small" effect="dark">
                 {{ b.failed ? '有失败' : (b.blocked ? '有阻塞' : (b.total > 0 && b.passed === b.total ? '本页全部通过' : (b.cancelled === b.total ? '已终止' : '尚未全部判定'))) }}
               </el-tag>
+              <el-tag v-else :type="b.failed ? 'danger' : b.mobilePassed === b.mobilePairs.length ? 'success' : 'warning'" size="small">{{ b.mobilePassed }} / {{ b.mobilePairs.length }} 条双端通过</el-tag>
               <span class="batch-id">{{ b.label }}</span>
               <span class="batch-stat">
                 本页 {{ b.total }} · <b class="ok">{{ b.passed }} 过</b> · <b class="ng">{{ b.failed }} 失</b>
                 <template v-if="b.blocked"> · <b class="blk">{{ b.blocked }} 阻塞</b></template>
                 <template v-if="b.cancelled"> · {{ b.cancelled }} 已终止</template>
                 <template v-if="b.flaky"> · <b class="flk" title="重试后通过(不稳定)">{{ b.flaky }} 抖动</b></template>
-                · 本页功能通过率 {{ b.rate }}%
+                <template v-if="!b.mobilePairs.length">· 本页功能通过率 {{ b.rate }}%</template>
               </span>
               <span class="batch-meta">{{ b.runner }} · {{ b.durationText }} · {{ fmtTime(b.time) }}</span>
             </div>
           </template>
 
+          <el-table v-if="b.mobilePairs.length" :data="b.mobilePairs" size="small" border class="mobile-pairs">
+            <el-table-column prop="title" label="对话用例" min-width="170" />
+            <el-table-column v-for="(name, platform) in { android: 'Android', ios: 'iPhone' }" :key="platform" :label="name" min-width="170">
+              <template #default="{ row }">
+                <template v-if="row[platform]">
+                  <el-tag :type="resultType(row[platform])" size="small">{{ resultLabel(row[platform]) }}</el-tag>
+                  <span v-if="row[platform].flaky"> 重试后通过</span>
+                  <div>{{ row[platform].mobile_target.model }} · {{ row[platform].mobile_target.build }} · {{ row[platform].runner }}</div>
+                  <el-link v-if="hasReport(row[platform])" type="primary" @click="showReport(row[platform])">查看步骤与证据</el-link>
+                </template>
+                <span v-else>当前列表缺少该端记录</span>
+              </template>
+            </el-table-column>
+          </el-table>
           <el-table :data="b.rows" size="small" border stripe empty-text="无记录">
             <el-table-column label="结果" width="130" align="center">
               <template #default="{ row }">
@@ -78,7 +93,7 @@
                   </el-tag>
                 </el-tooltip>
                 <span class="reason">{{ row.reason || '—' }}</span>
-                <template v-if="isBlocked(row)">
+                <template v-if="isBlocked(row) && !row.mobile_target">
                   <el-link v-if="selectorDiagnosis(row)" type="warning" class="fix-link" @click="showReport(row)">查看匹配冲突（{{ selectorDiagnosis(row).count }}）</el-link>
                   <el-tooltip
                     v-else-if="row._fixKeys && row._fixKeys.length"
@@ -198,7 +213,7 @@
               期望{{ s.check.negate ? '不' : '' }}{{ s.check.mode === 'contains' ? '包含' : '等于' }}
               <code class="exp">{{ s.check.expected }}</code>
               <span class="vs">实际</span>
-              <code class="act">{{ s.check.actual || '(空)' }}</code>
+              <code class="act">{{ s.check.actual ?? '(空)' }}</code>
             </div>
             <img v-if="s.shot" :src="s.shot" class="step-shot" alt="步骤截图" @click="zoom(s.shot)" />
           </li>
@@ -220,7 +235,7 @@
         <el-form label-width="72px">
           <el-form-item label="纠正为">
             <el-radio-group v-model="correct.verdict">
-              <el-radio value="pass">通过</el-radio>
+              <el-radio value="pass" :disabled="!!correct.row?.mobile_target && correct.row?.verdict !== 'pass'">通过</el-radio>
               <el-radio value="fail">失败(真 bug)</el-radio>
               <el-radio value="blocked">选择器阻塞</el-radio>
             </el-radio-group>
@@ -232,7 +247,7 @@
         <!-- 维护用例:文案/步骤变化导致的真失败,改正文+重生 script,下次不再需纠偏 -->
         <el-divider content-position="left" class="maint-divider">顺带维护用例(可选)</el-divider>
         <el-checkbox v-model="correct.maintain" :disabled="!canMaintain(correct.row)">
-          用例已过时(如断言文案变了)，更新用例并重生 script
+          {{ correct.row?.mobile_target ? '更新真机用例正文和操作脚本' : '用例已过时(如断言文案变了)，更新用例并重生 script' }}
         </el-checkbox>
         <div v-if="correct.maintain && canMaintain(correct.row)" class="maint-box">
           <el-form label-width="72px">
@@ -246,7 +261,8 @@
               <el-input v-model="correct.script" type="textarea" :rows="6" spellcheck="false" style="font-family:monospace" placeholder="结构化步骤 JSON 数组;留空则不改 script。手改此处将优先于按正文重生 script" />
             </el-form-item>
           </el-form>
-          <span class="correct-hint">改了「预期/步骤」而未手改 script → 保存后按新正文重新生成 script;若手改了上面的 script → 直接保存你写的 script(不再 AI 重生)。仅 gui/e2e/api。</span>
+          <span v-if="correct.row?.mobile_target" class="correct-hint">更新后的真机脚本需要在测试目标中重新审查。</span>
+          <span v-else class="correct-hint">改了「预期/步骤」而未手改 script → 保存后按新正文重新生成 script;若手改了上面的 script → 直接保存你写的 script(不再 AI 重生)。仅 gui/e2e/api。</span>
         </div>
         <span v-else-if="correct.maintain" class="correct-hint">该用例类型不支持重生 script(仅 gui/e2e/api)。</span>
         <p class="correct-hint" style="margin-top:10px">纠偏后结果说明会打「[人工纠偏]」前缀，并同步回填对应验收清单项。</p>
@@ -476,7 +492,7 @@ function resultLabel(row) {
   if (row.cancel_requested) return '终止中'
   if (row.fail_kind === 'cancelled') return '已终止'
   if (row.verdict === 'pass') return '通过'
-  if (isBlocked(row)) return selectorDiagnosis(row)?.label || '选择器阻塞'
+  if (isBlocked(row)) return row.mobile_target ? '真机执行阻塞' : (selectorDiagnosis(row)?.label || '选择器阻塞')
   if (row.verdict === 'fail') return '失败'
   return STATUS_LABEL[row.status] || row.status
 }
@@ -598,7 +614,7 @@ function prettyScript(s) {
 function openCorrect(row) {
   correct.value = {
     visible: true, row, saving: false, reason: '',
-    verdict: row.verdict === 'pass' ? 'fail' : 'pass',
+    verdict: row.mobile_target ? (row.verdict === 'fail' ? 'blocked' : 'fail') : (row.verdict === 'pass' ? 'fail' : 'pass'),
     maintain: false, expected: '', steps: '', script: '', scriptOrig: '',
   }
   // 预填用例正文(供"维护用例"编辑):列表行 payload 里有 steps/expected 快照,取不到再单查详情。
@@ -647,7 +663,9 @@ async function saveCorrect() {
       if (c.expected.trim()) patch.expected = c.expected.trim()
       if (c.steps.trim()) patch.steps = c.steps.trim()
       if (Object.keys(patch).length) await updateTestcase(cid, patch)
-      if (!scriptEdited) {
+      if (c.row.mobile_target) {
+        ElMessage.success('已更新真机用例，可在测试目标中重新审查')
+      } else if (!scriptEdited) {
         await genTestcaseScript(cid)   // 后端按最新 steps/expected 重生并写回(手改 script 时跳过,避免覆盖)
         ElMessage.success('已纠偏，并已更新用例、重生 script')
       } else {
@@ -691,6 +709,7 @@ function sameScript(a, b) {
 .chain-tag { margin-left: 4px; }
 .fix-link { margin-left: 10px; font-size: 12px; }
 .op-retry { margin-left: 10px; }
+.mobile-pairs { margin-bottom: 14px; }
 .triage-tag { margin-right: 6px; }
 .triage-btn { margin-left: 8px; font-size: 12px; }
 .triage-btn.busy { pointer-events: none; opacity: .6; }

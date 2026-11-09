@@ -7,6 +7,7 @@
             </el-select>
             <el-button size="small" :icon="Refresh" aria-label="刷新计划" title="刷新计划" :loading="loading" @click="reload" />
             <el-button size="small" @click="openRuns()">执行历史</el-button>
+            <el-button size="small" :disabled="!projectId" @click="router.push({ path:'/commander', query:{ project_id:projectId, mobile_dialog:'1' } })">AI 生成双端对话用例</el-button>
             <el-button type="primary" size="small" :disabled="!projectId" @click="openCreate">新建计划</el-button>
       </template>
       <template #filters>
@@ -20,7 +21,7 @@
           <template #default="{ row }">{{ row.description || '—' }}</template>
         </el-table-column>
         <el-table-column label="用例数" width="76" align="center"><template #default="{ row }">{{ row.case_count }}</template></el-table-column>
-        <el-table-column prop="runner" label="执行设备" width="110" show-overflow-tooltip />
+        <el-table-column label="执行设备" min-width="128" show-overflow-tooltip><template #default="{ row }">{{ deviceLabel(row) }}</template></el-table-column>
         <el-table-column label="定时" min-width="150">
           <template #default="{ row }">
             <template v-if="row.schedule_enabled && row.schedule_cron">
@@ -50,7 +51,14 @@
       <el-form label-width="80px">
         <el-form-item label="计划名"><el-input v-model="form.name" size="small" placeholder="如 每日冒烟回归" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" size="small" /></el-form-item>
-        <el-form-item label="执行设备">
+        <el-form-item label="执行方式">
+          <el-radio-group v-model="form.mobile"><el-radio :value="false">单执行机</el-radio><el-radio :value="true">双真机对话</el-radio></el-radio-group>
+        </el-form-item>
+        <MobileTargets v-if="form.mobile" v-model="form.targets" v-model:builds="form.builds" :devices="myDevices" />
+        <el-form-item v-if="form.mobile && !editing" label="用例">
+          <el-checkbox v-model="form.seed">加入发送、追问、停止、历史恢复 4 条用例</el-checkbox>
+        </el-form-item>
+        <el-form-item v-if="!form.mobile" label="执行设备">
           <el-select v-model="form.runner" size="small" style="width:100%" placeholder="选择执行设备" filterable allow-create>
             <el-option v-for="d in myDevices" :key="d.runner_id" :label="`${d.name}(${d.runner_id})`" :value="d.runner_id" />
           </el-select>
@@ -58,7 +66,7 @@
       </el-form>
       <template #footer>
         <el-button @click="editDlg = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!form.name" @click="savePlan">保存</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!form.name.trim() || (form.mobile && !(form.targets.android && form.targets.ios))" @click="savePlan">保存</el-button>
       </template>
     </el-dialog>
 
@@ -107,6 +115,7 @@
     <el-drawer v-model="casesDrawer" :title="`计划「${curPlan?.name || ''}」的用例`" size="min(960px, 100vw)">
       <div class="drawer-actions">
         <el-button size="small" type="primary" @click="openAddCases">添加用例</el-button>
+        <el-button v-if="curPlan?.mobile_targets?.android" size="small" :loading="adding" @click="seedSmoke">补齐对话冒烟用例</el-button>
         <el-button size="small" type="danger" :disabled="!planSelected.length" @click="removeCasesSel">移出选中（{{ planSelected.length }}）</el-button>
         <el-button size="small" @click="reloadPlanCases">刷新</el-button>
       </div>
@@ -199,17 +208,18 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
+import MobileTargets from '@/components/MobileTargets.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import {
   addPlanCases, createTestPlan, deleteTestPlan, getTestPlan, listMyDevices,
   planCandidateCases, removePlanCases, runTestPlan, setTestPlanSchedule, testPlanRuns,
-  testPlans, updateTestPlan,
+  testPlans, updateTestPlan, seedPlanMobileSmoke,
 } from '@/api'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 
-const router = useRouter()
+const router = useRouter(), route = useRoute()
 const app = useAppStore()
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
@@ -230,7 +240,7 @@ const loading = ref(false)
 
 const editDlg = ref(false)
 const editing = ref(false)
-const form = reactive({ id: null, name: '', description: '', runner: 'mac-01' })
+const form = reactive({ id: null, name: '', description: '', runner: 'mac-01', mobile: false, targets: {}, builds: {}, seed: false })
 const saving = ref(false)
 
 const schedDlg = ref(false)
@@ -266,21 +276,38 @@ async function reload() {
   try { rows.value = await testPlans(projectId.value) } catch { /* ignore */ } finally { loading.value = false }
 }
 
+function deviceLabel(row) {
+  return row.mobile_targets?.android ? `Android ${row.mobile_targets.android} / iPhone ${row.mobile_targets.ios}` : row.runner
+}
+async function seedSmoke() {
+  adding.value = true
+  try {
+    await seedPlanMobileSmoke(curPlan.value.id)
+    await Promise.all([reloadPlanCases(), reload()])
+  } finally { adding.value = false }
+}
 function openCreate() {
   editing.value = false
-  Object.assign(form, { id: null, name: '', description: '', runner: myDevices.value[0]?.runner_id || 'mac-01' })
+  Object.assign(form, { id: null, name: '', description: '', runner: myDevices.value.find(d => !d.platform || d.platform === 'web')?.runner_id || 'mac-01', mobile: false, targets: {}, builds: {}, seed: false })
   editDlg.value = true
 }
 function openEdit(row) {
   editing.value = true
-  Object.assign(form, { id: row.id, name: row.name, description: row.description, runner: row.runner })
+  Object.assign(form, { id: row.id, name: row.name, description: row.description, runner: row.runner, mobile: !!row.mobile_targets?.android, targets: { ...row.mobile_targets }, builds: { ...row.mobile_builds } })
   editDlg.value = true
 }
 async function savePlan() {
   saving.value = true
   try {
-    if (editing.value) await updateTestPlan(form.id, { name: form.name, description: form.description, runner: form.runner })
-    else await createTestPlan({ project_id: projectId.value, name: form.name, description: form.description, runner: form.runner })
+    const config = { name: form.name.trim(), description: form.description, runner: form.runner }
+    if (form.mobile) {
+      config.mobile_targets = form.targets
+      config.mobile_builds = Object.fromEntries(Object.entries(form.builds).filter(([, v]) => v))
+    } else if (editing.value && rows.value.find(r => r.id === form.id)?.mobile_targets) {
+      config.mobile_targets = null
+    }
+    if (editing.value) await updateTestPlan(form.id, config)
+    else await createTestPlan({ ...config, project_id: projectId.value, ...(form.mobile ? { seed_mobile_smoke: form.seed } : {}) })
     ElMessage.success('已保存')
     editDlg.value = false
     reload()
@@ -291,7 +318,7 @@ async function savePlan() {
 
 async function runNow(row) {
   try {
-    await ElMessageBox.confirm(`立即执行计划「${row.name}」？将下发计划内可自动化用例到 ${row.runner}。`, '确认', { type: 'warning' })
+    await ElMessageBox.confirm(`立即执行计划「${row.name}」？将下发计划内可自动化用例到 ${deviceLabel(row)}。`, '确认', { type: 'warning' })
   } catch { return }
   row._run = true
   try {
@@ -422,10 +449,12 @@ async function del(row) {
 onMounted(async () => {
   try {
     projects.value = await app.fetchProjects()
-    if (projects.value.length && !projectId.value) projectId.value = pickDefaultProjectId(projects.value)
+    if (projects.value.length && !projectId.value) projectId.value = projects.value.find(p => p.id === Number(route.query.project_id))?.id || pickDefaultProjectId(projects.value)
   } catch { /* ignore */ }
   try { myDevices.value = await listMyDevices() } catch { /* ignore */ }
-  reload()
+  await reload()
+  const linked = rows.value.find(row => row.id === Number(route.query.plan_id))
+  if (linked) openCases(linked)
 })
 </script>
 

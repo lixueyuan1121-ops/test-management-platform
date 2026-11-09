@@ -874,6 +874,22 @@ def ensure_platform_columns() -> None:
     同步建索引 idx_selkey_platform / idx_testcase_platform / idx_runnerdev_platform
     便于按平台筛选选择器、用例、设备。
     """
+    for table, additions in {
+        "exec_run": {"native_mobile": "BOOLEAN NOT NULL DEFAULT 0"},
+        "test_plan": {"mobile_targets": "TEXT", "mobile_builds": "TEXT"},
+        "test_case": {"mobile_scenario": "VARCHAR(24)", "mobile_case_hash": "VARCHAR(64)"},
+        "runner_device": {"mobile_device_id": "VARCHAR(64)", "mobile_presence": "TEXT", "mobile_seen_at": "DATETIME"},
+    }.items():
+        columns = _columns(table)
+        with engine.begin() as conn:
+            for field, sql_type in additions.items():
+                if columns and field not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {field} {sql_type}"))
+            if table == "runner_device" and columns:
+                inspector = inspect(conn)
+                constraints = inspector.get_unique_constraints(table) + inspector.get_indexes(table)
+                if not any(item.get("column_names") == ["mobile_device_id"] and item.get("unique", True) for item in constraints):
+                    conn.execute(text("CREATE UNIQUE INDEX uq_mobile_device_id ON runner_device (mobile_device_id)"))
     sk_cols = _columns("selector_key")
     if sk_cols and "platform" not in sk_cols:
         with engine.begin() as conn:
