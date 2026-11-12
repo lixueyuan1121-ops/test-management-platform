@@ -323,8 +323,40 @@ class LedgerTests(unittest.TestCase):
         payload.update(id=saved['id'],content='删除任务后仍可维护历史日报')
         self.assertEqual(self.client.post('/api/task-ledger/digests',json=payload).status_code,200)
         self.user_id = 2
-        self.assertEqual(self.client.get('/api/task-ledger/digests',params={'project_id':1}).json()['data'],[])
+        history = self.client.get('/api/task-ledger/digests',params={'project_id':1}).json()['data']
+        self.assertEqual([row['id'] for row in history], [saved['id']])
+        self.assertEqual(history[0]['author_id'], 1)
+        self.assertEqual(history[0]['author_name'], '平台负责人')
         self.assertEqual(self.client.post('/api/task-ledger/digests',json=payload).status_code,404)
+
+    def test_project_history_includes_all_authors_but_is_read_only_for_others(self):
+        task = self.task()
+        payload = dict(project_id=1, task_ids=[task['id']], report_date=self.today,
+                       title='项目日报', content='管理员提交的正文')
+        saved = self.client.post('/api/task-ledger/digests', json=payload).json()['data']
+        other = self.task(project_id=2)
+        self.client.post('/api/task-ledger/digests', json=dict(payload, project_id=2, task_ids=[other['id']]))
+        self.user_id = 2
+        mine = self.client.post('/api/task-ledger/digests', json=dict(payload, content='成员的正文')).json()['data']
+        for uid in (1, 2, 3):
+            self.user_id = uid
+            response = self.client.get('/api/task-ledger/digests', params={'project_id':1})
+            self.assertEqual(response.status_code, 200)
+            rows = response.json()['data']
+            self.assertEqual([row['id'] for row in rows], [mine['id'], saved['id']])
+            self.assertEqual([row['author_name'] for row in rows], ['平台成员', '平台负责人'])
+            self.assertEqual(rows[1]['content'], '管理员提交的正文')
+        for uid in (2, 3):
+            self.user_id = uid
+            for endpoint in ('/digests', '/digests/publish'):
+                response = self.client.post('/api/task-ledger'+endpoint, json=dict(payload, id=saved['id'], content='覆盖'))
+                self.assertIn(response.status_code, (403, 404))
+        self.db.expire_all()
+        self.assertEqual(self.db.get(TaskDigest, saved['id']).content, '管理员提交的正文')
+        self.user_id = 4
+        self.assertEqual(self.client.get('/api/task-ledger/digests', params={'project_id':1}).status_code, 403)
+        self.user_id = 2
+        self.assertEqual(self.client.get('/api/task-ledger/digests', params={'project_id':2}).status_code, 403)
 
     def test_permissions_and_cross_project(self):
         own = self.task(); other = self.task(project_id=2)

@@ -43,10 +43,12 @@ def source_hash(row):
 
 
 def digest_out(row, db=None):
+    author = db.get(User, row.author_id) if db else None
     publication = (db.query(TaskDigestPublication).filter_by(digest_id=row.id, source_sha256=source_hash(row))
                    .order_by(TaskDigestPublication.id.desc()).first()) if db else None
     deployment = db.get(TaskDigestDeployment, publication.id) if db and publication else None
     return {"id": row.id, "project_id": row.project_id, "report_date": str(row.report_date),
+            "author_id": row.author_id, "author_name": author.name if author else '',
             "title": row.title, "content": row.content, "task_ids": json.loads(row.task_ids),
             "filter_summary": row.filter_summary, "updated_at": row.updated_at,
             "share_path": deployment.url if deployment else f"/d/{publication.code}" if publication else None,
@@ -90,8 +92,8 @@ def generated_digest(generation_id: int, db: Session = Depends(get_db), user: Us
 
 @router.get("/digests")
 def list_digests(project_id: int = Query(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    assert_project_role(db, user, project_id, WRITE_ROLES)
-    rows = db.query(TaskDigest).filter_by(project_id=project_id, author_id=user.id).order_by(TaskDigest.id.desc()).all()
+    assert_project_role(db, user, project_id, READ_ROLES)
+    rows = db.query(TaskDigest).filter_by(project_id=project_id).order_by(TaskDigest.id.desc()).all()
     return ok([digest_out(r, db) for r in rows])
 
 

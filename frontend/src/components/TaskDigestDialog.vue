@@ -1,16 +1,17 @@
 <template>
-  <el-dialog :model-value="true" title="编写任务日报" width="min(920px, 96vw)" :before-close="close" :close-on-click-modal="false">
+  <el-dialog :model-value="true" :title="readOnly ? '查看任务日报' : '编写任务日报'" width="min(920px, 96vw)" :before-close="close" :close-on-click-modal="false">
     <div class="digest-toolbar">
       <span>来源 {{ draft.task_ids.length }} 个任务 · {{ draft.filter_summary }}</span>
       <el-button size="small" :disabled="loading" @click="showHistory">已保存日报</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button link @click="generate">重新生成</el-button></el-alert>
+    <el-alert v-if="readOnly && draft.id" :title="`提交人：${draft.author_name || '—'}，当前为只读查看`" type="info" :closable="false" />
     <div v-if="loading"><p class="generation-status">{{ generationStatus }}</p><el-skeleton :rows="8" animated /></div>
     <el-form v-else label-width="72px">
-      <el-form-item label="日报日期"><el-date-picker v-model="draft.report_date" type="date" value-format="YYYY-MM-DD" :clearable="false" /></el-form-item>
-      <el-form-item label="标题"><el-input v-model="draft.title" maxlength="255" /></el-form-item>
+      <el-form-item label="日报日期"><el-date-picker v-model="draft.report_date" :disabled="readOnly" type="date" value-format="YYYY-MM-DD" :clearable="false" /></el-form-item>
+      <el-form-item label="标题"><el-input v-model="draft.title" :readonly="readOnly" maxlength="255" /></el-form-item>
       <el-tabs v-model="tab">
-        <el-tab-pane label="编写" name="edit"><el-input v-model="draft.content" type="textarea" :rows="18" maxlength="60000" aria-label="日报正文" placeholder="根据当前筛选任务生成，可继续补充和修改" /></el-tab-pane>
+        <el-tab-pane v-if="!readOnly" label="编写" name="edit"><el-input v-model="draft.content" type="textarea" :rows="18" maxlength="60000" aria-label="日报正文" placeholder="根据当前筛选任务生成，可继续补充和修改" /></el-tab-pane>
         <el-tab-pane label="预览" name="preview"><div class="md-body digest-preview" v-html="renderMarkdown(draft.content)" /></el-tab-pane>
       </el-tabs>
     </el-form>
@@ -26,13 +27,14 @@
       <el-button :disabled="publishing" @click="close">关闭</el-button>
       <el-button :disabled="!draft.content || loading" @click="exportDraft('md')">导出 Markdown</el-button>
       <el-button :disabled="!draft.content || loading" @click="exportDraft('txt')">导出文本</el-button>
-      <el-button type="success" :disabled="loading || saving || !draft.content" :loading="publishing" @click="publish">{{ shareUrl && draft.share_link_type !== 'short' ? '重试生成短链' : '发布 HTML 报告' }}</el-button>
-      <el-button type="primary" :disabled="loading || publishing || !draft.content" :loading="saving" @click="save">保存日报</el-button>
+      <el-button v-if="!readOnly" type="success" :disabled="loading || saving || !draft.content" :loading="publishing" @click="publish">{{ shareUrl && draft.share_link_type !== 'short' ? '重试生成短链' : '发布 HTML 报告' }}</el-button>
+      <el-button v-if="!readOnly" type="primary" :disabled="loading || publishing || !draft.content" :loading="saving" @click="save">保存日报</el-button>
     </template>
-    <el-dialog v-model="historyVisible" title="我的已保存日报" width="min(720px, 92vw)" append-to-body>
+    <el-dialog v-model="historyVisible" title="项目历史日报" width="min(720px, 92vw)" append-to-body>
       <el-alert v-if="historyError" title="历史日报加载失败" type="error" :closable="false"><el-button link @click="showHistory">重试</el-button></el-alert>
       <el-table :data="history" v-loading="historyLoading" empty-text="还没有保存的日报">
         <el-table-column prop="report_date" label="日期" width="120" />
+        <el-table-column prop="author_name" label="提交人" width="120" />
         <el-table-column prop="title" label="标题" min-width="200" />
         <el-table-column label="操作" width="80"><template #default="{row}"><el-button link type="primary" @click="restore(row)">打开</el-button></template></el-table-column>
       </el-table>
@@ -45,9 +47,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { generateTaskDigest, saveTaskDigest, listTaskDigests, publishTaskDigest } from '@/api/taskLedger'
 import { downloadText } from '@/utils/taskLedger'
 import { renderMarkdown } from '@/utils/markdown'
+import { useAuthStore } from '@/store/auth'
 const props = defineProps({ context: { type: Object, required: true } })
 const emit = defineEmits(['close'])
 const draft = reactive({ id: null, ...props.context, task_ids: [...props.context.task_ids], title: '', content: '' })
+const auth = useAuthStore()
+const readOnly = computed(() => !['admin', 'member'].includes(auth.roleIn(props.context.project_id)) ||
+  (!!draft.id && draft.author_id !== auth.user?.id))
 let generationController
 const generationStatus = ref('正在准备总结…')
 onBeforeUnmount(() => generationController?.abort())
@@ -63,6 +69,7 @@ async function copyLink() {
   catch { ElMessage.warning('复制失败，请手动复制上方链接') }
 }
 async function publish() {
+  if (readOnly.value) return
   if (!draft.title.trim() || !draft.content.trim() || !draft.report_date) { ElMessage.warning('请填写日期、标题和正文'); return }
   publishing.value = true
   const data = { ...draft }
@@ -70,6 +77,7 @@ async function publish() {
   try {
     const result = await publishTaskDigest(data)
     draft.id = result.id; draft.share_path = result.share_path; draft.share_hosting = result.share_hosting; draft.share_link_type = result.share_link_type
+    draft.author_id = result.author_id; draft.author_name = result.author_name
     publishedSnapshot.value = requestedSnapshot; savedSnapshot = requestedSnapshot
     savedAt.value = new Date().toLocaleTimeString()
     if (result.share_link_type === 'short') ElMessage.success('日报已保存，HTML 短链已生成')
@@ -92,6 +100,7 @@ async function generate() {
   finally { loading.value = false }
 }
 async function save() {
+  if (readOnly.value) return
   if (!draft.title.trim() || !draft.content.trim() || !draft.report_date) { ElMessage.warning('请填写日期、标题和正文'); return }
   saving.value = true
   try {
@@ -113,6 +122,7 @@ async function showHistory() {
 async function restore(row) {
   if (!await allowDiscard()) return
   Object.assign(draft, row); savedSnapshot = snapshot(); publishedSnapshot.value = row.share_path ? snapshot() : ''; savedAt.value = ''; error.value = ''; historyVisible.value = false
+  tab.value = readOnly.value ? 'preview' : 'edit'
 }
 onMounted(() => props.context.history ? showHistory() : generate())
 </script>

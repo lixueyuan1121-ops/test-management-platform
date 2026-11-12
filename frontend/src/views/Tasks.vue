@@ -31,7 +31,7 @@
           <div class="ledger-actions">
             <el-button v-if="canManage" size="small" :disabled="!actionTasks.length || loading" @click="openDigest(false)">编写日报{{ selectedTasks.length ? '（已选）' : '（筛选结果）' }}</el-button>
             <el-button v-if="canManage" size="small" :disabled="!selectedTasks.length || loading" :loading="copyingRequirements" title="复制勾选项的功能/需求，每项一行" @click="copySelectedRequirements">复制</el-button>
-            <el-button v-if="canManage" size="small" :disabled="!pid" @click="openDigest(true)">历史日报</el-button>
+            <el-button size="small" :disabled="!pid" @click="openDigest(true)">历史日报</el-button>
             <el-button v-if="auth.isPlatformAdmin" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
           </div>
         </div>
