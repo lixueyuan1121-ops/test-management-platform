@@ -4,6 +4,7 @@ export const navigationGroups = [
   { id: 'workspace', label: '工作空间', icon: 'Odometer', items: [
     entry('/dashboard', '工作台', 'Odometer'), entry('/commander', '测试指挥官', 'ChatDotRound'),
     entry('/my-reports', '我的日报', 'EditPen', { reports: true }),
+    entry('/cloud-config', '云控配置表', 'Setting'),
   ] },
   { id: 'eval', label: '对话测评', icon: 'ChatDotRound', items: [
     entry('/eval-tasks', '测评任务', 'Tickets'), entry('/eval-library', '测评用例库', 'Collection'),

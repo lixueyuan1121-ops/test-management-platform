@@ -11,6 +11,7 @@ const routes = [
     children: [
       { path: '', redirect: '/dashboard' },
       { path: 'dashboard', name: 'dashboard', component: () => import('@/views/Dashboard.vue') },
+      { path: 'cloud-config', name: 'cloud-config', component: () => import('@/views/CloudConfig.vue'), meta: { title: '云控配置表' } },
       { path: 'ai-testgen', name: 'ai-testgen', component: () => import('@/views/AITestGen.vue') },
       { path: 'ai-eval-gen', name: 'ai-eval-gen', component: () => import('@/views/AIEvalGen.vue'), meta: { title: '对话测评生成' } },
       { path: 'eval-library', name: 'eval-library', component: () => import('@/views/EvalLibrary.vue'), meta: { title: '对话测评用例库' } },
