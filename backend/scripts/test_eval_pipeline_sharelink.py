@@ -117,7 +117,7 @@ def test_pipeline_prefers_nami_shortlink():
     from app.services import nami_deploy
     orig_cfg, orig_dep = nami_deploy.is_configured, nami_deploy.deploy_html
     nami_deploy.is_configured = lambda: True
-    nami_deploy.deploy_html = lambda html: "https://p8rxf30dc.zhaomi.cn/"
+    nami_deploy.deploy_html = lambda html, **kwargs: "https://p8rxf30dc.zhaomi.cn/" if kwargs.get('prefer_shortlink') else "https://ns.chat.360.cn/client-up/test/index.html"
     try:
         t = EvalTask(project_id=1, name="任务Y", query_ids=json.dumps([1]),
                      last_batch_id="by", auto_pipeline=True, pipeline_status="running")

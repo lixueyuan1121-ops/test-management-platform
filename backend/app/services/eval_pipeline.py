@@ -330,10 +330,10 @@ def _summary_with_retry(session_factory, task_id, batch_id):
 
 
 def _summary_share_url(session_factory, task_id, batch_id=None) -> str | None:
-    """综合评价在线链接:优先 nami 公网直链(部署整页 HTML),失败/未配则回落自托管 /r/<code>。
+    """综合评价在线链接:与日报一样优先申请 nami 短链，失败/未配则保留可访问链接。
 
     - nami:把 render_report_page 的完整 HTML 上传 n.cn → 公网 …/index.html 直链,任何人可点开
-      (推推群里直接可看;NAMI_SHORTLINK_ENABLED=true 时再换 zhaomi.cn 短链)。
+      (推推群里直接可看;显式申请 zhaomi.cn 短链，不受全局默认开关影响)。
       依赖服务器上的 nami cookie;缺失/过期/网关错都回落,不阻断一条龙。
     - 自托管回落:PLATFORM_BASE_URL + /r/<code>(需平台可达)。两者都不可用 → None(通知不带链接)。
     """
@@ -356,7 +356,7 @@ def _summary_share_url(session_factory, task_id, batch_id=None) -> str | None:
     from app.services.report_publishing import publish_html
     base = (settings.PLATFORM_BASE_URL or "").rstrip("/")
     fallback = f"{base}{share_path(code)}" if base and code else None
-    return publish_html(page_html, fallback)['url']
+    return publish_html(page_html, fallback, prefer_shortlink=True)['url']
 
 
 def run_pipeline(session_factory, task_id: int, project_id: int, task_name: str, batch_id: str) -> None:

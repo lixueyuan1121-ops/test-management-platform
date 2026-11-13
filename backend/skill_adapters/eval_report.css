@@ -1,0 +1,47 @@
+/* Evaluation-specific content on top of the daily report's shared theme. */
+.eval-summary { color: #59636f; font-size: 15px; line-height: 1.9; }
+.eval-details { overflow-wrap: anywhere; }
+.eval-summary h1, .eval-summary h2, .eval-details > h2 {
+  font-size: 18px; color: #26313d; font-weight: 600;
+  margin: 30px 0 16px; padding: 0 0 12px; border-bottom: 1px solid #dfe3e8;
+}
+.eval-summary > h2:first-child { margin-top: 0; }
+.eval-summary h3 { font-size: 16px; margin: 24px 0 10px; }
+.eval-summary p { margin: 12px 0; overflow-wrap: anywhere; }
+.eval-summary ul, .eval-summary ol { margin: 12px 0; padding-left: 24px; }
+.eval-summary li { padding: 3px 0; overflow-wrap: anywhere; }
+.eval-summary table, .eval-details > table {
+  display: block; overflow-x: auto; max-width: 100%; width: 100%;
+  border-collapse: collapse; margin: 20px 0; font-size: 14px;
+}
+.eval-summary th, .eval-summary td, .eval-details > table th, .eval-details > table td {
+  padding: 12px 10px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid #edf0f3; overflow-wrap: anywhere;
+}
+.eval-summary th, .eval-details > table th { background: #f7f8fa; color: #6a7480; font-size: 12px; font-weight: 500; }
+.eval-summary blockquote { margin: 16px 0; padding: 8px 16px; background: #f7f8fa; border-left: 2px solid #b4c3d1; }
+.eval-summary pre { overflow-x: auto; padding: 16px; background: #f7f8fa; }
+.eval-summary code { background: #f7f8fa; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
+.eval-summary pre code { padding: 0; }
+.eval-report .tip { padding: 48px 0; color: #646d79; text-align: center; }
+/* Scoped overrides also apply to older frozen detail snapshots, without rewriting them. */
+.eval-report .query-details { margin-top: 36px; }
+.eval-report .query-details > h2 { font-size: 18px; padding-bottom: 12px; border-bottom: 1px solid #dfe3e8; }
+.eval-report .query-details .qd-query { border-color: #e5e7eb; border-radius: 4px; margin: 24px 0; }
+.eval-report .query-details .qd-query header { background: #f7f8fa; }
+.eval-report .query-details h3 { color: #26313d; font-size: 16px; }
+.eval-report .query-details .qd-index { color: #84909d; }
+.eval-report .query-details .qd-note, .eval-report .query-details small { color: #75808c; }
+.eval-report .query-details a, .eval-report .query-details summary { color: #315f8b; }
+.eval-report .query-details .qd-table th { color: #6a7480; }
+.eval-report .query-details .qd-table th, .eval-report .query-details .qd-table td { border-bottom-color: #edf0f3; }
+.eval-report .query-details .qd-table tbody tr:nth-child(even) { background: #fafbfc; }
+.eval-report .query-details .qd-scroll:focus-visible { outline: 2px solid #315f8b; outline-offset: 2px; }
+@media (max-width: 640px) {
+  .eval-summary h1, .eval-summary h2, .eval-details > h2 { font-size: 17px; }
+  .eval-summary h3, .eval-report .query-details h3 { font-size: 15px; }
+  .eval-report .query-details .qd-query header { padding: 14px 16px; }
+}
+@media print {
+  .eval-summary table, .eval-details > table { display: table; overflow: visible; }
+}

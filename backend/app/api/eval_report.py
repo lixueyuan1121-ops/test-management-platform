@@ -10,6 +10,7 @@
 """
 import html as _html
 import secrets
+from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
@@ -45,46 +46,37 @@ def share_path(code: str) -> str:
     return f"/r/{code}"
 
 
+# The daily-report skill installer copies this exact base stylesheet into the
+# installed skill. Read the same source here, without requiring that skill to be installed.
+_STYLE_DIR = Path(__file__).resolve().parents[2] / "skill_adapters"
 _PAGE_TMPL = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
 <title>{title}</title>
-<style>
-  body {{ margin:0; background:#f5f7fa; color:#34495e; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; }}
-  .wrap {{ max-width:1200px; margin:0 auto; padding:28px 20px 60px; }}
-  .card {{ background:#fff; border:1px solid #e4e7ed; border-radius:10px; padding:26px 30px; box-shadow:0 1px 3px rgba(0,0,0,.04); }}
-  .hd {{ margin-bottom:18px; padding-bottom:14px; border-bottom:1px solid #eef2f6; }}
-  .hd h1 {{ font-size:20px; margin:0 0 6px; color:#1f2d3d; }}
-  .hd .meta {{ font-size:12px; color:#8a97a6; }}
-  .body {{ line-height:1.75; font-size:14px; }}
-  .body h2 {{ font-size:17px; margin:18px 0 10px; color:#1f2d3d; border-left:3px solid #00b386; padding-left:10px; }}
-  .body h3 {{ font-size:14px; margin:12px 0 6px; color:#34495e; }}
-  .body table {{ border-collapse:collapse; width:100%; margin:10px 0; }}
-  .body th, .body td {{ border:1px solid #dfe6ec; padding:7px 11px; text-align:left; font-size:13px; }}
-  .body th {{ background:#f3f8f7; color:#1f2d3d; }}
-  .body ul, .body ol {{ padding-left:24px; margin:8px 0; }}
-  .body blockquote {{ border-left:3px solid #dfe6ec; margin:8px 0; padding:6px 14px; color:#7d8a9b; background:#f8fafc; }}
-  .body code {{ background:#eef2f6; border-radius:3px; padding:1px 5px; font-size:13px; }}
-  .ft {{ text-align:center; color:#b4bcc7; font-size:12px; margin-top:22px; }}
-  @media(max-width:640px) {{ .wrap {{ padding:12px 8px 30px; }} .card {{ padding:18px 12px; }} }}
-  .tip {{ text-align:center; color:#8a97a6; padding:60px 20px; font-size:15px; }}
-</style>
+<style>{style}</style>
+<style>{report_style}</style>
 </head>
-<body>
-<div class="wrap">
-  <div class="card">
-    <div class="hd">
-      <h1>{title}</h1>
-      <div class="meta">{meta}</div>
-    </div>
-    <div class="body">{content}</div>
-  </div>
-  <div class="ft">AI 对话测评 · 综合评价报告</div>
-</div>
+<body class="eval-report">
+<main class="wrap">
+  <header class="report-header">
+    <span class="eyebrow">AI EVALUATION</span>
+    <h1>{title}</h1>
+    <p class="sub">{meta}</p>
+  </header>
+  {content}
+  <footer>AI 对话测评 · 综合评价报告</footer>
+</main>
 </body>
 </html>"""
+
+
+def _render_page(*, title, meta, content):
+    return _PAGE_TMPL.format(title=title, meta=meta, content=content,
+                             style=(_STYLE_DIR / 'feature_report.css').read_text(encoding='utf-8'),
+                             report_style=(_STYLE_DIR / 'eval_report.css').read_text(encoding='utf-8'))
 
 
 def render_report_page(task: EvalTask, db: Session | None = None) -> str:
@@ -104,10 +96,12 @@ def render_report_page(task: EvalTask, db: Session | None = None) -> str:
         content = f'<div class="tip">{_html.escape(tip)}</div>'
         meta = ""
     else:
-        content = task.summary_html + (getattr(task, "detail_html", None) or _detail_table_html(db, task))  # 已消毒片段 + 自生成(已 escape)明细表
+        # Preserve frozen report data verbatim; only the page presentation changes.
+        details = getattr(task, "detail_html", None) or _detail_table_html(db, task)
+        content = f'<section class="eval-summary">{task.summary_html}</section><div class="eval-details">{details}</div>'
         at = task.summary_at.isoformat(sep=" ", timespec="seconds") if task.summary_at else ""
         meta = _html.escape(f"批次 {task.last_batch_id or '—'} · 生成时间 {at} · 引擎 {task.summary_provider or ''}".strip(" ·"))
-    return _PAGE_TMPL.format(title=title, meta=meta, content=content)
+    return _render_page(title=title, meta=meta, content=content)
 
 
 def _detail_table_html(db: Session | None, task: EvalTask) -> str:
@@ -162,7 +156,7 @@ def view_shared_report(code: str):
             task = summary_view(db, task, summary.batch_id if summary else None)
         if not task:
             return HTMLResponse(
-                _PAGE_TMPL.format(title="报告不存在", meta="",
+                _render_page(title="报告不存在", meta="",
                                   content='<div class="tip">链接无效或报告已被删除。</div>'),
                 status_code=404)
         return HTMLResponse(render_report_page(task, db))
