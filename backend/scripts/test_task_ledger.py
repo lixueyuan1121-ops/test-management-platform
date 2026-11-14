@@ -358,6 +358,53 @@ class LedgerTests(unittest.TestCase):
         self.user_id = 2
         self.assertEqual(self.client.get('/api/task-ledger/digests', params={'project_id':2}).status_code, 403)
 
+    def test_administrators_edit_and_publish_other_authors_without_changing_ownership(self):
+        task = self.task()
+        self.user_id = 2
+        payload = dict(project_id=1, task_ids=[task['id']], report_date=self.today,
+                       title='成员日报', content='原始正文')
+        saved = self.client.post('/api/task-ledger/digests/publish', json=payload).json()['data']
+        original_url = '/api/task-ledger/digests/shared/' + saved['share_path'].split('/')[-1]
+        original_html = self.client.get(original_url).json()['data']['html']
+        self.db.add(ProjectMember(project_id=1, user_id=4, role=ProjectRole.admin))
+        self.db.commit()
+        for uid in (1, 4):
+            with self.subTest(administrator=uid):
+                self.user_id = uid
+                edited = dict(saved, title=f'管理员 {uid} 修订', content=f'修订正文 {uid}',
+                              report_date=(date.today() - timedelta(days=1)).isoformat())
+                response = self.client.post('/api/task-ledger/digests', json=edited)
+                self.assertEqual(response.status_code, 200, response.text)
+                result = response.json()['data']
+                self.assertEqual(result['id'], saved['id'])
+                self.assertEqual(result['author_id'], 2)
+                self.assertEqual(result['author_name'], '平台成员')
+                self.assertEqual(result['title'], edited['title'])
+                self.assertEqual(result['content'], edited['content'])
+                self.assertEqual(result['report_date'], edited['report_date'])
+                self.assertIsNone(result['share_path'])
+                response = self.client.post('/api/task-ledger/digests/publish', json=edited)
+                self.assertEqual(response.status_code, 200, response.text)
+                published = response.json()['data']
+                self.assertNotEqual(published['share_path'], saved['share_path'])
+                self.assertEqual(published['author_id'], 2)
+                self.assertEqual(self.client.get(original_url).json()['data']['html'], original_html)
+
+    def test_project_administrator_cannot_edit_another_projects_digest(self):
+        task = self.task(project_id=2)
+        payload = dict(project_id=2, task_ids=[task['id']], report_date=self.today,
+                       title='其他项目日报', content='原始正文')
+        saved = self.client.post('/api/task-ledger/digests', json=payload).json()['data']
+        self.db.add(ProjectMember(project_id=1, user_id=4, role=ProjectRole.admin))
+        self.db.commit()
+        self.user_id = 4
+        for endpoint in ('/digests', '/digests/publish'):
+            self.assertEqual(self.client.post('/api/task-ledger'+endpoint, json=saved).status_code, 403)
+            forged = dict(saved, project_id=1)
+            self.assertEqual(self.client.post('/api/task-ledger'+endpoint, json=forged).status_code, 404)
+        self.db.expire_all()
+        self.assertEqual(self.db.get(TaskDigest, saved['id']).content, '原始正文')
+
     def test_permissions_and_cross_project(self):
         own = self.task(); other = self.task(project_id=2)
         payload = dict(project_id=1, task_ids=[own['id'],other['id']], report_date=self.today)

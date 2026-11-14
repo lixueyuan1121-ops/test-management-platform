@@ -52,8 +52,10 @@ const props = defineProps({ context: { type: Object, required: true } })
 const emit = defineEmits(['close'])
 const draft = reactive({ id: null, ...props.context, task_ids: [...props.context.task_ids], title: '', content: '' })
 const auth = useAuthStore()
-const readOnly = computed(() => !['admin', 'member'].includes(auth.roleIn(props.context.project_id)) ||
-  (!!draft.id && draft.author_id !== auth.user?.id))
+const readOnly = computed(() => {
+  const role = auth.roleIn(props.context.project_id)
+  return role !== 'admin' && (role !== 'member' || (!!draft.id && draft.author_id !== auth.user?.id))
+})
 let generationController
 const generationStatus = ref('正在准备总结…')
 onBeforeUnmount(() => generationController?.abort())

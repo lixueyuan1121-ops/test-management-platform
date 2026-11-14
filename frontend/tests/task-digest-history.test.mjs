@@ -47,3 +47,14 @@ test('project guests cannot save or publish even their earlier reports', async (
   await view.save(); await view.publish()
   assert.deepEqual(view.calls, [])
 })
+
+test('administrators can edit and republish other authors reports without taking ownership', async () => {
+  const view = dialog('admin')
+  await view.restore(report)
+  assert.equal(view.tab.value, 'edit')
+  view.draft.title = '管理员修改标题'
+  view.draft.content = '管理员补充正文'
+  await view.save(); await view.publish()
+  assert.deepEqual(view.calls, ['save', 'publish'])
+  assert.equal(view.draft.author_id, 1)
+})

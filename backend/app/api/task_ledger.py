@@ -98,9 +98,10 @@ def list_digests(project_id: int = Query(...), db: Session = Depends(get_db), us
 
 
 def _save_digest(body, db, user):
-    assert_project_role(db, user, body.project_id, WRITE_ROLES)
+    membership = assert_project_role(db, user, body.project_id, WRITE_ROLES)
     row = db.query(TaskDigest).filter_by(id=body.id).with_for_update().first() if body.id else None
-    if body.id and (not row or row.project_id != body.project_id or row.author_id != user.id):
+    if body.id and (not row or row.project_id != body.project_id or
+                    (row.author_id != user.id and membership.role != ProjectRole.admin)):
         raise HTTPException(404, detail="日报不存在或无编辑权限")
     if row is None:
         selected_tasks(db, body.project_id, body.task_ids)
