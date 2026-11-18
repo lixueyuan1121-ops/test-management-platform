@@ -50,6 +50,7 @@ class MemberOut(BaseModel):
     user_id: int
     username: str
     name: str
+    user_status: str | None = None
     project_id: int
     role: str
     team_id: int | None = None

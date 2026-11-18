@@ -1,5 +1,17 @@
 import assert from 'node:assert/strict'
-import { filterLedger, TASK_STATUS, hasRisk, taskDateQuery, taskOwners } from '../src/utils/taskLedger.js'
+import { filterLedger, TASK_STATUS, hasRisk, taskDateQuery, taskOwners, taskAssigneeOptions, taskAssigneeLabel } from '../src/utils/taskLedger.js'
+const members = [
+  { user_id: 1, name: '启用成员', username: 'active', user_status: 'active', role: 'member' },
+  { user_id: 2, name: '停用成员', username: 'disabled', user_status: 'disabled', role: 'member' },
+  { user_id: 3, name: '启用访客', username: 'guest', user_status: 'active', role: 'guest' },
+  { user_id: 4, name: '缺失账号', user_status: null, role: 'member' },
+]
+assert.deepEqual(taskAssigneeOptions(members).map(m => m.user_id), [1, 3])
+assert.deepEqual(taskAssigneeOptions(members, true).map(m => m.user_id), [1])
+assert.equal(taskAssigneeLabel(members, 2, '2'), '停用成员 (disabled)（已停用）')
+assert.equal(taskAssigneeLabel(members, 1, '1'), '启用成员 (active)')
+assert.equal(taskAssigneeLabel(members, 99, '原负责人'), '原负责人')
+assert.equal(members.length, 4)
 const defaults = { keyword:'', status:[], owner:[], priority:[], version:[], risk:'', impact:'', riskOnly:false }
 const rows = [
   {id:1,title:'文档划词',status:'testing',priority:'p1',assigned_to:2,assigned_to_ids:[2,4],assigned_to_name:'平台姓名',target_version:'3.27.0',risk_level:'red',affects_release:true},

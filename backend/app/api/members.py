@@ -18,6 +18,7 @@ def _to_out(m: ProjectMember, db: Session) -> dict:
         "user_id": m.user_id,
         "username": u.username if u else "",
         "name": u.name if u else "",
+        "user_status": u.status.value if u else None,
         "project_id": m.project_id,
         "role": m.role.value,
         "team_id": m.team_id,

@@ -36,6 +36,12 @@ export function taskDateQuery(range, versions = []) {
     : { start_date: range[0], end_date: range[1] }
 }
 export const taskOwners = row => row.assigned_to_name || '待分配'
+export const taskAssigneeOptions = (members, ingested = false) => members.filter(m =>
+  m.user_status === 'active' && (!ingested || m.role !== 'guest'))
+export function taskAssigneeLabel(members, userId, fallback) {
+  const member = members.find(m => m.user_id === userId)
+  return member ? `${member.name} (${member.username})${member.user_status === 'disabled' ? '（已停用）' : ''}` : fallback
+}
 export const hasRisk = row => ['red', 'yellow'].includes(row.risk_level) || ['blocked', 'at_risk'].includes(row.status) || row.affects_release === true
 export function filterLedger(tasks, filters) {
   const keyword = filters.keyword.trim().toLocaleLowerCase()

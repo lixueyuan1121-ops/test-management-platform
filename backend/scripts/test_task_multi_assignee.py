@@ -7,9 +7,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.db.session import Base, get_db
 from app.core.deps import get_current_user
-from app.core.enums import ProjectRole
+from app.core.enums import ProjectRole, UserStatus
 from app.models import User, Project, ProjectMember, Task, TaskAssignee
-from app.api import tasks, stats, reports
+from app.api import tasks, stats, reports, members
 
 class MultiAssigneeTests(unittest.TestCase):
     def setUp(self):
@@ -28,7 +28,7 @@ class MultiAssigneeTests(unittest.TestCase):
         def current():
             with self.factory() as db:return db.get(User,self.uid)
         app=FastAPI()
-        for router in (tasks.router,stats.router,reports.router):app.include_router(router)
+        for router in (tasks.router,stats.router,reports.router,members.router):app.include_router(router)
         app.dependency_overrides[get_db]=session;app.dependency_overrides[get_current_user]=current
         self.client=TestClient(app)
         self.notify=patch('app.services.task_assignment.dispatch_assignment_notices');self.notify.start()
@@ -69,6 +69,21 @@ class MultiAssigneeTests(unittest.TestCase):
             r=self.client.patch(f'/api/tasks/{tid}',json={'title':'must not persist',**payload});self.assertEqual(r.status_code,code,r.text)
         with self.factory() as db:
             t=db.get(Task,tid);self.assertEqual(t.title,'Shared task');self.assertEqual(t.assigned_to_ids,[2,3])
+    def test_member_status_available_without_losing_historical_assignees(self):
+        row = self.create()
+        with self.factory() as db:
+            db.get(User, 2).status = UserStatus.disabled
+            db.commit()
+        response = self.client.get('/api/projects/1/members')
+        self.assertEqual(response.status_code, 200, response.text)
+        by_id = {m['user_id']: m for m in response.json()['data']}
+        self.assertEqual(by_id[2]['user_status'], 'disabled')
+        self.assertEqual(by_id[3]['user_status'], 'active')
+        updated = self.client.patch(f"/api/tasks/{row['id']}", json={
+            'description': 'Only update notes', 'assigned_to_ids': row['assigned_to_ids']})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()['data']['assigned_to_ids'], [2, 3])
+        self.assertEqual(updated.json()['data']['assigned_to_name'], 'User 2、User 3')
     def test_unassigned_create_assign_clear_and_copy(self):
         row=self.create(assigned_to_ids=[]);tid=row['id']
         self.assertIsNone(row['assigned_to']);self.assertEqual(row['assigned_to_ids'],[])

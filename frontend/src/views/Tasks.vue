@@ -182,7 +182,8 @@
         </el-form-item>
         <el-form-item label="测试负责人">
           <el-select v-model="form.assigned_to_ids" :disabled="dialog.ingested && !canAssignIngested" multiple filterable placeholder="选择项目成员（可多选或留空）" style="width:100%">
-            <el-option v-for="m in (dialog.ingested ? members.filter(m => m.role !== 'guest') : members)" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
+            <template #label="{ value, label }">{{ taskAssigneeLabel(members, value, label) }}</template>
+            <el-option v-for="m in taskAssigneeOptions(members, dialog.ingested)" :key="m.user_id" :label="`${m.name} (${m.username})`" :value="m.user_id" />
           </el-select>
         </el-form-item>
         <p v-if="dialog.ingested" class="cl-hint">此任务由提测机器人自动录入；管理员填写测试负责人并保存后，系统会向派单群发送通知。</p>
@@ -254,7 +255,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import TaskLedgerFields from '@/components/TaskLedgerFields.vue'
 import TaskDigestDialog from '@/components/TaskDigestDialog.vue'
 import TaskReleaseDialog from '@/components/TaskReleaseDialog.vue'
-import { TASK_STATUS, RISK_META, LEDGER_DEFAULTS, localDate, taskOwners, hasRisk, filterLedger, taskDateQuery } from '@/utils/taskLedger'
+import { TASK_STATUS, RISK_META, LEDGER_DEFAULTS, localDate, taskOwners, taskAssigneeOptions, taskAssigneeLabel, hasRisk, filterLedger, taskDateQuery } from '@/utils/taskLedger'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import '@/styles/workspace-overlays.css'
 import { ElMessage, ElMessageBox } from 'element-plus'
