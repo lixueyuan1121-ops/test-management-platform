@@ -413,8 +413,60 @@ class LedgerTests(unittest.TestCase):
             self.user_id = uid
             self.assertEqual(self.client.post('/api/task-ledger/digests/generate',json=payload).status_code,403)
             self.assertEqual(self.client.patch(f"/api/tasks/{own['id']}",json={'risk_level':'green'}).status_code,403)
+            self.assertEqual(self.client.post('/api/task-ledger/releases',json=dict(project_id=1, task_ids=[own['id']],version='1',release_date=self.today,content='内容')).status_code,403)
         self.user_id = 2
-        self.assertEqual(self.client.post('/api/task-ledger/releases',json=dict(project_id=1, task_ids=[own['id']],version='1',release_date=self.today,content='内容')).status_code,403)
+        # 成员可填写发版，但未上线/版本不匹配仍不允许归档。
+        self.assertEqual(self.client.post('/api/task-ledger/releases',json=dict(project_id=1, task_ids=[own['id']],version='1',release_date=self.today,content='内容')).status_code,400)
+
+    def test_members_and_project_admins_can_fill_release_and_retry_safely(self):
+        self.db.add(ProjectMember(project_id=1, user_id=4, role=ProjectRole.admin))
+        self.db.commit()
+        for uid in (2, 4):
+            with self.subTest(user_id=uid):
+                self.user_id = 1
+                task = self.task(target_version=f'3.27.{uid}')
+                self.client.patch(f"/api/tasks/{task['id']}", json={'status': 'online'})
+                self.user_id = uid
+                payload = dict(project_id=1, task_ids=[task['id']], version=f'3.27.{uid}',
+                               release_date=self.today, content='成员填写的上线内容')
+                result = self.client.post('/api/task-ledger/releases', json=payload)
+                self.assertEqual(result.status_code, 200, result.text)
+                data = result.json()['data']
+                self.assertEqual(data['added'], 1)
+                rel = self.db.get(ReleaseRecord, data['release']['id'])
+                self.assertEqual(rel.created_by, uid)
+                self.assertEqual(self.db.get(Task, task['id']).release_record_id, rel.id)
+                self.assertEqual(self.client.post('/api/task-ledger/releases', json=payload).json()['data']['added'], 0)
+                self.assertEqual(rel.req_count, 1)
+
+    def test_member_can_append_to_admin_release_but_cannot_cross_projects(self):
+        first = self.task(target_version='3.27.0')
+        second = self.task(target_version='3.27.0')
+        foreign = self.task(project_id=2, target_version='3.27.0')
+        for task in (first, second, foreign):
+            self.client.patch(f"/api/tasks/{task['id']}", json={'status': 'online'})
+        payload = dict(project_id=1, task_ids=[first['id']], version='3.27.0',
+                       release_date=self.today, content='管理员的上线内容')
+        rel = self.client.post('/api/task-ledger/releases', json=payload).json()['data']['release']
+        foreign_rel = self.client.post('/api/task-ledger/releases', json=dict(payload, project_id=2,
+            task_ids=[foreign['id']])).json()['data']['release']
+        self.user_id = 2
+        for url in ('/api/releases/products', '/api/releases'):
+            self.assertEqual(self.client.get(url, params={'project_id': 1}).status_code, 200)
+        appended = dict(payload, task_ids=[second['id']], release_id=rel['id'], content='成员追加的上线内容')
+        self.assertEqual(self.client.post('/api/task-ledger/releases', json=dict(appended, project_id=2,
+            task_ids=[foreign['id']], release_id=foreign_rel['id'])).status_code, 403)
+        self.assertEqual(self.client.post('/api/task-ledger/releases', json=dict(appended,
+            task_ids=[foreign['id']])).status_code, 400)
+        self.assertEqual(self.client.post('/api/task-ledger/releases', json=dict(appended,
+            release_id=foreign_rel['id'])).status_code, 400)
+        result = self.client.post('/api/task-ledger/releases', json=appended)
+        self.assertEqual(result.status_code, 200, result.text)
+        saved = self.db.get(ReleaseRecord, rel['id'])
+        self.assertEqual(saved.content, '管理员的上线内容\n\n成员追加的上线内容')
+        self.assertEqual(saved.req_count, 2)
+        self.assertEqual(saved.created_by, 1)
+        self.assertEqual(self.db.get(ReleaseRecord, foreign_rel['id']).req_count, 1)
 
     def test_release_create_retry_append_and_delete(self):
         a = self.task(target_version='3.27.0'); b = self.task(title='第二项',target_version='3.27.0')

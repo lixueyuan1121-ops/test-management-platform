@@ -32,7 +32,7 @@
             <el-button v-if="canManage" size="small" :disabled="!actionTasks.length || loading" @click="openDigest(false)">编写日报{{ selectedTasks.length ? '（已选）' : '（筛选结果）' }}</el-button>
             <el-button v-if="canManage" size="small" :disabled="!selectedTasks.length || loading" :loading="copyingRequirements" title="复制勾选项的功能/需求，每项一行" @click="copySelectedRequirements">复制</el-button>
             <el-button size="small" :disabled="!pid" @click="openDigest(true)">历史日报</el-button>
-            <el-button v-if="auth.isPlatformAdmin" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
+            <el-button v-if="canManage" size="small" :disabled="!releasableTasks.length || loading" @click="releaseRows = [...releasableTasks]; releaseVisible = true">填写发版记录（{{ releasableTasks.length }}）</el-button>
           </div>
         </div>
         <p class="cl-hint">{{ versionFiltering ? '当前按归属版本查询全部日期的任务，日期范围不生效；清空归属版本后恢复日期筛选。' : singleDate ? '单日跟踪包含当日任务、历史尚未上线/关闭的任务，以及当日上线或关闭的任务；历史任务标注顺延日期。' : dateRange?.length === 2 ? '按分配日期范围筛选（含起止日期）；清空日期可查看全部台账。' : '当前展示全部日期的任务台账。' }} 空白风险与发版影响表示未评估。</p>

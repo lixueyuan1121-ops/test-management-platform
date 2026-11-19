@@ -9,7 +9,7 @@ from app.models.task_digest import TaskDigestPublication, TaskDigestGeneration, 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.deps import assert_project_role, get_current_user, require_platform_admin
+from app.core.deps import assert_project_role, get_current_user
 from app.core.enums import ProjectRole, TaskStatus
 from app.db.session import get_db
 from app.models import Project, ReleaseRecord, Task, TaskDigest, User
@@ -167,8 +167,9 @@ def shared_digest(code: str, db: Session = Depends(get_db), user: User = Depends
 
 
 @router.post("/releases")
-def fill_release(body: TaskReleaseCreate, db: Session = Depends(get_db), user: User = Depends(require_platform_admin)):
+def fill_release(body: TaskReleaseCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.api.release import _norm_channel, _norm_sub_product, _to_out
+    assert_project_role(db, user, body.project_id, WRITE_ROLES)
     project = db.get(Project, body.project_id)
     if not project:
         raise HTTPException(404, detail="项目不存在")
