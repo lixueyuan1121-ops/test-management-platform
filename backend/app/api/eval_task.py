@@ -20,6 +20,7 @@ from app.models import EvalQuery, EvalRun, User
 from app.models.ai_eval import EvalTask, EvalBatchSummary
 from app.schemas.common import ok
 from app.services import generators, claude_runner
+from app.services.eval_task_status import reconcile_task_status
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/eval-tasks", tags=["eval-task"])
@@ -228,6 +229,11 @@ def create_task(body: EvalTaskCreateIn, db: Session = Depends(get_db), user: Use
 def list_tasks(project_id: int = Query(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     assert_project_role(db, user, project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
     rows = db.query(EvalTask).filter(EvalTask.project_id == project_id).order_by(EvalTask.id.desc()).all()
+    changed = False
+    for task in rows:
+        changed = reconcile_task_status(db, task) or changed
+    if changed:
+        db.commit()
     return ok([_to_out(r, db) for r in rows])
 
 
@@ -237,6 +243,8 @@ def get_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(g
     if not task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
     assert_project_role(db, user, task.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    if reconcile_task_status(db, task):
+        db.commit()
     return ok(_to_out(task, db))
 
 
@@ -711,12 +719,7 @@ def task_runs(task_id: int, batch_id: str | None = Query(None),
     if bid:
         q = q.filter(EvalRun.batch_id == bid)
     rows = q.order_by(EvalRun.id).all()
-    # 执行完批次自动收口任务状态(轻量:读接口顺带校正,不引入后台轮询)
-    if bid == task.last_batch_id and task.status == EvalTaskStatus.running and rows and all(
-        getattr(r.status, "value", r.status) in ("done", "judged", "failed", "cancelled") for r in rows
-    ):
-        task.status = (EvalTaskStatus.stopped if all(r.status == EvalRunStatus.cancelled for r in rows)
-                       else EvalTaskStatus.done)
+    if bid == task.last_batch_id and reconcile_task_status(db, task):
         db.commit()
     dim_map = {}
     qids = [r.eval_query_id for r in rows if r.eval_query_id]
@@ -1233,6 +1236,8 @@ def get_summary_status(task_id: int, batch_id: str | None = None,
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="测评任务不存在")
     assert_project_role(db, user, task.project_id, (ProjectRole.admin, ProjectRole.member, ProjectRole.guest))
+    if reconcile_task_status(db, task):
+        db.commit()
     from app.services.eval_summary_store import summary_view
     summary = summary_view(db, task, batch_id)
     return ok({"task_id": task_id, "status": getattr(task.status, "value", task.status),

@@ -7,7 +7,7 @@
 
 并发去重靠 eval_task.pipeline_status 门闩:一次条件 UPDATE(WHERE 可抢占 → running)抢占,
 只有抢到的那一次在后台线程里真正跑编排;并发回写/reaper 重复触发都被挡下。
-仅对开了 auto_pipeline 的任务生效;未开则直接返回。
+任务执行状态始终同步；只有开了 auto_pipeline 才启动后续编排。
 """
 import logging
 import threading
@@ -52,7 +52,12 @@ def on_batch_maybe_done(db: Session, batch_id: str) -> bool:
     if not batch_id:
         return False
     task = (db.query(EvalTask).filter(EvalTask.last_batch_id == batch_id).first())
-    if not task or not task.auto_pipeline:
+    if not task:
+        return False
+    from app.services.eval_task_status import reconcile_task_status
+    if reconcile_task_status(db, task):
+        db.commit()
+    if not task.auto_pipeline:
         return False
     if task.pipeline_status not in _CLAIMABLE:
         return False   # 已在跑或已完成,不重复
