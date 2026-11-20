@@ -14,7 +14,11 @@
       <template #filters>
         <el-input v-model="filters.keyword" clearable aria-label="搜索任务名称或负责人" placeholder="搜索任务、负责人、开发或卡点" style="width:260px" />
         <el-select v-model="filters.status" multiple collapse-tags collapse-tags-tooltip clearable aria-label="筛选任务状态" placeholder="全部状态" style="width:180px"><el-option v-for="(meta, key) in STATUS_META" :key="key" :label="meta.label" :value="key" /></el-select>
-        <el-select v-model="filters.owner" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:180px"><el-option label="待分配" value="__unset" /><el-option v-for="m in members" :key="m.user_id" :label="m.name" :value="m.user_id" /></el-select>
+        <el-select v-model="filters.owner" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="测试负责人" aria-label="筛选测试负责人" style="width:180px">
+          <template #label="{ value, label }">{{ members.find(m => m.user_id === value)?.name || label }}</template>
+          <el-option label="待分配" value="__unset" />
+          <el-option v-for="m in taskAssigneeOptions(members)" :key="m.user_id" :label="m.name" :value="m.user_id" />
+        </el-select>
         <el-select v-model="filters.version" multiple collapse-tags collapse-tags-tooltip clearable filterable placeholder="归属版本" aria-label="筛选归属版本" style="width:180px"><el-option label="未填写版本" value="__unset" /><el-option v-for="v in versions" :key="v" :label="v" :value="v" /></el-select>
         <el-select v-model="filters.risk" clearable placeholder="风险等级" aria-label="筛选风险等级" style="width:150px"><el-option label="未评估" value="__unset" /><el-option v-for="(m,k) in RISK_META" :key="k" :label="m.label" :value="k" /></el-select>
         <el-select v-model="filters.priority" multiple collapse-tags collapse-tags-tooltip clearable placeholder="优先级" aria-label="筛选优先级" style="width:140px"><el-option v-for="p in ['p0','p1','p2','p3']" :key="p" :label="p.toUpperCase()" :value="p" /></el-select>
