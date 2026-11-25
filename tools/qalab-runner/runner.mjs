@@ -38,6 +38,7 @@ import { makeEvidence, runtimeFingerprint } from './execution-evidence.mjs';
 import { verifyImport, saveLocalReport } from './verify-import.mjs';
 import { createExecutionTimer } from './execution-timing.mjs';
 import { runCodex } from './codex-engine.mjs';
+import { makeMdTaskRunner } from './md-task.mjs';
 import { createPollSchedule } from './runner-polling.mjs';
 import { publishResult } from './result-reporting.mjs';
 
@@ -92,11 +93,47 @@ const PERFDOG_DIR  = process.env.PERFDOG_DIR || (existsSync(join(__rdir, "nami-p
 const SESSIONS_DIR = join(PERFDOG_DIR, "sessions");
 const REPORT_SET_ID = process.env.REPORT_SET_ID ? Number(process.env.REPORT_SET_ID) : null;
 
+// ---- md 任务（整份提测文档交给 agent 执行）----
+// 默认关：runner 靠自升级分发到所有执行机，新能力必须由人在该机 .env 显式打开。
+const MD_TASK_ENABLED = (process.env.MD_TASK_ENABLED ?? "0") === "1";
+const MD_GROUPS_DIR   = process.env.MD_GROUPS_DIR || join(__mdHome(), "hosts-groups");
+const MD_RUNTIME_DIR  = process.env.MD_RUNTIME_DIR || join(__mdHome(), "runtime");
+const MD_HOSTS_HELPER = process.env.MD_HOSTS_HELPER || "";          // Mac: qa-hosts-helper 绝对路径
+const MD_HOSTS_TASK   = process.env.MD_HOSTS_TASK || "qa-hosts-helper"; // Win: 计划任务名
+const MD_VERIFY_DOMAINS = (process.env.MD_VERIFY_DOMAINS || "").split(",").map((x) => x.trim()).filter(Boolean);
+const MD_VERIFY_TIMEOUT_SEC = Number(process.env.MD_VERIFY_TIMEOUT_SEC || 15);
+const MD_CODEX_BIN    = process.env.MD_CODEX_BIN || process.env.CODEX_BIN || "codex";
+const MD_CODEX_ARGS   = (process.env.MD_CODEX_ARGS || "exec --skip-git-repo-check --sandbox workspace-write")
+  .split(/\s+/).filter(Boolean);
+const MD_CODEX_TIMEOUT_MS = Number(process.env.MD_CODEX_TIMEOUT_MS || 3600000);
+const MD_WORK_ROOT    = process.env.MD_WORK_ROOT || join(MD_RUNTIME_DIR, "md-runs");
+
+function __mdHome() {
+  // 默认落在用户目录，避免自升级时被 runner 目录的覆盖包清掉；可用 MD_*_DIR 覆盖
+  const home = process.env.HOME || process.env.USERPROFILE || process.cwd();
+  return join(home, "qa-workspace");
+}
+
 const H = { "Content-Type": "application/json", "Authorization": `Bearer ${RUNNER_TOKEN}` };
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 // gui-core 单例:StepExecutor 用它确定性执行 gui/e2e 步骤(与 gui-mcp server 同一套定位引擎)。
 const guiCore = createGuiCore({ cdpUrl: `http://127.0.0.1:${CDP_PORT}` });
+
+// md 任务执行器：只在 MD_TASK_ENABLED=1 时构造并轮询，其余执行机完全不受影响。
+const mdTasks = MD_TASK_ENABLED ? makeMdTaskRunner({
+  api, log, RUNNER_ID,
+  runtimeDir: MD_RUNTIME_DIR,
+  groupsDir: MD_GROUPS_DIR,
+  helperPath: MD_HOSTS_HELPER,
+  helperTaskName: MD_HOSTS_TASK,
+  verifyDomains: MD_VERIFY_DOMAINS,
+  verifyTimeoutSec: MD_VERIFY_TIMEOUT_SEC,
+  codexBin: MD_CODEX_BIN,
+  codexArgs: MD_CODEX_ARGS,
+  codexTimeoutMs: MD_CODEX_TIMEOUT_MS,
+  workRoot: MD_WORK_ROOT,
+}) : null;
 
 // ---- 平台 API(契约见 app/routers/exec_queue.py:{code,msg,data} 信封)----
 async function api(method, path, body) {
@@ -824,6 +861,10 @@ async function main() {
   log(`runner 启动 base=${BASE_URL} runner=${RUNNER_ID} dry=${DRY} gui_ai_engine=${GUI_AI_ENGINE}`);
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
+  if (mdTasks) {
+    log(`md 任务已启用 groups=${MD_GROUPS_DIR} runtime=${MD_RUNTIME_DIR}`);
+    try { await mdTasks.heal(); } catch (e) { log("md 任务环境自愈失败:", e.message); }
+  }
   const polling = createPollSchedule({ pollMs: POLL_MS, execPollMs: process.env.EXEC_POLL_MS });
   log(`执行队列轮询 ${polling.executionMs}ms，探测/perf 轮询 ${polling.maintenanceMs}ms`);
   let release;
@@ -841,6 +882,9 @@ async function main() {
     try {
       recordingActive = !AUDIT_ONLY && await handleRecordings();
       if (recordingActive) { await sleep(POLL_MS); continue; }
+      if (mdTasks) {
+        try { completed += await mdTasks.pollOnce(); } catch (e) { log("md 任务轮询异常:", e.message); }
+      }
       try { if (!AUDIT_ONLY) completed = await tick(); } catch (e) { log("轮询异常:", e.message); }
       if (polling.maintenanceDue()) {
         try { await handleProbes(); } catch (e) { log("探测轮询异常:", e.message); }

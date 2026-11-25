@@ -16,6 +16,7 @@ from app.models.ai import AiTask, TestCase
 from app.models.ai_job import AiJob
 from app.models.checklist import ChecklistItem
 from app.models.exec_queue import ExecRun
+from app.models.md_run import MdRun
 from app.models.runner_device import RunnerDevice, RunnerEvalHeartbeat
 from app.models.release import ReleaseRecord, ReleaseProduct
 from app.models.selector import SelectorKey, SelectorScope, ProbeRequest, SelectorLearned
@@ -61,6 +62,7 @@ __all__ = [
     "AiJob",
     "ChecklistItem",
     "ExecRun",
+    "MdRun",
     "TestCaseLink",
     "RunnerDevice",
     "RunnerEvalHeartbeat",

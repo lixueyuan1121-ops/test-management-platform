@@ -17,7 +17,8 @@ export const navigationGroups = [
     entry('/verified-imports', '导入任务', 'UploadFilled'), entry('/adopted-cases', '已采纳用例', 'Select'),
     entry('/regression-cases', '回归用例库', 'RefreshRight'), entry('/release-checklist', '上线 checklist', 'Checked'),
     entry('/recorder', '录制脚本', 'VideoCamera', { automationTools: true }),
-    entry('/exec-results', '执行结果', 'Finished'), entry('/issues', '遗留问题', 'Warning'),
+    entry('/exec-results', '执行结果', 'Finished'), entry('/md-tasks', '提测执行', 'Document'),
+    entry('/issues', '遗留问题', 'Warning'),
   ] },
   { id: 'feedback', label: '反馈回归', icon: 'ChatLineSquare', items: [
     entry('/feedback-imports', '导入记录', 'UploadFilled'), entry('/feedback-cases', '反馈用例库', 'Collection'),

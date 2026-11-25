@@ -31,6 +31,9 @@ api_router.include_router(eval_task.router)
 api_router.include_router(eval_report.router)
 api_router.include_router(checklist.router)
 api_router.include_router(exec_queue.router)
+
+from app.api import md_runs
+api_router.include_router(md_runs.router)
 api_router.include_router(devices.router)
 api_router.include_router(release.router)
 api_router.include_router(selectors.router)
