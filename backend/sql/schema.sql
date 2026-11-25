@@ -1075,3 +1075,31 @@ CREATE TABLE IF NOT EXISTS geelib_account (
     credentials TEXT NULL,
     pending_auth TEXT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS `sign_check` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `filename` VARCHAR(255) NOT NULL,
+  `file_size` BIGINT NOT NULL DEFAULT 0,
+  `sha256` VARCHAR(64) DEFAULT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'web',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `verdict` VARCHAR(16) DEFAULT NULL,
+  `signatures_json` TEXT,
+  `exit_code` BIGINT DEFAULT NULL,
+  `stdout` TEXT,
+  `stderr` TEXT,
+  `error` TEXT,
+  `agent` VARCHAR(64) DEFAULT NULL,
+  `duration_ms` INT DEFAULT NULL,
+  `created_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `started_at` DATETIME DEFAULT NULL,
+  `finished_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_signcheck_sha256` (`sha256`),
+  KEY `idx_signcheck_status` (`status`),
+  KEY `idx_signcheck_created_by` (`created_by`),
+  KEY `idx_signcheck_created_at` (`created_at`),
+  CONSTRAINT `fk_signcheck_user` FOREIGN KEY (`created_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -46,6 +46,7 @@ const routes = [
       { path: 'commander', name: 'commander', component: () => import('@/views/Commander.vue'), meta: { title: '测试指挥官' } },
       { path: 'issues', name: 'issues', component: () => import('@/views/Issues.vue') },
       { path: 'tool-plaza', name: 'tool-plaza', component: () => import('@/views/ToolPlaza.vue') },
+      { path: 'sign-check', name: 'sign-check', component: () => import('@/views/SignCheck.vue'), meta: { title: '签名校验' } },
       { path: 'tool-admin', name: 'tool-admin', component: () => import('@/views/ToolAdmin.vue'), meta: { platformAdmin: true } },
       { path: 'releases', name: 'releases', component: () => import('@/views/ReleaseNotes.vue'), meta: { title: '发版记录' } },
       { path: 'selectors', name: 'selectors', component: () => import('@/views/SelectorAdmin.vue'), meta: { title: '选择器管理', automationTools: true } },

@@ -35,6 +35,7 @@ export const navigationGroups = [
   ] },
   { id: 'resources', label: '设备与工具', icon: 'Monitor', items: [
     entry('/device-board', '设备看板', 'Cpu'), entry('/my-devices', '我的设备', 'Monitor'), entry('/tool-plaza', '工具广场', 'Grid'),
+    entry('/sign-check', '签名校验', 'Stamp'),
   ] },
   { id: 'settings', label: '系统管理', icon: 'Setting', items: [
     entry('/projects', '项目管理', 'Files', { admin: true }), entry('/users', '用户管理', 'User', { admin: true }),

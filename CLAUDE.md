@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **文档没提但代码里有的**：测试工具广场（`tools` 后端 + `ToolPlaza.vue`/`ToolAdmin.vue` 前端），平台管理员登记自研测试工具、分类、上下线，全体登录用户浏览下载。
 
 ### 已实现模块
-`auth`、`projects`、`members`、`users`、`tasks`、`reports`（日报 upsert）、`stats`（`/daily` 日报统计、`/workload` 工作量统计）、`issues`（遗留问题）、`tools`（工具广场）。
+`auth`、`projects`、`members`、`users`、`tasks`、`reports`（日报 upsert）、`stats`（`/daily` 日报统计、`/workload` 工作量统计）、`issues`（遗留问题）、`tools`（工具广场）、`signcheck`（Windows 签名校验）。
 
 ## 常用命令
 
@@ -91,6 +91,13 @@ docker compose up -d   # 前端 :80，后端 :8000，MySQL :3306
 - **并发闸联动**：`AI_MAX_CONCURRENCY` 必须 ≥ 分片数，否则分片会被这道全局闸重新串行化、提效归零（现为 6，分片上限 `AI_SHARD_CONCURRENCY=5`）。
 - api 用例的判定口径**按项目有无 api 契约切换**（`_kind_spec(has_contract)`）：有契约 → 接口层验证点正常判 api；无契约 → 劝退到 gui/e2e。改这块要同步 `scripts/test_prompt_quality.py`。
 - e2e 的 `steps` 要求写成**人工可照做的编号步骤**且与 script **同序一一对应**（`_STEPS_SPEC` + `_STEPS_TO_SCRIPT_RULE`，生成侧与单条重生侧两处配套，改一处须同步另一处）。
+
+### 签名校验（signcheck）：平台在 Linux，校验程序在 Windows
+- 入口：设备与工具 → 签名校验（`SignCheck.vue`）；后端 `api/signcheck.py` + `services/signcheck.py` + `sign_check` 表。
+- 校验程序 `360Base_test.exe` 是 32 位 Windows 程序，**后端不直接执行它**：用户上传(pending) → Windows 校验机 `tools/signcheck-agent/agent.mjs` 轮询认领(running) → 回传原始字节输出 → 后端按 GBK 解码并解析四项状态(completed/failed)。部署与排障见 `tools/signcheck-agent/README.md`。
+- 三种鉴权并存：用户 JWT（`/api/signcheck`）、校验机 `SIGNCHECK_AGENT_TOKEN`（`/api/signcheck/agent/*`，留空=功能关闭）、流水线 `CI_HOOK_TOKEN`（`/api/hooks/signcheck`）。
+- 上传是**原始字节流**（非 multipart，文件名在 query），流式落盘到 `backend/storage/signcheck/<id>.bin`，出结果/超时/删除即删。`verifier/` 二进制不入库（.gitignore），人工拷到校验机。
+- 测试：`cd backend && python -m scripts.test_signcheck`；`node --test tools/signcheck-agent/agent.test.mjs`。
 
 ### tools 模块与其余模块风格不一致（留意）
 `api/tools.py` 把 Pydantic schema **内联定义在路由文件里**（不像其他模块放 `app/schemas/`），且用了 `class Config: pass`、单行 `if ...: ...` 等紧凑写法。改这个文件时沿用它自己的风格即可；新增**其他**模块仍应把 schema 放 `app/schemas/`。

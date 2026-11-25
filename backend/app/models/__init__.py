@@ -1,5 +1,6 @@
 from app.models.module_entry import ModuleEntry
 from app.models.record_session import RecordSession
+from app.models.sign_check import SignCheck
 """导入所有模型，便于 Base.metadata.create_all 一次性建全表。"""
 from app.models.user import User
 from app.models.geelib_account import GeelibAccount
@@ -37,6 +38,7 @@ from app.models.test_case_link import TestCaseLink
 __all__ = [
     "ModuleEntry",
     "RecordSession",
+    "SignCheck",
     "User",
     "GeelibAccount",
     "Project",

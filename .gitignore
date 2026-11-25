@@ -14,6 +14,10 @@ backend/.env
 backend/uploads/
 backend/artifacts/
 backend/storage/eval_artifacts/
+# 签名校验：待校验的上传文件（出结果即删）与 360 校验程序二进制（内部工具，不入库，人工拷到校验机）
+backend/storage/signcheck/
+tools/signcheck-agent/verifier/
+tools/signcheck-agent/.env
 
 # Claude 本地个人记忆（含推送习惯，勿入库）
 CLAUDE.local.md

@@ -182,6 +182,15 @@ class Settings(BaseSettings):
     # 空则拒绝一切 /api/hooks/* 请求（通道默认关闭）。
     CI_HOOK_TOKEN: str = ""
 
+    # ---- Windows 签名校验（平台上传 → Windows 校验机 agent 跑 360Base_test.exe → 回传）----
+    # 校验程序是 32 位 Windows 程序，平台后端在 Linux，所以由一台 Windows 机器上的
+    # tools/signcheck-agent 轮询平台执行。agent 用这个独立长期 token 鉴权（Bearer）。
+    # 留空则签名校验整条关闭（页面提示未启用、上传返回 503）。
+    SIGNCHECK_AGENT_TOKEN: str = ""
+    SIGNCHECK_MAX_MB: int = 2048              # 单文件上限（MB），与原桌面工具的 2 GB 一致
+    SIGNCHECK_MAX_QUEUE: int = 20             # 同时排队/校验中的记录上限，防止上传堆满磁盘
+    SIGNCHECK_PENDING_TTL_MINUTES: int = 30   # 排队超过这么久仍无校验机认领 → 判失败并清理文件
+
     # ---- 极库云(geelib)缺陷上报（把遗留问题/回归失败推成极库云工作项「缺陷」）----
     # 手动报送走个人 SSO；后台自动报送通过服务器 qihoo-sso-cli 取 app_token。
     # 未开或缺 sub_id 映射时通道不可用，自动报送不影响主流程。
