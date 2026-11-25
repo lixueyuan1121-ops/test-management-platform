@@ -13,6 +13,7 @@
 状态 VARCHAR、不建 ENUM。
 """
 import json
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -39,20 +40,48 @@ def _dump(value) -> str | None:
 
 
 def _legacy_failure(verdict, reason, findings, markdown):
-    return bool(markdown and findings and verdict == "fail" and reason == f"{len(findings)} 条用例失败")
+    return bool(markdown and verdict == "fail" and (not findings or reason == f"{len(findings)} 条用例失败"))
 
 
 def _review_findings(r: MdRun) -> tuple[str | None, list]:
     items = r.findings_list
     indexed = list(enumerate(items))
-    if _legacy_failure(r.verdict, r.reason, items, r.result_md):
-        result = analyze_result(r.result_md)
-        if result.explicit_no_defects and result.verdict == "fail":
-            # Preserve receipts and pending submissions at their original database indexes.
-            indexed = [(i, item) for i, item in indexed if isinstance(item, dict)
-                       and (item.get("external_ref") or item.get("report_state"))]
-            return result.reason, indexed
-    return r.reason, indexed
+    if r.verdict != "fail" or not r.result_md or (items and not re.fullmatch(r"\d+ 条用例失败", r.reason or "")):
+        return r.reason, indexed
+    result = analyze_result(r.result_md)
+    if not result.failed_cases:
+        return r.reason, indexed
+    if result.findings == items:
+        return result.reason, indexed
+
+    # Keep the raw storage index for claims and receipts. New candidates are appended on first report.
+    review = [(None, finding) for finding in result.findings]
+    by_title = {f["title"]: i for i, f in enumerate(result.findings)}
+    steps = {}
+    for i, finding in enumerate(result.findings):
+        for step in re.findall(r"^[ \t]*(?:[-*]|\d+[.)])[ \t]+(.+)$", finding["detail"], re.M):
+            steps.setdefault(step[:200], set()).add(i)
+    legacy_titles = set(result.failed_cases)
+    legacy_titles.update(step[:200] for step in re.findall(r"^[ \t]*(?:[-*]|\d+[.)])[ \t]+(.+)$", r.result_md, re.M))
+    for index, old in indexed:
+        if not isinstance(old, dict):
+            continue
+        title = str(old.get("title") or "")
+        tracked = old.get("external_ref") or old.get("report_state")
+        pos = by_title.get(title)
+        if pos is None and tracked and len(steps.get(title, ())) == 1:
+            pos = next(iter(steps[title]))
+        if pos is None:
+            if tracked or title not in legacy_titles:
+                review.append((index, old))
+            continue
+        previous_index, current = review[pos]
+        if previous_index is not None and (current.get("external_ref") or current.get("report_state")):
+            if tracked:
+                review.append((index, old))
+            continue
+        review[pos] = (index, {**old, **result.findings[pos]})
+    return result.reason, review
 
 
 def _to_out(r: MdRun, full: bool = False) -> dict:
@@ -314,9 +343,12 @@ def _update_finding(db: Session, run: MdRun, index: int, *, claim=False, outcome
         db.refresh(run)
         previous = run.findings
         items = run.findings_list
-        if index >= len(items) or not isinstance(items[index], dict):
+        reason, review = _review_findings(run)
+        if index >= len(review):
             return None
-        item = items[index]
+        storage_index, item = review[index]
+        if not isinstance(item, dict):
+            return None
         if claim:
             if item.get("external_ref") or item.get("report_state"):
                 return item
@@ -325,9 +357,12 @@ def _update_finding(db: Session, run: MdRun, index: int, *, claim=False, outcome
             updated = {**item, **(outcome or {})}
             if not outcome or "report_state" not in outcome:
                 updated.pop("report_state", None)
-        items[index] = updated
+        if storage_index is None:
+            items.append(updated)
+        else:
+            items[storage_index] = updated
         changed = db.query(MdRun).filter_by(id=run.id, findings=previous).update(
-            {"findings": _dump(items)}, synchronize_session=False)
+            {"findings": _dump(items), "reason": reason}, synchronize_session=False)
         db.commit()
         if changed:
             return item
@@ -379,8 +414,7 @@ def report_bugs(
     executor = user.email or settings.GEELIB_DEFAULT_EXECUTOR
     results = []
     for index in targets:
-        storage_index = indexed[index][0]
-        item = _update_finding(db, r, storage_index, claim=True)
+        item = _update_finding(db, r, index, claim=True)
         if item is None:
             continue
         if item.get("external_ref"):
@@ -401,7 +435,7 @@ def report_bugs(
         except geelib.GeelibError as error:
             outcome = {"report_state": "uncertain"} if isinstance(error, md_bug_skill.SubmissionUncertain) else {}
             results.append({"index": index, "ok": False, "msg": str(error)})
-        _update_finding(db, r, storage_index, outcome=outcome)
+        _update_finding(db, r, index, outcome=outcome)
 
     db.refresh(r)
     reported = sum(1 for x in results if x.get("ok") and not x.get("skipped"))

@@ -20,6 +20,7 @@ class MdResult:
     reason: str | None
     findings: list[dict]
     explicit_no_defects: bool = False
+    failed_cases: tuple[str, ...] = ()
 
 
 def _visible_lines(lines: list[str]) -> list[str]:
@@ -37,21 +38,25 @@ def _visible_lines(lines: list[str]) -> list[str]:
     return visible
 
 
-def _case_counts(lines: list[str]) -> tuple[int, int, int]:
-    failed = passed = blocked = 0
-    verdict_column = None
+def _case_results(lines: list[str]) -> tuple[list[tuple[str, str]], int, int]:
+    failed = []
+    passed = blocked = 0
+    columns = {}
     for line in lines:
         line = line.strip()
         if not line.startswith("|"):
-            verdict_column = None
+            columns = {}
             continue
-        cells = [c.strip("*_` \t").casefold() for c in re.split(r"(?<!\\)\|", line[1:])]
+        cells = [c.strip("*_` \t").replace(r"\|", "|") for c in re.split(r"(?<!\\)\|", line[1:])]
         if "用例" in cells and "结论" in cells:
-            verdict_column = cells.index("结论")
-        elif verdict_column is not None and verdict_column < len(cells):
-            value = cells[verdict_column]
+            columns = {name: i for i, name in enumerate(cells) if name}
+        elif columns and columns["结论"] < len(cells):
+            value = cells[columns["结论"]].casefold()
             if value in {"fail", "failed", "失败", "不通过"}:
-                failed += 1
+                row = {name: cells[i] for name, i in columns.items() if i < len(cells) and cells[i]}
+                title = row.get("用例") or f"未命名失败用例 {len(failed) + 1}"
+                detail = "\n".join(f"{name}：{v}" for name, v in row.items() if name not in {"用例", "结论"})
+                failed.append((title, detail))
             elif value in {"pass", "passed", "通过", "正常"}:
                 passed += 1
             elif value in {"blocked", "skip", "skipped", "阻塞", "受阻", "跳过", "未执行"}:
@@ -64,10 +69,11 @@ def _no_defects(text: str) -> bool:
     return text.rstrip("。.") in {"无", "无缺陷", "无产品缺陷"} or bool(_NO_DEFECT.search(text))
 
 
-def _defects(lines: list[str], visible: list[str]) -> tuple[list[dict], bool]:
+def _defects(lines: list[str], visible: list[str], has_failures: bool) -> tuple[list[dict], list[dict], bool]:
     headings = [(i, m[1].rstrip("：:")) for i, line in enumerate(visible) if (m := _SECTION.match(line))]
     headings.append((len(lines), ""))
     findings = {}
+    case_notes = []
     negative = False
     for (start, section), (end, _) in zip(headings, headings[1:]):
         if section not in {"产品缺陷", "缺陷"}:
@@ -82,9 +88,15 @@ def _defects(lines: list[str], visible: list[str]) -> tuple[list[dict], bool]:
                 title = match[1].strip().strip("*").strip()
                 if title and title.rstrip("：:") not in _DETAIL_LABELS:
                     titles.append((i, title))
-        if not titles and _no_defects("\n".join(body)):
-            negative = True
-            continue
+        if not titles:
+            text = "\n".join(body).strip()
+            no_defects = _no_defects(text)
+            negative |= no_defects
+            # A list without issue titles may just be instructions for reproducing a failed case.
+            if has_failures and text and not _no_defects(next((s for s in body if s.strip()), "")):
+                case_notes.append({"title": "", "detail": "\n".join(lines[start + 1:end]).strip()})
+            if has_failures or no_defects:
+                continue
         if not titles and section == "缺陷":
             # Previous runners also requested flat lists of defects. An introductory
             # label (e.g. 复现步骤) means the bullets below it are supporting detail.
@@ -93,21 +105,66 @@ def _defects(lines: list[str], visible: list[str]) -> tuple[list[dict], bool]:
                 titles = [(i, s[2:].strip()) for i, s in enumerate(body, start + 1) if s.startswith(("- ", "* "))]
         for index, (line_no, title) in enumerate(titles):
             stop = titles[index + 1][0] if index + 1 < len(titles) else end
-            if _no_defects(title) or (section == "缺陷" and _no_defects("\n".join(visible[line_no + 1:stop]))):
+            if _no_defects(title):
                 negative = True
                 continue
             detail = "\n".join(lines[line_no + 1:stop]).strip()
-            findings.setdefault(title.casefold(), {"title": title, "detail": detail, "severity": "major"})
-    return list(findings.values()), negative and not findings
+            item = {"title": title, "detail": detail, "severity": "major"}
+            if section == "缺陷" and _no_defects("\n".join(visible[line_no + 1:stop])):
+                case_notes.append(item)
+                negative = True
+            else:
+                findings.setdefault(title.casefold(), item)
+    return list(findings.values()), case_notes, negative and not findings
+
+
+_CASE_ID = re.compile(r"(?<![\w-])(?:[a-z]+[-_]\d+|(?:tc|case|c)\d+)(?:[-_]\d+)*(?![\w-])", re.I | re.ASCII)
+_CASE_LINK = re.compile(r"^关联用例\s*[:：]\s*(.+)$")
+
+
+def _case_keys(label: str) -> set[str]:
+    return {label.strip().casefold()}.union(s.casefold() for s in _CASE_ID.findall(label))
+
+
+def _linked_cases(item: dict) -> set[str]:
+    keys = {s.casefold() for s in _CASE_ID.findall(item["title"])}
+    for line in _visible_lines(item["detail"].splitlines()):
+        if link := _CASE_LINK.match(line.strip().replace("**", "")):
+            for label in re.split(r"[、,，;；]", link[1]):
+                keys.update(_case_keys(label))
+    return keys
+
+
+def _include_failed_cases(failed: list[tuple[str, str]], findings: list[dict], notes: list[dict]) -> None:
+    references = set().union(*(_linked_cases(item) for item in findings))
+    covered = references | {item["title"].casefold() for item in findings}
+    evidence = {}
+    for note in notes:
+        for key in _linked_cases(note) | {note["title"].casefold()}:
+            evidence.setdefault(key, []).append(note["detail"])
+    # Older reports with one case could describe several separate issues without links.
+    if len(failed) == 1 and findings and not notes and not references:
+        return
+    for title, detail in failed:
+        keys = _case_keys(title)
+        if keys & covered:
+            continue
+        extra = [part for key in sorted(keys) for part in evidence.get(key, ())]
+        if len(failed) == 1 and len(notes) == 1 and not extra:
+            extra = [notes[0]["detail"]]
+        description = "\n\n".join(dict.fromkeys(part for part in [detail, *extra] if part))
+        findings.append({"title": title, "detail": description, "severity": "major"})
+        covered.update(keys)
 
 
 def analyze_result(markdown: str | None) -> MdResult:
     lines = (markdown or "").splitlines()
     visible = _visible_lines(lines)
-    failed, passed, blocked = _case_counts(visible)
-    findings, negative = _defects(lines, visible)
+    failed, passed, blocked = _case_results(visible)
+    findings, notes, negative = _defects(lines, visible, bool(failed))
     if failed:
-        return MdResult("fail", f"{failed} 条用例失败", findings, negative)
+        _include_failed_cases(failed, findings, notes)
+        return MdResult("fail", f"{len(failed)} 条用例失败", findings, negative, tuple(title for title, _ in failed))
     if findings:
         return MdResult("fail", f"{len(findings)} 条产品缺陷", findings)
     if blocked or not passed:

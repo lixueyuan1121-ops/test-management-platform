@@ -92,28 +92,38 @@ class MdDispatchTests(unittest.TestCase):
         return rid
 
     def test_negative_smoke_run_from_new_and_old_runners(self):
-        for callback in (dict(verdict='completed'), dict(verdict='fail', reason='3 条用例失败', findings=OLD_FINDINGS)):
+        for callback in (dict(verdict='completed'), dict(verdict='fail', findings=[]),
+                         dict(verdict='fail', reason='3 条用例失败', findings=OLD_FINDINGS)):
             rid = self.post('', **self.document, runner='a')['id']
             response = self.client.patch(f'/api/md-runs/queue/{rid}?runner=a',
                                          json={**callback, 'result_md': NEGATIVE_PATH})
             self.assertEqual(response.status_code, 200, response.text)
             run = response.json()['data']
-            self.assertEqual((run['status'], run['reason'], run['findings']), ('failed', '1 条用例失败', []))
+            self.assertEqual((run['status'], run['reason']), ('failed', '1 条用例失败'))
+            self.assertEqual([f['title'] for f in run['findings']], [OLD_FINDINGS[0]['title']])
+            self.assertIn('2. 在主窗口', run['findings'][0]['detail'])
 
-    def test_historical_false_candidates_cannot_be_reported(self):
-        rid = self.finished_run()
-        with self.sessions.begin() as db:
-            run = db.get(MdRun, rid)
-            run.reason, run.result_md, run.findings = '3 条用例失败', NEGATIVE_PATH, json.dumps(OLD_FINDINGS)
-        for url in (f'/api/md-runs/{rid}', '/api/md-runs'):
-            data = self.client.get(url).json()['data']
-            row = data[0] if isinstance(data, list) else data
-            self.assertEqual((row['reason'], row['findings']), ('1 条用例失败', []))
-        with patch.object(md_bug_skill, 'create_case') as submit:
-            for payload in ({}, {'indexes': [0, 1, 2]}):
-                result = self.post(f'/{rid}/report-bugs', **payload)
-                self.assertEqual((result['reported'], result['results']), (0, []))
-            submit.assert_not_called()
+    def test_historical_failure_can_be_reported_once_with_its_steps(self):
+        for old in (OLD_FINDINGS, []):
+            rid = self.finished_run()
+            with self.sessions.begin() as db:
+                run = db.get(MdRun, rid)
+                run.reason = '3 条用例失败' if old else '1 条用例失败'
+                run.result_md, run.findings = NEGATIVE_PATH, json.dumps(old)
+            for url in (f'/api/md-runs/{rid}', '/api/md-runs'):
+                data = self.client.get(url).json()['data']
+                row = data[0] if isinstance(data, list) else data
+                self.assertEqual(row['reason'], '1 条用例失败')
+                self.assertEqual([f['title'] for f in row['findings']], [OLD_FINDINGS[0]['title']])
+            with patch.object(settings, 'GEELIB_ENABLED', True), \
+                 patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'), \
+                 patch.object(md_bug_skill, 'create_case', return_value='geelib#123') as submit:
+                self.assertEqual(self.post(f'/{rid}/report-bugs', indexes=[1, 2])['reported'], 0)
+                self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 1)
+                self.assertEqual(self.post(f'/{rid}/report-bugs', indexes=[0])['reported'], 0)
+                submit.assert_called_once()
+                self.assertIn('2. 在主窗口', submit.call_args.args[2])
+                self.assertEqual(self.client.get(f'/api/md-runs/{rid}').json()['data']['findings'][0]['external_ref'], 'geelib#123')
 
         # A previous submission keeps its receipt, even if the two preceding false candidates disappear.
         with self.sessions.begin() as db:
@@ -149,6 +159,23 @@ class MdDispatchTests(unittest.TestCase):
         self.assertEqual([(f['title'], f['detail']) for f in row['findings']], [
             ('保存返回错误', '1. 打开设置。\n2. 点击保存。'), ('重试导致崩溃', '- 点击重试后客户端退出。')])
 
+    def test_unheaded_steps_and_case_expectations_stay_in_one_report(self):
+        md = """| 用例 | 预期 | 结论 | 实际 |
+| --- | --- | --- | --- |
+| C-001 登录 | 显示首页 | 失败 | 白屏 |
+
+## 缺陷
+- 打开客户端。
+- 点击登录。
+"""
+        report = analyze_result(md)
+        self.assertEqual([f['title'] for f in report.findings], ['C-001 登录'])
+        for part in ('预期：显示首页', '实际：白屏', '- 打开客户端。', '- 点击登录。'):
+            self.assertIn(part, report.findings[0]['detail'])
+        for verdict in ('pass', 'blocked'):
+            result = analyze_result(md.split('## 缺陷')[0].replace('失败', verdict))
+            self.assertEqual((result.verdict, result.findings), (verdict, []))
+
     def test_result_tables_and_fenced_evidence(self):
         table = '| 用例 | 结论 | 说明 |\n| --- | --- | --- |\n'
         for md, verdict in [(table, 'blocked'), ('| 配置 | 状态 |\n| 系统 | pass |', 'blocked'),
@@ -156,17 +183,36 @@ class MdDispatchTests(unittest.TestCase):
             with self.subTest(md=md):
                 self.assertEqual(analyze_result(md).verdict, verdict)
         log = '```md\n## 产品缺陷\n### 日志中的示例标题\n' + table + '| 示例 | fail | |\n```'
-        md = table + '| 登录 | fail | |\n| 重试登录 | fail | |\n## 产品缺陷\n### 登录崩溃\n' + log
+        detail = '关联用例：登录、重试登录\n' + log
+        md = table + '| 登录 | fail | |\n| 重试登录 | fail | |\n## 产品缺陷\n### 登录崩溃\n' + detail
         parsed = analyze_result(md)
         self.assertEqual(parsed.reason, '2 条用例失败')
-        self.assertEqual(parsed.findings, [dict(title='登录崩溃', detail=log, severity='major')])
+        self.assertEqual(parsed.findings, [dict(title='登录崩溃', detail=detail, severity='major')])
 
     def test_old_report_with_a_real_issue_and_a_negative_case(self):
         md = NEGATIVE_PATH.replace('## 缺陷\n', '## 缺陷\n**设置保存后丢失**\n**复现步骤**\n1. 保存后重开。\n')
         report = analyze_result(md)
         self.assertFalse(report.explicit_no_defects)
-        self.assertEqual([f['title'] for f in report.findings], ['设置保存后丢失'])
+        self.assertEqual([f['title'] for f in report.findings], ['设置保存后丢失', OLD_FINDINGS[0]['title']])
         self.assertIn('1. 保存后重开。', report.findings[0]['detail'])
+
+    def test_only_uncovered_failures_create_additional_candidates(self):
+        md = """| 用例 | 结论 | 说明 |
+| --- | --- | --- |
+| C-1 保存 | fail | 应显示成功提示，实际报错 |
+| C-10 搜索 | fail | 应返回结果，实际为空 |
+| C-2 重新保存 | fail | 同一保存错误 |
+| C-3 取消 | pass | 正常 |
+| C-4 设置 | blocked | 缺少账号 |
+## 产品缺陷
+### 保存报错
+关联用例：C-1、C-2
+1. 点击保存。
+"""
+        result = analyze_result(md)
+        self.assertEqual(result.reason, '3 条用例失败')
+        self.assertEqual([f['title'] for f in result.findings], ['保存报错', 'C-10 搜索'])
+        self.assertIn('应返回结果，实际为空', result.findings[1]['detail'])
 
     def test_skill_receipt_and_replay(self):
         rid = self.finished_run()
