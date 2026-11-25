@@ -93,11 +93,16 @@ def parse_output(stdout: str) -> list[dict]:
     ]
 
 
-def summarize(signatures: list[dict], exit_code: int | None, stdout: str) -> tuple[str, str | None]:
-    """四项状态 → (verdict, diagnostic)。口径与原桌面客户端一致：
+# 验签通过的硬性要求：这两项必须同时「签名有效」。360 旧签名 / 超级签名不作要求。
+REQUIRED_KINDS = ("EmbeddedSign", "S3360Sign")
 
-    没有任何一项拿到可识别状态 → error；有无效 → invalid；有过期 → expired；
-    四项没全拿到 → partial；有至少一项有效 → passed；四项都是无签名 → unsigned。
+
+def summarize(signatures: list[dict], exit_code: int | None, stdout: str) -> tuple[str, str | None]:
+    """四项状态 → (verdict, diagnostic)。
+
+    没有任何一项拿到可识别状态 → error（校验程序没跑成）；任一项无效 → invalid；任一项过期 → expired；
+    微软数字签名与 360 S3 签名都有效 → passed；这两项里有「无签名」→ rejected（验签不通过）；
+    这两项里有没拿到明确状态的（出错/缺行/不支持）→ partial。
     """
     states = [s["state"] for s in signatures]
     recognized = [s for s in states if s in _RECOGNIZED]
@@ -110,19 +115,46 @@ def summarize(signatures: list[dict], exit_code: int | None, stdout: str) -> tup
         if not (stdout or "").strip() and exit_code not in (0, None):
             return "error", MSG_RUNTIME
         return "error", MSG_LOCALE
-    known = [s for s in states if s in ("valid", "unsigned", "invalid", "expired")]
     if "invalid" in states:
         return "invalid", None
     if "expired" in states:
         return "expired", None
-    if len(known) < len(KINDS):
-        return "partial", None
-    if "valid" in states:
+    required = [s["state"] for s in signatures if s["kind"] in REQUIRED_KINDS]
+    if len(required) == len(REQUIRED_KINDS) and all(s == "valid" for s in required):
         return "passed", None
-    return "unsigned", None
+    if "unsigned" in required:
+        return "rejected", None
+    return "partial", None
 
 
 def clip(text: str | None) -> str | None:
     if text and len(text) > MAX_OUTPUT_CHARS:
         return text[:MAX_OUTPUT_CHARS] + "\n…（输出过长，已截断）"
     return text
+
+
+def resync_verdicts(db) -> int:
+    """按当前结论口径重算已出结果记录的 verdict（幂等，启动时调用）。
+
+    结论口径调整后（如「微软签名 + S3 都有效才算通过」），历史记录里存的旧结论要跟着变，
+    否则列表里新旧记录口径不一。四项状态已存在 signatures_json 里，直接重算即可，不需要重新校验。
+    """
+    import json
+
+    from app.models import SignCheck
+
+    changed = 0
+    for r in db.query(SignCheck).filter(SignCheck.status == "completed").all():
+        try:
+            signatures = json.loads(r.signatures_json or "[]")
+        except ValueError:
+            continue
+        if len(signatures) != len(KINDS):
+            continue
+        verdict, _ = summarize(signatures, r.exit_code, r.stdout or "")
+        if verdict != "error" and verdict != r.verdict:
+            r.verdict = verdict
+            changed += 1
+    if changed:
+        db.commit()
+    return changed

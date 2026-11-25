@@ -167,6 +167,18 @@ def create_app() -> FastAPI:
                 db.close()
         except Exception:
             logger.exception("启动收口僵尸综合评价/一条龙状态失败（不影响主服务）")
+        # 签名校验：结论口径变更后，把历史记录的结论按新口径重算（幂等）
+        try:
+            from app.services.signcheck import resync_verdicts
+            db = SessionLocal()
+            try:
+                n = resync_verdicts(db)
+                if n:
+                    logger.info("签名校验历史结论按新口径重算 count=%s", n)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("重算签名校验历史结论失败（不影响主服务）")
         # 反馈定时回归调度器（APScheduler）：建表后启动 + 从 DB enabled 集重建 job
         try:
             from app.services.scheduler import start_scheduler

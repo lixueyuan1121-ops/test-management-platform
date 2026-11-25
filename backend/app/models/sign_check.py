@@ -32,7 +32,7 @@ class SignCheck(Base):
     source: Mapped[str] = mapped_column(String(16), default="web", server_default="web")  # web / api
     # pending(排队) / running(校验机已认领) / completed(有结果) / failed(未能得到结果)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", index=True)
-    # 总体结论：passed / invalid / expired / unsigned / partial / error（未出结果时为空）
+    # 总体结论：passed / rejected(验签不通过) / invalid / expired / partial / error（未出结果时为空）
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
     signatures_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # [{kind,state,detail}]
     exit_code: Mapped[int | None] = mapped_column(BigInteger, nullable=True)   # Windows 退出码可能是 0xC0000135 这类大数

@@ -70,7 +70,16 @@ def test_parse():
     assert _states(GOOD) == ["valid", "unsigned", "valid", "valid"]
     assert svc.summarize(sigs, 0, GOOD) == ("passed", None)
 
-    assert svc.summarize(svc.parse_output(GOOD.replace("签名有效", "没有签名")), 0, "")[0] == "unsigned"
+    # 通过的条件：微软签名 + S3 都有效；旧签名/超级签名不作要求
+    only_two = GOOD.replace("New360Sign(360超级签名)->\t签名状态：签名有效", "New360Sign(360超级签名)->\t签名状态：没有签名")
+    assert _states(only_two) == ["valid", "unsigned", "unsigned", "valid"]
+    assert svc.summarize(svc.parse_output(only_two), 0, only_two)[0] == "passed"
+    # 两项必需签名里任一「无签名」→ 验签不通过
+    no_s3 = GOOD.replace("S3360Sign(s3签名)->\t\t签名状态：签名有效", "S3360Sign(s3签名)->\t\t签名状态：没有签名")
+    assert svc.summarize(svc.parse_output(no_s3), 0, no_s3)[0] == "rejected"
+    no_ms = GOOD.replace("EmbeddedSign(微软数字签名)->\t签名状态：签名有效", "EmbeddedSign(微软数字签名)->\t签名状态：没有签名")
+    assert svc.summarize(svc.parse_output(no_ms), 0, no_ms)[0] == "rejected"
+    assert svc.summarize(svc.parse_output(GOOD.replace("签名有效", "没有签名")), 0, "")[0] == "rejected"
     bad = GOOD.replace("New360Sign(360超级签名)->\t签名状态：签名有效", "New360Sign(360超级签名)->\t签名状态：签名无效")
     assert svc.summarize(svc.parse_output(bad), 0, bad)[0] == "invalid"
     exp = GOOD.replace("S3360Sign(s3签名)->\t\t签名状态：签名有效", "S3360Sign(s3签名)->\t\t签名状态：签名过期")
@@ -84,7 +93,9 @@ def test_parse():
 
     uns = GOOD.replace("Old360Sign(360旧签名)->\t\t签名状态：没有签名", "Old360Sign(360旧签名)->\t\t签名状态：不支持的签名状态")
     assert _states(uns)[1] == "unsupported"
-    assert svc.summarize(svc.parse_output(uns), 0, uns)[0] == "partial"
+    assert svc.summarize(svc.parse_output(uns), 0, uns)[0] == "passed"       # 旧签名状态不影响结论
+    uns3 = GOOD.replace("S3360Sign(s3签名)->\t\t签名状态：签名有效", "S3360Sign(s3签名)->\t\t签名状态：不支持的签名状态")
+    assert svc.summarize(svc.parse_output(uns3), 0, uns3)[0] == "partial"    # 必需项没拿到明确状态
 
     # 输出缺行 → missing → partial
     assert _states("\r\n".join(GOOD.split("\r\n")[:3])) == ["valid", "unsigned", "missing", "missing"]
@@ -265,6 +276,24 @@ def test_resume_after_agent_restart():
     assert d["status"] == "failed" and "中断" in d["error"], d
 
 
+def test_resync_verdicts():
+    """历史记录按新口径重算：旧口径下「只有微软签名有效」记为 passed，应改成 rejected。"""
+    import json
+    db = S()
+    sigs = svc.parse_output(GOOD.replace("S3360Sign(s3签名)->\t\t签名状态：签名有效", "S3360Sign(s3签名)->\t\t签名状态：没有签名"))
+    old = SignCheck(filename="old.exe", file_size=1, status="completed", verdict="passed",
+                    signatures_json=json.dumps(sigs, ensure_ascii=False), exit_code=0)
+    db.add(old)
+    db.commit()
+    assert svc.resync_verdicts(db) == 1
+    db.refresh(old)
+    assert old.verdict == "rejected"
+    assert svc.resync_verdicts(db) == 0, "应幂等"
+    db.delete(old)
+    db.commit()
+    db.close()
+
+
 def test_hook():
     url = "/api/hooks/signcheck"
     assert client.post(url, params={"filename": "ci.exe"}, content=b"x", headers=OCTET).status_code == 401
@@ -293,6 +322,7 @@ def main():
     test_validation()
     test_reap_and_delete(done_id)
     test_resume_after_agent_restart()
+    test_resync_verdicts()
     test_hook()
     print("OK test_signcheck")
 

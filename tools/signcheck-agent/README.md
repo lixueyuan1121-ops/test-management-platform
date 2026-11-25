@@ -83,7 +83,7 @@ curl -sS "$PLATFORM/api/hooks/signcheck/$ID" -H "X-CI-Token: $CI_HOOK_TOKEN"
 | 字段 | 含义 |
 |---|---|
 | `status` | `pending` 排队 / `running` 校验中 / `completed` 有结果 / `failed` 没能得到结果（看 `error`） |
-| `verdict` | `passed` 验签通过 / `invalid` 有签名无效 / `expired` 有签名过期 / `unsigned` 四项均无签名 / `partial` 只拿到部分结果 / `error` |
+| `verdict` | `passed` 验签通过（微软数字签名与 360 S3 签名**都有效**）/ `rejected` 验签不通过（这两项里有无签名）/ `invalid` 有签名无效 / `expired` 有签名过期 / `partial` 这两项没拿到明确状态 / `error` |
 | `signatures` | 四项明细 `[{kind, label, state, detail}]`，`state` 取 `valid` / `unsigned` / `invalid` / `expired` / `unsupported` / `error` / `missing` |
 | `stdout` / `stderr` / `exit_code` | 校验程序原始输出与退出码 |
 
@@ -95,5 +95,7 @@ curl -sS "$PLATFORM/api/hooks/signcheck/$ID" -H "X-CI-Token: $CI_HOOK_TOKEN"
 node --test tools/signcheck-agent/agent.test.mjs     # agent 单测（假校验程序 + 假平台，Linux/Mac/Windows 都能跑）
 cd backend && python -m scripts.test_signcheck       # 后端：输出解析 + 全链路
 ```
+
+结论口径：只有微软数字签名（EmbeddedSign）和 360 第三代签名（S3360Sign）两项都「签名有效」才算验签通过；任一项无签名即「验签不通过」。360 旧签名、超级签名只展示，不影响通过与否（但任一项「签名无效 / 过期」仍会判为无效 / 过期）。
 
 数据约定：上传的文件只在校验期间保留在平台 `backend/storage/signcheck/`，出结果（或超时判失败、删除记录）即删；`sign_check` 表只存文件名、大小、sha256、四项状态和原始输出。

@@ -135,11 +135,13 @@ const VERDICTS = {
   passed: { title: '验签通过', icon: '✓', tone: 'ok', desc: '' },
   invalid: { title: '签名无效', icon: '×', tone: 'bad', desc: '' },
   expired: { title: '签名已过期', icon: '!', tone: 'warn', desc: '' },
-  unsigned: { title: '未发现签名', icon: '–', tone: 'muted', desc: '四项签名均未检出。' },
-  partial: { title: '部分结果', icon: '!', tone: 'warn', desc: '请查看各项状态和原始输出。' },
+  rejected: { title: '验签不通过', icon: '×', tone: 'bad', desc: '' },
+  partial: { title: '部分结果', icon: '!', tone: 'warn', desc: '微软数字签名或 360 S3 签名未得到明确状态，请查看各项状态和原始输出。' },
   error: { title: '校验失败', icon: '×', tone: 'bad', desc: '校验程序未能返回结果。' },
 }
 const FINAL = ['completed', 'failed']
+// 验签通过的硬性要求：这两项必须同时有效（与后端 services/signcheck.py 的 REQUIRED_KINDS 一致）
+const REQUIRED = ['EmbeddedSign', 'S3360Sign']
 
 const auth = useAuthStore()
 const svc = ref(null)
@@ -211,7 +213,10 @@ function countsOf(c) {
   const n = { valid: 0, invalid: 0, expired: 0, unsigned: 0 }
   for (const s of c.signatures || []) if (s.state in n) n[s.state] += 1
   const known = n.valid + n.invalid + n.expired + n.unsigned
-  if (c.verdict === 'unsigned') return ''
+  if (c.verdict === 'rejected') {
+    const lack = KINDS.filter(k => REQUIRED.includes(k.kind) && sigOf(c, k.kind).state !== 'valid').map(k => k.label)
+    return `微软数字签名和 360 第三代签名（S3）须同时有效；${lack.join('、')}无签名。`
+  }
   return [n.valid && `${n.valid} 项有效`, n.invalid && `${n.invalid} 项无效`, n.expired && `${n.expired} 项过期`,
     n.unsigned && `${n.unsigned} 项无签名`, known < KINDS.length && `${KINDS.length - known} 项待确认`].filter(Boolean).join('，')
 }
