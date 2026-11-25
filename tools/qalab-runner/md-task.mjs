@@ -93,12 +93,15 @@ export function tokenizeArgs(text) {
   return out;
 }
 
-function runCapture(cmd, args, { cwd, env, timeoutMs, control, shell = IS_WIN }) {
+function runCapture(cmd, args, { cwd, env, timeoutMs, control, logFile, shell = IS_WIN }) {
   return new Promise((resolve) => {
     const started = Date.now();
     let child;
     try {
-      child = spawn(cmd, args, { cwd, env, shell, windowsHide: true });
+      // stdin 必须 ignore：`codex exec` 的规则是「stdin 有内容就追加到 prompt 之后」，
+      // stdin 是打开的管道时它会一直等 EOF —— 表现为永远不返回、也没有任何输出。
+      // 手动在终端跑没事，因为终端里的 stdin 不是管道。
+      child = spawn(cmd, args, { cwd, env, shell, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
       return resolve({ code: -1, out: "", err: `无法启动 ${cmd}: ${e.message}`, timedOut: false, duration_ms: 0 });
     }
@@ -108,12 +111,17 @@ function runCapture(cmd, args, { cwd, env, timeoutMs, control, shell = IS_WIN })
       if (done) return;
       done = true;
       clearTimeout(timer);
+      try { sink?.end(); } catch {}
       resolve({ code, out, err, timedOut, duration_ms: Date.now() - started });
     };
     const timer = timeoutMs > 0 ? setTimeout(() => { kill(); finish(-1, true); }, timeoutMs) : null;
     if (control) control.kill = kill;   // 平台取消时由心跳掉线逻辑调用
-    child.stdout?.on("data", (d) => (out += d));
-    child.stderr?.on("data", (d) => (err += d));
+    // 边跑边写文件：无人值守时卡住/失败，靠这个能看到它最后在做什么
+    let sink = null;
+    if (logFile) { try { sink = fs.createWriteStream(logFile, { flags: "a" }); } catch { sink = null; } }
+    const tap = (chunk) => { try { sink?.write(chunk); } catch { /* 写盘失败不影响执行 */ } };
+    child.stdout?.on("data", (d) => { out += d; tap(d); });
+    child.stderr?.on("data", (d) => { err += d; tap(d); });
     child.on("error", (e) => { err += e.message; finish(-1, false); });
     child.on("close", (code) => finish(code, false));
   });
@@ -226,11 +234,14 @@ export function makeMdTaskRunner({
         for (const d of addDirs || []) if (d) extra.push("--add-dir", d);
       }
       log(`启动 agent run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""} bin=${cmd.command}`);
+      const liveLog = path.join(workDir, "agent.log");
+      fs.writeFileSync(liveLog, `# run_id=${item.run_id} bin=${cmd.command} args=${[...cmd.prefix, ...codexArgs].join(" ")}\n`);
       const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, ...extra, prompt], {
         cwd: workDir, env: process.env, timeoutMs: codexTimeoutMs, control,
         shell: cmd.prefix.length ? false : IS_WIN,
+        logFile: liveLog,
       });
-      fs.writeFileSync(path.join(workDir, "agent.log"), `# exit=${r.code} timedOut=${r.timedOut}\n\n## stdout\n${r.out}\n\n## stderr\n${r.err}`);
+      fs.appendFileSync(liveLog, `\n# exit=${r.code} timedOut=${r.timedOut} duration=${Date.now() - started}ms\n`);
 
       const resultPath = path.join(workDir, "result.md");
       const resultMd = fs.existsSync(resultPath) ? fs.readFileSync(resultPath, "utf-8")
