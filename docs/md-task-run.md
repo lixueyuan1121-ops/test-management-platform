@@ -94,6 +94,26 @@ exec --skip-git-repo-check --sandbox workspace-write -c approval_policy=never
 另外 runner 会额外传 `-o <工作目录>/agent-last-message.md`：agent 忘了按约定写 `result.md` 时，
 用 CLI 落盘的最后一条回复兜底解析，不至于整轮白跑。
 
+### 沙箱边界（实测）
+
+`--sandbox workspace-write` 的可写范围是 **`-C` 工作目录 + `/tmp` + `$TMPDIR`**，其余一律只读。
+实测 agent 会明确告诉你"D 盘只有读取权限，放可写目录我才能写 result.md"。
+
+- 任务文档与结果都在 runner 的工作目录里（`MD_RUNTIME_DIR/md-runs/md-<id>/`），默认没问题。
+- 需要把截图、日志、附件落到别处，用 `MD_CODEX_ADD_DIRS` 显式加，**不要**换成
+  `--dangerously-bypass-approvals-and-sandbox`：那等于让无人值守的 agent 拥有整机权限。
+- 被测客户端目录只读不影响启动与 GUI 操作（MCP 工具不受 shell 沙箱约束），
+  只有 agent 自己用 shell 往那儿写才会失败。
+
+### 无人值守时 agent 会反问
+
+实测过一次：给的路径是占位符，agent 没去猜，直接回「请发一下完整路径」然后结束 —— 整轮空跑。
+所以 prompt 里写死了：不得提问、不得等确认，缺信息按最合理理解继续，
+确实做不下去就把原因和已完成部分写进 `result.md` 再结束。
+
+如果以后仍常见"什么都没做就结束"，优先检查任务文档本身是否缺少必需信息（账号、客户端版本、入口），
+而不是放松 prompt 约束。
+
 agent 要联网：代理必须给到 **runner 进程**（Windows 上实测 Clash `127.0.0.1:7897`，`qihoo.net` 走 `NO_PROXY`）。
 没配代理的表现是超时而不是报错，很容易被误判成用例失败。
 

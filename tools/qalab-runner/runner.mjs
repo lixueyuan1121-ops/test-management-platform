@@ -110,6 +110,8 @@ const MD_CODEX_BIN    = process.env.MD_CODEX_BIN || process.env.CODEX_BIN || "co
 const MD_CODEX_ARGS   = tokenizeArgs(process.env.MD_CODEX_ARGS
   || 'exec --skip-git-repo-check --sandbox workspace-write -c approval_policy=never');
 const MD_CODEX_TIMEOUT_MS = Number(process.env.MD_CODEX_TIMEOUT_MS || 3600000);
+// agent 的 shell 只能在 -C 指定的工作目录（以及 /tmp）里写。要把截图/日志落到别处就显式加目录。
+const MD_CODEX_ADD_DIRS = (process.env.MD_CODEX_ADD_DIRS || "").split(",").map((x) => x.trim()).filter(Boolean);
 const MD_WORK_ROOT    = process.env.MD_WORK_ROOT || join(MD_RUNTIME_DIR, "md-runs");
 
 function __mdHome() {
@@ -137,6 +139,7 @@ const mdTasks = MD_TASK_ENABLED ? makeMdTaskRunner({
   codexArgs: MD_CODEX_ARGS,
   codexTimeoutMs: MD_CODEX_TIMEOUT_MS,
   workRoot: MD_WORK_ROOT,
+  addDirs: MD_CODEX_ADD_DIRS,
 }) : null;
 
 // ---- 平台 API(契约见 app/routers/exec_queue.py:{code,msg,data} 信封)----

@@ -139,7 +139,7 @@ export function makeMdTaskRunner({
   api, log, RUNNER_ID, runtimeDir,
   groupsDir, helperPath, helperTaskName,
   verifyDomains, verifyTimeoutSec,
-  codexBin, codexArgs, codexTimeoutMs, workRoot,
+  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs,
 }) {
   const hosts = makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName: helperTaskName });
   let busy = false;
@@ -183,14 +183,22 @@ export function makeMdTaskRunner({
         `2. 发现缺陷时按你配置的方式上报${item.req_no ? `，标题带上提测号 ${item.req_no}` : ""}。`,
         `3. 执行结束后把结果写入 ${path.join(workDir, "result.md")}，格式：表格「| 用例 | 结论 | 说明 |」，`,
         `   失败用例的结论写 fail，并在文末用「## 缺陷」小节列出每条缺陷的标题与复现要点。`,
+        `4. 这是无人值守执行：**不要向我提问、不要等待确认**。文档缺信息就按最合理的理解继续；`,
+        `   确实无法继续时（客户端起不来、缺账号、工具不可用），把原因和已完成的部分写进 result.md，然后结束。`,
+        `5. 工作目录 ${workDir} 是唯一可写位置；需要留截图/日志就放在它下面。`,
       ].join("\n");
 
       const cmd = codexCommand(resolveAgentBin(codexBin));
       // -o：让 CLI 无论 agent 有没有按约定写 result.md，都把最后一条回复落盘。
       // 无人值守下"agent 忘了写文件"是常见失败，有这个兜底才能拿到结论。
       const lastMsgPath = path.join(workDir, "agent-last-message.md");
-      const extra = codexArgs.some((a) => a === "-o" || a === "--output-last-message")
-        ? [] : ["-o", lastMsgPath];
+      const extra = [];
+      if (!codexArgs.some((a) => a === "-o" || a === "--output-last-message")) extra.push("-o", lastMsgPath);
+      // 客户端/证据目录不在工作目录下时，agent 的 shell 写不进去（沙箱只给 workdir + /tmp）。
+      // 由 MD_CODEX_ADD_DIRS 显式放开，别图省事用 danger-full-access。
+      if (!codexArgs.includes("--add-dir")) {
+        for (const d of addDirs || []) if (d) extra.push("--add-dir", d);
+      }
       log(`启动 agent run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""} bin=${cmd.command}`);
       const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, ...extra, prompt], {
         cwd: workDir, env: process.env, timeoutMs: codexTimeoutMs, control,
