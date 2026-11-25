@@ -122,31 +122,31 @@ _CASE_ID = re.compile(r"(?<![\w-])(?:[a-z]+[-_]\d+|(?:tc|case|c)\d+)(?:[-_]\d+)*
 _CASE_LINK = re.compile(r"^关联用例\s*[:：]\s*(.+)$")
 
 
-def _case_keys(label: str) -> set[str]:
+def case_keys(label: str) -> set[str]:
     return {label.strip().casefold()}.union(s.casefold() for s in _CASE_ID.findall(label))
 
 
-def _linked_cases(item: dict) -> set[str]:
+def linked_cases(item: dict) -> set[str]:
     keys = {s.casefold() for s in _CASE_ID.findall(item["title"])}
-    for line in _visible_lines(item["detail"].splitlines()):
+    for line in _visible_lines((item.get("detail") or "").splitlines()):
         if link := _CASE_LINK.match(line.strip().replace("**", "")):
             for label in re.split(r"[、,，;；]", link[1]):
-                keys.update(_case_keys(label))
+                keys.update(case_keys(label))
     return keys
 
 
 def _include_failed_cases(failed: list[tuple[str, str]], findings: list[dict], notes: list[dict]) -> None:
-    references = set().union(*(_linked_cases(item) for item in findings))
+    references = set().union(*(linked_cases(item) for item in findings))
     covered = references | {item["title"].casefold() for item in findings}
     evidence = {}
     for note in notes:
-        for key in _linked_cases(note) | {note["title"].casefold()}:
+        for key in linked_cases(note) | {note["title"].casefold()}:
             evidence.setdefault(key, []).append(note["detail"])
     # Older reports with one case could describe several separate issues without links.
     if len(failed) == 1 and findings and not notes and not references:
         return
     for title, detail in failed:
-        keys = _case_keys(title)
+        keys = case_keys(title)
         if keys & covered:
             continue
         extra = [part for key in sorted(keys) for part in evidence.get(key, ())]

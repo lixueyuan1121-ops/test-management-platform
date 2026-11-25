@@ -17,9 +17,10 @@ import json
 import time
 import uuid
 import re
+from urllib.parse import quote
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, File, Form, UploadFile, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -27,8 +28,9 @@ from app.core.deps import assert_project_role, get_current_user, RunnerCtx, requ
 from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import MdRun, User
+from app.models.md_run import MdRunEvidence, MdEvidenceDelivery
 from app.schemas.common import ok
-from app.services import md_bug_skill
+from app.services import md_bug_skill, md_evidence
 from app.services.md_result import analyze_result
 from app.schemas.md_run import MdRunDocument, MdRunBatchCreate, MdRunCreate, MdRunReportIn, MdRunBugsIn
 
@@ -87,7 +89,7 @@ def _review_findings(r: MdRun) -> tuple[str | None, list]:
     return result.reason, review
 
 
-def _to_out(r: MdRun, full: bool = False) -> dict:
+def _to_out(r: MdRun, full: bool = False, db: Session | None = None) -> dict:
     reason, indexed = _review_findings(r)
     out = {
         "id": r.id,
@@ -112,9 +114,32 @@ def _to_out(r: MdRun, full: bool = False) -> dict:
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "can_cancel": r.status in ("pending", "running"),
     }
+    summary = (out["env_check"] or {}).pop("evidence_summary", None)
     if full:
         out["content"] = r.content
         out["result_md"] = r.result_md
+        if db is not None:
+            rows = db.query(MdRunEvidence).filter_by(run_id=r.id).order_by(MdRunEvidence.id).all()
+            out["evidence"] = [md_evidence.metadata(row) for row in rows]
+            out["evidence_summary"] = summary
+            deliveries = db.query(MdEvidenceDelivery).join(MdRunEvidence).filter(MdRunEvidence.run_id == r.id).all()
+            targets = {(d.evidence_id, d.sub_id, d.matter_id): d for d in deliveries}
+            for item in out["findings"]:
+                if not isinstance(item, dict) or not item.get("title"):
+                    continue
+                target = item.get("evidence_target") or {}
+                files = []
+                for row in md_evidence.related(rows, item, len(indexed)):
+                    delivery = targets.get((row.id, target.get("sub_id"), target.get("matter_id")))
+                    files.append({**md_evidence.metadata(row), "state": delivery.state if delivery else "pending",
+                                  "message": delivery.message if delivery else None,
+                                  "remote_id": delivery.remote_id if delivery else None})
+                item["evidence"] = files
+                if files and item.get("report_receipt"):
+                    receipt = item["report_receipt"]
+                    receipt["attachments"] = [*receipt.get("attachments", []),
+                        *[{"id": f["remote_id"], "file_name": f["name"], "skill": "geelib-attachment"}
+                          for f in files if f["state"] == "sent"]]
     return out
 
 
@@ -196,6 +221,40 @@ def queue_heartbeat(
     return ok({"run_id": r.id, "status": r.status})
 
 
+@router.post("/queue/{run_id}/evidence")
+def upload_evidence(run_id: int, file: UploadFile = File(...), case_label: str = Form(""),
+                    runner: str | None = Query(None), db: Session = Depends(get_db),
+                    ctx: RunnerCtx = Depends(require_runner_ctx)):
+    rid = _resolve_runner(db, ctx, runner)
+    run = db.query(MdRun).filter_by(id=run_id).with_for_update().first()
+    if not run:
+        raise HTTPException(404, "任务不存在")
+    if run.runner != rid:
+        raise HTTPException(403, "该任务未派给此执行机")
+    if run.status in ("pending", "canceled"):
+        raise HTTPException(409, "当前状态不能回传附件")
+    row = md_evidence.save(db, run, file.filename or "", case_label.strip(), file.file.read(md_evidence.MAX_FILE + 1))
+    return ok(md_evidence.metadata(row))
+
+
+@router.get("/{run_id}/evidence/{evidence_id}")
+def download_evidence(run_id: int, evidence_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    run = db.get(MdRun, run_id)
+    if not run:
+        raise HTTPException(404, "任务不存在")
+    if run.project_id is not None:
+        assert_project_role(db, user, run.project_id, tuple(ProjectRole))
+    elif not user.is_platform_admin and run.enqueued_by != user.id:
+        raise HTTPException(403, "无权下载此任务附件")
+    row = db.query(MdRunEvidence).filter_by(run_id=run_id, id=evidence_id).first()
+    if not row:
+        raise HTTPException(404, "任务附件不存在")
+    return Response(row.content, media_type="application/octet-stream", headers={
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(row.name, safe=""),
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
 @router.patch("/queue/{run_id}")
 def queue_report(
     run_id: int,
@@ -205,13 +264,22 @@ def queue_report(
     ctx: RunnerCtx = Depends(require_runner_ctx),
 ):
     rid = _resolve_runner(db, ctx, runner)
-    r = db.get(MdRun, run_id)
+    r = db.query(MdRun).filter_by(id=run_id).with_for_update().first()
     if not r:
         raise HTTPException(404, "任务不存在")
     if r.runner != rid:
         raise HTTPException(403, "该任务未派给此执行机")
     # A retried runner callback must not erase references recorded after the first report.
     if r.status in _TERMINAL:
+        if body.evidence_summary and r.status != "canceled":
+            check = json.loads(r.env_check or "{}")
+            previous = check.get("evidence_summary")
+            if previous and previous["expected"] == body.evidence_summary.expected:
+                notes = list(dict.fromkeys([*previous["notes"], *body.evidence_summary.notes]))[-35:]
+                if notes != previous["notes"]:
+                    check["evidence_summary"] = {**previous, "notes": notes}
+                    r.env_check = _dump(check)
+                    db.commit()
         return ok(_to_out(r, full=True))
     verdict, reason, findings = body.verdict, body.reason, body.findings
     if verdict == "completed" or _legacy_failure(verdict, reason, findings, body.result_md):
@@ -223,9 +291,14 @@ def queue_report(
     if body.result_md is not None:
         r.result_md = body.result_md
     if findings is not None:
-        r.findings = _dump(findings)
-    if body.env_check is not None:
-        r.env_check = _dump(body.env_check)
+        # Tracker references and attachment destinations are set only by the reporting endpoint.
+        r.findings = _dump([{k: v for k, v in f.items() if not k.startswith("report_") and
+                             k not in ("external_ref", "evidence_target", "evidence")} for f in findings])
+    if body.env_check is not None or body.evidence_summary is not None:
+        check = dict(body.env_check or {})
+        if body.evidence_summary:
+            check["evidence_summary"] = body.evidence_summary.model_dump()
+        r.env_check = _dump(check)
     r.duration_ms = body.duration_ms
     r.finished_at = datetime.utcnow()
     db.commit()
@@ -296,7 +369,8 @@ def get_run(
         raise HTTPException(404, "任务不存在")
     if r.project_id is not None:
         assert_project_role(db, user, r.project_id, tuple(ProjectRole))
-    return ok(_to_out(r, full=True))
+    can_read_files = r.project_id is not None or user.is_platform_admin or r.enqueued_by == user.id
+    return ok(_to_out(r, full=True, db=db if can_read_files else None))
 
 
 @router.post("/{run_id}/cancel")
@@ -328,13 +402,16 @@ def delete_run(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    r = db.get(MdRun, run_id)
+    r = db.query(MdRun).filter_by(id=run_id).with_for_update().first()
     if not r:
         raise HTTPException(404, "任务不存在")
     if r.project_id is not None:
         assert_project_role(db, user, r.project_id, _WRITE_ROLES)
     if r.status == "running":
         raise HTTPException(409, "任务执行中，不能删除（先取消）")
+    files = db.query(MdRunEvidence.id).filter_by(run_id=r.id)
+    db.query(MdEvidenceDelivery).filter(MdEvidenceDelivery.evidence_id.in_(files)).delete(synchronize_session=False)
+    db.query(MdRunEvidence).filter_by(run_id=r.id).delete(synchronize_session=False)
     db.delete(r)
     db.commit()
     return ok({"deleted": run_id})
@@ -361,11 +438,29 @@ def _save_finding(db: Session, run: MdRun, index: int, expected: dict, updated: 
             return True
 
 
+def _send_evidence(db, run, item, sub_id, token, result):
+    target = item.get("evidence_target") or {}
+    if target.get("sub_id") != sub_id or item.get("external_ref") != f"geelib#{target.get('matter_id')}":
+        return result
+    rows = db.query(MdRunEvidence).filter_by(run_id=run.id).order_by(MdRunEvidence.id).all()
+    files = md_evidence.related(rows, item, len(_review_findings(run)[1]))
+    if files:
+        states = [md_evidence.deliver(db, row, sub_id, target["matter_id"], token) for row in files]
+        result["attachment_count"] = len(states)
+        result["attachments_sent"] = states.count("sent")
+    return result
+
+
 def _report_one(db, run, index, item, body, sub_id, executor, token):
     from app.services.geelib import GeelibError
 
     if item.get("external_ref"):
-        return {"ok": True, "skipped": True, "external_ref": item["external_ref"]}
+        result = {"ok": True, "skipped": True, "external_ref": item["external_ref"]}
+        if body.receipt_action == "attachments":
+            return _send_evidence(db, run, item, sub_id, token, result)
+        return result
+    if body.receipt_action == "attachments":
+        return {"ok": False, "status": "changed", "msg": "请先完成工单上报"}
     changed = {"ok": False, "status": "changed", "msg": "候选状态已更新，请刷新详情"}
     state = item.get("report_state")
     now = time.time()
@@ -390,9 +485,11 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
             if body.matter_id not in {m["id"] for m in matches}:
                 raise HTTPException(409, "请选择当前项目中已核对的缺陷")
             ref = f"geelib#{body.matter_id}"
-            if not _save_finding(db, run, index, item, {**clean, "external_ref": ref}):
+            linked = {**clean, "external_ref": ref, "evidence_target": {"sub_id": sub_id, "matter_id": body.matter_id}}
+            if not _save_finding(db, run, index, item, linked):
                 return changed
-            return {"ok": True, "skipped": True, "status": "linked", "external_ref": ref}
+            return _send_evidence(db, run, linked, sub_id, token,
+                                  {"ok": True, "skipped": True, "status": "linked", "external_ref": ref})
         return None
 
     skill_review = (body.review_key or "").startswith("skill-")
@@ -428,7 +525,8 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
         return changed
     try:
         report = md_bug_skill.create_case(sub_id, title, description, priority, executor, token)
-        updated = {**clean, **report}
+        updated = {**clean, **report, "evidence_target": {"sub_id": sub_id,
+                                                        "matter_id": int(report["external_ref"].split("#")[1])}}
         result = {"ok": True, **report}
     except md_bug_skill.SubmissionUncertain as exc:
         updated = {**claimed, "report_state": "uncertain", "report_error": str(exc)}
@@ -438,7 +536,7 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
         result = {"ok": False, "status": "failed", "msg": str(exc)}
     if not _save_finding(db, run, index, claimed, updated):
         return changed
-    return result
+    return _send_evidence(db, run, updated, sub_id, token, result) if result["ok"] else result
 
 
 @router.post("/{run_id}/report-bugs")
@@ -468,7 +566,7 @@ def report_bugs(
     count = len(indexed)
     targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
     if not targets:
-        return ok({"results": [], "reported": 0, "run": _to_out(r, full=True)})
+        return ok({"results": [], "reported": 0, "run": _to_out(r, full=True, db=db)})
 
     from app.services import geelib
     if not geelib.is_enabled():
@@ -496,4 +594,4 @@ def report_bugs(
 
     db.refresh(r)
     reported = sum(1 for x in results if x.get("ok") and not x.get("skipped"))
-    return ok({"results": results, "reported": reported, "run": _to_out(r, full=True)})
+    return ok({"results": results, "reported": reported, "run": _to_out(r, full=True, db=db)})

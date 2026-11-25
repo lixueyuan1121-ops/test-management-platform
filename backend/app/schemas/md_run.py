@@ -32,6 +32,11 @@ class MdRunBatchCreate(MdRunDocument):
     env_group: Literal["online", "pre", "test"]
 
 
+class MdEvidenceSummary(BaseModel):
+    expected: int = Field(ge=0, le=32)
+    notes: list[Annotated[str, StringConstraints(max_length=300)]] = Field(default_factory=list, max_length=35)
+
+
 class MdRunReportIn(BaseModel):
     """runner 回写（PATCH /queue/{id}）。
 
@@ -42,6 +47,7 @@ class MdRunReportIn(BaseModel):
     reason: str | None = Field(None, max_length=4000)
     result_md: str | None = Field(None, max_length=400_000)
     findings: list[dict[str, Any]] | None = None
+    evidence_summary: MdEvidenceSummary | None = None
     duration_ms: int | None = None
     env_check: dict[str, Any] | None = None
 
@@ -52,6 +58,6 @@ class MdRunBugsIn(BaseModel):
     indexes: 只报这几条（findings 的下标）；不传=报全部尚未上报的。
     """
     indexes: list[int] | None = None
-    receipt_action: Literal["check", "link", "retry"] | None = None
+    receipt_action: Literal["check", "link", "retry", "attachments"] | None = None
     review_key: str | None = Field(None, max_length=64)
     matter_id: int | None = Field(None, gt=0)

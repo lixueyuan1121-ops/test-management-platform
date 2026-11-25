@@ -8,3 +8,5 @@ evidence/
 pending-reports/
 
 *.encoding-backup
+md-pending-reports/
+md-runs/

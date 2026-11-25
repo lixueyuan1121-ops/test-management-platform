@@ -133,6 +133,7 @@ const guiCore = createGuiCore({ cdpUrl: `http://127.0.0.1:${CDP_PORT}` });
 // md 任务执行器：只在 MD_TASK_ENABLED=1 时构造并轮询，其余执行机完全不受影响。
 const mdTasks = MD_TASK_ENABLED ? makeMdTaskRunner({
   api, log, RUNNER_ID, restartClient: restartDesktopClient,
+  captureScreenshot: () => guiCore.shotBuffer(), clientLogFile: process.env.MD_CLIENT_LOG_FILE,
   runtimeDir: MD_RUNTIME_DIR,
   groupsDir: MD_GROUPS_DIR,
   helperPath: MD_HOSTS_HELPER,
@@ -149,8 +150,10 @@ const mdTasks = MD_TASK_ENABLED ? makeMdTaskRunner({
 
 // ---- 平台 API(契约见 app/routers/exec_queue.py:{code,msg,data} 信封)----
 async function api(method, path, body) {
+  const multipart = body instanceof FormData;
   const res = await fetch(`${BASE_URL}${path}`, {
-    method, headers: H, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000),
+    method, headers: multipart ? { Authorization: H.Authorization } : H,
+    body: multipart ? body : body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(multipart ? 45000 : 15000),
   });
   const env = await res.json().catch(() => ({}));
   if (!res.ok || (env.code !== 0 && env.code !== undefined && ![200, 201].includes(env.code))) {

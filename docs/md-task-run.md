@@ -90,7 +90,7 @@ node bin\hosts-check.mjs test             # 真切一次：快照 → 写入 →
 执行机回传 `result.md`。每条结论为 `fail` 的用例都应有可人工上报的缺陷候选。报告在「## 产品缺陷」下用三级标题记录问题，并用「关联用例」列出用例编号或全名。同一问题影响多条用例时可以共用一条候选。报告漏写候选或填写「无」时，平台会用失败行的用例名和说明补齐候选。复现步骤、预期和实际结果保留在详情中。负向场景符合预期时填 `pass`，因环境问题无法验证时填 `blocked`。
 
 人在「提测执行」详情页复核后点「上报到极库云」→ `POST /api/md-runs/{id}/report-bugs`
-「上报到极库云」使用服务器私有目录 `backend/.skills/jikuyun-bug-report-package` 中安装的技能。可执行 `python backend/scripts/install_md_bug_skill.py <原始技能包.zip>` 安装、校验该版本。平台加载 `jikuyun-bug-report` 的说明和字段参考，根据本条失败记录整理描述、评估优先级，跨状态查重并比对已有工单详情。疑似重复时由报送人核对并选择关联或建单。新单由包中的原版 `geelib-bug-report/scripts/report-bug.mjs` 创建，使用报送人的个人 SSO 和任务项目，读取实时成员列表，记录缺陷编号及技能回执。回执中断时点「核对回执」，确认极库云中无对应工单后可以重新建单。执行机目前回传 Markdown 结果，截图与客户端日志需从执行机取得。
+「上报到极库云」使用服务器私有目录 `backend/.skills/jikuyun-bug-report-package` 中安装的技能。可执行 `python backend/scripts/install_md_bug_skill.py <原始技能包.zip>` 安装、校验该版本。平台加载 `jikuyun-bug-report` 的说明和字段参考，根据本条失败记录整理描述、评估优先级，跨状态查重并比对已有工单详情。疑似重复时由报送人核对并选择关联或建单。新单由包中的原版 `geelib-bug-report/scripts/report-bug.mjs` 创建，使用报送人的个人 SSO 和任务项目，读取实时成员列表，记录缺陷编号及技能回执。回执中断时点「核对回执」，确认极库云中无对应工单后可以重新建单。执行机同时回传 Markdown、截图和客户端日志。失败现场截图及用例日志按工作目录 `evidence/manifest.json` 中的用例编号或名称匹配；任务级日志只截取本次执行新增的内容，默认读取 `~/.namiwork/logs/YYYY/MM/DD/YYYY-MM-DD.log`，其他客户端可在执行机设置 `MD_CLIENT_LOG_FILE` 指向其实际日志。没有现场截图时会尝试采集任务结束时的客户端窗口，单候选时可随单作为补充。任务详情支持下载并查看每份附件的提交状态。新建或明确关联工单后，使用原包 `geelib-attachment` 向对应工作项上传，失败可单独点击「补传附件」。旧任务只展示实际回传的材料。
 
 刻意不做自动上报：环境问题、偶发失败自动灌进缺陷库，会迅速让缺陷单失去可信度。
 要全自动可以复用 `GEELIB_AUTO_REPORT` 的开关思路再加，默认不写死。

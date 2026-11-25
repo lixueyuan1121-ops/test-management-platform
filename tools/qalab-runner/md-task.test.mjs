@@ -64,7 +64,7 @@ for (const restartFails of [false, true]) {
     const runner = makeMdTaskRunner({ runtimeDir: dir, RUNNER_ID: 'a', log() {},
       async api(method, url, body) {
         if (method === 'GET') return [{ run_id: 11, content: '# task', env_group: 'pre' }];
-        if (method === 'PATCH') { events.push('report'); report = body; }
+        if (method === 'PATCH') { events.push('report'); report = body; return { id: 11 }; }
       },
       hosts: {
         async apply(group) { events.push('hosts'); return { group, verify: [] }; },
@@ -82,3 +82,69 @@ for (const restartFails of [false, true]) {
     assert.equal(fs.existsSync(path.join(dir, 'md-runs/md-11/result.md')), !restartFails);
   });
 }
+
+test('failed case returns its screenshot, client log delta and Markdown, then replays only missing bytes', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-evidence-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const clientLogFile = path.join(dir, 'client.log');
+  fs.writeFileSync(clientLogFile, 'prior session\n');
+  const cli = path.join(dir, 'agent.js');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XAmQAAAAASUVORK5CYII=', 'base64');
+  fs.writeFileSync(cli, [
+    "const fs = require('node:fs');",
+    "fs.writeFileSync('result.md', '| 用例 | 结论 | 说明 |\\n| --- | --- | --- |\\n| C-001 | fail | 保存失败 |');",
+    `fs.writeFileSync('evidence/error.png',Buffer.from('${png.toString('base64')}','base64'));`,
+    `fs.writeFileSync('evidence/manifest.json',JSON.stringify([{case:'C-001',file:'error.png'}]));`,
+  ].join('\n'));
+  let first = true, reported = 0, executions = 0, logUploads = 0;
+  const screenshots = [];
+  const runner = makeMdTaskRunner({ runtimeDir: dir, RUNNER_ID: 'win', clientLogFile, log() {},
+    hosts: { apply: async () => ({ verify: [] }), restore: async () => true },
+    async restartClient() { executions++; fs.appendFileSync(clientLogFile, 'this run\nAuthorization: Bearer test-secret\n'); },
+    codexBin: cli, codexArgs: [], codexTimeoutMs: 5000,
+    async api(method, url, body) {
+      if (method === 'GET') { if (!first) return []; first = false; return [{ run_id: 14, content: 'task' }]; }
+      if (url.includes('/evidence?')) {
+        const data = body.get('file');
+        if (data.name === 'error.png') {
+          assert.equal(body.get('case_label'), 'C-001');
+          screenshots.push(Buffer.from(await data.arrayBuffer()));
+        } else {
+          assert.equal(data.name, '任务时段客户端.log');
+          assert.equal(body.get('case_label'), '');
+          assert.equal(await data.text(), 'this run\nAuthorization: [已隐藏]\n');
+          if (++logUploads === 1) throw Error('network reset');
+        }
+        return { id: 1 };
+      }
+      if (method === 'PATCH') {
+        reported++;
+        assert.equal(body.evidence_summary.expected, 2);
+        assert.match(body.result_md, /保存失败/);
+        return { id: 14, status: 'failed' };
+      }
+    },
+  });
+  await runner.pollOnce(); await runner.pollOnce();
+  assert.deepEqual(screenshots, [png]);
+  assert.deepEqual([reported, executions, logUploads], [2, 1, 2]);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'md-pending-reports')), []);
+});
+
+test('evidence manifest cannot read files outside the work folder and uses an explicitly marked end screenshot', async (t) => {
+  const { collectMdEvidence } = await import('./md-evidence.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-linked-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const evidence = path.join(dir, 'evidence');
+  fs.mkdirSync(evidence); fs.writeFileSync(path.join(dir, 'private.log'), 'not evidence');
+  const rows = [{ case: 'C-001', file: '../private.log' }];
+  if (process.platform !== 'win32') {
+    fs.symlinkSync('../private.log', path.join(evidence, 'linked.log'));
+    rows.push({ case: 'C-001', file: 'linked.log' });
+  }
+  fs.writeFileSync(path.join(evidence, 'manifest.json'), JSON.stringify(rows));
+  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+  const result = await collectMdEvidence({ workDir: dir, clientStarted: true, captureScreenshot: async () => png });
+  assert.deepEqual(result.files.map(f => [f.name, f.label]), [['任务结束时客户端.png', '']]);
+  assert.equal(result.notes.length, rows.length);
+});

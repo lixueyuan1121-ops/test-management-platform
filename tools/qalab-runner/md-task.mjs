@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import fs from "node:fs";
 import path from "node:path";
+import { startClientLog, collectMdEvidence, queueMdReport, sendMdReport } from "./md-evidence.mjs";
 import { makeHostsEnv } from "./hosts-env.mjs";
 // 复用 codex-engine 的可执行文件解析：它已经处理了三种形态 ——
 //   .js（@openai/codex/bin/codex.js，用 node 起）、Windows 上的 .cmd 包装、原生 .exe。
@@ -129,10 +130,11 @@ export function makeMdTaskRunner({
   api, log, RUNNER_ID, runtimeDir,
   groupsDir, helperPath, helperTaskName,
   verifyDomains, verifyTimeoutSec,
-  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs, direct, restartClient,
+  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs, direct, restartClient, captureScreenshot, clientLogFile,
   hosts = makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName: helperTaskName, direct }),
 }) {
   let busy = false;
+  const pendingDir = path.join(runtimeDir, "md-pending-reports");
 
   async function execute(item) {
     const base = `md-${item.run_id}`;
@@ -142,7 +144,9 @@ export function makeMdTaskRunner({
     const docPath = path.join(workDir, "task.md");
     fs.writeFileSync(docPath, item.content || "");
 
+    fs.mkdirSync(path.join(workDir, "evidence"));
     const started = Date.now();
+    let logStart, evidence = { files: [], notes: [] };
     let envCheck = null;
     let result = null;
     const q = `runner=${encodeURIComponent(RUNNER_ID)}`;
@@ -168,6 +172,7 @@ export function makeMdTaskRunner({
       envCheck.client_restarted = false;
       if (canceled) throw new Error("平台已取消");
       try {
+        logStart = startClientLog(clientLogFile);
         await restartClient();
       } catch (error) {
         throw new Error(`目标客户端重启失败：${error.message}`);
@@ -185,7 +190,8 @@ export function makeMdTaskRunner({
         `   失败行的说明写清预期和实际结果。文末写「## 产品缺陷」，每个问题用「### 问题标题」开头，下一行写「关联用例：用例编号或全名」。同一问题影响多条用例时用顿号列出，再写复现步骤和证据。没有候选时本节填「无」。执行期间不要创建外部缺陷。`,
         `4. 这是无人值守执行：**不要向我提问、不要等待确认**。文档缺信息就按最合理的理解继续；`,
         `   确实无法继续时（客户端起不来、缺账号、工具不可用），把原因和已完成的部分写进 result.md，然后结束。`,
-        `5. 工作目录 ${workDir} 是唯一可写位置；需要留截图/日志就放在它下面。`,
+        `5. 工作目录 ${workDir} 是唯一可写位置；每条失败用例在异常现场用客户端截图工具（如 gui_screenshot）将真实图片保存到 ${path.join(workDir, "evidence")} 下，传入完整的 PNG/JPEG 绝对路径，继续下一条前完成。可同时保存该用例对应的客户端日志片段为 UTF-8 .log。不要复制 agent.log、配置文件或整个历史日志。`,
+        `   将每份附件登记到 evidence/manifest.json，内容为 JSON 数组，例如 [{"case":"C-001","file":"C-001.png"},{"case":"C-001","file":"C-001.log"}]。case 使用结果表中对应的编号或全名；文件名不能含目录。采集失败要在报告写明原因。`,
       ].join("\n");
 
       const cmd = codexCommand(resolveAgentBin(codexBin));
@@ -238,6 +244,9 @@ export function makeMdTaskRunner({
       }
       result = { verdict: "blocked", reason: e.message, env_check: envCheck };
     } finally {
+      try {
+        if (!canceled) evidence = await collectMdEvidence({ workDir, logStart, captureScreenshot, clientStarted: envCheck?.client_restarted });
+      } catch (error) { evidence.notes.push("附件采集失败：" + error.message.slice(0, 160)); }
       clearInterval(heartbeat);
       const restored = await hosts.restore();
       // 即使没走到切换这一步（分组不存在/快照失败），也要带上 group 与 restored，
@@ -246,13 +255,9 @@ export function makeMdTaskRunner({
     }
 
     result.duration_ms = Date.now() - started;
-    const saved = await api("PATCH", `/api/md-runs/queue/${item.run_id}?${q}`, {
-      verdict: result.verdict,
-      reason: result.reason || null,
-      result_md: result.result_md || null,
-      duration_ms: result.duration_ms,
-      env_check: result.env_check || null,
-    });
+    result.evidence_summary = { expected: evidence.files.length, notes: evidence.notes };
+    const packet = queueMdReport(pendingDir, item.run_id, result, evidence.files);
+    const saved = await sendMdReport(packet, api, RUNNER_ID, log);
     const reason = saved?.reason || result.reason;
     log(`回写 run_id=${item.run_id} -> ${saved?.verdict || result.verdict}${reason ? ` (${String(reason).slice(0, 120)})` : ""}`);
   }
@@ -262,6 +267,12 @@ export function makeMdTaskRunner({
     if (busy) return 0;
     busy = true;
     try {
+      if (fs.existsSync(pendingDir)) {
+        for (const file of fs.readdirSync(pendingDir).filter(name => /^md-\d+\.json$/.test(name))) {
+          try { await sendMdReport(path.join(pendingDir, file), api, RUNNER_ID, log); }
+          catch (error) { log("提测结果等待重传：" + error.message); }
+        }
+      }
       const pending = await api("GET", `/api/md-runs/queue?runner=${encodeURIComponent(RUNNER_ID)}&limit=1`);
       if (!pending?.length) return 0;
       const item = pending[0];

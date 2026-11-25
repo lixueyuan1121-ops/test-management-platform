@@ -631,6 +631,8 @@ export const cancelSelectorAudit = id => http.post(`/selector-audits/${id}/cance
 // ===== 提测执行（整份 md 下发到执行机，由 agent 执行）=====
 export const listMdRuns = (params) => http.get('/md-runs', { params })
 export const getMdRun = (id) => http.get(`/md-runs/${id}`)
+export const downloadMdEvidence = (runId, fileId) =>
+  http.get(`/md-runs/${runId}/evidence/${fileId}`, { responseType: 'blob' })
 export const createMdRun = (data) => http.post('/md-runs', data)
 export const createMdRuns = (data) => http.post('/md-runs/batch', data)
 export const cancelMdRun = (id) => http.post(`/md-runs/${id}/cancel`)

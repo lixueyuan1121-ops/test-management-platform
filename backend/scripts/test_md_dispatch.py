@@ -6,6 +6,8 @@ import subprocess
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from email import policy
+from email.parser import BytesParser
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -226,11 +228,22 @@ class MdDispatchTests(unittest.TestCase):
             self.skipTest('安装私有技能包后运行原包集成测试')
         self.prepare.stop()
         rid = self.finished_run()
+        upload = self.client.post(f'/api/md-runs/queue/{rid}/evidence?runner=a',
+                                  files={'file': ('client.log', b'client evidence', 'text/plain')})
+        self.assertEqual(upload.status_code, 200, upload.text)
         calls = []
         failure = None
         class Tracker(BaseHTTPRequestHandler):
             def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                raw = self.rfile.read(int(self.headers['Content-Length']))
+                if self.path.endswith('/addAttachmentFile'):
+                    packet = BytesParser(policy=policy.default).parsebytes(
+                        ('Content-Type: ' + self.headers['Content-Type'] + '\r\n\r\n').encode() + raw)
+                    parts = {p.get_param('name', header='Content-Disposition'): p for p in packet.iter_parts()}
+                    body = {'file_name': parts['file'].get_filename(), 'bytes': parts['file'].get_payload(decode=True),
+                            'matter_id': parts['id'].get_content(), 'sub_id': parts['sub_id'].get_content()}
+                else:
+                    body = json.loads(raw)
                 calls.append((self.path, self.headers['X-Agent-Auth'], body))
                 if self.path.endswith('/getList'):
                     data = {'matterList': [], 'total': 0}
@@ -247,6 +260,8 @@ class MdDispatchTests(unittest.TestCase):
                         self.wfile.write(b'{"errno":3000,"errmsg":"invalid field"}')
                         return
                     data = {'id': '729'}
+                elif self.path.endswith('/addAttachmentFile'):
+                    data = [{'file_name': body['file_name'], 'id': 101}]
                 else:
                     self.send_error(404)
                     return
@@ -266,6 +281,8 @@ class MdDispatchTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         run_process = subprocess.run
         def without_fetch(args, **options):
+            if '--require' not in args:
+                return run_process(args, **options)
             self.assertEqual(Path(args[3]).read_bytes(), (md_bug_skill.PACKAGE / md_bug_skill.ENTRY).read_bytes())
             return run_process([args[0], '--no-experimental-fetch', *args[1:]], **options)
         def draft(_, *, system_prompt, prompt_builder, **kwargs):
@@ -298,9 +315,11 @@ class MdDispatchTests(unittest.TestCase):
                 md_bug_skill.create_case(81, '测试', '测试', 'P2', 'qa@example.test', 'local-test-token')
         calls = successful_calls
         self.assertEqual([path.rsplit('/', 1)[1] for path, _, _ in calls],
-                         ['getList', 'getList', 'getMatterTypeCustomAttributeList', 'add', 'getDetail'])
+                         ['getList', 'getList', 'getMatterTypeCustomAttributeList', 'add', 'getDetail', 'addAttachmentFile'])
         self.assertTrue(all(header == 'Bearer local-test-token' for _, header, _ in calls))
-        body = calls[-2][2]
+        attached = calls[-1][2]
+        self.assertEqual((attached['bytes'], attached['matter_id'], attached['sub_id']), (b'client evidence', '729', '81'))
+        body = calls[-3][2]
         self.assertEqual((body['sub_id'], body['title']), (81, '[42] 按钮无响应'))
         self.assertIn('&lt;确认&gt;</p><p>', body['content'])
         self.assertEqual({f['cf_name']: f['cf_value'] for f in body['data']},
@@ -311,7 +330,8 @@ class MdDispatchTests(unittest.TestCase):
         self.assertEqual(saved['report_receipt']['skill'], 'jikuyun-bug-report')
         self.assertTrue(saved['report_receipt']['detail_verified'])
         self.assertEqual(saved['report_receipt']['type_id'], 218)
-        self.assertEqual(saved['report_receipt']['attachments'], [])
+        self.assertEqual(saved['report_receipt']['attachments'], [
+            {'id': '101', 'file_name': 'client.log', 'skill': 'geelib-attachment'}])
 
     def test_skill_matches_using_details_across_pages_before_creation(self):
         self.prepare.stop()
@@ -337,6 +357,94 @@ class MdDispatchTests(unittest.TestCase):
             _, priority, matches = md_bug_skill.prepare_case(81, '[42] 保存无响应', {'detail': '点击保存后卡住'}, 'personal')
         self.assertEqual(priority, 'P2')
         self.assertEqual([(m['id'], m['status']) for m in matches], [(602, '已关闭')])
+
+    def test_case_evidence_is_private_matched_and_retried_without_new_ticket(self):
+        from app.services import md_evidence
+        from app.models.md_run import MdRunEvidence, MdEvidenceDelivery
+        rid = self.post('', **self.document, runner='a')['id']
+        self.post(f'/queue/{rid}/claim?runner=a')
+        path = f'/api/md-runs/queue/{rid}/evidence'
+        def upload(name, content, case, runner='a'):
+            return self.client.post(path, params={'runner': runner}, data={'case_label': case},
+                                    files={'file': (name, content, 'application/octet-stream')})
+        image = b'\x89PNG\r\n\x1a\n' + b'case1'
+        self.assertEqual(upload('case.png', image, 'C-001', 'wrong').status_code, 403)
+        self.assertEqual(upload('bad.png', b'not an image', 'C-001').status_code, 422)
+        self.assertEqual(upload('../bad.log', b'no', '').status_code, 422)
+        first = upload('case.png', image, 'C-001').json()['data']['id']
+        self.assertEqual(upload('case.png', image, 'C-001').json()['data']['id'], first)
+        upload('任务时段客户端.log', b'task delta', '')
+        upload('case2.log', b'second case', 'C-002')
+        upload('end.png', image, '')
+        callback = self.client.patch(f'/api/md-runs/queue/{rid}?runner=a', json={
+            'verdict': 'completed', 'evidence_summary': {'expected': 4, 'notes': []},
+            'result_md': '| 用例 | 结论 | 说明 |\n| --- | --- | --- |\n| C-001 | fail | 按钮无响应 |\n| C-002 | fail | 保存失败 |'})
+        self.assertEqual(callback.status_code, 200, callback.text)
+        detail_path = f'/api/md-runs/{rid}'
+        detail = self.client.get(detail_path).json()['data']
+        self.assertEqual(detail['evidence_summary']['expected'], 4)
+        self.assertEqual([[f['name'] for f in row['evidence']] for row in detail['findings']],
+                         [['case.png', '任务时段客户端.log'], ['case2.log']])
+        self.assertEqual(self.client.get(f'{detail_path}/evidence/{first}').content, image)
+        self.user.is_platform_admin = False
+        self.assertEqual(self.client.get(f'{detail_path}/evidence/{first}').status_code, 403)
+        self.user.is_platform_admin = True
+        names = []
+        def send(row, sub, matter, name, token):
+            names.append(row.name)
+            self.assertEqual((sub, matter, token), (81, 729, 'personal'))
+            if row.name == '任务时段客户端.log':
+                raise ValueError('lost receipt after upload')
+            return '99'
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch('app.services.geelib_account.get_user_app_token', return_value='personal'), \
+             patch.object(md_bug_skill, 'create_case', return_value={'external_ref': 'geelib#729'}) as create, \
+             patch.object(md_evidence, '_upload', side_effect=send), \
+             patch.object(md_evidence, '_reconcile', return_value='101') as reconcile:
+            report = self.post(f'/{rid}/report-bugs', indexes=[0])
+            self.assertEqual(report['reported'], 1)
+            self.assertEqual(report['results'][0]['attachments_sent'], 1)
+            self.assertEqual(report['run']['findings'][0]['external_ref'], 'geelib#729')
+            retry = self.post(f'/{rid}/report-bugs', indexes=[0], receipt_action='attachments')
+            self.assertEqual((retry['reported'], retry['results'][0]['attachments_sent']), (0, 2))
+            self.assertEqual(names, ['case.png', '任务时段客户端.log'])
+            reconcile.assert_called_once()
+            create.assert_called_once()
+        self.assertEqual(self.client.delete(detail_path).status_code, 200)
+        with self.sessions() as db:
+            self.assertEqual(db.query(MdRunEvidence).count(), 0)
+            self.assertEqual(db.query(MdEvidenceDelivery).count(), 0)
+
+    def test_original_attachment_skill_uploads_file_to_matter_using_personal_sso(self):
+        import platform
+        from app.services import md_attachment_skill
+        binary = md_attachment_skill.BINARIES.get((platform.system(), platform.machine().lower()))
+        if not binary or not (md_bug_skill.PACKAGE / 'geelib-attachment/cli/bin' / binary[0]).is_file():
+            self.skipTest('安装私有技能包后运行附件 CLI 集成测试')
+        seen = []
+        name = 'QALab-5-2-客户端.log'
+        class Tracker(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                packet = BytesParser(policy=policy.default).parsebytes(
+                    ('Content-Type: ' + self.headers['Content-Type'] + '\r\n\r\n').encode() +
+                    self.rfile.read(int(self.headers['Content-Length'])))
+                parts = {p.get_param('name', header='Content-Disposition'): p for p in packet.iter_parts()}
+                seen.append((self.path, self.headers.get('X-Agent-Auth'), sorted(parts),
+                             parts['type'].get_content(), parts['sub_id'].get_content(), parts['id'].get_content(),
+                             parts['file'].get_filename(), parts['file'].get_payload(decode=True)))
+                self.send_response(200); self.end_headers()
+                self.wfile.write(json.dumps({'errno': 2000, 'data': [{'file_name': name, 'id': 101}]}).encode())
+        with ThreadingHTTPServer(('127.0.0.1', 0), Tracker) as server:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                with patch.object(settings, 'GEELIB_API_URL', f'http://127.0.0.1:{server.server_port}'):
+                    result = md_attachment_skill.upload(81, 729, name, b'client evidence', 'text/plain', 'personal')
+            finally:
+                server.shutdown()
+        self.assertEqual(result[0]['id'], 101)
+        self.assertEqual(seen, [(md_attachment_skill.ENDPOINT, 'Bearer personal', ['file', 'id', 'sub_id', 'type'],
+                                 'matter', '81', '729', name, b'client evidence')])
 
     def test_missing_skill_does_not_attempt_to_report(self):
         self.prepare.stop()

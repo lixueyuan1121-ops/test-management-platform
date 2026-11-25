@@ -1159,3 +1159,28 @@ CREATE TABLE `md_run` (
   KEY `idx_mdrun_runner` (`runner`),
   KEY `idx_mdrun_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE md_run_evidence (
+  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  run_id BIGINT NOT NULL,
+  fingerprint VARCHAR(64) NOT NULL,
+  case_label VARCHAR(200) NOT NULL,
+  name VARCHAR(140) NOT NULL,
+  kind VARCHAR(16) NOT NULL,
+  size INT NOT NULL,
+  content MEDIUMBLOB NOT NULL,
+  UNIQUE KEY uq_md_evidence (run_id,fingerprint)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE md_evidence_delivery (
+  evidence_id INT NOT NULL,
+  sub_id INT NOT NULL,
+  matter_id INT NOT NULL,
+  state VARCHAR(16) NOT NULL,
+  attempt VARCHAR(32) NOT NULL,
+  started INT NOT NULL,
+  remote_id VARCHAR(64) DEFAULT NULL,
+  message VARCHAR(240) DEFAULT NULL,
+  PRIMARY KEY (evidence_id,sub_id,matter_id),
+  FOREIGN KEY (evidence_id) REFERENCES md_run_evidence(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

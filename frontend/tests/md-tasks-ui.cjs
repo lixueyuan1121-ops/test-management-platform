@@ -7,9 +7,11 @@ const assert = require('node:assert/strict');
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     const errors = [], payloads = [];
     const reports = [];
-    const run = { id: 5, project_id: 1, title: '冒烟用例', status: 'failed', verdict: 'fail',
+    const logFile = { id: 2, name: '客户端.log', kind: 'log', size: 100, case: 'C-002' };
+    const run = { evidence: [logFile], evidence_summary: { expected: 1, notes: [] }, id: 5, project_id: 1, title: '冒烟用例', status: 'failed', verdict: 'fail',
       findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' },
-        { title: '保存失败', external_ref: 'geelib#731',
+        { title: '保存失败', external_ref: 'geelib#731', evidence_target: { sub_id: 7087, matter_id: 731 },
+          evidence: [{ ...logFile, state: 'failed', message: '连接失败' }],
           report_receipt: { skill: 'jikuyun-bug-report', priority: 'P1', sub_id: 7087, type_id: 21732 } }] };
     page.on('pageerror', err => errors.push(err.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'local-ui-fixture'));
@@ -21,6 +23,10 @@ const assert = require('node:assert/strict');
       if (pathname.endsWith('/devices')) data = [{ id: 1, name: '甲', runner_id: 'mac' }, { id: 2, name: '乙', runner_id: 'win' }];
       if (pathname.endsWith('/md-runs')) data = [run];
       if (pathname.endsWith('/md-runs/5')) data = run;
+      if (pathname.endsWith('/md-runs/5/evidence/2')) {
+        assert.match(req.headers().authorization, /^Bearer /);
+        return route.fulfill({ contentType: 'application/octet-stream', body: 'client log' });
+      }
       if (pathname.endsWith('/md-runs/5/report-bugs')) {
         const payload = req.postDataJSON();
         reports.push(payload);
@@ -29,6 +35,10 @@ const assert = require('node:assert/strict');
         if (payload.receipt_action === 'link') {
           run.findings[0] = { title: '按钮无响应', external_ref: 'geelib#729' };
           result = { index: 0, ok: true, skipped: true, status: 'linked', external_ref: 'geelib#729' };
+        }
+        if (payload.receipt_action === 'attachments') {
+          run.findings[1].evidence[0].state = 'sent';
+          result = { index: 1, ok: true, skipped: true, attachment_count: 1, attachments_sent: 1 };
         }
         data = { reported: 0, results: [result], run };
       }
@@ -64,12 +74,17 @@ const assert = require('node:assert/strict');
     await page.getByText('极库云提 Bug 技能 · P1').waitFor();
     assert.equal(await page.getByRole('link', { name: 'geelib#731' }).getAttribute('href'),
       'https://geelib.qihoo.net/geelib/project/matterType/21732?subId=7087&matterId=731&typeId=21732');
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: '客户端.log', exact: true }).first().click();
+    assert.equal((await download).suggestedFilename(), '客户端.log');
+    await page.getByRole('button', { name: '补传附件' }).click();
+    await page.getByText('已附到工单', { exact: true }).waitFor();
     await page.getByRole('button', { name: '核对回执' }).click();
     const review = page.getByRole('dialog', { name: '核对极库云回执' });
     await review.getByText('已记录按钮无响应').waitFor();
     await review.getByRole('button', { name: '关联所选工单' }).click();
     await page.getByText('geelib#729', { exact: true }).waitFor();
-    assert.deepEqual(reports, [{ indexes: [0], receipt_action: 'check' },
+    assert.deepEqual(reports, [{ indexes: [1], receipt_action: 'attachments' }, { indexes: [0], receipt_action: 'check' },
       { indexes: [0], receipt_action: 'link', review_key: 'review-5', matter_id: 729 }]);
     assert.deepEqual(errors, []);
     console.log('PASS dispatch, receipt lookup and explicit link to existing defect');

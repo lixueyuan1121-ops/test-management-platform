@@ -89,6 +89,17 @@
             <el-table-column type="index" width="50" />
             <el-table-column prop="title" label="标题" min-width="180" />
             <el-table-column prop="severity" label="严重度" width="80" />
+            <el-table-column v-if="detail.evidence_summary || detail.evidence?.length" label="随缺陷提交的附件" min-width="185">
+              <template #default="{ row, $index }">
+                <div v-for="file in row.evidence" :key="file.id">
+                  <el-button link type="primary" @click="downloadEvidence(file)">{{ file.name }}</el-button>
+                  <span v-if="row.external_ref" class="hint" :title="file.message">{{ attachmentState[file.state] }}</span>
+                </div>
+                <span v-if="!row.evidence?.length" class="hint">暂无关联附件</span>
+                <el-button v-if="row.evidence_target && row.evidence?.some(f => f.state !== 'sent')"
+                  link type="primary" :disabled="reporting" @click="submitReports({ indexes: [$index], receipt_action: 'attachments' })">补传附件</el-button>
+              </template>
+            </el-table-column>
             <el-table-column label="极库云" width="180">
               <template #default="{ row, $index }">
                 <template v-if="row.external_ref">
@@ -110,6 +121,14 @@
           </div>
         </template>
 
+        <template v-if="detail.evidence_summary || detail.evidence?.length">
+          <h3>执行附件（{{ detail.evidence?.length || 0 }}<template v-if="detail.evidence_summary"> / {{ detail.evidence_summary.expected }}</template>）</h3>
+          <div v-for="file in detail.evidence" :key="file.id">
+            <el-button link type="primary" @click="downloadEvidence(file)">{{ file.name }}</el-button>
+            <span class="hint">{{ file.case || '任务级' }} · {{ Math.ceil(file.size / 1024) }} KiB</span>
+          </div>
+          <div v-for="(note, index) in detail.evidence_summary?.notes" :key="index" class="hint">{{ note }}</div>
+        </template>
         <h3>执行结果</h3>
         <pre class="md">{{ detail.result_md || '（执行机未返回结果文档）' }}</pre>
 
@@ -135,7 +154,7 @@
       <template #footer>
         <el-button @click="reviewVisible = false">取消</el-button>
         <el-button :disabled="reporting" @click="resolveReceipt('retry')">重新建单</el-button>
-        <el-button v-if="receipt?.matches.length" type="primary" :disabled="reporting || !selectedMatter" @click="resolveReceipt('link')">关联所选工单</el-button>
+        <el-button v-if="receipt?.matches.length" type="primary" :disabled="reporting || !selectedMatter" @click="resolveReceipt('link')">关联所选工单{{ detail?.findings[receipt.index]?.evidence?.length ? '并提交附件' : '' }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -149,7 +168,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { listMyDevices, listMdRuns, getMdRun, createMdRuns, cancelMdRun, reportMdRunBugs } from '@/api'
+import { listMyDevices, listMdRuns, getMdRun, createMdRuns, cancelMdRun, reportMdRunBugs, downloadMdEvidence } from '@/api'
 
 const app = useAppStore()
 const projects = ref([])
@@ -252,6 +271,18 @@ async function onCancel(row) {
   await loadRuns()
 }
 
+const attachmentState = { pending: '待提交', sending: '上传中', sent: '已附到工单', failed: '上传失败', uncertain: '回执待核对' }
+
+async function downloadEvidence(file) {
+  const blob = await downloadMdEvidence(detail.value.id, file.id)
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1500)
+}
+
 function caseLink(row) {
   const receipt = row.report_receipt
   const id = /^geelib#([1-9]\d*)$/.exec(row.external_ref)?.[1]
@@ -291,6 +322,12 @@ async function submitReports(payload) {
       reviewVisible.value = false
     }
     if (res.reported) ElMessage.success(`已上报 ${res.reported} 条`)
+    const files = res.results.reduce((n, r) => n + (r.attachment_count || 0), 0)
+    if (files) {
+      const sent = res.results.reduce((n, r) => n + (r.attachments_sent || 0), 0)
+      if (sent === files) ElMessage.success(`已附到工单 ${sent} 份附件`)
+      else ElMessage.warning(`工单已关联，附件已提交 ${sent}/${files}，可在候选行补传`)
+    }
     const linked = res.results.find(r => r.status === 'linked')
     if (linked) ElMessage.success(`已关联 ${linked.external_ref}`)
     const pending = res.results.find(r => ['sending', 'uncertain', 'changed'].includes(r.status))

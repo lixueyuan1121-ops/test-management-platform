@@ -10,8 +10,8 @@ exec_run 被统计、质量门禁、失败聚类、回归智选、发版质量�
 import json
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.mysql import MEDIUMTEXT
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, LargeBinary, UniqueConstraint, func
+from sqlalchemy.dialects.mysql import MEDIUMTEXT, MEDIUMBLOB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -74,3 +74,31 @@ class MdRun(Base):
         except (ValueError, TypeError):
             return []
         return data if isinstance(data, list) else []
+
+
+class MdRunEvidence(Base):
+    """Binary evidence is loaded only for an authorized download or attachment upload."""
+    __tablename__ = 'md_run_evidence'
+    __table_args__ = (UniqueConstraint('run_id', 'fingerprint'),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    case_label: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(140))
+    kind: Mapped[str] = mapped_column(String(16))
+    size: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary().with_variant(MEDIUMBLOB(), 'mysql'), deferred=True)
+
+
+class MdEvidenceDelivery(Base):
+    __tablename__ = 'md_evidence_delivery'
+
+    evidence_id: Mapped[int] = mapped_column(ForeignKey('md_run_evidence.id', ondelete='CASCADE'), primary_key=True)
+    sub_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    matter_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    state: Mapped[str] = mapped_column(String(16))
+    attempt: Mapped[str] = mapped_column(String(32))
+    started: Mapped[int] = mapped_column(Integer)
+    remote_id: Mapped[str | None] = mapped_column(String(64))
+    message: Mapped[str | None] = mapped_column(String(240))
