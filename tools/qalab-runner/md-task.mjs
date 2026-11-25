@@ -103,17 +103,27 @@ function runCapture(cmd, args, { cwd, env, timeoutMs, control, shell = IS_WIN })
   });
 }
 
-/** 从 agent 的结果文档里抽"是否有失败"和缺陷候选。解析宁缺毋滥：认不出就当没缺陷，不影响 verdict。 */
+// 结果文档里出现这些说法，说明 agent 自己都判定"没真正执行"。
+// 只认否定词不算完 —— 必须同时没有任何 pass 行的证据（见下方 rows）。
+const BLOCKED_HINTS = /执行受阻|无法执行|未能执行|未能读取|未能完成|无法读取|无法启动|环境不可用|连接超时|窗口.*超时|执行 \*\*0 项\*\*|已执行 0 项|0 项已执行|no applicable|blocked/i;
+
+/** 从 agent 的结果文档里抽"是否有失败"和缺陷候选。
+ * 返回值里的 rows 是"带结论的表格行数"：0 行意味着 agent 没产出可判定的结果，
+ * 这种情况必须判 blocked，绝不能因为"没看到 fail"就记成 pass —— 空跑记成通过是 QA 最坏的假阳性。 */
 function parseResult(text) {
   const findings = [];
-  if (!text) return { findings };
+  let rows = 0, passes = 0;
+  if (!text) return { findings, rows, passes };
   // 1) 表格：| 用例 | 结论 | 说明 |  —— 结论列含 fail/失败 的行算失败
   for (const line of text.split(/\r?\n/)) {
     if (!/^\s*\|/.test(line)) continue;
     const cells = line.split("|").map((c) => c.trim()).filter((c, i, a) => !(i === 0 || i === a.length - 1));
     if (cells.length < 2) continue;
+    rows++;
     if (/fail|失败|不通过/i.test(cells[1])) {
       findings.push({ title: cells[0] || "未命名用例失败", detail: cells.slice(2).join(" / ") || "", severity: "major" });
+    } else if (/pass|通过|正常/i.test(cells[1])) {
+      passes++;
     }
   }
   // 2) 「## 缺陷」小节下的列表项
@@ -132,7 +142,7 @@ function parseResult(text) {
     seen.add(k);
     return true;
   });
-  return { findings: unique };
+  return { findings: unique, rows, passes };
 }
 
 export function makeMdTaskRunner({
@@ -210,7 +220,7 @@ export function makeMdTaskRunner({
       const resultMd = fs.existsSync(resultPath) ? fs.readFileSync(resultPath, "utf-8")
         : fs.existsSync(lastMsgPath) ? fs.readFileSync(lastMsgPath, "utf-8")
         : (r.out || "");
-      const { findings } = parseResult(resultMd);
+      const { findings, rows, passes } = parseResult(resultMd);
 
       if (canceled) {
         result = { verdict: "blocked", reason: "平台已取消，执行中断", result_md: resultMd || null, findings, env_check: envCheck };
@@ -225,8 +235,21 @@ export function makeMdTaskRunner({
           reason: `agent 未正常完成（exit=${r.code}）${tail ? `：${tail.slice(0, 300)}` : ""}`,
           result_md: resultMd || null, findings, env_check: envCheck,
         };
+      } else if (findings.length) {
+        result = { verdict: "fail", reason: `${findings.length} 条用例失败`, result_md: resultMd, findings, env_check: envCheck };
+      } else if (rows === 0 || (passes === 0 && BLOCKED_HINTS.test(resultMd))) {
+        // 没有可判定结论：agent 什么都没跑成、或只写了"执行受阻"。
+        // 这种情况如果判 pass，等于把空跑记成通过 —— 假通过比假失败危害大得多。
+        const hint = (resultMd.match(BLOCKED_HINTS) || [""])[0];
+        result = {
+          verdict: "blocked",
+          reason: rows === 0
+            ? `agent 未产出可判定的结果（0 条带结论的用例行）${hint ? `；文档提到「${hint}」` : ""}`
+            : `agent 自述执行受阻${hint ? `「${hint}」` : ""}，无通过证据`,
+          result_md: resultMd, findings: [], env_check: envCheck,
+        };
       } else {
-        result = { verdict: findings.length ? "fail" : "pass", reason: findings.length ? `${findings.length} 条用例失败` : "", result_md: resultMd, findings, env_check: envCheck };
+        result = { verdict: "pass", reason: "", result_md: resultMd, findings, env_check: envCheck };
       }
     } catch (e) {
       // 环境/客户端类失败：归 blocked，不当成产品缺陷（与 exec 的 fail_kind=selector 同思路）
