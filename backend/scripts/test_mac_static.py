@@ -1,6 +1,7 @@
 """Run with python -m unittest scripts.test_mac_static."""
 import hashlib
 import io
+import lzma
 from pathlib import Path
 import struct
 import tempfile
@@ -59,6 +60,40 @@ class MacStaticTest(unittest.TestCase):
         self.assertEqual(len(scanner.warnings), 2)
         self.assertIn("分区 1 ", scanner.warnings[0])
         self.assertIn("未读取到 HFS+ 或 APFS", scanner.warnings[1])
+
+    def test_hfs_catalog_overflow(self):
+        # macOS allocated this 4 MiB HFS+ catalog in more than eight extents.
+        # The volume contains only synthetic padding and an unsigned Mach-O header.
+        fixture = Path(__file__).with_name("fixtures") / "hfs-catalog-overflow.hfs.xz"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "fragmented.dmg"
+            builder = dpp.DmgBuilder()
+            builder.add_partition("Apple_HFS", lzma.decompress(fixture.read_bytes()))
+            builder.build(str(target))
+            scanner = Scan(None, Path(tmp))
+            scanner.disk_image(target, target.name)
+            self.assertFalse((Path(tmp) / "partition.img").exists())
+        self.assertEqual(scanner.warnings, [])
+        self.assertEqual([r["path"] for r in scanner.results], ["fragmented.dmg/分区0/catalog/tested-helper"])
+        self.assertIn("未签名", scanner.results[0]["problems"][0])
+
+    def test_unreadable_directory_keeps_sibling_results(self):
+        unsigned = struct.pack("<8I", 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0)
+
+        def entries(volume, directory):
+            if directory == "/":
+                yield "readable", "directory", 0, None
+                yield "unreadable", "directory", 0, None
+            elif directory == "/unreadable":
+                raise OSError("无法读取目录")
+            else:
+                yield "helper", "file", len(unsigned), io.BytesIO(unsigned)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scanner = Scan(None, Path(tmp))
+            scanner.scan_volume(None, "sample", entries)
+        self.assertEqual([r["path"] for r in scanner.results], ["sample/readable/helper"])
+        self.assertEqual(scanner.warnings, ["sample/unreadable 目录未完整读取：无法读取目录"])
 
     def test_checks_code_pages_against_signed_digest(self):
         code = b"x" * 4096 + b"last page"

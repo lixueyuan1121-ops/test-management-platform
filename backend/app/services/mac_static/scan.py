@@ -1,5 +1,6 @@
 """Read package contents in a separate process without mounting or executing them."""
 import argparse
+from contextlib import closing, contextmanager, nullcontext
 from io import BytesIO
 import json
 import mmap
@@ -27,6 +28,43 @@ MAX_ENTRIES = 100000
 
 class BudgetReached(Exception):
     pass
+
+
+def hfs_entries(volume, directory):
+    parent = volume.get_file_entry_by_path(directory)
+    if parent is None:
+        raise ValueError("找不到 HFS+ 目录")
+    for entry in parent.sub_file_entries:
+        name = entry.name
+        # libfshfs renders NUL characters in the private hard-link directory as ␀.
+        if directory == "/" and name in (".HFS+ Private Directory Data\r", "␀␀␀␀HFS+ Private Data"):
+            continue
+        mode = entry.file_mode
+        if stat.S_ISDIR(mode):
+            kind = "directory"
+        elif stat.S_ISREG(mode):
+            kind = "file"
+        elif stat.S_ISLNK(mode):
+            kind = "symlink"
+        else:
+            kind = "other"
+        # The data-fork handle resolves overflow extents and reads on demand.
+        yield name, kind, entry.size, nullcontext(entry)
+
+
+@contextmanager
+def apfs_file(volume, path, size):
+    data = volume.read_file(path)
+    if len(data) != size:
+        raise ValueError("文件实际长度与目录记录不一致")
+    with BytesIO(data) as stream:
+        yield stream
+
+
+def apfs_entries(volume, directory):
+    for entry in volume.list_directory(directory):
+        path = f"{directory.rstrip('/')}/{entry.name}"
+        yield entry.name, entry.kind, entry.size, apfs_file(volume, path, entry.size)
 
 
 class Scan:
@@ -105,40 +143,41 @@ class Scan:
                         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as exc:
                             self.warnings.append(f"{path} 未完整检查：{exc}")
 
-    def scan_volume(self, volume, label):
+    def scan_volume(self, volume, label, list_entries):
+        import dpp
+        read_errors = (OSError, ValueError, RuntimeError, dpp.DppError)
+        member_errors = read_errors + (zipfile.BadZipFile, tarfile.TarError)
         directories = ["/"]
         while directories:
             directory = directories.pop()
-            for entry in volume.list_directory(directory):
-                self.account(entry.size)
-                name = entry.name
-                if name in (".HFS+ Private Directory Data\r", "\0\0\0\0HFS+ Private Data"):
-                    continue  # HFS filesystem bookkeeping
-                if not name or "/" in name or name in (".", ".."):
-                    self.warnings.append(label + " 跳过无效目录条目")
-                    continue
-                path = directory.rstrip("/") + "/" + name
-                if len(path) > 2048:
-                    self.warnings.append(label + path[:120] + "… 路径过长，未检查")
-                elif entry.kind == "directory":
-                    directories.append(path)
-                elif entry.kind == "file":
-                    if entry.size > 768 * 1024**2:
-                        self.warnings.append(label + path + " 文件超过单项读取上限")
+            try:
+                for name, kind, size, source in list_entries(volume, directory):
+                    self.account(size)
+                    if not name or "/" in name or name in (".", ".."):
+                        self.warnings.append(label + " 跳过无效目录条目")
                         continue
-                    try:
-                        data = volume.read_file(path)
-                        if len(data) != entry.size:
-                            raise ValueError("文件实际长度与目录记录不一致")
-                        with BytesIO(data) as stream:
-                            self.member(stream, entry.size, label + path, 0)
-                    except (ValueError, OSError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as exc:
-                        self.warnings.append(f"{label}{path} 未完整检查：{exc}")
-                elif entry.kind != "symlink":
-                    self.warnings.append(label + path + " 未读取此类型的目录条目")
+                    path = directory.rstrip("/") + "/" + name
+                    if len(path) > 2048:
+                        self.warnings.append(label + path[:120] + "… 路径过长，未检查")
+                    elif kind == "directory":
+                        directories.append(path)
+                    elif kind == "file":
+                        if size > 768 * 1024**2:
+                            self.warnings.append(label + path + " 文件超过单项读取上限")
+                            continue
+                        try:
+                            with source as stream:
+                                self.member(stream, size, label + path, 0)
+                        except member_errors as exc:
+                            self.warnings.append(f"{label}{path} 未完整检查：{exc}")
+                    elif kind != "symlink":
+                        self.warnings.append(label + path + " 未读取此类型的目录条目")
+            except read_errors as exc:
+                self.warnings.append(f"{label}{directory} 目录未完整读取：{exc}")
 
     def disk_image(self, target, label):
         import dpp
+        import pyfshfs
         found = False
         partition_file = self.work / "partition.img"
         with dpp.DmgArchive.open(str(target)) as image:
@@ -165,13 +204,15 @@ class Scan:
                         ):
                             continue
                     if header[1024:1026] in (b"H+", b"HX"):
-                        volume_reader = dpp.HfsVolume
+                        opened_volume = closing(pyfshfs.open(str(partition_file)))
+                        list_entries = hfs_entries
                     elif header[32:36] == b"NXSB":
-                        volume_reader = dpp.ApfsVolume
                         # The reader opens the default APFS volume. Record extra volumes.
                         volume_ids = struct.unpack_from("<100Q", header, 184)
                         if sum(bool(v) for v in volume_ids) > 1:
                             self.warnings.append(f"{label} 分区 {part.id} 仅检查默认 APFS 卷")
+                        opened_volume = dpp.ApfsVolume.open(str(partition_file))
+                        list_entries = apfs_entries
                     elif (part.size <= len(header) and (header[510:512] == b"\x55\xaa"
                           or header.startswith((b"EFI PART", b"PM"))
                           or header[:16] in APPLE_GPT_TYPES)):
@@ -179,8 +220,8 @@ class Scan:
                     else:
                         self.warnings.append(f"{label} 分区 {part.id} 含有数据，文件系统格式未识别，该分区未扫描。")
                         continue
-                    with volume_reader.open(str(partition_file)) as volume:
-                        self.scan_volume(volume, f"{label}/分区{part.id}")
+                    with opened_volume as volume:
+                        self.scan_volume(volume, f"{label}/分区{part.id}", list_entries)
                     found = True
                 finally:
                     partition_file.unlink(missing_ok=True)

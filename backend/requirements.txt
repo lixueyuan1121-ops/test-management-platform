@@ -19,3 +19,4 @@ APScheduler==3.11.3
 httpx==0.28.1
 asn1crypto==1.5.1
 dpp-py==0.4.1
+libfshfs-python==20260922
