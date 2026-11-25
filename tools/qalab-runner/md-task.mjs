@@ -20,6 +20,42 @@ import { makeHostsEnv } from "./hosts-env.mjs";
 // 自己再写一份 where.exe 探测只会和它走岔。
 import { codexCommand } from "./codex-engine.mjs";
 
+// 桌面版 Codex 的 CLI 只在 Appx 包内（...\WindowsApps\OpenAI.Codex_<版本>_x64__<hash>\app\resources\codex.exe），
+// 不进 PATH，而且路径带版本号 —— 升级后旧路径就没了。所以支持 MD_CODEX_BIN="appx:OpenAI.Codex"：
+// 每次启动重新扫一遍，取版本号最大的那个包。
+export function resolveAgentBin(bin, windowsAppsDir = process.env.ProgramFiles ? `${process.env.ProgramFiles}\\WindowsApps` : "C:\\Program Files\\WindowsApps") {
+  const m = /^appx:(.+)$/i.exec(String(bin || "").trim());
+  if (!m) return bin;
+  const pkgName = m[1].trim();
+  let entries = [];
+  try {
+    entries = fs.readdirSync(windowsAppsDir);
+  } catch (e) {
+    throw new Error(`扫不到 ${windowsAppsDir}（${e.code || e.message}），appx: 模式只能在这台机器的 Windows 上用；也可以直接把 MD_CODEX_BIN 写成 codex.exe 的绝对路径`);
+  }
+  const all = entries.filter((d) => d.startsWith(`${pkgName}_`) && /_(x64|arm64|x86)__/i.test(d));
+  if (!all.length) throw new Error(`${windowsAppsDir} 下没有 ${pkgName} 包，确认 Codex 桌面版已安装`);
+  // 优先本机架构：同一台机器上一般只装一个架构的包，但升级过渡期可能并存
+  const archTag = { x64: "_x64__", arm64: "_arm64__", ia32: "_x86__" }[process.arch];
+  const sameArch = archTag ? all.filter((d) => d.includes(archTag)) : [];
+  const cands = sameArch.length ? sameArch : all;
+  // 版本号形如 26.1120.5083.0，按数字段比较，别用字典序（"26.999" > "26.1120"）
+  const ver = (d) => (d.match(/_([\d.]+)_/) || [, "0"])[1].split(".").map(Number);
+  cands.sort((a, b) => {
+    const va = ver(a), vb = ver(b);
+    for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+      const x = va[i] || 0, y = vb[i] || 0;
+      if (x !== y) return y - x;
+    }
+    return 0;
+  });
+  for (const d of cands) {
+    const exe = path.join(windowsAppsDir, d, "app", "resources", "codex.exe");
+    if (fs.existsSync(exe)) return exe;
+  }
+  throw new Error(`${pkgName} 包里没有 app\\resources\\codex.exe，可能这个版本不带 CLI`);
+}
+
 const IS_WIN = process.platform === "win32";
 
 function runCapture(cmd, args, { cwd, env, timeoutMs, control, shell = IS_WIN }) {
@@ -130,7 +166,7 @@ export function makeMdTaskRunner({
         `   失败用例的结论写 fail，并在文末用「## 缺陷」小节列出每条缺陷的标题与复现要点。`,
       ].join("\n");
 
-      const cmd = codexCommand(codexBin);
+      const cmd = codexCommand(resolveAgentBin(codexBin));
       log(`启动 agent 执行 run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""} bin=${cmd.command}`);
       const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, prompt], {
         cwd: workDir, env: process.env, timeoutMs: codexTimeoutMs, control,
