@@ -1126,3 +1126,36 @@ CREATE TABLE IF NOT EXISTS `mac_notary_agent` (
   PRIMARY KEY (`owner_id`, `agent`),
   KEY `ix_mac_notary_agent_last_seen_at` (`last_seen_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- md 任务：整份提测文档下发到执行机，由 agent 执行。与 exec_run 互不相干。
+CREATE TABLE `md_run` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` BIGINT DEFAULT NULL,
+  `task_id` BIGINT DEFAULT NULL,
+  `req_no` VARCHAR(64) DEFAULT NULL,
+  `title` VARCHAR(255) NOT NULL,
+  `runner` VARCHAR(64) NOT NULL DEFAULT 'mac-01',
+  `env_group` VARCHAR(64) NOT NULL,
+  `client_version` VARCHAR(64) DEFAULT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'page',
+  `content` MEDIUMTEXT NOT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `verdict` VARCHAR(16) DEFAULT NULL,
+  `reason` TEXT,
+  `result_md` MEDIUMTEXT,
+  `findings` TEXT,
+  `duration_ms` INT DEFAULT NULL,
+  `env_check` TEXT,
+  `started_at` DATETIME DEFAULT NULL,
+  `heartbeat_at` DATETIME DEFAULT NULL,
+  `finished_at` DATETIME DEFAULT NULL,
+  `enqueued_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_mdrun_project` (`project_id`),
+  KEY `idx_mdrun_task` (`task_id`),
+  KEY `idx_mdrun_req` (`req_no`),
+  KEY `idx_mdrun_runner` (`runner`),
+  KEY `idx_mdrun_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

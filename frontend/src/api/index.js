@@ -627,3 +627,11 @@ export const getSelectorAudit = params => http.get('/selector-audits', {params})
 export const saveSelectorAuditSchedule = body => http.put('/selector-audits/schedule', body)
 export const runSelectorAudit = body => http.post('/selector-audits/run', body)
 export const cancelSelectorAudit = id => http.post(`/selector-audits/${id}/cancel`)
+
+// ===== 提测执行（整份 md 下发到执行机，由 agent 执行）=====
+export const listMdRuns = (params) => http.get('/md-runs', { params })
+export const getMdRun = (id) => http.get(`/md-runs/${id}`)
+export const createMdRun = (data) => http.post('/md-runs', data)
+export const cancelMdRun = (id) => http.post(`/md-runs/${id}/cancel`)
+export const deleteMdRun = (id) => http.delete(`/md-runs/${id}`)
+export const reportMdRunBugs = (id, data = {}) => http.post(`/md-runs/${id}/report-bugs`, data)
