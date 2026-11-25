@@ -15,15 +15,19 @@ import { setTimeout as sleep } from "node:timers/promises";
 import fs from "node:fs";
 import path from "node:path";
 import { makeHostsEnv } from "./hosts-env.mjs";
+// 复用 codex-engine 的可执行文件解析：它已经处理了三种形态 ——
+//   .js（@openai/codex/bin/codex.js，用 node 起）、Windows 上的 .cmd 包装、原生 .exe。
+// 自己再写一份 where.exe 探测只会和它走岔。
+import { codexCommand } from "./codex-engine.mjs";
 
 const IS_WIN = process.platform === "win32";
 
-function runCapture(cmd, args, { cwd, env, timeoutMs, control }) {
+function runCapture(cmd, args, { cwd, env, timeoutMs, control, shell = IS_WIN }) {
   return new Promise((resolve) => {
     const started = Date.now();
     let child;
     try {
-      child = spawn(cmd, args, { cwd, env, shell: IS_WIN, windowsHide: true });
+      child = spawn(cmd, args, { cwd, env, shell, windowsHide: true });
     } catch (e) {
       return resolve({ code: -1, out: "", err: `无法启动 ${cmd}: ${e.message}`, timedOut: false, duration_ms: 0 });
     }
@@ -126,9 +130,11 @@ export function makeMdTaskRunner({
         `   失败用例的结论写 fail，并在文末用「## 缺陷」小节列出每条缺陷的标题与复现要点。`,
       ].join("\n");
 
-      log(`启动 agent 执行 run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""}`);
-      const r = await runCapture(codexBin, [...codexArgs, prompt], {
+      const cmd = codexCommand(codexBin);
+      log(`启动 agent 执行 run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""} bin=${cmd.command}`);
+      const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, prompt], {
         cwd: workDir, env: process.env, timeoutMs: codexTimeoutMs, control,
+        shell: cmd.prefix.length ? false : IS_WIN,
       });
       fs.writeFileSync(path.join(workDir, "agent.log"), `# exit=${r.code} timedOut=${r.timedOut}\n\n## stdout\n${r.out}\n\n## stderr\n${r.err}`);
 
@@ -141,13 +147,24 @@ export function makeMdTaskRunner({
       } else if (r.timedOut) {
         result = { verdict: "blocked", reason: `agent 执行超时（${Math.round(codexTimeoutMs / 1000)}s）`, result_md: resultMd || null, findings, env_check: envCheck };
       } else if (r.code !== 0 || !fs.existsSync(resultPath)) {
-        result = { verdict: "blocked", reason: `agent 未正常完成（exit=${r.code}）`, result_md: resultMd || null, findings, env_check: envCheck };
+        // 把 agent 自己吐的最后一行错误带回去：命令不存在 / 未登录 / 配置错，
+        // 在无人值守时全靠这一句，否则页面上只看到 exit=-1。
+        const tail = (r.err || "").trim().split(/\r?\n/).filter(Boolean).slice(-1)[0] || "";
+        result = {
+          verdict: "blocked",
+          reason: `agent 未正常完成（exit=${r.code}）${tail ? `：${tail.slice(0, 300)}` : ""}`,
+          result_md: resultMd || null, findings, env_check: envCheck,
+        };
       } else {
         result = { verdict: findings.length ? "fail" : "pass", reason: findings.length ? `${findings.length} 条用例失败` : "", result_md: resultMd, findings, env_check: envCheck };
       }
     } catch (e) {
       // 环境/客户端类失败：归 blocked，不当成产品缺陷（与 exec 的 fail_kind=selector 同思路）
       if (e.envCheck) envCheck = e.envCheck;
+      if (/ENOENT|not recognized|不是内部或外部命令|CODEX_BIN/i.test(String(e.message))) {
+        e.message = `找不到 agent 命令（MD_CODEX_BIN=${codexBin}）：${e.message}。` +
+          `Windows 上桌面版 Codex 不把 CLI 放 PATH，需把 MD_CODEX_BIN 指向 codex.exe 或 @openai/codex/bin/codex.js`;
+      }
       result = { verdict: "blocked", reason: e.message, findings: [], env_check: envCheck };
     } finally {
       clearInterval(heartbeat);
