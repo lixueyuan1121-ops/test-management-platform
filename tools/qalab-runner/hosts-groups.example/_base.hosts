@@ -1,0 +1,4 @@
+# 每个环境都必须有的基础行。不建这个文件时，runner 用内置的三行。
+127.0.0.1	localhost
+::1	localhost
+255.255.255.255	broadcasthost

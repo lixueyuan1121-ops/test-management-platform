@@ -133,6 +133,31 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName,
     return path.join(groupsDir || "", `${group}.hosts`);
   }
 
+  // 基础行：每个环境的 hosts 都要有的东西（localhost 等）。
+  // SwitchHosts 导出的分组通常只有业务映射，直接整份替换会把这些行弄丢，
+  // 所以固定拼一个基础段在前。可用 hosts-groups/_base.hosts 覆盖。
+  const DEFAULT_BASE = ["127.0.0.1\tlocalhost", "::1\tlocalhost", "255.255.255.255\tbroadcasthost"];
+  function baseLines() {
+    const f = path.join(groupsDir || "", "_base.hosts");
+    try {
+      if (fs.existsSync(f)) {
+        const text = fs.readFileSync(f, "utf-8");
+        return text.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
+      }
+    } catch { /* 读不到就用内置的 */ }
+    return DEFAULT_BASE;
+  }
+
+  // 最终写入系统 hosts 的内容 = 基础行 + 该环境的映射行
+  function composeSystemsHosts(groupText) {
+    const groupLines = groupText.split(/\r?\n/);
+    const head = [
+      "# >>> qa-pipeline managed (由 runner 写入，跑完自动还原) >>>",
+      ...baseLines(),
+    ];
+    return [...head, ...groupLines, "# <<< qa-pipeline managed <<<", ""].join("\n");
+  }
+
   function listGroups() {
     try {
       return fs.readdirSync(groupsDir || "").filter((f) => f.endsWith(".hosts")).map((f) => f.replace(/\.hosts$/, ""));
@@ -151,7 +176,12 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName,
     if (r.code !== 0) throw new Error(`快照 hosts 失败: ${r.err.trim()}`);
     fs.writeFileSync(pendingFile, JSON.stringify({ snapshot, group, at: Date.now() }));
 
-    r = await viaHelper("apply", file);
+    // direct 模式可以直接传拼装后的文本；helper 模式写临时文件再应用
+    const composed = composeSystemsHosts(fs.readFileSync(file, "utf-8"));
+    const composedFile = path.join(hostsRuntime, `composed-${Date.now()}.hosts`);
+    fs.writeFileSync(composedFile, composed, "utf-8");
+    r = await viaHelper("apply", composedFile);
+    try { fs.unlinkSync(composedFile); } catch {}
     if (r.code !== 0) throw new Error(`写入 hosts 失败: ${r.err.trim()}`);
     await flushDns();
 
