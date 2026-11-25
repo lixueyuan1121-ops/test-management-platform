@@ -1,5 +1,7 @@
 """Dispatch-to-report regression tests. The skill posts to a loopback tracker."""
 import json
+from pathlib import Path
+import tempfile
 import subprocess
 import threading
 import unittest
@@ -63,6 +65,10 @@ class MdDispatchTests(unittest.TestCase):
         self.client = TestClient(app)
         self.document = dict(title='测试', req_no='42', env_group='pre', content='# 文档', project_id=1)
         self.addCleanup(self.client.close)
+        self.prepare = patch.object(md_bug_skill, 'prepare_case',
+                                    side_effect=lambda sub, title, facts, token: (facts['detail'], 'P2', []))
+        self.prepare.start()
+        self.addCleanup(self.prepare.stop)
 
     def post(self, path, **payload):
         response = self.client.post('/api/md-runs' + path, json=payload)
@@ -118,7 +124,7 @@ class MdDispatchTests(unittest.TestCase):
                 self.assertEqual([f['title'] for f in row['findings']], [OLD_FINDINGS[0]['title']])
             with patch.object(settings, 'GEELIB_ENABLED', True), \
                  patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'), \
-                 patch.object(md_bug_skill, 'create_case', return_value='geelib#123') as submit:
+                 patch.object(md_bug_skill, 'create_case', return_value={'external_ref': 'geelib#123'}) as submit:
                 self.assertEqual(self.post(f'/{rid}/report-bugs', indexes=[1, 2])['reported'], 0)
                 self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 1)
                 self.assertEqual(self.post(f'/{rid}/report-bugs', indexes=[0])['reported'], 0)
@@ -216,37 +222,148 @@ class MdDispatchTests(unittest.TestCase):
         self.assertIn('应返回结果，实际为空', result.findings[1]['detail'])
 
     def test_skill_receipt_and_replay(self):
+        if not (md_bug_skill.PACKAGE / md_bug_skill.ENTRY).exists():
+            self.skipTest('安装私有技能包后运行原包集成测试')
+        self.prepare.stop()
         rid = self.finished_run()
         calls = []
+        failure = None
         class Tracker(BaseHTTPRequestHandler):
             def do_POST(self):
-                calls.append((self.path, self.headers['X-Agent-Auth'], json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                calls.append((self.path, self.headers['X-Agent-Auth'], body))
+                if self.path.endswith('/getList'):
+                    data = {'matterList': [], 'total': 0}
+                elif self.path.endswith('/getMatterTypeCustomAttributeList'):
+                    opts = [{'text': '测试员', 'mail': 'qa@example.test'}]
+                    data = [{'matterCustomAttribute': {'cf_key': 'executor', 'type_options': json.dumps(opts)}}]
+                elif self.path.endswith('/add'):
+                    if failure == 'lost':
+                        self.close_connection = True
+                        return
+                    if failure == 'rejected':
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'{"errno":3000,"errmsg":"invalid field"}')
+                        return
+                    data = {'id': '729'}
+                else:
+                    self.send_error(404)
+                    return
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b'{"errno":2000,"data":"729"}')
+                self.wfile.write(json.dumps({'errno': 2000, 'data': data}).encode())
+            def do_GET(self):
+                calls.append((self.path.split('?')[0], self.headers['X-Agent-Auth'], {}))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"errno":2000,"data":{"matterInfo":{"id":729,"type_id":218,"sub_id":81}}}')
             def log_message(self, *args):
                 pass
         server = ThreadingHTTPServer(('127.0.0.1', 0), Tracker)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        # Match the deployment host, where global fetch is unavailable.
         run_process = subprocess.run
         def without_fetch(args, **options):
+            self.assertEqual(Path(args[3]).read_bytes(), (md_bug_skill.PACKAGE / md_bug_skill.ENTRY).read_bytes())
             return run_process([args[0], '--no-experimental-fetch', *args[1:]], **options)
+        def draft(_, *, system_prompt, prompt_builder, **kwargs):
+            self.assertIn((md_bug_skill.PACKAGE / md_bug_skill.RULES).read_text(), system_prompt)
+            self.assertIn((md_bug_skill.PACKAGE / md_bug_skill.FIELDS).read_text(), system_prompt)
+            self.assertNotIn('local-test-token', prompt_builder() + system_prompt)
+            self.assertIn('仍停留', prompt_builder())
+            return [{'type': 'result', 'text': json.dumps({'description': '点 <确认>\n仍停留', 'priority': 'P1',
+                                                          'keywords': ['确认']})}]
         with patch.object(settings, 'GEELIB_API_URL', f'http://127.0.0.1:{server.server_port}'), \
              patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch.object(md_bug_skill.generators, 'get_provider') as engine, \
              patch.object(md_bug_skill.subprocess, 'run', side_effect=without_fetch), \
              patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'):
-            self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 1)
+            engine.return_value.stream_generate.side_effect = draft
+            report = self.post(f'/{rid}/report-bugs')
+            self.assertEqual(report['reported'], 1, report['results'])
             self.client.patch(self.callback, json=self.results)
             self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 0)
-        self.assertEqual(len(calls), 1)
-        path, header, body = calls[0]
-        self.assertEqual((path, header, body['sub_id'], body['title']),
-                         ('/openapi/Matter/add', 'Bearer local-test-token', 81, '[42] 按钮无响应'))
+            successful_calls = list(calls)
+            with self.assertRaisesRegex(md_bug_skill.GeelibError, '成员列表'):
+                md_bug_skill.create_case(81, '测试', '测试', 'P2', 'unknown@example.test', 'local-test-token')
+            self.assertTrue(calls[-1][0].endswith('getMatterTypeCustomAttributeList'))
+            failure = 'rejected'
+            with self.assertRaisesRegex(md_bug_skill.GeelibError, 'invalid field') as rejected:
+                md_bug_skill.create_case(81, '测试', '测试', 'P2', 'qa@example.test', 'local-test-token')
+            self.assertNotIsInstance(rejected.exception, md_bug_skill.SubmissionUncertain)
+            failure = 'lost'
+            with self.assertRaises(md_bug_skill.SubmissionUncertain):
+                md_bug_skill.create_case(81, '测试', '测试', 'P2', 'qa@example.test', 'local-test-token')
+        calls = successful_calls
+        self.assertEqual([path.rsplit('/', 1)[1] for path, _, _ in calls],
+                         ['getList', 'getList', 'getMatterTypeCustomAttributeList', 'add', 'getDetail'])
+        self.assertTrue(all(header == 'Bearer local-test-token' for _, header, _ in calls))
+        body = calls[-2][2]
+        self.assertEqual((body['sub_id'], body['title']), (81, '[42] 按钮无响应'))
         self.assertIn('&lt;确认&gt;</p><p>', body['content'])
-        self.assertEqual(self.client.get(f'/api/md-runs/{rid}').json()['data']['findings'][0]['external_ref'], 'geelib#729')
+        self.assertEqual({f['cf_name']: f['cf_value'] for f in body['data']},
+                         {'执行人': 'qa@example.test', '优先级': 'high', '状态': '新建'})
+        self.assertFalse({'user_mail', 'sign', 't'}.intersection(body))
+        saved = self.client.get(f'/api/md-runs/{rid}').json()['data']['findings'][0]
+        self.assertEqual(saved['external_ref'], 'geelib#729')
+        self.assertEqual(saved['report_receipt']['skill'], 'jikuyun-bug-report')
+        self.assertTrue(saved['report_receipt']['detail_verified'])
+        self.assertEqual(saved['report_receipt']['type_id'], 218)
+        self.assertEqual(saved['report_receipt']['attachments'], [])
+
+    def test_skill_matches_using_details_across_pages_before_creation(self):
+        self.prepare.stop()
+        present = {'id': 602, 'sub_id': 81, 'type_name': '缺陷', 'title': '点击保存时卡住', 'status_name': '已关闭'}
+        other = {**present, 'id': 603, 'title': '点击保存后闪退'}
+        def read(method, endpoint, payload, token):
+            self.assertEqual(token, 'personal')
+            if endpoint == 'getDetail':
+                self.assertEqual(method, 'GET')
+                return {'matterInfo': {'mkd_content': '点击保存后' + ('卡住' if payload['id'] == 602 else '直接闪退')}}
+            if payload['title'] == '保存':
+                return {'matterList': [present if payload['page'] == 1 else other], 'total': 2}
+            return {'matterList': [], 'total': 0}
+        def analyze(_, task, facts):
+            if 'existing' not in facts:
+                return {'priority': 'P2', 'description': '点击保存后卡住', 'keywords': ['保存']}
+            self.assertEqual([r['description'] for r in facts['existing']], ['点击保存后卡住', '点击保存后直接闪退'])
+            return {'checks': [{'id': 602, 'match': 'same', 'reason': '点击保存后卡住'},
+                               {'id': 603, 'match': 'different', 'reason': '发生闪退'}]}
+        with patch.object(md_bug_skill, 'installed_file', return_value=b'skill fixture'), \
+             patch.object(md_bug_skill, '_read_tracker', side_effect=read), \
+             patch.object(md_bug_skill, 'skill_json', side_effect=analyze):
+            _, priority, matches = md_bug_skill.prepare_case(81, '[42] 保存无响应', {'detail': '点击保存后卡住'}, 'personal')
+        self.assertEqual(priority, 'P2')
+        self.assertEqual([(m['id'], m['status']) for m in matches], [(602, '已关闭')])
+
+    def test_missing_skill_does_not_attempt_to_report(self):
+        self.prepare.stop()
+        rid = self.finished_run()
+        with tempfile.TemporaryDirectory() as directory, patch.object(md_bug_skill, 'PACKAGE', Path(directory)), \
+             patch.object(settings, 'GEELIB_ENABLED', True), patch.object(md_bug_skill, 'create_case') as create, \
+             patch('app.services.geelib_account.get_user_app_token', return_value='personal'):
+            result = self.post(f'/{rid}/report-bugs')['results'][0]
+            self.assertEqual(result['status'], 'failed')
+            self.assertIn('未完整安装', result['msg'])
+            create.assert_not_called()
+
+    def test_skill_duplicate_review_can_link_without_submitting(self):
+        self.prepare.stop()
+        rid = self.finished_run()
+        match = {'id': 729, 'title': '确认按钮无响应', 'description': '触发条件和行为相同'}
+        with patch.object(md_bug_skill, 'prepare_case', return_value=('点确认', 'P2', [match])), \
+             patch.object(settings, 'GEELIB_ENABLED', True), patch.object(md_bug_skill, 'create_case') as create, \
+             patch('app.services.geelib_account.get_user_app_token', return_value='personal'):
+            path = f'/{rid}/report-bugs'
+            result = self.post(path)['results'][0]
+            self.assertEqual(result['status'], 'review')
+            self.assertEqual(result['matches'], [match])
+            linked = self.post(path, indexes=[0], receipt_action='link', review_key=result['review_key'], matter_id=729)
+            self.assertEqual(linked['results'][0]['external_ref'], 'geelib#729')
+            self.assertEqual(self.post(path)['reported'], 0)
+            create.assert_not_called()
 
     def test_tracker_rejection_can_retry_but_lost_receipt_is_not_resubmitted(self):
         rid = self.finished_run()
@@ -292,7 +409,7 @@ class MdDispatchTests(unittest.TestCase):
              patch('app.services.geelib_account.get_user_app_token', return_value='personal'), \
              patch.object(md_bug_skill, 'find_title_matches', return_value=[]) as lookup, \
              patch.object(md_bug_skill, 'create_case', side_effect=[md_bug_skill.SubmissionUncertain('超时'),
-                          md_bug_skill.SubmissionUncertain('再次超时'), 'geelib#730']) as submit:
+                          md_bug_skill.SubmissionUncertain('再次超时'), {'external_ref': 'geelib#730'}]) as submit:
             self.assertEqual(self.post(path)['results'][0]['status'], 'uncertain')
             def retry(key):
                 return self.post(path, indexes=[0], receipt_action='retry', review_key=key)
@@ -320,7 +437,8 @@ class MdDispatchTests(unittest.TestCase):
 
     def test_receipt_lookup_filters_and_requires_a_complete_successful_response(self):
         row = dict(id='729', sub_id='81', type_name='缺陷', title='按钮无响应', mkd_content='点击确认后窗口不变')
-        rows = [row, {**row, 'sub_id': '82'}, {**row, 'type_name': '需求'}, {**row, 'title': '其他按钮无响应'}]
+        rows = [row, {**row, 'id': '730', 'sub_id': '82'}, {**row, 'id': '731', 'type_name': '需求'},
+                {**row, 'id': '732', 'title': '其他按钮无响应'}]
         with patch.object(md_bug_skill.requests, 'post') as query:
             response = query.return_value
             response.json.return_value = {'errno': 2000, 'data': {'total': 4, 'matterList': rows}}

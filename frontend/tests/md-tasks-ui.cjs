@@ -8,7 +8,9 @@ const assert = require('node:assert/strict');
     const errors = [], payloads = [];
     const reports = [];
     const run = { id: 5, project_id: 1, title: '冒烟用例', status: 'failed', verdict: 'fail',
-      findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' }] };
+      findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' },
+        { title: '保存失败', external_ref: 'geelib#731',
+          report_receipt: { skill: 'jikuyun-bug-report', priority: 'P1', sub_id: 7087, type_id: 21732 } }] };
     page.on('pageerror', err => errors.push(err.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'local-ui-fixture'));
     await page.route('**/api/**', async route => {
@@ -59,6 +61,9 @@ const assert = require('node:assert/strict');
     assert.deepEqual(payloads[0].runners, ['mac', 'win']);
     assert.equal(payloads[0].env_group, 'pre');
     await page.getByRole('button', { name: '查看', exact: true }).click();
+    await page.getByText('极库云提 Bug 技能 · P1').waitFor();
+    assert.equal(await page.getByRole('link', { name: 'geelib#731' }).getAttribute('href'),
+      'https://geelib.qihoo.net/geelib/project/matterType/21732?subId=7087&matterId=731&typeId=21732');
     await page.getByRole('button', { name: '核对回执' }).click();
     const review = page.getByRole('dialog', { name: '核对极库云回执' });
     await review.getByText('已记录按钮无响应').waitFor();

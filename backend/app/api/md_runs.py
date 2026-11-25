@@ -380,35 +380,56 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
     title = (f"[{run.req_no}] {title}" if run.req_no else title)[:200]
     clean = {k: v for k, v in item.items() if k not in
              ("report_state", "report_started_at", "report_attempt", "report_error")}
-    if state:
-        try:
-            matches = md_bug_skill.find_title_matches(sub_id, title, token)
-        except GeelibError as exc:
-            return {"ok": False, "status": "check_failed", "msg": str(exc)}
-        # A decision is valid only for the displayed attempt and the same set of possible receipts.
-        snapshot = [run.id, index, sub_id, title, item.get("report_attempt"), sorted(m["id"] for m in matches)]
-        key = hashlib.sha256(_dump(snapshot).encode()).hexdigest()
+
+    def review(matches, stage, message):
+        snapshot = [stage, run.id, index, sub_id, title, item.get("report_attempt"), sorted(m["id"] for m in matches)]
+        key = stage + "-" + hashlib.sha256(_dump(snapshot).encode()).hexdigest()[:56]
         if body.receipt_action not in ("link", "retry") or body.review_key != key:
-            return {"ok": False, "status": "review", "msg": item.get("report_error") or "请核对极库云工单",
-                    "matches": matches, "review_key": key}
+            return {"ok": False, "status": "review", "msg": message, "matches": matches, "review_key": key}
         if body.receipt_action == "link":
             if body.matter_id not in {m["id"] for m in matches}:
-                raise HTTPException(409, "请选择当前项目中已核对的同标题缺陷")
+                raise HTTPException(409, "请选择当前项目中已核对的缺陷")
             ref = f"geelib#{body.matter_id}"
             if not _save_finding(db, run, index, item, {**clean, "external_ref": ref}):
                 return changed
             return {"ok": True, "skipped": True, "status": "linked", "external_ref": ref}
-    elif body.receipt_action:
+        return None
+
+    skill_review = (body.review_key or "").startswith("skill-")
+    receipts = []
+    if state:
+        try:
+            receipts = md_bug_skill.find_title_matches(sub_id, title, token)
+        except GeelibError as exc:
+            return {"ok": False, "status": "check_failed", "msg": str(exc)}
+        if not skill_review:
+            decision = review(receipts, "receipt", item.get("report_error") or "请核对极库云工单")
+            if decision:
+                return decision
+    elif body.receipt_action and not skill_review:
         return changed
 
-    claimed = {**clean, "report_state": "sending", "report_attempt": uuid.uuid4().hex, "report_started_at": now}
+    facts = {"title": title, "detail": item.get("detail") or item.get("description") or "",
+             "severity": item.get("severity"), "environment": run.env_group, "version": run.client_version,
+             "test_document": md_bug_skill.case_context(run.content, title)}
+    try:
+        description, priority, matches = md_bug_skill.prepare_case(sub_id, title, facts, token)
+    except GeelibError as exc:
+        return {"ok": False, "status": "failed", "msg": str(exc)}
+    reviewed = {m["id"] for m in receipts}
+    if skill_review or any(m["id"] not in reviewed for m in matches):
+        related = {m["id"]: m for m in [*receipts, *matches]}
+        decision = review(list(related.values()), "skill", "技能查到可能相同的缺陷，请核对触发条件和实际结果")
+        if decision:
+            return decision
+
+    claimed = {**clean, "report_state": "sending", "report_attempt": uuid.uuid4().hex, "report_started_at": time.time()}
     if not _save_finding(db, run, index, item, claimed):
         return changed
     try:
-        ref = md_bug_skill.create_case(sub_id, title, str(item.get("detail") or item.get("description") or ""),
-                                       item.get("severity"), executor, token)
-        updated = {**clean, "external_ref": ref}
-        result = {"ok": True, "external_ref": ref}
+        report = md_bug_skill.create_case(sub_id, title, description, priority, executor, token)
+        updated = {**clean, **report}
+        result = {"ok": True, **report}
     except md_bug_skill.SubmissionUncertain as exc:
         updated = {**claimed, "report_state": "uncertain", "report_error": str(exc)}
         result = {"ok": False, "status": "uncertain", "msg": str(exc)}

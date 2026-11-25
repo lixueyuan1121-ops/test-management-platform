@@ -91,7 +91,11 @@
             <el-table-column prop="severity" label="严重度" width="80" />
             <el-table-column label="极库云" width="180">
               <template #default="{ row, $index }">
-                <span v-if="row.external_ref">{{ row.external_ref }}</span>
+                <template v-if="row.external_ref">
+                  <a v-if="caseLink(row)" :href="caseLink(row)" target="_blank" rel="noopener noreferrer">{{ row.external_ref }}</a>
+                  <span v-else>{{ row.external_ref }}</span>
+                  <div v-if="row.report_receipt?.skill" class="hint">极库云提 Bug 技能 · {{ row.report_receipt.priority }}</div>
+                </template>
                 <template v-else-if="row.report_state">
                   <span>{{ row.report_state === 'sending' ? '上报中' : '回执待核对' }}</span>
                   <el-button link type="primary" :disabled="reporting" @click="submitReports({ indexes: [$index], receipt_action: 'check' })">核对回执</el-button>
@@ -120,9 +124,9 @@
       <template v-if="receipt">
         <p>任务 #{{ receipt.runId }} · {{ receipt.title }}</p>
         <template v-if="receipt.matches.length">
-          <p>请核对项目中的同标题缺陷，选择要关联的工单。</p>
+          <p>{{ receipt.msg || '请核对相关缺陷，选择要关联的工单。' }}</p>
           <el-select v-model="selectedMatter" placeholder="选择工单" style="width:100%">
-            <el-option v-for="m in receipt.matches" :key="m.id" :value="m.id" :label="['#' + m.id, m.status, m.created_at].filter(Boolean).join(' · ')" />
+            <el-option v-for="m in receipt.matches" :key="m.id" :value="m.id" :label="['#' + m.id, m.title, m.status, m.created_at].filter(Boolean).join(' · ')" />
           </el-select>
           <p v-if="selectedMatter">{{ receipt.matches.find(m => m.id === selectedMatter)?.description }}</p>
         </template>
@@ -246,6 +250,13 @@ async function onCancel(row) {
   await cancelMdRun(row.id)
   ElMessage.success('已取消')
   await loadRuns()
+}
+
+function caseLink(row) {
+  const receipt = row.report_receipt
+  const id = /^geelib#([1-9]\d*)$/.exec(row.external_ref)?.[1]
+  if (!id || !Number.isSafeInteger(receipt?.sub_id) || !Number.isSafeInteger(receipt?.type_id)) return ''
+  return `https://geelib.qihoo.net/geelib/project/matterType/${receipt.type_id}?subId=${receipt.sub_id}&matterId=${id}&typeId=${receipt.type_id}`
 }
 
 async function reportBugs() {
