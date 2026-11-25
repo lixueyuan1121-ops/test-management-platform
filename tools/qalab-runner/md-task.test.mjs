@@ -77,7 +77,8 @@ for (const restartFails of [false, true]) {
     assert.deepEqual(events, ['hosts', 'restart', 'restore', 'report']);
     assert.equal(report.env_check.client_restarted, !restartFails);
     assert.equal(report.env_check.restored, true);
-    assert.equal(report.verdict, restartFails ? 'blocked' : 'pass');
+    assert.equal(report.verdict, restartFails ? 'blocked' : 'completed');
+    if (!restartFails) assert.match(report.result_md, /\| open \| pass \| good \|/);
     assert.equal(fs.existsSync(path.join(dir, 'md-runs/md-11/result.md')), !restartFails);
   });
 }

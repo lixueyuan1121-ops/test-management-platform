@@ -25,6 +25,7 @@ from app.db.session import get_db
 from app.models import MdRun, User
 from app.schemas.common import ok
 from app.services import md_bug_skill
+from app.services.md_result import analyze_result
 from app.schemas.md_run import MdRunDocument, MdRunBatchCreate, MdRunCreate, MdRunReportIn, MdRunBugsIn
 
 router = APIRouter(prefix="/api/md-runs", tags=["md-runs"])
@@ -37,7 +38,25 @@ def _dump(value) -> str | None:
     return None if value is None else json.dumps(value, ensure_ascii=False)
 
 
+def _legacy_failure(verdict, reason, findings, markdown):
+    return bool(markdown and findings and verdict == "fail" and reason == f"{len(findings)} 条用例失败")
+
+
+def _review_findings(r: MdRun) -> tuple[str | None, list]:
+    items = r.findings_list
+    indexed = list(enumerate(items))
+    if _legacy_failure(r.verdict, r.reason, items, r.result_md):
+        result = analyze_result(r.result_md)
+        if result.explicit_no_defects and result.verdict == "fail":
+            # Preserve receipts and pending submissions at their original database indexes.
+            indexed = [(i, item) for i, item in indexed if isinstance(item, dict)
+                       and (item.get("external_ref") or item.get("report_state"))]
+            return result.reason, indexed
+    return r.reason, indexed
+
+
 def _to_out(r: MdRun, full: bool = False) -> dict:
+    reason, indexed = _review_findings(r)
     out = {
         "id": r.id,
         "run_id": r.id,   # 与 exec_queue/perf 对齐：runner 侧统一用 run_id
@@ -51,8 +70,8 @@ def _to_out(r: MdRun, full: bool = False) -> dict:
         "source": r.source,
         "status": r.status,
         "verdict": r.verdict,
-        "reason": r.reason,
-        "findings": r.findings_list,
+        "reason": reason,
+        "findings": [item for _, item in indexed],
         "duration_ms": r.duration_ms,
         "env_check": json.loads(r.env_check) if r.env_check else None,
         "started_at": r.started_at.isoformat() if r.started_at else None,
@@ -162,13 +181,17 @@ def queue_report(
     # A retried runner callback must not erase references recorded after the first report.
     if r.status in _TERMINAL:
         return ok(_to_out(r, full=True))
-    r.verdict = body.verdict
-    r.status = {"pass": "passed", "fail": "failed", "blocked": "blocked"}[body.verdict]
-    r.reason = body.reason
+    verdict, reason, findings = body.verdict, body.reason, body.findings
+    if verdict == "completed" or _legacy_failure(verdict, reason, findings, body.result_md):
+        parsed = analyze_result(body.result_md)
+        if verdict == "completed" or parsed.verdict == "fail" or parsed.explicit_no_defects:
+            verdict, reason, findings = parsed.verdict, parsed.reason, parsed.findings
+    r.verdict, r.reason = verdict, reason
+    r.status = {"pass": "passed", "fail": "failed", "blocked": "blocked"}[verdict]
     if body.result_md is not None:
         r.result_md = body.result_md
-    if body.findings is not None:
-        r.findings = _dump(body.findings)
+    if findings is not None:
+        r.findings = _dump(findings)
     if body.env_check is not None:
         r.env_check = _dump(body.env_check)
     r.duration_ms = body.duration_ms
@@ -329,6 +352,14 @@ def report_bugs(
         raise HTTPException(400, "该任务未绑定项目，无法上报极库云（缺陷要归属到项目）")
     assert_project_role(db, user, r.project_id, _WRITE_ROLES)
 
+    if r.status not in _TERMINAL:
+        raise HTTPException(409, "任务结束后才能上报缺陷")
+    _, indexed = _review_findings(r)
+    count = len(indexed)
+    targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
+    if not targets:
+        return ok({"results": [], "reported": 0, "run": _to_out(r, full=True)})
+
     from app.services import geelib
     if not geelib.is_enabled():
         raise HTTPException(400, "极库云未启用（GEELIB 相关配置缺失）")
@@ -345,14 +376,11 @@ def report_bugs(
     except GeelibAccountError as e:
         raise HTTPException(400, f"极库云账号未授权：{e}")
 
-    if r.status not in _TERMINAL:
-        raise HTTPException(409, "任务结束后才能上报缺陷")
-    count = len(r.findings_list)
-    targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
     executor = user.email or settings.GEELIB_DEFAULT_EXECUTOR
     results = []
     for index in targets:
-        item = _update_finding(db, r, index, claim=True)
+        storage_index = indexed[index][0]
+        item = _update_finding(db, r, storage_index, claim=True)
         if item is None:
             continue
         if item.get("external_ref"):
@@ -373,7 +401,7 @@ def report_bugs(
         except geelib.GeelibError as error:
             outcome = {"report_state": "uncertain"} if isinstance(error, md_bug_skill.SubmissionUncertain) else {}
             results.append({"index": index, "ok": False, "msg": str(error)})
-        _update_finding(db, r, index, outcome=outcome)
+        _update_finding(db, r, storage_index, outcome=outcome)
 
     db.refresh(r)
     reported = sum(1 for x in results if x.get("ok") and not x.get("skipped"))

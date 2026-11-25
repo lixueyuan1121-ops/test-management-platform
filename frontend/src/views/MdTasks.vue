@@ -25,7 +25,7 @@
           <template #default="{ row }"><el-tag size="small" :type="statusType(row.status)">{{ row.status }}</el-tag></template>
         </el-table-column>
         <el-table-column label="缺陷" width="60">
-          <template #default="{ row }">{{ row.findings?.length || '—' }}</template>
+          <template #default="{ row }">{{ row.verdict ? row.findings.length : '—' }}</template>
         </el-table-column>
         <el-table-column label="时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.finished_at || row.started_at || row.created_at) }}</template>
@@ -83,8 +83,8 @@
         </div>
         <el-alert v-if="detail.reason" :title="detail.reason" type="info" :closable="false" class="block" />
 
+        <h3 v-if="detail.verdict">缺陷候选（{{ detail.findings.length }}）</h3>
         <template v-if="detail.findings?.length">
-          <h3>缺陷候选（{{ detail.findings.length }}）</h3>
           <el-table :data="detail.findings" size="small">
             <el-table-column type="index" width="50" />
             <el-table-column prop="title" label="标题" min-width="180" />

@@ -15,8 +15,29 @@ from app.api import md_runs
 from app.core.config import settings
 from app.core.deps import RunnerCtx, get_current_user, require_runner_ctx
 from app.db.session import Base, get_db
-from app.models import Project, User
+from app.models import MdRun, Project, User
 from app.services import md_bug_skill
+from app.services.md_result import analyze_result
+
+
+NEGATIVE_PATH = """| 用例 | 结论 | 说明 |
+| --- | --- | --- |
+| C-001 点击一个不存在的按钮 | fail | 按用例约定记为失败。 |
+
+## 缺陷
+
+**C-001 失败路径复现：找不到「这个按钮不存在」**
+
+1. 打开纳米Work桌面客户端，停留在首页。
+2. 在主窗口和浮窗的辅助功能树中查找按钮，匹配数均为 0。
+
+该用例专门验证按钮不存在时的失败记录。提测文档未要求客户端提供此按钮，本次未发现需向极库云上报的产品缺陷。
+"""
+OLD_FINDINGS = [
+    {'title': 'C-001 点击一个不存在的按钮', 'detail': '按用例约定记为失败。', 'severity': 'major'},
+    {'title': '打开纳米Work桌面客户端，停留在首页。', 'detail': '', 'severity': 'major'},
+    {'title': '在主窗口和浮窗的辅助功能树中查找按钮，匹配数均为 0。', 'detail': '', 'severity': 'major'},
+]
 
 
 class MdDispatchTests(unittest.TestCase):
@@ -25,6 +46,7 @@ class MdDispatchTests(unittest.TestCase):
         Base.metadata.create_all(engine)
         self.addCleanup(engine.dispose)
         sessions = sessionmaker(engine)
+        self.sessions = sessions
         with sessions.begin() as db:
             db.add_all([Project(id=1, name='QA', code='qa', geelib_sub_id=81),
                         User(id=1, name='QA', username='qa', password_hash='x',
@@ -68,6 +90,83 @@ class MdDispatchTests(unittest.TestCase):
         self.callback = f'/api/md-runs/queue/{rid}?runner=a'
         self.assertEqual(self.client.patch(self.callback, json=self.results).status_code, 200)
         return rid
+
+    def test_negative_smoke_run_from_new_and_old_runners(self):
+        for callback in (dict(verdict='completed'), dict(verdict='fail', reason='3 条用例失败', findings=OLD_FINDINGS)):
+            rid = self.post('', **self.document, runner='a')['id']
+            response = self.client.patch(f'/api/md-runs/queue/{rid}?runner=a',
+                                         json={**callback, 'result_md': NEGATIVE_PATH})
+            self.assertEqual(response.status_code, 200, response.text)
+            run = response.json()['data']
+            self.assertEqual((run['status'], run['reason'], run['findings']), ('failed', '1 条用例失败', []))
+
+    def test_historical_false_candidates_cannot_be_reported(self):
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            run = db.get(MdRun, rid)
+            run.reason, run.result_md, run.findings = '3 条用例失败', NEGATIVE_PATH, json.dumps(OLD_FINDINGS)
+        for url in (f'/api/md-runs/{rid}', '/api/md-runs'):
+            data = self.client.get(url).json()['data']
+            row = data[0] if isinstance(data, list) else data
+            self.assertEqual((row['reason'], row['findings']), ('1 条用例失败', []))
+        with patch.object(md_bug_skill, 'create_case') as submit:
+            for payload in ({}, {'indexes': [0, 1, 2]}):
+                result = self.post(f'/{rid}/report-bugs', **payload)
+                self.assertEqual((result['reported'], result['results']), (0, []))
+            submit.assert_not_called()
+
+        # A previous submission keeps its receipt, even if the two preceding false candidates disappear.
+        with self.sessions.begin() as db:
+            db.get(MdRun, rid).findings = json.dumps([*OLD_FINDINGS[:2], {**OLD_FINDINGS[2], 'external_ref': 'geelib#123'}])
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'), \
+             patch.object(md_bug_skill, 'create_case') as submit:
+            result = self.post(f'/{rid}/report-bugs', indexes=[0])
+            self.assertEqual(result['results'], [dict(index=0, ok=True, skipped=True, external_ref='geelib#123')])
+            self.assertEqual(len(result['run']['findings']), 1)
+            submit.assert_not_called()
+
+    def test_confirmed_product_defects_keep_steps_and_count_failed_cases_separately(self):
+        rid = self.post('', **self.document, runner='a')['id']
+        md = """| 用例 | 结论 | 说明 |
+| --- | --- | --- |
+| C-001 | fail | 保存失败，重试后崩溃 |
+
+## 产品缺陷
+### 保存返回错误
+1. 打开设置。
+2. 点击保存。
+### 重试导致崩溃
+- 点击重试后客户端退出。
+
+## 附件
+- 截图
+"""
+        response = self.client.patch(f'/api/md-runs/queue/{rid}?runner=a', json=dict(verdict='completed', result_md=md))
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()['data']
+        self.assertEqual(row['reason'], '1 条用例失败')
+        self.assertEqual([(f['title'], f['detail']) for f in row['findings']], [
+            ('保存返回错误', '1. 打开设置。\n2. 点击保存。'), ('重试导致崩溃', '- 点击重试后客户端退出。')])
+
+    def test_result_tables_and_fenced_evidence(self):
+        table = '| 用例 | 结论 | 说明 |\n| --- | --- | --- |\n'
+        for md, verdict in [(table, 'blocked'), ('| 配置 | 状态 |\n| 系统 | pass |', 'blocked'),
+                            (table + '| 登录 | **通过** | |', 'pass'), (table + '| 登录 | blocked | |', 'blocked')]:
+            with self.subTest(md=md):
+                self.assertEqual(analyze_result(md).verdict, verdict)
+        log = '```md\n## 产品缺陷\n### 日志中的示例标题\n' + table + '| 示例 | fail | |\n```'
+        md = table + '| 登录 | fail | |\n| 重试登录 | fail | |\n## 产品缺陷\n### 登录崩溃\n' + log
+        parsed = analyze_result(md)
+        self.assertEqual(parsed.reason, '2 条用例失败')
+        self.assertEqual(parsed.findings, [dict(title='登录崩溃', detail=log, severity='major')])
+
+    def test_old_report_with_a_real_issue_and_a_negative_case(self):
+        md = NEGATIVE_PATH.replace('## 缺陷\n', '## 缺陷\n**设置保存后丢失**\n**复现步骤**\n1. 保存后重开。\n')
+        report = analyze_result(md)
+        self.assertFalse(report.explicit_no_defects)
+        self.assertEqual([f['title'] for f in report.findings], ['设置保存后丢失'])
+        self.assertIn('1. 保存后重开。', report.findings[0]['detail'])
 
     def test_skill_receipt_and_replay(self):
         rid = self.finished_run()

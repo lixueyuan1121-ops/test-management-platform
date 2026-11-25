@@ -35,10 +35,10 @@ class MdRunBatchCreate(MdRunDocument):
 class MdRunReportIn(BaseModel):
     """runner 回写（PATCH /queue/{id}）。
 
-    verdict: pass / fail / blocked。blocked 用于"环境/客户端就没起来"，与产品缺陷区分开。
+    completed 表示执行机正常结束，由服务端解析 result_md。兼容直接回写 pass / fail / blocked。
     findings: 结构化缺陷列表，供人工复核后一键上报极库云（不自动报，避免误报污染缺陷库）。
     """
-    verdict: str = Field(..., pattern="^(pass|fail|blocked)$")
+    verdict: Literal["completed", "pass", "fail", "blocked"]
     reason: str | None = Field(None, max_length=4000)
     result_md: str | None = Field(None, max_length=400_000)
     findings: list[dict[str, Any]] | None = None

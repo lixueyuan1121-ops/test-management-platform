@@ -125,48 +125,6 @@ function runCapture(cmd, args, { cwd, env, timeoutMs, control, logFile }) {
   });
 }
 
-// 结果文档里出现这些说法，说明 agent 自己都判定"没真正执行"。
-// 只认否定词不算完 —— 必须同时没有任何 pass 行的证据（见下方 rows）。
-const BLOCKED_HINTS = /执行受阻|无法执行|未能执行|未能读取|未能完成|无法读取|无法启动|环境不可用|连接超时|窗口.*超时|执行 \*\*0 项\*\*|已执行 0 项|0 项已执行|no applicable|blocked/i;
-
-/** 从 agent 的结果文档里抽"是否有失败"和缺陷候选。
- * 返回值里的 rows 是"带结论的表格行数"：0 行意味着 agent 没产出可判定的结果，
- * 这种情况必须判 blocked，绝不能因为"没看到 fail"就记成 pass —— 空跑记成通过是 QA 最坏的假阳性。 */
-function parseResult(text) {
-  const findings = [];
-  let rows = 0, passes = 0;
-  if (!text) return { findings, rows, passes };
-  // 1) 表格：| 用例 | 结论 | 说明 |  —— 结论列含 fail/失败 的行算失败
-  for (const line of text.split(/\r?\n/)) {
-    if (!/^\s*\|/.test(line)) continue;
-    const cells = line.split("|").map((c) => c.trim()).filter((c, i, a) => !(i === 0 || i === a.length - 1));
-    if (cells.length < 2) continue;
-    rows++;
-    if (/fail|失败|不通过/i.test(cells[1])) {
-      findings.push({ title: cells[0] || "未命名用例失败", detail: cells.slice(2).join(" / ") || "", severity: "major" });
-    } else if (/pass|通过|正常/i.test(cells[1])) {
-      passes++;
-    }
-  }
-  // 2) 「## 缺陷」小节下的列表项
-  const sec = text.split(/\r?\n#{1,4}\s*缺陷/)[1];
-  if (sec) {
-    for (const line of sec.split(/\r?\n#{1,4}\s/)[0].split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:[-*]|\d+\.)\s+(.{4,})$/);
-      if (m) findings.push({ title: m[1].slice(0, 200), detail: "", severity: "major" });
-    }
-  }
-  // 去重（表格与列表可能重复描述同一条）
-  const seen = new Set();
-  const unique = findings.filter((f) => {
-    const k = f.title.toLowerCase();
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  return { findings: unique, rows, passes };
-}
-
 export function makeMdTaskRunner({
   api, log, RUNNER_ID, runtimeDir,
   groupsDir, helperPath, helperTaskName,
@@ -222,9 +180,9 @@ export function makeMdTaskRunner({
         ``,
         `要求：`,
         `1. 按文档中的用例逐条在被测客户端上执行；客户端已安装、环境已配置好，不要改 hosts。`,
-        `2. 将发现的问题记录为缺陷候选。由平台在人工确认后统一上报极库云，执行期间不要创建外部缺陷。`,
+        `2. 对照提测要求记录产品缺陷候选。同一问题影响多条用例时合并复现信息。预期的负向场景和环境阻塞只记录用例结论。由平台在人工确认后统一上报极库云，执行期间不要创建外部缺陷。`,
         `3. 执行结束后把结果写入 ${path.join(workDir, "result.md")}，格式：表格「| 用例 | 结论 | 说明 |」，`,
-        `   失败用例的结论写 fail，并在文末用「## 缺陷」小节列出每条缺陷的标题与复现要点。`,
+        `   结论填 pass、fail 或 blocked。文末写「## 产品缺陷」，每个独立问题用「### 问题标题」开头，下面写复现步骤、预期和实际结果。没有产品缺陷时本节只写「无」。`,
         `4. 这是无人值守执行：**不要向我提问、不要等待确认**。文档缺信息就按最合理的理解继续；`,
         `   确实无法继续时（客户端起不来、缺账号、工具不可用），把原因和已完成的部分写进 result.md，然后结束。`,
         `5. 工作目录 ${workDir} 是唯一可写位置；需要留截图/日志就放在它下面。`,
@@ -254,12 +212,11 @@ export function makeMdTaskRunner({
       const resultMd = fs.existsSync(resultPath) ? fs.readFileSync(resultPath, "utf-8")
         : fs.existsSync(lastMsgPath) ? fs.readFileSync(lastMsgPath, "utf-8")
         : (r.out || "");
-      const { findings, rows, passes } = parseResult(resultMd);
 
       if (canceled) {
-        result = { verdict: "blocked", reason: "平台已取消，执行中断", result_md: resultMd || null, findings, env_check: envCheck };
+        result = { verdict: "blocked", reason: "平台已取消，执行中断", result_md: resultMd || null, env_check: envCheck };
       } else if (r.timedOut) {
-        result = { verdict: "blocked", reason: `agent 执行超时（${Math.round(codexTimeoutMs / 1000)}s）`, result_md: resultMd || null, findings, env_check: envCheck };
+        result = { verdict: "blocked", reason: `agent 执行超时（${Math.round(codexTimeoutMs / 1000)}s）`, result_md: resultMd || null, env_check: envCheck };
       } else if (r.code !== 0 || !(fs.existsSync(resultPath) || fs.existsSync(lastMsgPath))) {
         // 把 agent 自己吐的最后一行错误带回去：命令不存在 / 未登录 / 配置错，
         // 在无人值守时全靠这一句，否则页面上只看到 exit=-1。
@@ -267,23 +224,10 @@ export function makeMdTaskRunner({
         result = {
           verdict: "blocked",
           reason: `agent 未正常完成（exit=${r.code}）${tail ? `：${tail.slice(0, 300)}` : ""}`,
-          result_md: resultMd || null, findings, env_check: envCheck,
-        };
-      } else if (findings.length) {
-        result = { verdict: "fail", reason: `${findings.length} 条用例失败`, result_md: resultMd, findings, env_check: envCheck };
-      } else if (rows === 0 || (passes === 0 && BLOCKED_HINTS.test(resultMd))) {
-        // 没有可判定结论：agent 什么都没跑成、或只写了"执行受阻"。
-        // 这种情况如果判 pass，等于把空跑记成通过 —— 假通过比假失败危害大得多。
-        const hint = (resultMd.match(BLOCKED_HINTS) || [""])[0];
-        result = {
-          verdict: "blocked",
-          reason: rows === 0
-            ? `agent 未产出可判定的结果（0 条带结论的用例行）${hint ? `；文档提到「${hint}」` : ""}`
-            : `agent 自述执行受阻${hint ? `「${hint}」` : ""}，无通过证据`,
-          result_md: resultMd, findings: [], env_check: envCheck,
+          result_md: resultMd || null, env_check: envCheck,
         };
       } else {
-        result = { verdict: "pass", reason: "", result_md: resultMd, findings, env_check: envCheck };
+        result = { verdict: "completed", result_md: resultMd, env_check: envCheck };
       }
     } catch (e) {
       // 环境/客户端类失败：归 blocked，不当成产品缺陷（与 exec 的 fail_kind=selector 同思路）
@@ -292,7 +236,7 @@ export function makeMdTaskRunner({
         e.message = `找不到 agent 命令（MD_CODEX_BIN=${codexBin}）：${e.message}。` +
           `Windows 上桌面版 Codex 不把 CLI 放 PATH：建议 MD_CODEX_BIN=npm:codex（npm 全局安装），或指向 codex.exe / codex.cmd`;
       }
-      result = { verdict: "blocked", reason: e.message, findings: [], env_check: envCheck };
+      result = { verdict: "blocked", reason: e.message, env_check: envCheck };
     } finally {
       clearInterval(heartbeat);
       const restored = await hosts.restore();
@@ -302,15 +246,15 @@ export function makeMdTaskRunner({
     }
 
     result.duration_ms = Date.now() - started;
-    await api("PATCH", `/api/md-runs/queue/${item.run_id}?${q}`, {
+    const saved = await api("PATCH", `/api/md-runs/queue/${item.run_id}?${q}`, {
       verdict: result.verdict,
       reason: result.reason || null,
       result_md: result.result_md || null,
-      findings: result.findings || [],
       duration_ms: result.duration_ms,
       env_check: result.env_check || null,
     });
-    log(`回写 run_id=${item.run_id} -> ${result.verdict}${result.reason ? ` (${String(result.reason).slice(0, 120)})` : ""}`);
+    const reason = saved?.reason || result.reason;
+    log(`回写 run_id=${item.run_id} -> ${saved?.verdict || result.verdict}${reason ? ` (${String(reason).slice(0, 120)})` : ""}`);
   }
 
   /** 一轮轮询：一次只拿一条（这类任务耗时长，抢多了没意义），整轮串行。 */
