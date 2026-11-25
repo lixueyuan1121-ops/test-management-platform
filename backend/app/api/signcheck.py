@@ -221,14 +221,28 @@ def service_status(db: Session = Depends(get_db), _: User = Depends(get_current_
     })
 
 
+def upload_user_id(creds: HTTPAuthorizationCredentials = Depends(_bearer)) -> int:
+    """上传专用鉴权：用完即还连接，只带回用户 id。
+
+    不能直接 Depends(get_current_user)：它依赖的 get_db 会话要到请求结束才关，而上传大文件要
+    收很久，这条连接一直空闲，会被 MySQL/中间层掐断，收尾 rollback 时报 2013 Lost connection
+    （文件其实已收完，却给用户返回 500）。
+    """
+    db = SessionLocal()
+    try:
+        return get_current_user(creds, db).id
+    finally:
+        db.close()
+
+
 @router.post("")
 async def upload(
     request: Request,
     filename: str | None = Query(None, description="原文件名（也可放请求头 X-File-Name，URL 编码）"),
-    user: User = Depends(get_current_user),
+    user_id: int = Depends(upload_user_id),
 ):
     """上传一个待校验文件（请求体即文件原始字节）。返回 pending 记录，前端轮询 GET /{id} 取结果。"""
-    cid = await _receive(request, filename, "web", user.id)
+    cid = await _receive(request, filename, "web", user_id)
 
     def _load() -> dict:
         db = SessionLocal()

@@ -41,6 +41,7 @@ def _get_db():
 
 current = SimpleNamespace(id=1, is_platform_admin=True)
 app.dependency_overrides[get_current_user] = lambda: current
+app.dependency_overrides[api.upload_user_id] = lambda: current.id
 app.dependency_overrides[get_db] = _get_db
 api.SessionLocal = S                                   # 上传走的是模块内直连会话
 svc.STORAGE_DIR = Path(tempfile.mkdtemp(prefix="signcheck-test-"))
