@@ -4,16 +4,19 @@
   <template v-if="current">
     <p v-if="current.team_id">预期 Team ID <code>{{ current.team_id }}</code></p>
     <template v-if="report">
-      <p>已检查 <b>{{ report.checked }}</b> 个原生文件，<b>{{ report.failed }}</b> 个发现问题。</p>
-      <p v-if="!report.checked">未发现可判读的原生文件。</p>
+      <p v-if="report.checked">
+        已检查 <b>{{ report.checked }}</b> 个原生文件，<template v-if="report.failed">其中 <b>{{ report.failed }}</b> 个存在签名问题。</template><template v-else>未发现签名问题。</template>
+      </p>
+      <p v-else>未扫描到可判读的原生文件。</p>
       <div v-if="report.warnings?.length" class="warning">
-        <b>未覆盖内容</b>
+        <b>未完整扫描的内容</b>
         <ul><li v-for="(warning, i) in report.warnings" :key="i">{{ warning }}</li></ul>
       </div>
-      <div v-if="findings.length" class="findings">
-        <div v-for="(item, i) in findings" :key="i">
+      <div v-for="section in detailSections" :key="section.field" class="findings">
+        <h3>{{ section.title }}</h3>
+        <div v-for="(item, i) in section.items" :key="i">
           <b>{{ item.path }}</b>
-          <ul><li v-for="(msg, j) in [...item.problems, ...item.notes]" :key="j">{{ msg }}</li></ul>
+          <ul><li v-for="(msg, j) in item[section.field]" :key="j">{{ msg }}</li></ul>
         </div>
       </div>
     </template>
@@ -29,8 +32,15 @@ import { computed } from 'vue'
 
 const props = defineProps({ current: Object, log: String })
 const report = computed(() => props.current?.report)
-const findings = computed(() => (Array.isArray(report.value?.results) ? report.value.results : [])
-  .filter(r => Array.isArray(r?.problems) && Array.isArray(r?.notes) && (r.problems.length || r.notes.length)))
+const detailSections = computed(() => {
+  const results = Array.isArray(report.value?.results) ? report.value.results : []
+  return [{ field: 'problems', title: '签名问题' }, { field: 'notes', title: '提示（不影响结论）' }]
+    .map(section => ({
+      ...section,
+      items: results.filter(item => Array.isArray(item?.[section.field]) && item[section.field].length),
+    }))
+    .filter(section => section.items.length)
+})
 
 function download(ext) {
   const json = ext === 'json'
@@ -49,5 +59,6 @@ function download(ext) {
 .warning { color: var(--tech-warn); }
 .findings, .warning { max-height: 16rem; overflow: auto; overflow-wrap: anywhere; }
 .findings, .downloads { margin-top: 12px; }
+.findings h3 { margin: 0 0 6px; font-size: 14px; }
 ul { padding-inline-start: 20px; }
 </style>

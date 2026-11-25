@@ -7,6 +7,8 @@ import tempfile
 import unittest
 import zipfile
 
+import dpp
+
 from app.services.mac_static.macho import code_pages
 from app.services.mac_static.scan import Scan
 
@@ -42,6 +44,21 @@ class MacStaticTest(unittest.TestCase):
         for _ in range(7):
             bad = package([("inner.zip", bad.getvalue())])
         self.assertIn("嵌套", self.scan(bad).warnings[0])
+
+    def test_free_space_and_unknown_data_in_dmg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "partitions.dmg"
+            builder = dpp.DmgBuilder()
+            padding = bytes(3 * 1024**2)
+            builder.add_partition("Apple_Free", padding)
+            builder.add_partition("Apple_Free", padding[:-1] + b"x")
+            builder.build(str(target))
+            scanner = Scan(None, Path(tmp))
+            scanner.disk_image(target, target.name)
+        self.assertFalse(scanner.results)
+        self.assertEqual(len(scanner.warnings), 2)
+        self.assertIn("分区 1 ", scanner.warnings[0])
+        self.assertIn("未读取到 HFS+ 或 APFS", scanner.warnings[1])
 
     def test_checks_code_pages_against_signed_digest(self):
         code = b"x" * 4096 + b"last page"

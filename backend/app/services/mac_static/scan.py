@@ -154,10 +154,16 @@ class Scan:
                     raise BudgetReached("磁盘映像分区超过临时空间上限")
                 image.extract_partition_to(part.id, str(partition_file))
                 try:
-                    with partition_file.open("rb") as f:
-                        header = f.read(32768)
                     if partition_file.stat().st_size != part.size:
                         raise ValueError("解码后的分区长度不一致")
+                    with partition_file.open("rb") as f:
+                        header = f.read(32768)
+                        # Free space can exceed the header window. Check every byte
+                        # before skipping it, independently of the partition label.
+                        if not any(header) and all(
+                            block.count(0) == len(block) for block in iter(lambda: f.read(1024**2), b"")
+                        ):
+                            continue
                     if header[1024:1026] in (b"H+", b"HX"):
                         volume_reader = dpp.HfsVolume
                     elif header[32:36] == b"NXSB":
@@ -166,12 +172,12 @@ class Scan:
                         volume_ids = struct.unpack_from("<100Q", header, 184)
                         if sum(bool(v) for v in volume_ids) > 1:
                             self.warnings.append(f"{label} 分区 {part.id} 仅检查默认 APFS 卷")
-                    elif (part.size <= len(header) and (not header.strip(b"\0")
-                          or header[510:512] == b"\x55\xaa" or header.startswith((b"EFI PART", b"PM"))
+                    elif (part.size <= len(header) and (header[510:512] == b"\x55\xaa"
+                          or header.startswith((b"EFI PART", b"PM"))
                           or header[:16] in APPLE_GPT_TYPES)):
                         continue
                     else:
-                        self.warnings.append(f"{label} 未识别分区 {part.id} 的文件系统")
+                        self.warnings.append(f"{label} 分区 {part.id} 含有数据，文件系统格式未识别，该分区未扫描。")
                         continue
                     with volume_reader.open(str(partition_file)) as volume:
                         self.scan_volume(volume, f"{label}/分区{part.id}")

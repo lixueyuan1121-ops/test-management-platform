@@ -51,8 +51,11 @@ def _scan(path, filename, team_id):
         verdict = "partial"
     else:
         verdict = "no_findings"
-    summary = f"已扫描 {report['checked']} 个原生文件，发现 {report['failed']} 个异常文件。"
-    log = "\n".join([summary, *report["warnings"]])
+    summary = "未扫描到可判读的原生文件。"
+    if report["checked"]:
+        finding = f"{report['failed']} 个文件存在签名问题" if report["failed"] else "未发现签名问题"
+        summary = f"已扫描 {report['checked']} 个原生文件，{finding}。"
+    log = "\n".join([summary, *(f"[扫描范围] {msg}" for msg in report["warnings"])])
     return dict(status="completed", verdict=verdict, exit_code=0,
                 mac_output=json.dumps({"report": report, "stdout": log}, ensure_ascii=False))
 
