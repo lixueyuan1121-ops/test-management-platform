@@ -1,3 +1,4 @@
+import hashlib
 from datetime import date, datetime, timedelta
 from typing import Annotated
 
@@ -50,6 +51,7 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "source_message_id": t.source_message_id,
         "title": t.title,
         "description": t.description,
+        "feature_html_name": t.feature_html_name,
         "module": t.module,
         "requirement_url": t.requirement_url,
         "developer": t.developer,
@@ -67,6 +69,13 @@ def _to_out(db: Session, t: Task, on_date: date | None = None, names: dict | Non
         "release_record_id": t.release_record_id,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
+
+
+def _set_feature_html(task, upload):
+    data = upload.content.encode('utf-8') if upload else None
+    task.feature_html = data
+    task.feature_html_name = upload.name if upload else None
+    task.feature_html_hash = hashlib.sha256(data).hexdigest() if data else None
 
 
 def _assignee_ids(db: Session, body):
@@ -173,6 +182,7 @@ def create_task(
         status=TaskStatus.pending,
         **{field: getattr(body, field) for field in TaskLedgerFields.model_fields},
     )
+    _set_feature_html(t, body.feature_html)
     _set_assignees(t, ids)
     db.add(t)
     if ids:
@@ -231,6 +241,8 @@ def update_task(
             raise HTTPException(400, detail="任务已填写发版记录，不能修改归属版本")
     if body.assigned_to is not None and not db.get(User, body.assigned_to):
         raise HTTPException(404, detail="指派用户不存在")
+    if "feature_html" in body.model_fields_set:
+        _set_feature_html(t, body.feature_html)
     # 扩展字段显式传 null 表示清空；旧客户端不传时保留原值。
     for field in TaskLedgerFields.model_fields:
         if field in body.model_fields_set:
@@ -342,6 +354,8 @@ def copy_yesterday(
             status=TaskStatus.pending,
             **{field: getattr(s, field) for field in TaskLedgerFields.model_fields},
         )
+        if s.feature_html_name:
+            t.feature_html_name, t.feature_html_hash, t.feature_html = s.feature_html_name, s.feature_html_hash, s.feature_html
         _set_assignees(t, s.assigned_to_ids)
         db.add(t)
         created += 1

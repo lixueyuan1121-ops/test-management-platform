@@ -183,6 +183,65 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(self.db.query(TaskDigestDeployment).count(), 1)
             self.assertEqual(self.client.get('/api/task-ledger/digests', params={'project_id': 1}).json()['data'][0]['share_link_type'], 'short')
 
+    def test_feature_html_upload_and_manual_retry_belong_to_selected_tasks(self):
+        from app.services import task_feature_manual as manual
+        first = self.task(title='导出')
+        second = self.task(title='检索')
+        outside = self.task(title='不在日报范围')
+        def attach(task_id, text):
+            return self.client.patch(f'/api/tasks/{task_id}', json={
+                'feature_description': text,
+                'feature_html': {'name': '说明.html', 'content': f'<body><h2>{text}</h2></body>'}})
+        for task in (first, second, outside):
+            response = attach(task['id'], task['title'])
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['data']['feature_html_name'], '说明.html')
+            self.assertNotIn('feature_html', response.json()['data'])
+        self.user_id = 3
+        self.assertEqual(attach(first['id'], '越权').status_code, 403)
+        self.user_id = 1
+        self.assertEqual(self.client.patch(f"/api/tasks/{first['id']}", json={
+            'feature_html': {'name': 'a.txt', 'content': '<body>a</body>'}}).status_code, 422)
+        self.client.patch(f"/api/tasks/{first['id']}", json={'module': '新模块'})
+        draft = dict(project_id=1, task_ids=[second['id'], first['id']], report_date=self.today,
+                     title='版本更新说明', content='发布正文')
+        def publish(body):
+            response = self.client.post('/api/task-ledger/digests/publish', json=body)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()['data']
+        short = 'https://manual.zhaomi.cn/'
+        direct = 'https://ns.chat.360.cn/zhaomi-so/client-up/manual/index.html'
+        with (patch.object(manual.settings, 'NAMI_DEPLOY_ENABLED', True),
+              patch.object(manual.nami_deploy, 'is_configured', return_value=True),
+              patch.object(manual, 'merge_manual', return_value='<html>两章</html>') as merge,
+              patch.object(manual.nami_deploy, 'deploy_html', return_value=direct) as upload,
+              patch.object(manual.nami_deploy, 'shorten_uploaded_url', return_value=short) as shorten,
+              patch.object(manual, 'verify_manual', side_effect=[manual.ManualError('校验失败'), None, None])):
+            partial = publish(draft)
+            self.assertEqual(partial['manual_status'], 'failed')
+            self.assertIsNone(partial['manual_url'])
+            self.assertTrue(partial['share_path'])
+            self.assertEqual([data.decode() for _, data in merge.call_args.args[0]],
+                             ['<body><h2>检索</h2></body>', '<body><h2>导出</h2></body>'])
+            ready = publish(partial)
+            self.assertEqual(ready['manual_url'], short)
+            self.assertEqual(publish(ready)['manual_status'], 'ready')
+            merge.assert_called_once()
+            upload.assert_called_once()
+            self.assertEqual(shorten.call_count, 2)
+            history = self.client.get('/api/task-ledger/digests?project_id=1').json()['data']
+            self.assertEqual(history[0]['manual_url'], short)
+            attach(first['id'], '新版导出')
+            publish(ready)
+            self.assertEqual(merge.call_count, 2)
+            self.assertEqual(upload.call_count, 2)
+            for task in (first, second):
+                self.client.patch(f"/api/tasks/{task['id']}", json={'feature_html': None})
+            empty = publish(ready)
+            self.assertEqual(empty['manual_status'], 'none')
+            self.assertIsNone(empty['manual_url'])
+            self.assertEqual(empty['share_path'], ready['share_path'])
+
     def test_changed_digest_does_not_shorten_the_previous_content_url(self):
         task = self.task()
         draft = dict(project_id=1, task_ids=[task['id']], report_date=self.today, title='日报', content='第一版')

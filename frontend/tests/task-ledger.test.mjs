@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { filterLedger, TASK_STATUS, hasRisk, taskDateQuery, taskOwners, taskAssigneeOptions, taskAssigneeLabel } from '../src/utils/taskLedger.js'
+import { digestShareText, filterLedger, TASK_STATUS, hasRisk, taskDateQuery, taskOwners, taskAssigneeOptions, taskAssigneeLabel } from '../src/utils/taskLedger.js'
 const members = [
   { user_id: 1, name: '启用成员', username: 'active', user_status: 'active', role: 'member' },
   { user_id: 2, name: '停用成员', username: 'disabled', user_status: 'disabled', role: 'member' },
@@ -62,3 +62,15 @@ const pending = {id:4,title:'待录入',assigned_to:null,assigned_to_ids:[],stat
 assert.equal(taskOwners(pending),'待分配')
 assert.deepEqual(filterLedger([...rows,pending], {...defaults,owner:['__unset']}).map(t=>t.id),[4])
 assert.deepEqual(filterLedger([...rows,pending], {...defaults,owner:['__unset',4]}).map(t=>t.id),[1,4])
+
+
+const digest = {
+  title: '产品 1.2 版本更新说明',
+  content: '## 1.2 版本更新说明\n### 更新内容\n1. **导出 HTML**\n   说明文字\n## 1.3 测试日报\n1. **测试中条目**',
+  manual_url: 'https://manual.zhaomi.cn/',
+}
+assert.equal(digestShareText(digest, 'https://release.zhaomi.cn/'), [
+  digest.title, '1. 导出 HTML', '在线说明 HTML：https://release.zhaomi.cn/',
+  '使用说明和相关案例详见：https://manual.zhaomi.cn/',
+].join('\n'))
+assert.equal(digestShareText({ title: '历史日报', content: '旧正文' }, '/d/snapshot'), '历史日报\n在线说明 HTML：/d/snapshot')

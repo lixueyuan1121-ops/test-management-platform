@@ -54,3 +54,14 @@ class TaskDigestDeployment(Base):
     url: Mapped[str] = mapped_column(Text)
     hosting: Mapped[str] = mapped_column(String(24))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TaskDigestManual(Base):
+    """The feature manual associated with a particular release-note publication."""
+    __tablename__ = "task_digest_manual"
+    publication_id: Mapped[int] = mapped_column(ForeignKey("task_digest_publication.id", ondelete="CASCADE"), primary_key=True)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    html_hash: Mapped[str | None] = mapped_column(String(64))
+    upload_url: Mapped[str | None] = mapped_column(Text)
+    short_url: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(String(500))

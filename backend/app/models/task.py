@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
-from sqlalchemy import String, Text, Date, DateTime, Enum, ForeignKey, Numeric, Boolean, func
-from sqlalchemy.dialects.mysql import MEDIUMTEXT
+from sqlalchemy import LargeBinary, String, Text, Date, DateTime, Enum, ForeignKey, Numeric, Boolean, func
+from sqlalchemy.dialects.mysql import LONGBLOB, MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.enums import TaskStatus, TaskPriority
@@ -28,6 +28,10 @@ class Task(Base):
     # 20000 个字符可能超过 MySQL TEXT 的 64 KiB（例如四字节字符）。
     title: Mapped[str] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"))
     description: Mapped[str | None] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=True)
+    feature_description: Mapped[str | None] = mapped_column(Text)
+    feature_html_name: Mapped[str | None] = mapped_column(String(160))
+    feature_html_hash: Mapped[str | None] = mapped_column(String(64))
+    feature_html: Mapped[bytes | None] = mapped_column(LargeBinary().with_variant(LONGBLOB(), "mysql"), deferred=True)
     module: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 被测项目/模块
     requirement_url: Mapped[str | None] = mapped_column(String(512), nullable=True)  # 需求地址
     developer: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 开发

@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import re
 
-from app.models.task_digest import TaskDigestPublication, TaskDigestGeneration, TaskDigestDeployment
+from app.models.task_digest import TaskDigestPublication, TaskDigestGeneration, TaskDigestDeployment, TaskDigestManual
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -47,11 +47,15 @@ def digest_out(row, db=None):
     publication = (db.query(TaskDigestPublication).filter_by(digest_id=row.id, source_sha256=source_hash(row))
                    .order_by(TaskDigestPublication.id.desc()).first()) if db else None
     deployment = db.get(TaskDigestDeployment, publication.id) if db and publication else None
+    manual = db.get(TaskDigestManual, publication.id) if publication else None
     return {"id": row.id, "project_id": row.project_id, "report_date": str(row.report_date),
             "author_id": row.author_id, "author_name": author.name if author else '',
             "title": row.title, "content": row.content, "task_ids": json.loads(row.task_ids),
             "filter_summary": row.filter_summary, "updated_at": row.updated_at,
             "share_path": deployment.url if deployment else f"/d/{publication.code}" if publication else None,
+            "manual_url": manual.short_url if manual else None,
+            "manual_status": ("ready" if manual.short_url else "failed" if manual.error else "pending") if manual else "none",
+            "manual_error": manual.error if manual else None,
             "share_hosting": deployment.hosting if deployment else "platform",
             "share_link_type": ('short' if is_short_url(deployment.url) else 'direct')
                 if deployment and deployment.hosting == 'nami' else 'platform'}
@@ -138,12 +142,15 @@ def publish_digest(body: DigestSave, db: Session = Depends(get_db), user: User =
     publication_id, digest_id, fallback = publication.id, row.id, f'/d/{publication.code}'
     deployed = db.get(TaskDigestDeployment, publication_id)
     existing_url = deployed.url if deployed is not None and deployed.hosting == 'nami' else None
+    from app.services.task_feature_manual import prepare_manual, publish_manual
+    manual_job = prepare_manual(db, publication, row)
     has_short_url = is_short_url(existing_url)
     db.commit()  # Do not hold a DB connection during the shared service's upload.
     if not has_short_url:
         from app.services.report_publishing import publish_html
         published = publish_html(html, fallback, prefer_shortlink=True, existing_url=existing_url)
-        deployed = db.get(TaskDigestDeployment, publication_id)
+        db.get(TaskDigestPublication, publication_id, with_for_update=True)
+        deployed = db.get(TaskDigestDeployment, publication_id, populate_existing=True)
         if deployed is None:
             deployed = TaskDigestDeployment(publication_id=publication_id, **published)
             db.add(deployed)
@@ -151,6 +158,8 @@ def publish_digest(body: DigestSave, db: Session = Depends(get_db), user: User =
             # 另一次发布已换得短链时，迟到的失败结果不能把它覆盖成长链。
             deployed.url, deployed.hosting = published['url'], published['hosting']
         db.commit()
+    if manual_job:
+        publish_manual(db, manual_job)
     return ok(digest_out(db.get(TaskDigest, digest_id), db))
 
 

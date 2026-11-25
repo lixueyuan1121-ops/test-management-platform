@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from html.parser import HTMLParser
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -6,7 +7,47 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.enums import TaskPriority, TaskStatus
 
 
+MAX_FEATURE_HTML = 12 * 1024 * 1024
+
+
+class _DocumentCheck(HTMLParser):
+    found = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('html', 'body', 'main', 'article'):
+            self.found = True
+
+
+class FeatureHtmlUpload(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1, max_length=MAX_FEATURE_HTML)
+
+    @field_validator('name')
+    @classmethod
+    def html_filename(cls, value):
+        if (not value.lower().endswith(('.html', '.htm'))
+                or any(ord(c) < 32 or c in '/\\:*?"<>|' for c in value)):
+            raise ValueError('请选择本地 .html 或 .htm 文件')
+        return value
+
+    @field_validator('content')
+    @classmethod
+    def html_document(cls, value):
+        if len(value.encode('utf-8')) > MAX_FEATURE_HTML or '\0' in value:
+            raise ValueError('功能说明须为 12 MiB 以内的 UTF-8 HTML 文件')
+        parser = _DocumentCheck()
+        try:
+            parser.feed(value)
+            parser.close()
+        except (AssertionError, ValueError):
+            raise ValueError('HTML 文件格式无效') from None
+        if not parser.found:
+            raise ValueError('文件缺少 HTML 文档正文')
+        return value
+
+
 class TaskLedgerFields(BaseModel):
+    feature_description: str | None = Field(default=None, max_length=10000)
     risk_level: Literal['green', 'yellow', 'red'] | None = None
     target_version: str | None = Field(default=None, max_length=64)
     progress_note: str | None = Field(default=None, max_length=10000)
@@ -17,13 +58,14 @@ class TaskLedgerFields(BaseModel):
     affects_release: bool | None = None
     conclusion: str | None = Field(default=None, max_length=10000)
 
-    @field_validator('target_version', 'progress_note', 'next_action', 'action_owner', 'conclusion', mode='before')
+    @field_validator('feature_description', 'target_version', 'progress_note', 'next_action', 'action_owner', 'conclusion', mode='before')
     @classmethod
     def trim_optional_text(cls, value):
         return value.strip() or None if isinstance(value, str) else value
 
 
 class TaskCreate(TaskLedgerFields):
+    feature_html: FeatureHtmlUpload | None = None
     project_id: int
     title: str = Field(min_length=1, max_length=20000)
     description: str | None = None
@@ -37,6 +79,7 @@ class TaskCreate(TaskLedgerFields):
 
 
 class TaskUpdate(TaskLedgerFields):
+    feature_html: FeatureHtmlUpload | None = None
     title: str | None = Field(default=None, min_length=1, max_length=20000)
     description: str | None = None
     module: str | None = None
@@ -52,6 +95,7 @@ class TaskUpdate(TaskLedgerFields):
 
 
 class TaskOut(TaskLedgerFields):
+    feature_html_name: str | None = None
     id: int
     project_id: int
     assigned_by: int

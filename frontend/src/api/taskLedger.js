@@ -12,5 +12,5 @@ export const listTaskDigests = project_id => http.get('/task-ledger/digests', { 
 export const fillTaskRelease = data => http.post('/task-ledger/releases', data)
 
 // Expired Nami authentication can require one browser login and a verified retry.
-export const publishTaskDigest = data => http.post('/task-ledger/digests/publish', data, { timeout: 210000 })
+export const publishTaskDigest = data => http.post('/task-ledger/digests/publish', data, { timeout: 510000 })
 export const getSharedTaskDigest = code => http.get(`/task-ledger/digests/shared/${encodeURIComponent(code)}`, { silent: true })

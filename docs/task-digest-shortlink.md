@@ -132,3 +132,22 @@ Cookie。更新密码用隐藏配置工具重新输入，再执行 `enable`。�
 平台健康检查 HTTP 200、Cookie 权限 600。代码发布和自动补救开关需单独完成。
 
 `test_report_publishing`、`test_nami_shortlink`、`test_task_ledger` 共 30 项检查通过，原 Nami 上传/部署脚本 10 个场景通过。前端生产构建成功，并通过隔离浏览器验证：已有长链失败时显示警告，再次重试获得短链，正文和日报 ID 保持不变，两个请求均复用原上传地址。
+
+## 任务功能说明手册
+
+在部署主机上，以 QALab 服务账户安装用户提供的原始 ZIP。安装目标为私有目录
+`backend/.skills/tuitui-report-suite`，安装器核对包摘要，再次安装同一版本会校验现有文件。
+前端与后端随平台版本一起更新。手册合并使用包内的 Python 合并器和清洗器；
+发布与重试使用平台已配置的 Nami 服务。
+
+```sh
+cd /home/lixueyuan1/test-management-platform/backend
+.venv/bin/python scripts/install_task_report_suite.py /path/to/推推日报报告短链一体化-skill.zip
+```
+
+任务编辑器支持填写功能说明、上传或替换一个 UTF-8 HTML 文件，点保存后生效。
+截图须内嵌，单个文件最多 12 MiB。编写任务日报时点击“发布 HTML 报告”，
+系统按日报任务顺序合并有附件的任务，合计最多 40 MiB。
+历史日报保留最近一次发布的手册链接；替换附件后再次发布会更新它。
+没有附件时照常发布版本更新说明。有附件时，手册短链匿名回读的内容摘要必须匹配才可复制。
+短链失败后重试会复用已经上传的手册。

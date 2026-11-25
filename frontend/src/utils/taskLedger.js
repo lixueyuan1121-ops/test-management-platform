@@ -64,3 +64,22 @@ export function downloadText(content, filename, type = 'text/plain;charset=utf-8
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+// Read the editor's saved Markdown so copied titles include the author's edits.
+export function digestShareText(draft, onlineUrl) {
+  const lines = [draft.title.trim()]
+  let release = false
+  for (const raw of (draft.content || '').split(/\r?\n/)) {
+    const heading = /^##\s+(.+?)\s*$/.exec(raw)
+    if (heading) {
+      release = heading[1].endsWith('版本更新说明')
+      if (release && !draft.title.endsWith(heading[1])) lines.push(heading[1])
+    } else if (release) {
+      const item = /^(\d+[.、])\s*(.+)/.exec(raw)
+      if (item) lines.push(`${item[1]} ${item[2].replace(/\*\*/g, '').trim()}`)
+    }
+  }
+  lines.push(`在线说明 HTML：${onlineUrl}`)
+  if (draft.manual_url) lines.push(`使用说明和相关案例详见：${draft.manual_url}`)
+  return lines.join('\n')
+}
