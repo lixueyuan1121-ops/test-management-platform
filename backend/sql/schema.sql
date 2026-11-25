@@ -1103,3 +1103,10 @@ CREATE TABLE IF NOT EXISTS `sign_check` (
   KEY `idx_signcheck_created_at` (`created_at`),
   CONSTRAINT `fk_signcheck_user` FOREIGN KEY (`created_by`) REFERENCES `user` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS `sign_check_agent` (
+  `agent` VARCHAR(64) NOT NULL,
+  `last_seen_at` DATETIME NOT NULL,
+  PRIMARY KEY (`agent`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

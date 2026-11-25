@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import Base, get_db
 from app.main import app
-from app.models import SignCheck, User
+from app.models import SignCheck, SignCheckAgent, User
 from app.services import signcheck as svc
 
 eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -258,7 +258,10 @@ def test_resume_after_agent_restart():
     again = client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"]
     assert again == job, again
     # 干活期间不轮询：心跳过期也仍算在线
-    api._agents["win-r"] = datetime.utcnow() - timedelta(minutes=2)
+    db = S()
+    db.query(SignCheckAgent).update({SignCheckAgent.last_seen_at: datetime.utcnow() - timedelta(minutes=5)})
+    db.commit()
+    db.close()
     st = client.get("/api/signcheck/status").json()["data"]
     assert st["agent_online"] and "win-r" in st["agents"], st
     assert client.get(f"/api/signcheck/agent/{cid}/file", headers=AGENT).content == b"MZresume"
@@ -266,6 +269,14 @@ def test_resume_after_agent_restart():
                     json={"agent": "win-r", "exit_code": 0, "stdout_b64": base64.b64encode(GOOD.encode("gbk")).decode()})
     assert r.json()["data"]["verdict"] == "passed"
     assert client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"] is None
+    # 心跳全部过期且没有在跑的校验 → 离线；再轮询一次 → 在线
+    db = S()
+    db.query(SignCheckAgent).update({SignCheckAgent.last_seen_at: datetime.utcnow() - timedelta(minutes=5)})
+    db.commit()
+    db.close()
+    assert client.get("/api/signcheck/status").json()["data"]["agent_online"] is False
+    client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT)
+    assert client.get("/api/signcheck/status").json()["data"]["agents"] == ["win-r"]
 
     # 文件已不在的孤儿：判失败而不是反复重派
     cid = _upload(b"MZgone", "gone.exe").json()["data"]["id"]

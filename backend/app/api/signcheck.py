@@ -26,6 +26,7 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse
@@ -34,7 +35,7 @@ from app.api.hooks import require_hook_auth
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import SessionLocal, get_db
-from app.models import SignCheck, User
+from app.models import SignCheck, SignCheckAgent, User
 from app.schemas.common import ok
 from app.schemas.signcheck import SignCheckResultIn
 from app.services import signcheck as svc
@@ -45,10 +46,9 @@ hook_router = APIRouter(prefix="/api/hooks/signcheck", tags=["ci-hooks"])
 
 _bearer = HTTPBearer(auto_error=True)
 
-# 校验机心跳：agent 每次轮询刷新。只存进程内存——平台是 uvicorn 单进程部署，
-# 重启后 agent 下一次轮询（几秒内）就会重新出现，不值得为此建表。
-_agents: dict[str, datetime] = {}
-_ONLINE_WINDOW = timedelta(seconds=30)
+# 校验机心跳存 sign_check_agent 表（见模型注释：不能放进程内存）。agent 空闲时每 3 秒轮询一次，
+# 出错退避最长 30 秒；窗口取 90 秒，偶发一两次网络失败不至于在页面上闪成「离线」。
+_ONLINE_WINDOW = timedelta(seconds=90)
 # 认领后迟迟不回传（agent 断网/关机后一直没回来）→ 判 failed；agent 重启回来的情况见 agent_next 的孤儿重派，避免页面永久「校验中」。原程序硬超时 120s，这里留足余量。
 _RUNNING_TTL = timedelta(minutes=10)
 _FINAL = ("completed", "failed")
@@ -104,7 +104,8 @@ def _online_agents(db: Session) -> list[str]:
     误判成离线（几百 MB 的文件一次就要几十秒到几分钟）。所以名下有未超时 running 记录的也算在线。
     """
     now = datetime.utcnow()
-    online = {a for a, seen in _agents.items() if now - seen <= _ONLINE_WINDOW}
+    seen = db.query(SignCheckAgent.agent).filter(SignCheckAgent.last_seen_at >= now - _ONLINE_WINDOW).all()
+    online = {a for (a,) in seen}
     busy = (
         db.query(SignCheck.agent)
         .filter(SignCheck.status == "running", SignCheck.started_at >= now - _RUNNING_TTL)
@@ -112,6 +113,20 @@ def _online_agents(db: Session) -> list[str]:
     )
     online.update(a for (a,) in busy if a)
     return sorted(online)
+
+
+def _touch(db: Session, agent: str) -> None:
+    """刷新校验机心跳（不存在则建）。"""
+    now = datetime.utcnow()
+    hit = db.execute(update(SignCheckAgent).where(SignCheckAgent.agent == agent).values(last_seen_at=now)).rowcount
+    if not hit:
+        try:
+            db.add(SignCheckAgent(agent=agent, last_seen_at=now))
+            db.commit()
+            return
+        except IntegrityError:      # 同名校验机并发首次上报
+            db.rollback()
+    db.commit()
 
 
 def _fail(r: SignCheck, reason: str) -> None:
@@ -312,7 +327,7 @@ def agent_next(
     记录一定是孤儿（校验到一半 agent 被关掉/重启/断电），直接重新交给它，而不是让用户
     干等到超时判失败。
     """
-    _agents[agent] = datetime.utcnow()
+    _touch(db, agent)
     _reap(db)
     orphans = (
         db.query(SignCheck)

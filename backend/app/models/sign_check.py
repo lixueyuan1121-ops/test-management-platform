@@ -47,3 +47,15 @@ class SignCheck(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class SignCheckAgent(Base):
+    """校验机心跳：agent 每次轮询刷新 last_seen_at（naive UTC），页面据此显示在线/离线。
+
+    放库里而不是进程内存：后端只要不止一个进程（多 worker、滚动重启时新旧进程并存、
+    前面有负载均衡），心跳和页面查询就可能落在不同进程上，表现为「在线/离线来回跳」。
+    """
+    __tablename__ = "sign_check_agent"
+
+    agent: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
