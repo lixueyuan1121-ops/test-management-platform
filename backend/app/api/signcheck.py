@@ -49,7 +49,7 @@ _bearer = HTTPBearer(auto_error=True)
 # 重启后 agent 下一次轮询（几秒内）就会重新出现，不值得为此建表。
 _agents: dict[str, datetime] = {}
 _ONLINE_WINDOW = timedelta(seconds=30)
-# 认领后迟迟不回传（agent 被杀/断网）→ 判 failed，避免页面永久「校验中」。原程序硬超时 120s，这里留足余量。
+# 认领后迟迟不回传（agent 断网/关机后一直没回来）→ 判 failed；agent 重启回来的情况见 agent_next 的孤儿重派，避免页面永久「校验中」。原程序硬超时 120s，这里留足余量。
 _RUNNING_TTL = timedelta(minutes=10)
 _FINAL = ("completed", "failed")
 
@@ -294,9 +294,28 @@ def agent_next(
     db: Session = Depends(get_db),
     _: None = Depends(require_agent),
 ):
-    """agent 轮询：刷新心跳，并原子认领最早一条 pending。没有待办返回 data=null。"""
+    """agent 轮询：刷新心跳，并原子认领最早一条 pending。没有待办返回 data=null。
+
+    agent 是单线程的：它来轮询，就说明手上没有在处理的活。所以此时仍挂在它名下的 running
+    记录一定是孤儿（校验到一半 agent 被关掉/重启/断电），直接重新交给它，而不是让用户
+    干等到超时判失败。
+    """
     _agents[agent] = datetime.utcnow()
     _reap(db)
+    orphans = (
+        db.query(SignCheck)
+        .filter(SignCheck.status == "running", SignCheck.agent == agent)
+        .order_by(SignCheck.id).all()
+    )
+    for r in orphans:
+        if not svc.file_path(r.id).is_file():
+            _fail(r, "校验被中断且服务端文件已清理，请重新上传。")
+            db.commit()
+            continue
+        r.started_at = datetime.utcnow()
+        db.commit()
+        logger.info("签名校验 #%s 上次被中断，重新交给校验机 %s", r.id, agent)
+        return ok({"id": r.id, "filename": r.filename, "file_size": r.file_size, "sha256": r.sha256})
     for r in db.query(SignCheck).filter(SignCheck.status == "pending").order_by(SignCheck.id).limit(5).all():
         if not svc.file_path(r.id).is_file():
             _fail(r, "服务端找不到已上传的文件（可能被清理），请重新上传。")

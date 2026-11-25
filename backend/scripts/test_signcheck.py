@@ -237,6 +237,30 @@ def test_reap_and_delete(done_id):
     assert client.get(f"/api/signcheck/{done_id}").status_code == 404
 
 
+def test_resume_after_agent_restart():
+    """校验到一半 agent 被重启：它再来轮询时应拿回同一条，而不是让记录卡在「校验中」。"""
+    cid = _upload(b"MZresume", "resume.exe").json()["data"]["id"]
+    job = client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"]
+    assert job["id"] == cid
+    # 别的校验机拿不到它
+    assert client.get("/api/signcheck/agent/next", params={"agent": "win-other"}, headers=AGENT).json()["data"] is None
+    again = client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"]
+    assert again == job, again
+    assert client.get(f"/api/signcheck/agent/{cid}/file", headers=AGENT).content == b"MZresume"
+    r = client.post(f"/api/signcheck/agent/{cid}/result", headers=AGENT,
+                    json={"agent": "win-r", "exit_code": 0, "stdout_b64": base64.b64encode(GOOD.encode("gbk")).decode()})
+    assert r.json()["data"]["verdict"] == "passed"
+    assert client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"] is None
+
+    # 文件已不在的孤儿：判失败而不是反复重派
+    cid = _upload(b"MZgone", "gone.exe").json()["data"]["id"]
+    client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT)
+    svc.remove_file(cid)
+    assert client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"] is None
+    d = client.get(f"/api/signcheck/{cid}").json()["data"]
+    assert d["status"] == "failed" and "中断" in d["error"], d
+
+
 def test_hook():
     url = "/api/hooks/signcheck"
     assert client.post(url, params={"filename": "ci.exe"}, content=b"x", headers=OCTET).status_code == 401
@@ -264,6 +288,7 @@ def main():
     test_agent_error_and_locale()
     test_validation()
     test_reap_and_delete(done_id)
+    test_resume_after_agent_restart()
     test_hook()
     print("OK test_signcheck")
 
