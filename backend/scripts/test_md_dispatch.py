@@ -1,5 +1,6 @@
 """Dispatch-to-report regression tests. The skill posts to a loopback tracker."""
 import json
+import subprocess
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -229,8 +230,13 @@ class MdDispatchTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
+        # Match the deployment host, where global fetch is unavailable.
+        run_process = subprocess.run
+        def without_fetch(args, **options):
+            return run_process([args[0], '--no-experimental-fetch', *args[1:]], **options)
         with patch.object(settings, 'GEELIB_API_URL', f'http://127.0.0.1:{server.server_port}'), \
              patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch.object(md_bug_skill.subprocess, 'run', side_effect=without_fetch), \
              patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'):
             self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 1)
             self.client.patch(self.callback, json=self.results)
@@ -246,8 +252,82 @@ class MdDispatchTests(unittest.TestCase):
         rid = self.finished_run()
         with patch.object(settings, 'GEELIB_ENABLED', True), \
              patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'), \
+             patch.object(md_bug_skill, 'find_title_matches', return_value=[]), \
              patch.object(md_bug_skill, 'create_case', side_effect=[md_bug_skill.GeelibError('字段无效'),
                           md_bug_skill.SubmissionUncertain('回执丢失')]) as submit:
             for _ in range(3):
                 self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 0)
             self.assertEqual(submit.call_count, 2)
+
+    def test_check_and_link_legacy_receipt_without_creating(self):
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            row = db.get(MdRun, rid)
+            row.findings = json.dumps([{**row.findings_list[0], 'report_state': 'uncertain'}])
+        path = f'/{rid}/report-bugs'
+        matches = [dict(id=729, title='[42] 按钮无响应', created_at='2026-11-25 18:56:02')]
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch('app.services.geelib_account.get_user_app_token', return_value='personal'), \
+             patch.object(md_bug_skill, 'find_title_matches', return_value=matches) as lookup, \
+             patch.object(md_bug_skill, 'create_case') as submit:
+            review = self.post(path)['results'][0]
+            self.assertEqual((review['status'], review['matches']), ('review', matches))
+            lookup.assert_called_once_with(81, '[42] 按钮无响应', 'personal')
+            payload = dict(indexes=[0], receipt_action='link', matter_id=729, review_key=review['review_key'])
+            lookup.side_effect = md_bug_skill.GeelibError('查询暂不可用')
+            self.assertEqual(self.post(path, **payload)['results'][0]['status'], 'check_failed')
+            lookup.side_effect = None
+            bad = self.client.post('/api/md-runs' + path, json={**payload, 'matter_id': 730})
+            self.assertEqual(bad.status_code, 409)
+            result = self.post(path, **payload)
+            self.assertEqual((result['reported'], result['results'][0]['status']), (0, 'linked'))
+            self.assertEqual(result['run']['findings'][0]['external_ref'], 'geelib#729')
+            self.assertEqual(self.post(path, **payload)['reported'], 0)
+            submit.assert_not_called()
+
+    def test_uncertain_retry_requires_current_review_and_active_requests_stay_pending(self):
+        rid = self.finished_run()
+        path = f'/{rid}/report-bugs'
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch('app.services.geelib_account.get_user_app_token', return_value='personal'), \
+             patch.object(md_bug_skill, 'find_title_matches', return_value=[]) as lookup, \
+             patch.object(md_bug_skill, 'create_case', side_effect=[md_bug_skill.SubmissionUncertain('超时'),
+                          md_bug_skill.SubmissionUncertain('再次超时'), 'geelib#730']) as submit:
+            self.assertEqual(self.post(path)['results'][0]['status'], 'uncertain')
+            def retry(key):
+                return self.post(path, indexes=[0], receipt_action='retry', review_key=key)
+            key = self.post(path)['results'][0]['review_key']
+            self.assertEqual(retry('stale')['results'][0]['status'], 'review')
+            self.assertEqual(retry(key)['results'][0]['status'], 'uncertain')
+            review = retry(key)['results'][0]
+            self.assertEqual(review['status'], 'review')
+            self.assertNotEqual(key, review['review_key'])
+            self.assertEqual(retry(review['review_key'])['reported'], 1)
+            self.assertEqual(retry(review['review_key'])['reported'], 0)
+            self.assertEqual(submit.call_count, 3)
+
+            with self.sessions.begin() as db:
+                row = db.get(MdRun, rid)
+                row.findings = json.dumps([dict(title='按钮无响应', report_state='sending')])
+            lookup.reset_mock()
+            self.assertEqual(self.post(path)['results'][0]['status'], 'sending')
+            lookup.assert_not_called()
+            with self.sessions.begin() as db:
+                row = db.get(MdRun, rid)
+                row.findings = json.dumps([{**row.findings_list[0], 'report_started_at': 1}])
+            self.assertEqual(self.post(path)['results'][0]['status'], 'review')
+            self.assertEqual(submit.call_count, 3)
+
+    def test_receipt_lookup_filters_and_requires_a_complete_successful_response(self):
+        row = dict(id='729', sub_id='81', type_name='缺陷', title='按钮无响应', mkd_content='点击确认后窗口不变')
+        rows = [row, {**row, 'sub_id': '82'}, {**row, 'type_name': '需求'}, {**row, 'title': '其他按钮无响应'}]
+        with patch.object(md_bug_skill.requests, 'post') as query:
+            response = query.return_value
+            response.json.return_value = {'errno': 2000, 'data': {'total': 4, 'matterList': rows}}
+            result = md_bug_skill.find_title_matches(81, '按钮无响应', 'personal')
+            self.assertEqual([(m['id'], m['description']) for m in result], [(729, '点击确认后窗口不变')])
+            self.assertTrue(query.call_args.args[0].endswith('/openapi/Matter/getList'))
+            self.assertFalse(query.call_args.kwargs['allow_redirects'])
+            response.json.return_value['data']['total'] = 5
+            with self.assertRaises(md_bug_skill.GeelibError):
+                md_bug_skill.find_title_matches(81, '按钮无响应', 'personal')

@@ -12,7 +12,10 @@
 沿用全项目约定：{code,msg,data} 信封、手写 _to_out、体外 assert_project_role、
 状态 VARCHAR、不建 ENUM。
 """
+import hashlib
 import json
+import time
+import uuid
 import re
 from datetime import datetime
 
@@ -337,26 +340,16 @@ def delete_run(
     return ok({"deleted": run_id})
 
 
-def _update_finding(db: Session, run: MdRun, index: int, *, claim=False, outcome=None):
-    """Compare-and-swap the JSON column so concurrent reports preserve each other's references."""
+def _save_finding(db: Session, run: MdRun, index: int, expected: dict, updated: dict) -> bool:
+    """Retry unrelated JSON changes, but never overwrite a newer attempt on this finding."""
     while True:
         db.refresh(run)
         previous = run.findings
         items = run.findings_list
         reason, review = _review_findings(run)
-        if index >= len(review):
-            return None
-        storage_index, item = review[index]
-        if not isinstance(item, dict):
-            return None
-        if claim:
-            if item.get("external_ref") or item.get("report_state"):
-                return item
-            updated = {**item, "report_state": "sending"}
-        else:
-            updated = {**item, **(outcome or {})}
-            if not outcome or "report_state" not in outcome:
-                updated.pop("report_state", None)
+        if index >= len(review) or review[index][1] != expected:
+            return False
+        storage_index = review[index][0]
         if storage_index is None:
             items.append(updated)
         else:
@@ -365,7 +358,66 @@ def _update_finding(db: Session, run: MdRun, index: int, *, claim=False, outcome
             {"findings": _dump(items), "reason": reason}, synchronize_session=False)
         db.commit()
         if changed:
-            return item
+            return True
+
+
+def _report_one(db, run, index, item, body, sub_id, executor, token):
+    from app.services.geelib import GeelibError
+
+    if item.get("external_ref"):
+        return {"ok": True, "skipped": True, "external_ref": item["external_ref"]}
+    changed = {"ok": False, "status": "changed", "msg": "候选状态已更新，请刷新详情"}
+    state = item.get("report_state")
+    now = time.time()
+    if state == "sending":
+        started = item.get("report_started_at")
+        if started is None:
+            # Old workers did not record a start time. Allow one full request window.
+            _save_finding(db, run, index, item, {**item, "report_started_at": now})
+        if started is None or now - started < 90:
+            return {"ok": False, "status": "sending", "msg": "上报请求正在处理，请稍后刷新"}
+    title = str(item.get("title") or "").strip() or f"{run.title} 执行失败"
+    title = (f"[{run.req_no}] {title}" if run.req_no else title)[:200]
+    clean = {k: v for k, v in item.items() if k not in
+             ("report_state", "report_started_at", "report_attempt", "report_error")}
+    if state:
+        try:
+            matches = md_bug_skill.find_title_matches(sub_id, title, token)
+        except GeelibError as exc:
+            return {"ok": False, "status": "check_failed", "msg": str(exc)}
+        # A decision is valid only for the displayed attempt and the same set of possible receipts.
+        snapshot = [run.id, index, sub_id, title, item.get("report_attempt"), sorted(m["id"] for m in matches)]
+        key = hashlib.sha256(_dump(snapshot).encode()).hexdigest()
+        if body.receipt_action not in ("link", "retry") or body.review_key != key:
+            return {"ok": False, "status": "review", "msg": item.get("report_error") or "请核对极库云工单",
+                    "matches": matches, "review_key": key}
+        if body.receipt_action == "link":
+            if body.matter_id not in {m["id"] for m in matches}:
+                raise HTTPException(409, "请选择当前项目中已核对的同标题缺陷")
+            ref = f"geelib#{body.matter_id}"
+            if not _save_finding(db, run, index, item, {**clean, "external_ref": ref}):
+                return changed
+            return {"ok": True, "skipped": True, "status": "linked", "external_ref": ref}
+    elif body.receipt_action:
+        return changed
+
+    claimed = {**clean, "report_state": "sending", "report_attempt": uuid.uuid4().hex, "report_started_at": now}
+    if not _save_finding(db, run, index, item, claimed):
+        return changed
+    try:
+        ref = md_bug_skill.create_case(sub_id, title, str(item.get("detail") or item.get("description") or ""),
+                                       item.get("severity"), executor, token)
+        updated = {**clean, "external_ref": ref}
+        result = {"ok": True, "external_ref": ref}
+    except md_bug_skill.SubmissionUncertain as exc:
+        updated = {**claimed, "report_state": "uncertain", "report_error": str(exc)}
+        result = {"ok": False, "status": "uncertain", "msg": str(exc)}
+    except GeelibError as exc:
+        updated = clean
+        result = {"ok": False, "status": "failed", "msg": str(exc)}
+    if not _save_finding(db, run, index, claimed, updated):
+        return changed
+    return result
 
 
 @router.post("/{run_id}/report-bugs")
@@ -389,6 +441,8 @@ def report_bugs(
 
     if r.status not in _TERMINAL:
         raise HTTPException(409, "任务结束后才能上报缺陷")
+    if body.receipt_action and (body.indexes is None or len(body.indexes) != 1):
+        raise HTTPException(422, "核对回执时须指定一条缺陷候选")
     _, indexed = _review_findings(r)
     count = len(indexed)
     targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
@@ -414,28 +468,10 @@ def report_bugs(
     executor = user.email or settings.GEELIB_DEFAULT_EXECUTOR
     results = []
     for index in targets:
-        item = _update_finding(db, r, index, claim=True)
-        if item is None:
-            continue
-        if item.get("external_ref"):
-            results.append({"index": index, "ok": True, "skipped": True, "external_ref": item["external_ref"]})
-            continue
-        if item.get("report_state"):
-            results.append({"index": index, "ok": False, "msg": "正在上报或等待核对极库云回执"})
-            continue
-        title = str(item.get("title") or "").strip() or f"{r.title} 执行失败"
-        if r.req_no:
-            title = f"[{r.req_no}] {title}"
-        try:
-            ref = md_bug_skill.create_case(sub_id, title[:200],
-                                           str(item.get("detail") or item.get("description") or ""),
-                                           item.get("severity"), executor, app_token)
-            outcome = {"external_ref": ref}
-            results.append({"index": index, "ok": True, **outcome})
-        except geelib.GeelibError as error:
-            outcome = {"report_state": "uncertain"} if isinstance(error, md_bug_skill.SubmissionUncertain) else {}
-            results.append({"index": index, "ok": False, "msg": str(error)})
-        _update_finding(db, r, index, outcome=outcome)
+        item = indexed[index][1]
+        if isinstance(item, dict):
+            result = _report_one(db, r, index, item, body, sub_id, executor, app_token)
+            results.append({"index": index, **result})
 
     db.refresh(r)
     reported = sum(1 for x in results if x.get("ok") and not x.get("skipped"))

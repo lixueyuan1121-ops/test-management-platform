@@ -89,11 +89,13 @@
             <el-table-column type="index" width="50" />
             <el-table-column prop="title" label="标题" min-width="180" />
             <el-table-column prop="severity" label="严重度" width="80" />
-            <el-table-column label="极库云" width="130">
-              <template #default="{ row }">
+            <el-table-column label="极库云" width="180">
+              <template #default="{ row, $index }">
                 <span v-if="row.external_ref">{{ row.external_ref }}</span>
-                <span v-else-if="row.report_state === 'sending'" class="hint">上报中</span>
-                <span v-else-if="row.report_state === 'uncertain'" class="hint">回执待核对</span>
+                <template v-else-if="row.report_state">
+                  <span>{{ row.report_state === 'sending' ? '上报中' : '回执待核对' }}</span>
+                  <el-button link type="primary" :disabled="reporting" @click="submitReports({ indexes: [$index], receipt_action: 'check' })">核对回执</el-button>
+                </template>
                 <span v-else class="hint">未上报</span>
               </template>
             </el-table-column>
@@ -114,6 +116,24 @@
         <pre class="md">{{ detail.content }}</pre>
       </div>
     </el-drawer>
+    <el-dialog v-model="reviewVisible" title="核对极库云回执" width="560px">
+      <template v-if="receipt">
+        <p>任务 #{{ receipt.runId }} · {{ receipt.title }}</p>
+        <template v-if="receipt.matches.length">
+          <p>请核对项目中的同标题缺陷，选择要关联的工单。</p>
+          <el-select v-model="selectedMatter" placeholder="选择工单" style="width:100%">
+            <el-option v-for="m in receipt.matches" :key="m.id" :value="m.id" :label="['#' + m.id, m.status, m.created_at].filter(Boolean).join(' · ')" />
+          </el-select>
+          <p v-if="selectedMatter">{{ receipt.matches.find(m => m.id === selectedMatter)?.description }}</p>
+        </template>
+        <p v-else>当前项目中未查到同标题缺陷。确认极库云中没有对应工单后，可以重新上报。</p>
+      </template>
+      <template #footer>
+        <el-button @click="reviewVisible = false">取消</el-button>
+        <el-button :disabled="reporting" @click="resolveReceipt('retry')">重新建单</el-button>
+        <el-button v-if="receipt?.matches.length" type="primary" :disabled="reporting || !selectedMatter" @click="resolveReceipt('link')">关联所选工单</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -144,6 +164,9 @@ const form = reactive({ title: '', req_no: '', runners: [], env_group: '', clien
 const detailVisible = ref(false)
 const detail = ref(null)
 const reporting = ref(false)
+const reviewVisible = ref(false)
+const receipt = ref(null)
+const selectedMatter = ref(null)
 
 const statusType = (s) => ({ pending: 'info', running: 'warning', passed: 'success', failed: 'danger', blocked: 'warning', canceled: 'info' }[s] || 'info')
 function fmtTime(iso) { if (!iso) return '—'; const d = new Date(iso); return isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
@@ -228,13 +251,43 @@ async function onCancel(row) {
 async function reportBugs() {
   if (!detail.value) return
   await ElMessageBox.confirm('把尚未上报的缺陷候选上报到极库云？请先确认它们都是产品缺陷。', '确认上报', { type: 'warning' })
+  await submitReports({})
+}
+
+async function resolveReceipt(action) {
+  const item = receipt.value
+  if (!item || item.runId !== detail.value?.id) return
+  if (action === 'retry') {
+    await ElMessageBox.confirm('请确认极库云里没有可关联的工单。继续将创建一张新缺陷单。', '确认重新建单', { type: 'warning' })
+  }
+  await submitReports({ indexes: [item.index], receipt_action: action, review_key: item.review_key, matter_id: selectedMatter.value })
+}
+
+async function submitReports(payload) {
+  if (reporting.value || !detail.value) return
+  const runId = detail.value.id
   reporting.value = true
   try {
-    const res = await reportMdRunBugs(detail.value.id, {})
+    const res = await reportMdRunBugs(runId, payload)
+    if (detail.value?.id !== runId || !detailVisible.value) return
     detail.value = res.run
-    const failed = res.results.filter((r) => !r.ok)
+    const review = res.results.find(r => r.status === 'review')
+    if (review) {
+      receipt.value = { ...review, runId, title: res.run.findings[review.index]?.title }
+      selectedMatter.value = review.matches.length === 1 ? review.matches[0].id : null
+      reviewVisible.value = true
+    } else {
+      reviewVisible.value = false
+    }
     if (res.reported) ElMessage.success(`已上报 ${res.reported} 条`)
-    if (failed.length) ElMessage.warning(`${failed.length} 条上报失败：${failed[0].msg || ''}`)
+    const linked = res.results.find(r => r.status === 'linked')
+    if (linked) ElMessage.success(`已关联 ${linked.external_ref}`)
+    const pending = res.results.find(r => ['sending', 'uncertain', 'changed'].includes(r.status))
+    if (pending) ElMessage.info(pending.msg)
+    const failed = res.results.filter(r => r.status === 'failed' || (!r.ok && !r.status))
+    if (failed.length) ElMessage.warning(`${failed.length} 条上报失败：${failed[0].msg}`)
+    const checkError = res.results.find(r => r.status === 'check_failed')
+    if (checkError) ElMessage.warning(checkError.msg)
     await loadRuns()
   } finally { reporting.value = false }
 }

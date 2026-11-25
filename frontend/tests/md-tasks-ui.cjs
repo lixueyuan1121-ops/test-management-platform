@@ -6,6 +6,9 @@ const assert = require('node:assert/strict');
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     const errors = [], payloads = [];
+    const reports = [];
+    const run = { id: 5, project_id: 1, title: '冒烟用例', status: 'failed', verdict: 'fail',
+      findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' }] };
     page.on('pageerror', err => errors.push(err.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'local-ui-fixture'));
     await page.route('**/api/**', async route => {
@@ -14,6 +17,19 @@ const assert = require('node:assert/strict');
       if (pathname.endsWith('/auth/me')) data = { user: { id: 1, name: '测试' }, is_platform_admin: true, memberships: [] };
       if (pathname.endsWith('/projects')) data = [{ id: 1, name: 'QA' }];
       if (pathname.endsWith('/devices')) data = [{ id: 1, name: '甲', runner_id: 'mac' }, { id: 2, name: '乙', runner_id: 'win' }];
+      if (pathname.endsWith('/md-runs')) data = [run];
+      if (pathname.endsWith('/md-runs/5')) data = run;
+      if (pathname.endsWith('/md-runs/5/report-bugs')) {
+        const payload = req.postDataJSON();
+        reports.push(payload);
+        let result = { index: 0, ok: false, status: 'review', review_key: 'review-5',
+          matches: [{ id: 729, status: '新建', created_at: '2026-11-25 18:56:02', description: '已记录按钮无响应' }] };
+        if (payload.receipt_action === 'link') {
+          run.findings[0] = { title: '按钮无响应', external_ref: 'geelib#729' };
+          result = { index: 0, ok: true, skipped: true, status: 'linked', external_ref: 'geelib#729' };
+        }
+        data = { reported: 0, results: [result], run };
+      }
       if (pathname.endsWith('/md-runs/batch')) {
         const payload = req.postDataJSON();
         payloads.push(payload); data = payload.runners.map(runner => ({ runner }));
@@ -42,7 +58,15 @@ const assert = require('node:assert/strict');
     assert.equal(payloads.length, 1);
     assert.deepEqual(payloads[0].runners, ['mac', 'win']);
     assert.equal(payloads[0].env_group, 'pre');
+    await page.getByRole('button', { name: '查看', exact: true }).click();
+    await page.getByRole('button', { name: '核对回执' }).click();
+    const review = page.getByRole('dialog', { name: '核对极库云回执' });
+    await review.getByText('已记录按钮无响应').waitFor();
+    await review.getByRole('button', { name: '关联所选工单' }).click();
+    await page.getByText('geelib#729', { exact: true }).waitFor();
+    assert.deepEqual(reports, [{ indexes: [0], receipt_action: 'check' },
+      { indexes: [0], receipt_action: 'link', review_key: 'review-5', matter_id: 729 }]);
     assert.deepEqual(errors, []);
-    console.log('PASS navigation icon, imported legacy group, environment options and two-runner dispatch');
+    console.log('PASS dispatch, receipt lookup and explicit link to existing defect');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

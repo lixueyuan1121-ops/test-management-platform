@@ -17,6 +17,8 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 
 // ---------- 参数解析 ----------
 function parseArgs(argv) {
@@ -111,15 +113,42 @@ if (args.dryRun) {
 }
 
 // ---------- 发送(建/改都走 Matter/add,带 id 即编辑) ----------
-const resp = await fetch(`${BASE}/openapi/Matter/add`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', ...(platformMode
-    ? { 'X-Agent-Auth': `Bearer ${platform.appToken}` } : { 'From-App': USER_MAIL }) },
-  redirect: 'error', signal: AbortSignal.timeout(30000),
-  body: JSON.stringify(params),
-});
-const text = await resp.text();
-let body; try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 800) }; }
-// 统一输出: errno=2000 成功; 建 case 时 data 是新 matterId 字符串
-console.log(JSON.stringify({ http: resp.status, errno: body.errno, errmsg: body.errmsg, data: body.data }));
-process.exit(body.errno === 2000 ? 0 : 1);
+// The deployment host runs Node 16 without global fetch. Never follow a redirect with a personal token.
+async function submit() {
+  const url = new URL(`${BASE}/openapi/Matter/add`);
+  const transport = { 'http:': http, 'https:': https }[url.protocol];
+  if (!transport) throw new Error('unsupported protocol');
+  const payload = JSON.stringify(params);
+  return new Promise((resolve, reject) => {
+    const req = transport.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload),
+        ...(platformMode ? { 'X-Agent-Auth': `Bearer ${platform.appToken}` } : { 'From-App': USER_MAIL }) },
+    }, res => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { text += chunk; });
+      res.on('error', reject);
+      res.on('end', () => {
+        let body;
+        try { body = JSON.parse(text); } catch { body = {}; }
+        resolve({ http: res.statusCode, errno: body?.errno, errmsg: body?.errmsg, data: body?.data });
+      });
+    });
+    const timer = setTimeout(() => req.destroy(new Error('receipt timeout')), 30000);
+    req.on('close', () => clearTimeout(timer));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+try {
+  const result = await submit();
+  console.log(JSON.stringify(result));
+  process.exitCode = result.errno === 2000 ? 0 : 1;
+} catch (error) {
+  // Only these failures prove that no connection reached the tracker.
+  const notSent = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ERR_INVALID_URL'].includes(error.code);
+  console.log(JSON.stringify({ delivery: notSent ? 'not_sent' : 'unknown', code: error.code || 'NO_RECEIPT' }));
+  process.exitCode = 1;
+}

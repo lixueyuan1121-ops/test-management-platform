@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+import requests
 
 from app.core.config import settings
 from app.services.geelib import GeelibError
@@ -16,11 +17,34 @@ class SubmissionUncertain(GeelibError):
     """Geelib may have accepted the defect before the response was lost."""
 
 
+def find_title_matches(sub_id: int, title: str, app_token: str) -> list[dict]:
+    """Only offer visible defects in this project with the exact title submitted by QALab."""
+    try:
+        response = requests.post(f"{settings.GEELIB_API_URL.rstrip('/')}/openapi/Matter/getList",
+                                 headers={"X-Agent-Auth": f"Bearer {app_token}"},
+                                 json={"sub_id": sub_id, "title": title, "page": 1, "pageSize": 100, "simple": 1},
+                                 timeout=12, allow_redirects=False)
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict) or body.get("errno") != 2000:
+            raise GeelibError("极库云未返回有效的查询结果，请核对项目访问权限")
+        rows = body["data"]["matterList"]
+        total = int(body["data"]["total"])
+        if not isinstance(rows, list) or total != len(rows):
+            raise GeelibError("极库云查询结果不完整，请在极库云核对同标题工单")
+        return [{"id": int(row["id"]), "title": title, "created_at": row.get("create_time"),
+                 "status": row.get("status_name"), "description": str(row.get("mkd_content") or "")[:350]}
+                for row in rows if int(row["sub_id"]) == sub_id and row["title"] == title
+                and row["type_name"] == settings.GEELIB_DEFECT_TYPE]
+    except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+        raise GeelibError("查询极库云回执失败，请稍后重新核对") from exc
+
+
 def create_case(sub_id: int, title: str, description: str, severity: str | None,
                 executor: str | None, app_token: str) -> str:
     node = shutil.which("node")
     if not node or not SCRIPT.is_file():
-        raise GeelibError("极库云提 Bug 技能需要 Node.js 18+ 和 create-case.mjs")
+        raise GeelibError("极库云提 Bug 技能需要 Node.js 16.20+ 和 create-case.mjs")
     if not executor or not app_token:
         raise GeelibError("缺少执行人邮箱或个人极库云授权")
     priority = {"blocker": "P0", "critical": "P1", "major": "P2", "minor": "P3", "trivial": "P4"}.get(str(severity), "P2")
@@ -40,8 +64,12 @@ def create_case(sub_id: int, title: str, description: str, severity: str | None,
         raise SubmissionUncertain("技能调用超时，请先在极库云核对是否已建单") from None
     try:
         result = json.loads(proc.stdout)
+        if result.get("delivery") == "not_sent":
+            raise GeelibError(f"技能未连接到极库云（{result['code']}），请检查网络后重试")
+        if result.get("http", 200) >= 500:
+            raise SubmissionUncertain("极库云服务端返回异常，请核对是否已建单")
         errno = result["errno"]
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise SubmissionUncertain("未收到极库云建单回执，请先核对是否已建单") from None
     if errno != 2000:
         raise GeelibError(f"极库云拒绝建单（{errno}）：{str(result.get('errmsg') or '')[:200]}")

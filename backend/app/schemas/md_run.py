@@ -52,3 +52,6 @@ class MdRunBugsIn(BaseModel):
     indexes: 只报这几条（findings 的下标）；不传=报全部尚未上报的。
     """
     indexes: list[int] | None = None
+    receipt_action: Literal["check", "link", "retry"] | None = None
+    review_key: str | None = Field(None, max_length=64)
+    matter_id: int | None = Field(None, gt=0)
