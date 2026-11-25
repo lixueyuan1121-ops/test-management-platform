@@ -38,7 +38,7 @@ import { makeEvidence, runtimeFingerprint } from './execution-evidence.mjs';
 import { verifyImport, saveLocalReport } from './verify-import.mjs';
 import { createExecutionTimer } from './execution-timing.mjs';
 import { runCodex } from './codex-engine.mjs';
-import { makeMdTaskRunner } from './md-task.mjs';
+import { makeMdTaskRunner, tokenizeArgs } from './md-task.mjs';
 import { createPollSchedule } from './runner-polling.mjs';
 import { publishResult } from './result-reporting.mjs';
 
@@ -103,8 +103,12 @@ const MD_HOSTS_TASK   = process.env.MD_HOSTS_TASK || "qa-hosts-helper"; // Win: 
 const MD_VERIFY_DOMAINS = (process.env.MD_VERIFY_DOMAINS || "").split(",").map((x) => x.trim()).filter(Boolean);
 const MD_VERIFY_TIMEOUT_SEC = Number(process.env.MD_VERIFY_TIMEOUT_SEC || 15);
 const MD_CODEX_BIN    = process.env.MD_CODEX_BIN || process.env.CODEX_BIN || "codex";
-const MD_CODEX_ARGS   = (process.env.MD_CODEX_ARGS || "exec --skip-git-repo-check --sandbox workspace-write")
-  .split(/\s+/).filter(Boolean);
+// 默认值按 codex-cli 0.171 的 `exec` 选项实测：
+//   --skip-git-repo-check  工作目录不是 git 仓库也能跑
+//   --sandbox workspace-write  只允许改工作目录（写 result.md 需要）
+//   -c approval_policy=never   非交互下不能停在等授权，否则表现是超时
+const MD_CODEX_ARGS   = tokenizeArgs(process.env.MD_CODEX_ARGS
+  || 'exec --skip-git-repo-check --sandbox workspace-write -c approval_policy=never');
 const MD_CODEX_TIMEOUT_MS = Number(process.env.MD_CODEX_TIMEOUT_MS || 3600000);
 const MD_WORK_ROOT    = process.env.MD_WORK_ROOT || join(MD_RUNTIME_DIR, "md-runs");
 

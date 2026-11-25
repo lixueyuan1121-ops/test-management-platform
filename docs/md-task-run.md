@@ -65,6 +65,38 @@ agent 执行完只产出**缺陷候选**（`findings`），不直接调缺陷系
    - Win：`bin/helper-win.ps1` + 计划任务「qa-hosts-helper」（最高权限、按需运行，不用 SYSTEM）
 4. 配置 `MD_VERIFY_DOMAINS`（需要校验解析的域名）与 `MD_CODEX_*`（agent 调用方式）。
 
+### Windows：agent 命令在内置包目录里
+
+桌面版 Codex 的 CLI 在 Appx 包内，**不进 PATH**，路径带版本号：
+
+```
+C:\Program Files\WindowsApps\OpenAI.Codex_<版本>_x64__<hash>\app\resources\codex.exe
+```
+
+所以 `MD_CODEX_BIN` 写 `appx:OpenAI.Codex`：runner 每次启动扫 WindowsApps，取版本号最大的、
+架构匹配的包，升级后自动跟着走。也可以直接写绝对路径，但升级会失效。
+
+实测环境（2026-11）：`codex-cli 0.171.0-alpha.13.2`，`codex login status` → `Logged in using ChatGPT`。
+**桌面版登录不与 CLI 共用**，新机器先跑一次 `codex login`，否则无人值守时会卡在等授权。
+
+默认参数按该版本的 `exec` 选项：
+
+```
+exec --skip-git-repo-check --sandbox workspace-write -c approval_policy=never
+```
+
+- `--skip-git-repo-check`：工作目录不是 git 仓库也能跑
+- `--sandbox workspace-write`：agent 要写 `result.md`，只读模式写不出来
+- `-c approval_policy=never`：非交互下不能停在等授权，否则表现为超时
+- **不要加 `--ignore-user-config`**：那会丢掉 `~/.codex/config.toml` 里的 MCP/skill 配置，
+  而 agent 正是靠这些去操作客户端、报缺陷
+
+另外 runner 会额外传 `-o <工作目录>/agent-last-message.md`：agent 忘了按约定写 `result.md` 时，
+用 CLI 落盘的最后一条回复兜底解析，不至于整轮白跑。
+
+agent 要联网：代理必须给到 **runner 进程**（Windows 上实测 Clash `127.0.0.1:7897`，`qihoo.net` 走 `NO_PROXY`）。
+没配代理的表现是超时而不是报错，很容易被误判成用例失败。
+
 ## 状态与取消
 
 `pending → running → passed / failed / blocked / canceled`

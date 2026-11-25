@@ -58,6 +58,25 @@ export function resolveAgentBin(bin, windowsAppsDir = process.env.ProgramFiles ?
 
 const IS_WIN = process.platform === "win32";
 
+// 拆分 MD_CODEX_ARGS：要能处理 -c approval_policy="never" 这种带引号的值，
+// 简单 split(/\s+/) 会把引号留在 token 里、或把值拆成两半。
+export function tokenizeArgs(text) {
+  const out = [];
+  let cur = "", quote = null;
+  for (const ch of String(text || "")) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (/\s/.test(ch)) { if (cur) { out.push(cur); cur = ""; } continue; }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 function runCapture(cmd, args, { cwd, env, timeoutMs, control, shell = IS_WIN }) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -167,22 +186,29 @@ export function makeMdTaskRunner({
       ].join("\n");
 
       const cmd = codexCommand(resolveAgentBin(codexBin));
-      log(`启动 agent 执行 run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""} bin=${cmd.command}`);
-      const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, prompt], {
+      // -o：让 CLI 无论 agent 有没有按约定写 result.md，都把最后一条回复落盘。
+      // 无人值守下"agent 忘了写文件"是常见失败，有这个兜底才能拿到结论。
+      const lastMsgPath = path.join(workDir, "agent-last-message.md");
+      const extra = codexArgs.some((a) => a === "-o" || a === "--output-last-message")
+        ? [] : ["-o", lastMsgPath];
+      log(`启动 agent run_id=${item.run_id}${item.req_no ? ` req=${item.req_no}` : ""} bin=${cmd.command}`);
+      const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, ...extra, prompt], {
         cwd: workDir, env: process.env, timeoutMs: codexTimeoutMs, control,
         shell: cmd.prefix.length ? false : IS_WIN,
       });
       fs.writeFileSync(path.join(workDir, "agent.log"), `# exit=${r.code} timedOut=${r.timedOut}\n\n## stdout\n${r.out}\n\n## stderr\n${r.err}`);
 
       const resultPath = path.join(workDir, "result.md");
-      const resultMd = fs.existsSync(resultPath) ? fs.readFileSync(resultPath, "utf-8") : (r.out || "");
+      const resultMd = fs.existsSync(resultPath) ? fs.readFileSync(resultPath, "utf-8")
+        : fs.existsSync(lastMsgPath) ? fs.readFileSync(lastMsgPath, "utf-8")
+        : (r.out || "");
       const { findings } = parseResult(resultMd);
 
       if (canceled) {
         result = { verdict: "blocked", reason: "平台已取消，执行中断", result_md: resultMd || null, findings, env_check: envCheck };
       } else if (r.timedOut) {
         result = { verdict: "blocked", reason: `agent 执行超时（${Math.round(codexTimeoutMs / 1000)}s）`, result_md: resultMd || null, findings, env_check: envCheck };
-      } else if (r.code !== 0 || !fs.existsSync(resultPath)) {
+      } else if (r.code !== 0 || !(fs.existsSync(resultPath) || fs.existsSync(lastMsgPath))) {
         // 把 agent 自己吐的最后一行错误带回去：命令不存在 / 未登录 / 配置错，
         // 在无人值守时全靠这一句，否则页面上只看到 exit=-1。
         const tail = (r.err || "").trim().split(/\r?\n/).filter(Boolean).slice(-1)[0] || "";
