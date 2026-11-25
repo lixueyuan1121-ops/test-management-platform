@@ -1,0 +1,5 @@
+{
+  "base_url": "https://qalab.claw.qihoo.net",
+  "project_id": null,
+  "runners": { "win": ["lili-win"], "mac": [] }
+}
