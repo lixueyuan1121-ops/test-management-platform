@@ -76,14 +76,31 @@ C:\Program Files\WindowsApps\OpenAI.Codex_<版本>_x64__<hash>\app\resources\cod
 所以 `MD_CODEX_BIN` 写 `appx:OpenAI.Codex`：runner 每次启动扫 WindowsApps，取版本号最大的、
 架构匹配的包，升级后自动跟着走。也可以直接写绝对路径，但升级会失效。
 
-实测环境（2026-11）：`codex-cli 0.171.0-alpha.13.2`，`codex login status` → `Logged in using ChatGPT`。
-**桌面版登录不与 CLI 共用**，新机器先跑一次 `codex login`，否则无人值守时会卡在等授权。
+实测环境（2026-11，Windows 11）：
+
+| 安装形态 | 版本 | `workspace-write` 沙箱 |
+|---|---|---|
+| Appx 包内 `app\resources\codex.exe` | 0.171.0-alpha.13.2 | ❌ `exec_command` 报 `Failed to create unified exec process: runner handshake task failed` |
+| Appx 包内 + `-c features.unified_exec=false` | 同上 | ✅ |
+| npm 全局 `%APPDATA%\npm\codex.cmd` | 0.172.0 | ✅ 默认即可 |
+
+结论：**优先用 npm 全局安装的 CLI**（`MD_CODEX_BIN=npm:codex`）。与桌面版升级解耦，
+不依赖 WindowsApps 的 ACL，也不用为绕一个 alpha 的 bug 关功能开关。
+
+排查过程留档，避免以后重复踩：先用 `-s danger-full-access` 确认 CLI 本身能执行命令
+（能跑 → 问题在沙箱或 exec 通道），再分别关 `unified_exec`、换安装形态，一步一变。
+所有 MCP（`cua_repl` / `node_repl`）同时在启动时失败，也是同一原因——它们同样要起子进程。
+
+登录：`codex login status` → `Logged in using ChatGPT`。Appx 版与 npm 版共用 `CODEX_HOME` 下的凭据，
+不必重新登录；但**桌面版应用内的登录状态不等于 CLI 已登录**，新机器先跑一次 `codex login`。
 
 默认参数按该版本的 `exec` 选项：
 
 ```
 exec --skip-git-repo-check --sandbox workspace-write -c approval_policy=never
 ```
+
+若不得不用 Appx 版（0.171-alpha），追加 `-c features.unified_exec=false`。
 
 - `--skip-git-repo-check`：工作目录不是 git 仓库也能跑
 - `--sandbox workspace-write`：agent 要写 `result.md`，只读模式写不出来

@@ -24,6 +24,22 @@ import { codexCommand } from "./codex-engine.mjs";
 // 不进 PATH，而且路径带版本号 —— 升级后旧路径就没了。所以支持 MD_CODEX_BIN="appx:OpenAI.Codex"：
 // 每次启动重新扫一遍，取版本号最大的那个包。
 export function resolveAgentBin(bin, windowsAppsDir = process.env.ProgramFiles ? `${process.env.ProgramFiles}\\WindowsApps` : "C:\\Program Files\\WindowsApps") {
+  // npm:codex → npm 全局安装目录下的 codex.cmd（APPADATA\npm）。
+  // 实测 npm 版 0.172 默认 unified exec 可用，而 Appx 版 0.171-alpha 在 Windows 上起不来
+  // （exec_command 报 "Failed to create unified exec process: runner handshake task failed"），
+  // 所以推荐这条路：与桌面版升级解耦，也不依赖 WindowsApps 的 ACL。
+  const npmMatch = /^npm:(.+)$/i.exec(String(bin || "").trim());
+  if (npmMatch) {
+    const name = npmMatch[1].trim();
+    const base = process.env.APPDATA
+      || (process.env.USERPROFILE ? `${process.env.USERPROFILE}\\AppData\\Roaming` : "");
+    if (!base) throw new Error("npm: 模式需要 APPDATA/USERPROFILE，可以直接把 MD_CODEX_BIN 写成 codex.cmd 的绝对路径");
+    const cmdPath = path.join(base, "npm", `${name}.cmd`);
+    if (!fs.existsSync(cmdPath)) {
+      throw new Error(`没找到 ${cmdPath}。先在该机执行 npm i -g @openai/codex，或把 MD_CODEX_BIN 写成绝对路径`);
+    }
+    return cmdPath;
+  }
   const m = /^appx:(.+)$/i.exec(String(bin || "").trim());
   if (!m) return bin;
   const pkgName = m[1].trim();
@@ -256,7 +272,7 @@ export function makeMdTaskRunner({
       if (e.envCheck) envCheck = e.envCheck;
       if (/ENOENT|not recognized|不是内部或外部命令|CODEX_BIN/i.test(String(e.message))) {
         e.message = `找不到 agent 命令（MD_CODEX_BIN=${codexBin}）：${e.message}。` +
-          `Windows 上桌面版 Codex 不把 CLI 放 PATH，需把 MD_CODEX_BIN 指向 codex.exe 或 @openai/codex/bin/codex.js`;
+          `Windows 上桌面版 Codex 不把 CLI 放 PATH：建议 MD_CODEX_BIN=npm:codex（npm 全局安装），或指向 codex.exe / codex.cmd`;
       }
       result = { verdict: "blocked", reason: e.message, findings: [], env_check: envCheck };
     } finally {
