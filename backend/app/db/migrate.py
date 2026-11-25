@@ -122,6 +122,8 @@ def ensure_task_columns() -> None:
         if "close_note" not in cols:
             conn.execute(text("ALTER TABLE task ADD COLUMN close_note TEXT NULL"))
         ledger_columns = {
+            "feature_description": "TEXT", "feature_html_name": "VARCHAR(160)",
+            "feature_html_hash": "VARCHAR(64)", "feature_html": "LONGBLOB" if engine.dialect.name == "mysql" else "BLOB",
             "risk_level": "VARCHAR(8)",
             "target_version": "VARCHAR(64)", "progress_note": "TEXT",
             "expected_completion": "DATE", "next_action": "TEXT",

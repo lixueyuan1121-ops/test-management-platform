@@ -175,6 +175,18 @@
     <el-dialog v-if="dialog.visible" v-model="dialog.visible" :title="dialog.id ? '编辑任务' : '新建任务'" width="min(720px, 96vw)" :close-on-click-modal="false" :show-close="!dialog.saving" :close-on-press-escape="!dialog.saving">
       <el-form :model="form" :disabled="dialog.saving" label-width="116px">
         <el-form-item label="功能/需求" required><el-input v-model="form.title" type="textarea" :autosize="{ minRows: 2, maxRows: 8 }" maxlength="20000" show-word-limit /></el-form-item>
+        <el-form-item label="功能说明">
+          <el-input v-model="form.feature_description" type="textarea" :rows="2" maxlength="10000" placeholder="填写功能说明" />
+          <div class="feature-file">
+            <label class="el-button el-button--small">
+              {{ featureFilename ? '替换 HTML' : '上传本地 HTML' }}
+              <input type="file" accept=".html,.htm,text/html" aria-label="上传功能说明 HTML" :disabled="dialog.saving" @change="chooseFeatureFile" />
+            </label>
+            <span v-if="featureFilename">{{ featureFilename }}</span>
+            <el-button v-if="featureFilename" link :disabled="dialog.saving" @click="dialog.featureFile = null">移除</el-button>
+          </div>
+          <small class="cl-hint">发布日报时合并所选任务的 HTML 附件。支持内嵌截图的 UTF-8 单文件，最大 12 MiB。</small>
+        </el-form-item>
         <el-form-item label="需求文档"><el-input v-model="form.requirement_url" placeholder="http://..." /></el-form-item>
         <el-form-item label="开发负责人"><el-input v-model="form.developer" placeholder="开发人员姓名" /></el-form-item>
         <el-form-item label="模块"><el-input v-model="form.module" /></el-form-item>
@@ -214,6 +226,11 @@
         <p v-if="detail.row.is_ingested" class="d-row"><span class="d-k">任务来源</span> 机器人自动录入</p>
         <p class="d-row"><span class="d-k">功能/需求</span></p>
         <pre class="d-pre">{{ detail.row.title || '—' }}</pre>
+        <template v-if="detail.row.feature_description || detail.row.feature_html_name">
+          <p class="d-row"><span class="d-k">功能说明</span></p>
+          <pre v-if="detail.row.feature_description" class="d-pre">{{ detail.row.feature_description }}</pre>
+          <p v-if="detail.row.feature_html_name">{{ detail.row.feature_html_name }}</p>
+        </template>
         <p class="d-row"><span class="d-k">状态</span>
           <el-tag :type="STATUS_META[detail.row.status]?.type || 'info'" effect="light" size="small">
             {{ STATUS_META[detail.row.status]?.label || detail.row.status }}
@@ -453,7 +470,22 @@ function fmtExecAt(s) {
   return String(s).replace('T', ' ').slice(0, 16)
 }
 
+const featureFilename = computed(() => dialog.featureFile === undefined ? dialog.savedFeatureName : dialog.featureFile?.name)
+function chooseFeatureFile(event) {
+  const file = event.target.files[0]
+  event.target.value = ''
+  if (!file) return
+  if (!/\.html?$/i.test(file.name) || !file.size || file.size > 12 * 1024 * 1024) {
+    ElMessage.warning('请选择 12 MiB 以内的非空 HTML 文件')
+    return
+  }
+  dialog.featureFile = file
+}
+
 function openCreate() {
+  dialog.featureFile = undefined
+  dialog.savedFeatureName = ''
+  form.feature_description = ''
   dialog.id = null
   dialog.linked = false
   dialog.ingested = false
@@ -462,6 +494,9 @@ function openCreate() {
   dialog.visible = true
 }
 function openEdit(row) {
+  dialog.featureFile = undefined
+  dialog.savedFeatureName = row.feature_html_name || ''
+  form.feature_description = row.feature_description || ''
   dialog.id = row.id
   dialog.originalStatus = row.status
   dialog.linked = !!row.release_record_id
@@ -487,6 +522,17 @@ async function submit() {
   dialog.saving = true
   try {
     const payload = { ...form, project_id: pid.value, risk_level: form.risk_level || null, expected_completion: form.expected_completion || null, feedback_due_at: form.feedback_due_at || null }
+    if (dialog.featureFile) {
+      try {
+        const content = new TextDecoder('utf-8', { fatal: true }).decode(await dialog.featureFile.arrayBuffer())
+        payload.feature_html = { name: dialog.featureFile.name, content }
+      } catch {
+        ElMessage.warning('无法读取文件，请选择 UTF-8 编码的 HTML')
+        return
+      }
+    } else if (dialog.featureFile === null) {
+      payload.feature_html = null
+    }
     if (dialog.id) {
       // Editing notes must not resend a possibly stale status from another tab.
       if (form.status === dialog.originalStatus) delete payload.status
@@ -536,6 +582,10 @@ async function onCopy() {
 </script>
 
 <style scoped>
+.feature-file { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:6px; width:100%; overflow-wrap:anywhere; }
+.feature-file label { position:relative; }
+.feature-file input { position:absolute; inset:0; opacity:0; width:100%; cursor:pointer; }
+.feature-file label:focus-within { outline:2px solid var(--el-color-primary); }
 .ledger-summary { display:flex; flex-wrap:wrap; gap:18px; align-items:center; padding-top:14px; font-size:13px; }
 .ledger-summary strong { font-size:16px; margin-left:4px; }
 .ledger-actions { display:flex; flex-wrap:wrap; gap:8px; margin-left:auto; }

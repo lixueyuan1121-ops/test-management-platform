@@ -17,19 +17,28 @@
     </el-form>
     <div v-if="shareUrl" class="digest-share">
       <span>在线 HTML：</span><el-link :href="shareUrl" target="_blank" rel="noopener noreferrer" type="primary">{{ shareUrl }}</el-link>
-      <el-button size="small" @click="copyLink">复制链接</el-button>
+      <el-button size="small" :disabled="manualIncomplete || publishing" @click="copyLink">复制链接</el-button>
       <span class="share-note">{{ draft.share_hosting === 'nami' ? '与测评报告使用同一在线发布服务，持有链接可查看' : '登录平台后，项目成员可查看本次发布内容' }}</span>
     </div>
-    <div v-else-if="draft.share_path" class="share-note">正文已修改，请重新发布 HTML 生成新链接。</div>
+    <div v-if="shareUrl && draft.manual_url" class="digest-share">
+      <span>使用说明和相关案例详见</span>
+      <el-link :href="draft.manual_url" target="_blank" rel="noopener noreferrer" type="primary">{{ draft.manual_url }}</el-link>
+    </div>
+    <el-alert v-if="shareUrl && manualIncomplete" class="shortlink-warning" type="warning" :closable="false"
+      :title="draft.manual_error || '手册短链尚未生成，请稍后重试。'" />
+    <div v-if="!shareUrl && draft.share_path" class="share-note">正文已修改，请重新发布 HTML 生成新链接。</div>
     <el-alert v-if="shareUrl && draft.share_link_type !== 'short'" class="shortlink-warning" type="warning" :closable="false" title="短链尚未生成，日报已保存。当前链接可临时查看，稍后可重试生成短链；持续失败请联系管理员。" />
     <template #footer>
       <span v-if="savedAt" class="saved-at">已保存 {{ savedAt }}</span>
       <el-button :disabled="publishing" @click="close">关闭</el-button>
       <el-button :disabled="!draft.content || loading" @click="exportDraft('md')">导出 Markdown</el-button>
       <el-button :disabled="!draft.content || loading" @click="exportDraft('txt')">导出文本</el-button>
-      <el-button v-if="!readOnly" type="success" :disabled="loading || saving || !draft.content" :loading="publishing" @click="publish">{{ shareUrl && draft.share_link_type !== 'short' ? '重试生成短链' : '发布 HTML 报告' }}</el-button>
+      <el-button v-if="!readOnly" type="success" :disabled="loading || saving || !draft.content" :loading="publishing" @click="publish">{{ shareUrl && (draft.share_link_type !== 'short' || manualIncomplete) ? '重试生成短链' : '发布 HTML 报告' }}</el-button>
       <el-button v-if="!readOnly" type="primary" :disabled="loading || publishing || !draft.content" :loading="saving" @click="save">保存日报</el-button>
     </template>
+    <el-dialog :model-value="!!manualCopy" title="手动复制发布内容" width="min(560px, 92vw)" append-to-body @close="manualCopy = ''">
+      <el-input :model-value="manualCopy" type="textarea" readonly :rows="9" @focus="$event.target.select()" />
+    </el-dialog>
     <el-dialog v-model="historyVisible" title="项目历史日报" width="min(720px, 92vw)" append-to-body>
       <el-alert v-if="historyError" title="历史日报加载失败" type="error" :closable="false"><el-button link @click="showHistory">重试</el-button></el-alert>
       <el-table :data="history" v-loading="historyLoading" empty-text="还没有保存的日报">
@@ -45,7 +54,7 @@
 import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { generateTaskDigest, saveTaskDigest, listTaskDigests, publishTaskDigest } from '@/api/taskLedger'
-import { downloadText } from '@/utils/taskLedger'
+import { digestShareText, downloadText } from '@/utils/taskLedger'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/store/auth'
 const props = defineProps({ context: { type: Object, required: true } })
@@ -66,9 +75,16 @@ let savedSnapshot = ''
 const snapshot = () => JSON.stringify([draft.title, draft.content, draft.report_date])
 const shareUrl = computed(() => draft.share_path && snapshot() === publishedSnapshot.value
   ? new URL(draft.share_path, window.location.origin).href : '')
+const manualIncomplete = computed(() => ['failed', 'pending'].includes(draft.manual_status))
+const manualCopy = ref('')
 async function copyLink() {
-  try { await navigator.clipboard.writeText(shareUrl.value); ElMessage.success('链接已复制') }
-  catch { ElMessage.warning('复制失败，请手动复制上方链接') }
+  const text = digestShareText(draft, shareUrl.value)
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('版本标题和链接已复制')
+  } catch {
+    manualCopy.value = text
+  }
 }
 async function publish() {
   if (readOnly.value) return
@@ -79,10 +95,12 @@ async function publish() {
   try {
     const result = await publishTaskDigest(data)
     draft.id = result.id; draft.share_path = result.share_path; draft.share_hosting = result.share_hosting; draft.share_link_type = result.share_link_type
+    draft.manual_url = result.manual_url; draft.manual_status = result.manual_status; draft.manual_error = result.manual_error
     draft.author_id = result.author_id; draft.author_name = result.author_name
     publishedSnapshot.value = requestedSnapshot; savedSnapshot = requestedSnapshot
     savedAt.value = new Date().toLocaleTimeString()
-    if (result.share_link_type === 'short') ElMessage.success('日报已保存，HTML 短链已生成')
+    if (manualIncomplete.value) ElMessage.warning('日报已保存，功能手册短链待重试')
+    else if (result.share_link_type === 'short') ElMessage.success('日报已保存，HTML 短链已生成')
     else ElMessage.warning('日报已保存，但短链暂未生成，请稍后重试')
   } finally { publishing.value = false }
 }
