@@ -97,9 +97,21 @@ def _to_out(db: Session, r: SignCheck, full: bool = False) -> dict:
     return out
 
 
-def _online_agents() -> list[str]:
+def _online_agents(db: Session) -> list[str]:
+    """在线 = 最近轮询过，或手上正有一条校验在跑。
+
+    agent 是单线程的：下载大文件 + 跑校验程序期间不会来轮询，只看心跳会把「正在干活」
+    误判成离线（几百 MB 的文件一次就要几十秒到几分钟）。所以名下有未超时 running 记录的也算在线。
+    """
     now = datetime.utcnow()
-    return sorted(a for a, seen in _agents.items() if now - seen <= _ONLINE_WINDOW)
+    online = {a for a, seen in _agents.items() if now - seen <= _ONLINE_WINDOW}
+    busy = (
+        db.query(SignCheck.agent)
+        .filter(SignCheck.status == "running", SignCheck.started_at >= now - _RUNNING_TTL)
+        .distinct().all()
+    )
+    online.update(a for (a,) in busy if a)
+    return sorted(online)
 
 
 def _fail(r: SignCheck, reason: str) -> None:
@@ -210,7 +222,7 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
 def service_status(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """页面顶部状态条：功能是否启用、有没有校验机在线、当前排队数。"""
     _reap(db)
-    agents = _online_agents()
+    agents = _online_agents(db)
     queued = db.query(SignCheck).filter(SignCheck.status.in_(("pending", "running"))).count()
     return ok({
         "enabled": bool(settings.SIGNCHECK_AGENT_TOKEN),
@@ -398,7 +410,7 @@ def get_check(cid: int, db: Session = Depends(get_db), _: User = Depends(get_cur
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
     out = _to_out(db, r, full=True)
-    out["agent_online"] = bool(_online_agents())
+    out["agent_online"] = bool(_online_agents(db))
     return ok(out)
 
 

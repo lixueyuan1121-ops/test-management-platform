@@ -246,6 +246,10 @@ def test_resume_after_agent_restart():
     assert client.get("/api/signcheck/agent/next", params={"agent": "win-other"}, headers=AGENT).json()["data"] is None
     again = client.get("/api/signcheck/agent/next", params={"agent": "win-r"}, headers=AGENT).json()["data"]
     assert again == job, again
+    # 干活期间不轮询：心跳过期也仍算在线
+    api._agents["win-r"] = datetime.utcnow() - timedelta(minutes=2)
+    st = client.get("/api/signcheck/status").json()["data"]
+    assert st["agent_online"] and "win-r" in st["agents"], st
     assert client.get(f"/api/signcheck/agent/{cid}/file", headers=AGENT).content == b"MZresume"
     r = client.post(f"/api/signcheck/agent/{cid}/result", headers=AGENT,
                     json={"agent": "win-r", "exit_code": 0, "stdout_b64": base64.b64encode(GOOD.encode("gbk")).decode()})
