@@ -18,6 +18,7 @@ backend/storage/eval_artifacts/
 backend/storage/signcheck/
 tools/signcheck-agent/verifier/
 tools/signcheck-agent/.env
+tools/signcheck-agent/logs/
 
 # Claude 本地个人记忆（含推送习惯，勿入库）
 CLAUDE.local.md
