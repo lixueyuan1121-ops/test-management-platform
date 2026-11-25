@@ -85,7 +85,7 @@ agent 执行完只产出**缺陷候选**（`findings`），不直接调缺陷系
    **替代方案：直写模式。** 专用测试机上，直接给 runner 账号 hosts 写权限，跳过辅助层：
 
    ```powershell
-   icacls "C:\Windows\System32\drivers\etc\hosts" /grant "%USERNAME%:(M)"
+   icacls "C:\Windows\System32\drivers\etc\hosts" /grant "$($env:USERNAME):(M)"
    ```
 
    然后 `.env` 设 `MD_HOSTS_DIRECT=1`，计划任务可以整个不要。

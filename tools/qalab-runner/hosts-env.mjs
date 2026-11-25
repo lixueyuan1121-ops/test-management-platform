@@ -55,7 +55,7 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName,
   // 权限提示按平台给，别在 Mac 上教人敲 icacls
   function permHint(sys) {
     return IS_WIN
-      ? `无写权限：先执行 icacls "${sys}" /grant "%USERNAME%:(M)"，然后重开 runner`
+      ? `无写权限：在管理员 PowerShell 里执行 icacls "${sys}" /grant "$($env:USERNAME):(M)"，然后重开 runner`
       : `无写权限：Mac/Linux 请改用提权助手（不要开 MD_HOSTS_DIRECT），或 sudo chown 让该账号可写 ${sys}`;
   }
 
