@@ -871,6 +871,11 @@ async function main() {
   if (mdTasks) {
     log(`md 任务已启用 groups=${MD_GROUPS_DIR} runtime=${MD_RUNTIME_DIR}`);
     try { await mdTasks.heal(); } catch (e) { log("md 任务环境自愈失败:", e.message); }
+    try {
+      const pf = await mdTasks.preflight();
+      if (pf.ok) log("hosts 提权助手可用");
+      else log(`!! hosts 提权助手不可用：${pf.err}（md 任务会在切环境时失败，检查 MD_HOSTS_HELPER / MD_HOSTS_TASK 与计划任务权限）`);
+    } catch (e) { log("hosts 自检异常:", e.message); }
   }
   const polling = createPollSchedule({ pollMs: POLL_MS, execPollMs: process.env.EXEC_POLL_MS });
   log(`执行队列轮询 ${polling.executionMs}ms，探测/perf 轮询 ${polling.maintenanceMs}ms`);

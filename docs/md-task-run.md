@@ -61,8 +61,26 @@ agent 执行完只产出**缺陷候选**（`findings`），不直接调缺陷系
    新能力必须由人在该机显式打开，否则每台机器都会去抢这类任务。
 2. 放好 hosts 分组文件（`MD_GROUPS_DIR`），从 SwitchHosts 导出即可。
 3. 装提权助手：它只做三件事（快照/应用/还原系统 hosts），runner 与 agent 本身都不提权。
-   - Mac：`bin/helper-mac.sh` → `/usr/local/bin/qa-hosts-helper`，sudoers 只放行这一条命令
-   - Win：`bin/helper-win.ps1` + 计划任务「qa-hosts-helper」（最高权限、按需运行，不用 SYSTEM）
+   两份脚本随 runner 分发在 `bin/` 下（`qa-hosts-helper-mac.sh` / `qa-hosts-helper-win.ps1`）。
+   - Mac：装到 `/usr/local/bin/qa-hosts-helper`，sudoers 只放行这一条命令
+   - Win：建计划任务「qa-hosts-helper」指向 `qa-hosts-helper-win.ps1`，最高权限、按需运行、**不要 SYSTEM**
+
+   Windows 上建任务的正确写法（`schtasks /ru` 不给密码会报"拒绝访问"，用 PowerShell 的
+   Interactive 登录类型可以避免）：
+
+   ```powershell
+   $act = New-ScheduledTaskAction -Execute "powershell.exe" `
+     -Argument "-NoProfile -ExecutionPolicy Bypass -File <runner目录>\bin\qa-hosts-helper-win.ps1"
+   $pr  = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+     -LogonType Interactive -RunLevel Highest
+   Register-ScheduledTask -TaskName "qa-hosts-helper" -Action $act -Principal $pr -Force
+   ```
+
+   `LogonType Interactive` = 只在该用户登录时运行（需要桌面会话），`RunLevel Highest` = 提权。
+   创建这条任务本身要求当前窗口已提权，否则同样报"拒绝访问"。
+
+   runner 启动时会做一次自检（只读快照 hosts），失败会打
+   `!! hosts 提权助手不可用` 并说明原因 —— 比等到切环境时才发现好。
 4. 配置 `MD_VERIFY_DOMAINS`（需要校验解析的域名）与 `MD_CODEX_*`（agent 调用方式）。
 
 ### Windows：agent 命令在内置包目录里

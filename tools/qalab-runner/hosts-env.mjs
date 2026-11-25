@@ -37,8 +37,10 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName 
       const bin = helperPath || "/usr/local/bin/qa-hosts-helper";
       return run("sudo", ["-n", bin, action, file]);
     }
-    const jobPath = path.join(hostsRuntime, "job.json");
-    const resPath = path.join(hostsRuntime, "job.result.json");
+    // job 文件必须放在 helper 约定的位置（runtime 根，不是 runtime/hosts）：
+    // helper 由计划任务拉起，只认 QA_RUNTIME 或 %USERPROFILE%\qa-workspace\runtime。
+    const jobPath = path.join(runtimeDir, "job.json");
+    const resPath = path.join(runtimeDir, "job.result.json");
     const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try { fs.unlinkSync(resPath); } catch {}
     fs.writeFileSync(jobPath, JSON.stringify({ token, action, arg: file }));
@@ -150,6 +152,19 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName 
     }
   }
 
+  /** 自检：能否以提权身份读到 hosts（只做快照，不改任何东西）。 */
+  async function preflight() {
+    const f = path.join(runtimeDir, "hosts-preflight.hosts");
+    try {
+      const r = await viaHelper("snapshot", f);
+      if (r.code !== 0) return { ok: false, err: (r.err || "").trim() || "快照失败" };
+      fs.existsSync(f) && fs.unlinkSync(f);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, err: e.message };
+    }
+  }
+
   /** 启动时自愈：上次崩在"已切未还原"，系统 hosts 会停在测试环境。 */
   async function heal() {
     if (!fs.existsSync(pendingFile)) return;
@@ -158,5 +173,5 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName 
     log(ok ? "hosts 已还原" : "hosts 自愈失败，请检查 helper 权限");
   }
 
-  return { apply, restore, heal, listGroups, groupFile };
+  return { apply, restore, heal, preflight, listGroups, groupFile };
 }

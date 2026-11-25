@@ -311,5 +311,5 @@ export function makeMdTaskRunner({
     }
   }
 
-  return { pollOnce, heal: hosts.heal };
+  return { pollOnce, heal: hosts.heal, preflight: hosts.preflight };
 }
