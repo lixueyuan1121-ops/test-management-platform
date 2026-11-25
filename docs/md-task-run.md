@@ -60,6 +60,18 @@
 任务里必须显式写 `env_group: online`，不要留空——留空会跳过整个切换流程，
 而机器上若还残留上一轮测试的映射，你测的就是"假线上"。
 
+### 先自检，再发任务
+
+```powershell
+cd D:\code\test-management-platform\tools\qalab-runner
+node bin\hosts-check.mjs                  # 列出每个分组的映射，检查文件名/IP 有没有写错
+node bin\hosts-check.mjs work-test        # 真切一次：快照 → 写入 → 校验解析 → 还原，并核对还原一致
+```
+
+它读同目录 `.env`，用的就是 runner 的真实配置，但不连平台、不跑 agent。
+会明确打印「期望 / 实际」和「还原前后 hosts 指纹是否一致」——
+比发一个任务再从结果里反推快得多，也不占执行机。
+
 校验只看该分组文件里出现的域名。`online.hosts` 里没有 `api.n.cn`，
 所以线上任务不做解析校验（没有可比的期望值）——这是刻意的：
 线上没有"应该在哪个 IP"的先验，硬编一个反而会误判。
