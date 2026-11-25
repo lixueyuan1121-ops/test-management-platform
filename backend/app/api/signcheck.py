@@ -1,4 +1,4 @@
-"""平台签名校验：按平台派发 Windows 签名校验或 macOS 公证预检任务。
+"""平台签名校验：Windows 签名校验与服务端 macOS 静态初筛。
 
 三类调用方、三种鉴权：
 - 平台用户（JWT）       /api/signcheck            上传、查结果、历史、删除
@@ -43,6 +43,7 @@ from app.models import MacNotaryAgent, SignCheck, SignCheckAgent, User
 from app.schemas.common import ok
 from app.schemas.signcheck import SignCheckResultIn
 from app.services import mac_notary, signcheck as svc
+from app.services.mac_static import jobs as static_checks
 
 CheckPlatform = Literal["windows", "macos"]
 
@@ -81,7 +82,8 @@ def _to_out(db: Session, r: SignCheck, full: bool = False) -> dict:
         "filename": r.filename,
         "file_size": r.file_size,
         "sha256": r.sha256,
-        "platform": r.platform,
+        "platform": "macos" if r.platform == static_checks.PLATFORM else r.platform,
+        "check_mode": {"macos": "mac-native", static_checks.PLATFORM: "server-static"}.get(r.platform, "windows"),
         "team_id": r.team_id,
         "source": r.source,
         "status": r.status,
@@ -100,7 +102,7 @@ def _to_out(db: Session, r: SignCheck, full: bool = False) -> dict:
         out["exit_code"] = r.exit_code
         out["stdout"] = r.stdout
         out["stderr"] = r.stderr
-        if r.platform == "macos" and r.mac_output:
+        if r.platform in ("macos", static_checks.PLATFORM) and r.mac_output:
             out.update(json.loads(r.mac_output))
     return out
 
@@ -160,7 +162,7 @@ def _reap(db: Session) -> None:
          "长时间没有支持此任务的校验机认领（未在线），请启动校验机后重新上传。"),
     )
     for state, cutoff, reason in expired:
-        rows = db.query(SignCheck.id).filter(state, cutoff).all()
+        rows = db.query(SignCheck.id).filter(SignCheck.platform != static_checks.PLATFORM, state, cutoff).all()
         for (cid,) in rows:
             # 领取、回传或心跳可能发生在读到过期记录之后。
             changed = db.execute(update(SignCheck).where(SignCheck.id == cid, state, cutoff).values(
@@ -185,14 +187,15 @@ def _clean_filename(raw: str | None) -> str:
 async def _receive(request: Request, filename: str | None, source: str, user_id: int | None,
                    platform: CheckPlatform, team_id: str | None) -> int:
     """把请求体流式写盘并建一条 pending 记录，返回记录 id。"""
-    if (platform == "windows" or user_id is None) and not _agent_token(platform):
+    storage_platform = static_checks.PLATFORM if platform == "macos" else platform
+    if platform == "windows" and not _agent_token(platform):
         raise HTTPException(503, detail="该平台校验未启用，请为校验机配置独立令牌。")
     # query 参数已由框架解码；请求头只能放 ASCII，所以约定为 URL 编码，这里解一次
     name = _clean_filename(filename or unquote(request.headers.get("x-file-name") or ""))
     if platform == "macos" and len(name.encode("utf-8")) > 255:
         raise HTTPException(422, detail="文件名过长，请缩短文件名后再上传。")
     if platform == "macos" and not name.lower().endswith((".dmg", ".zip")):
-        raise HTTPException(422, detail="Mac 公证预检支持 DMG、ZIP；请先将 APP 或目录压缩为 ZIP。")
+        raise HTTPException(422, detail="macOS 静态初筛支持 DMG、ZIP，请先将 APP 或目录压缩为 ZIP。")
     if team_id and platform != "macos":
         raise HTTPException(422, detail="预期 Team ID 仅适用于 Mac 包。")
     max_bytes = settings.SIGNCHECK_MAX_MB * 1024 * 1024
@@ -205,7 +208,7 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
     def _queue_full() -> bool:
         db = SessionLocal()
         try:
-            n = db.query(SignCheck).filter(SignCheck.platform == platform, SignCheck.status.in_(("pending", "running"))).count()
+            n = db.query(SignCheck).filter(SignCheck.platform == storage_platform, SignCheck.status.in_(("pending", "running"))).count()
             return n >= settings.SIGNCHECK_MAX_QUEUE
         finally:
             db.close()
@@ -231,7 +234,7 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
             db = SessionLocal()
             try:
                 r = SignCheck(filename=name, file_size=size, sha256=digest.hexdigest(),
-                              source=source, status="pending", created_by=user_id, platform=platform, team_id=team_id)
+                              source=source, status="pending", created_by=user_id, platform=storage_platform, team_id=team_id)
                 db.add(r)
                 db.flush()
                 cid = r.id
@@ -261,10 +264,14 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
 def service_status(platform: CheckPlatform = "windows", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """页面顶部状态条：功能是否启用、有没有校验机在线、当前排队数。"""
     _reap(db)
+    is_static = platform == "macos"
+    # Keep legacy agent telemetry for clients finishing a pre-upgrade native job.
     agents = _online_agents(db, platform, user.id)
-    queued = db.query(SignCheck).filter(SignCheck.platform == platform, SignCheck.status.in_(("pending", "running"))).count()
+    storage_platform = static_checks.PLATFORM if is_static else platform
+    queued = db.query(SignCheck).filter(SignCheck.platform == storage_platform, SignCheck.status.in_(("pending", "running"))).count()
     return ok({
         "enabled": platform == "macos" or bool(_agent_token(platform)),
+        "check_mode": "server-static" if is_static else "windows",
         "agent_online": bool(agents),
         "agents": agents,
         "queued": queued,
@@ -330,7 +337,8 @@ def list_checks(
 ):
     """历史记录（全体登录用户可见，最新在前）。keyword 匹配文件名或 sha256 前缀。"""
     _reap(db)
-    q = db.query(SignCheck).filter(SignCheck.platform == platform)
+    platforms = ("macos", static_checks.PLATFORM) if platform == "macos" else ("windows",)
+    q = db.query(SignCheck).filter(SignCheck.platform.in_(platforms))
     if mine:
         q = q.filter(SignCheck.created_by == user.id)
     if keyword and keyword.strip():
@@ -523,7 +531,7 @@ def get_check(cid: int, db: Session = Depends(get_db), _: User = Depends(get_cur
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
     out = _to_out(db, r, full=True)
-    out["agent_online"] = bool(_online_agents(db, r.platform, r.created_by))
+    out["agent_online"] = None if r.platform == static_checks.PLATFORM else bool(_online_agents(db, r.platform, r.created_by))
     return ok(out)
 
 

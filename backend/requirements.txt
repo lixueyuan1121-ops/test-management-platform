@@ -17,3 +17,5 @@ requests==2.34.2
 APScheduler==3.11.3
 
 httpx==0.28.1
+asn1crypto==1.5.1
+dpp-py==0.4.1

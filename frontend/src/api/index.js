@@ -422,7 +422,6 @@ export const getPerfPrompt = (id) => http.get(`/perf/runs/${id}/prompt`)
 export const signalPerfRun = (id) => http.post(`/perf/runs/${id}/signal`)
 export const cancelPerfRun = (id) => http.post(`/perf/runs/${id}/cancel`)
 // ===== Windows 签名校验（上传 → Windows 校验机执行 → 轮询结果）=====
-export const downloadMacAgent = () => http.get('/signcheck/mac-agent.zip', { responseType: 'blob' })
 export const signCheckStatus = (platform = 'windows') => http.get('/signcheck/status', { silent: true, params: { platform } })
 export const listSignChecks = (params) => http.get('/signcheck', { params })
 export const getSignCheck = (id, config) => http.get(`/signcheck/${id}`, config)

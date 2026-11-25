@@ -155,6 +155,8 @@ def create_app() -> FastAPI:
         selector_audit.start()
         from app.services import verified_import_jobs
         verified_import_jobs.start()
+        from app.services.mac_static import jobs as static_checks
+        static_checks.start()
         # 收口僵尸 running:重启会打断内存里的综合评价/一条龙线程,库里残留的 running 再没人落
         # 终态,前端遂永久「生成中」——启动时统一收口为 failed(可重生成/换批重跑)。不影响主服务。
         try:
@@ -211,6 +213,8 @@ def create_app() -> FastAPI:
     def _shutdown():
         from app.services import verified_import_jobs
         verified_import_jobs.stop()
+        from app.services.mac_static import jobs as static_checks
+        static_checks.stop()
         from app.services import test_missions
         test_missions.stop()
         try:

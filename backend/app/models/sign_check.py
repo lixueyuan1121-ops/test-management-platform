@@ -1,4 +1,4 @@
-"""签名任务表：Windows 原生验签和 macOS 公证预检。
+"""签名任务表：Windows 原生验签、macOS 服务端静态初筛及历史原生预检。
 
 链路：用户在平台上传文件(pending) → Windows 校验机 agent 轮询认领(running) → 下载文件、
 跑 360Base_test.exe → 回传原始输出 → 后端解析四项签名状态(completed/failed)。
@@ -27,6 +27,7 @@ class SignCheck(Base):
     __tablename__ = "sign_check"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # windows 与历史 macos 可由外部校验机认领，mac_static 仅由服务端处理。
     platform: Mapped[str] = mapped_column(String(12), default="windows", server_default="windows")
     team_id: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # 完整 JSON 和 UTF-8 日志仅在打开单条记录时加载。

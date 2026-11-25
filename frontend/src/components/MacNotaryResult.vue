@@ -1,5 +1,6 @@
 <template>
-  <p class="scope">团队 Mac 使用 codesign 检查原生文件的签名、Developer ID、时间戳及 hardened runtime。本地预检不等于 Apple 公证通过。</p>
+  <p v-if="current?.check_mode === 'mac-native'" class="scope">历史原生预检。团队 Mac 使用 codesign 检查原生文件的签名、Developer ID、时间戳及 hardened runtime。本地预检不等于 Apple 公证通过。</p>
+  <p v-else class="scope">检查包内原生文件的代码页摘要、Developer ID 签名信息、时间戳和 hardened runtime 标记。证书信任及 Apple 公证状态需另行验证。</p>
   <template v-if="current">
     <p v-if="current.team_id">预期 Team ID <code>{{ current.team_id }}</code></p>
     <template v-if="report">

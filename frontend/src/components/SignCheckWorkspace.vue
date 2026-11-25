@@ -2,7 +2,7 @@
   <div class="signcheck functional-workspace">
     <WorkspacePage title="签名校验">
       <template #actions>
-        <span v-if="svc" class="agent-state" :class="agentClass" role="status">
+        <span v-if="svc && !mac" class="agent-state" :class="agentClass" role="status">
           <i class="dot" aria-hidden="true"></i>{{ agentLabel }}
         </span>
         <el-button size="small" :icon="Refresh" title="刷新" aria-label="刷新" :loading="loading" @click="refresh" />
@@ -11,16 +11,12 @@
       <el-radio-group :model-value="platform" :disabled="uploading" aria-label="校验类型" class="modes"
         @update:model-value="$emit('switch-platform', $event)">
         <el-radio-button value="windows">Windows 签名校验</el-radio-button>
-        <el-radio-button value="macos">macOS 公证预检</el-radio-button>
+        <el-radio-button value="macos">macOS 静态初筛</el-radio-button>
       </el-radio-group>
-      <div v-if="mac" class="mac-agent">
-        <el-button size="small" :loading="downloadingAgent" @click="downloadAgent">下载 Mac 校验机启动包</el-button>
-        <span>在任意测试 Mac（Node.js 18+）上解压，运行「启动预检.command」，保持终端打开。个人启动包有效期为 12 小时。</span>
-      </div>
-      <el-alert v-if="svc && !svc.enabled" class="notice" type="warning" :closable="false" show-icon
+      <el-alert v-if="!mac && svc && !svc.enabled" class="notice" type="warning" :closable="false" show-icon
         title="签名校验未启用"
-        :description="mac ? '请下载启动包并在测试 Mac 上运行。' : '请管理员配置 SIGNCHECK_AGENT_TOKEN 并启动 Windows 校验机。'" />
-      <el-alert v-else-if="svc && !svc.agent_online" class="notice" type="warning" :closable="false" show-icon
+        description="请管理员配置 SIGNCHECK_AGENT_TOKEN 并启动 Windows 校验机。" />
+      <el-alert v-else-if="!mac && svc && !svc.agent_online" class="notice" type="warning" :closable="false" show-icon
         title="校验机离线"
         :description="offlineHint" />
 
@@ -43,12 +39,12 @@
             <el-progress :percentage="uploadPct" :stroke-width="6" />
             <el-button size="small" @click="cancelUpload">取消上传</el-button>
           </div>
-          <p v-if="mac" class="privacy">APP 或目录请先压成 ZIP。团队 Mac 调用系统 codesign 检查包内原生文件，检查结束后清理安装包。</p>
+          <p v-if="mac" class="privacy">平台服务器自动检查 DMG 或 ZIP，完成后清理上传文件。APP 或目录请先压成 ZIP。</p>
           <p v-else class="privacy">文件上传到平台后交给 Windows 校验机校验，出结果即从平台和校验机删除，只保留文件名、大小、SHA-256 与校验结果。</p>
         </section>
 
         <section class="panel" aria-labelledby="sc-result-title">
-          <h2 id="sc-result-title">{{ mac ? '公证预检结果' : '签名结果' }}</h2>
+          <h2 id="sc-result-title">{{ mac ? (current?.check_mode === 'mac-native' ? '历史原生预检结果' : '静态初筛结果') : '签名结果' }}</h2>
           <div class="verdict" :class="`is-${banner.tone}`" role="status" aria-live="polite">
             <el-icon v-if="banner.tone === 'running'" class="verdict-icon is-loading"><Loading /></el-icon>
             <span v-else class="verdict-icon" aria-hidden="true">{{ banner.icon }}</span>
@@ -99,6 +95,9 @@
             <template #default="{ row }"><button class="row-link" type="button" @click.stop="open(row)">{{ row.filename }}</button></template>
           </el-table-column>
           <el-table-column label="大小" width="96"><template #default="{ row }">{{ fmtSize(row.file_size) }}</template></el-table-column>
+          <el-table-column v-if="mac" label="检查方式" width="100">
+            <template #default="{ row }">{{ row.check_mode === 'mac-native' ? 'Mac 原生' : '静态初筛' }}</template>
+          </el-table-column>
           <el-table-column label="结论" width="130">
             <template #default="{ row }"><span class="badge" :class="`badge-${rowTone(row)}`">{{ rowText(row) }}</span></template>
           </el-table-column>
@@ -130,7 +129,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import WorkspacePage from '@/components/WorkspacePage.vue'
 import { useAuthStore } from '@/store/auth'
-import { downloadMacAgent, deleteSignCheck, getSignCheck, listSignChecks, signCheckStatus, uploadSignCheck } from '@/api'
+import { deleteSignCheck, getSignCheck, listSignChecks, signCheckStatus, uploadSignCheck } from '@/api'
 
 import MacNotaryResult from '@/components/MacNotaryResult.vue'
 
@@ -138,19 +137,6 @@ const props = defineProps({ platform: { type: String, required: true } })
 defineEmits(['switch-platform'])
 const mac = props.platform === 'macos'
 const teamId = ref('')
-const downloadingAgent = ref(false)
-async function downloadAgent() {
-  downloadingAgent.value = true
-  try {
-    const blob = await downloadMacAgent()
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'qalab-mac-notary.zip'
-    link.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } finally { downloadingAgent.value = false }
-}
 const KINDS = [
   { kind: 'EmbeddedSign', label: '微软数字签名', short: '微软签名' },
   { kind: 'Old360Sign', label: '360 旧签名', short: '360 旧签名' },
@@ -164,10 +150,11 @@ const STATES = {
 }
 // 总体结论 → 标题 / 图标 / 色调 / 缺省说明
 const VERDICTS = mac ? {
-  passed: { title: '预检通过', icon: '✓', tone: 'ok', desc: '' },
+  no_findings: { title: '初筛未发现问题', icon: '✓', tone: 'ok', desc: '已完成本次静态检查。' },
+  passed: { title: '原生预检通过', icon: '✓', tone: 'ok', desc: '' },
   invalid: { title: '发现签名问题', icon: '×', tone: 'bad', desc: '请查看文件明细。' },
   partial: { title: '检查不完整', icon: '!', tone: 'warn', desc: '请查看扫描数量和未覆盖内容。' },
-  error: { title: '预检执行异常', icon: '×', tone: 'bad', desc: '请查看执行日志。' },
+  error: { title: '检查执行异常', icon: '×', tone: 'bad', desc: '请查看执行日志。' },
 } : {
   passed: { title: '验签通过', icon: '✓', tone: 'ok', desc: '' },
   invalid: { title: '签名无效', icon: '×', tone: 'bad', desc: '' },
@@ -181,7 +168,7 @@ const FINAL = ['completed', 'failed']
 const REQUIRED = ['EmbeddedSign', 'S3360Sign']
 const auth = useAuthStore()
 const svc = ref(null)
-const offlineHint = computed(() => (mac ? '当前没有 Mac 校验机在线。' : '当前没有 Windows 校验机在线。') + `可先上传排队，超过 ${svc.value?.pending_minutes || 30} 分钟未认领会结束任务。`)
+const offlineHint = computed(() => '当前没有 Windows 校验机在线。' + `可先上传排队，超过 ${svc.value?.pending_minutes || 30} 分钟未认领会结束任务。`)
 const current = ref(null)
 const rows = ref([])
 const total = ref(0)
@@ -218,6 +205,9 @@ const banner = computed(() => {
   if (uploading.value) return { tone: 'running', title: '正在上传', desc: `${uploadName.value}（${uploadPct.value}%）` }
   const c = current.value
   if (!c) return { tone: 'idle', icon: '·', title: '等待校验', desc: '选择文件后自动开始。' }
+  if (c.check_mode === 'server-static' && !FINAL.includes(c.status)) return {
+    tone: 'running', title: c.status === 'pending' ? '等待初筛' : '正在初筛', desc: '平台服务器将读取安装包并检查签名元数据。',
+  }
   if (c.status === 'pending') return { tone: 'running', title: '排队中', desc: c.agent_online === false ? (mac ? '等待 Mac 校验机上线…' : '等待 Windows 校验机上线…') : '等待校验机认领…' }
   if (c.status === 'running') return { tone: 'running', title: '正在校验', desc: `校验机 ${c.agent || ''} 正在读取文件并检查签名…` }
   const v = VERDICTS[c.verdict] || VERDICTS.error
@@ -388,7 +378,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.mac-agent { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; color: var(--tech-muted); }
 .modes, .team { margin-bottom: 12px; }
 .notice { margin-bottom: 12px; }
 .agent-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--tech-muted); white-space: nowrap; }

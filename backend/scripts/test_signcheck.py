@@ -328,6 +328,18 @@ def test_hook():
     assert client.post(url, params={"filename": "ci.exe"}, content=b"x", headers={**OCTET, "X-CI-Token": ""}).status_code == 403
 
 
+def legacy_native_job(params, content):
+    # A record created by the release that dispatched macOS jobs to agents.
+    with S() as db:
+        r = SignCheck(platform="macos", created_by=current.id, filename=params["filename"],
+                      team_id=params.get("team_id"), file_size=len(content), status="pending")
+        db.add(r)
+        db.flush()
+        svc.file_path(r.id).write_bytes(content)
+        db.commit()
+        return api._to_out(db, r)
+
+
 def test_mac_notary():
     settings.SIGNCHECK_AGENT_TOKEN = "agent-secret"
     settings.SIGNCHECK_MAC_AGENT_TOKEN = "mac-test"
@@ -335,7 +347,7 @@ def test_mac_notary():
     params = {"platform": "macos", "filename": "应用 1.zip", "team_id": "AB12345678"}
     assert client.post("/api/signcheck", params={**params, "filename": "app.exe"}, content=b"x").status_code == 422
     assert client.post("/api/signcheck", params={**params, "team_id": "invalid"}, content=b"x").status_code == 422
-    row = client.post("/api/signcheck", params=params, content=b"zip").json()["data"]
+    row = legacy_native_job(params, b"zip")
     cid = row["id"]
     assert row["team_id"] == params["team_id"] and row["platform"] == "macos"
     assert client.get("/api/signcheck/agent/next", headers=AGENT).json()["data"] is None
@@ -387,9 +399,9 @@ def test_personal_mac_worker():
     params = {"platform": "macos", "filename": "my.zip"}
     # An earlier package from someone else must remain available to its owner.
     current.id = 2
-    other = client.post("/api/signcheck", params=params, content=b"other").json()["data"]["id"]
+    other = legacy_native_job(params, b"other")["id"]
     current.id = 1
-    own = client.post("/api/signcheck", params=params, content=b"own").json()["data"]["id"]
+    own = legacy_native_job(params, b"own")["id"]
     poll = "/api/signcheck/agent/next?platform=macos&agent=personal"
     assert client.get(poll, headers=personal).json()["data"]["id"] == own
     assert "personal" in client.get("/api/signcheck/status?platform=macos").json()["data"]["agents"]
@@ -407,6 +419,42 @@ def test_personal_mac_worker():
     client.delete(f"/api/signcheck/{other}")
 
 
+def test_server_static():
+    import struct
+    from app.services.mac_static import jobs
+    settings.SIGNCHECK_MAC_AGENT_TOKEN = ""
+    settings.SIGNCHECK_AGENT_TOKEN = ""
+    settings.CI_HOOK_TOKEN = "ci-secret"
+    params = {"platform": "macos", "filename": "嵌套.zip"}
+    def zipped(name, data):
+        buf = BytesIO()
+        with ZipFile(buf, "w") as z:
+            z.writestr(name, data)
+        return buf.getvalue()
+    unsigned = struct.pack("<8I", 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0)
+    pkg = zipped("inner.whl", zipped("bin/helper", unsigned))
+    row = client.post("/api/signcheck", params=params, content=pkg).json()["data"]
+    assert row["check_mode"] == "server-static" and row["status"] == "pending"
+    assert jobs.process_next(S)
+    detail = client.get(f"/api/signcheck/{row['id']}").json()["data"]
+    assert detail["verdict"] == "invalid" and detail["report"]["checked"] == 1
+    assert detail["report"]["results"][0]["path"].endswith("inner.whl/bin/helper")
+    assert not svc.file_path(row["id"]).exists()
+    # Interrupted server jobs are reclaimed even without a browser polling them.
+    hook = client.post("/api/hooks/signcheck", params=params, content=zipped("a", b"text"),
+                       headers={"X-CI-Token": "ci-secret"}).json()["data"]
+    with S() as db:
+        db.query(SignCheck).filter_by(id=hook["id"]).update(dict(status="running",
+            agent="interrupted", started_at=datetime.utcnow() - timedelta(hours=1)))
+        db.commit()
+    assert jobs.process_next(S) and not jobs.process_next(S)
+    final = client.get(f"/api/hooks/signcheck/{hook['id']}", headers={"X-CI-Token": "ci-secret"}).json()["data"]
+    assert final["verdict"] == "partial" and final["report"]["checked"] == 0
+    assert not svc.file_path(hook["id"]).exists()
+    modes = {r["check_mode"] for r in client.get("/api/signcheck", params={"platform": "macos"}).json()["data"]["items"]}
+    assert modes == {"server-static", "mac-native"}
+
+
 def main():
     test_parse()
     test_disabled()
@@ -419,6 +467,7 @@ def main():
     test_mac_notary()
     test_personal_mac_worker()
     test_hook()
+    test_server_static()
     print("OK test_signcheck")
 
 

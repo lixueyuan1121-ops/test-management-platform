@@ -27,7 +27,7 @@ fi
 
 # ---- 1. 拉取最新代码，顺带看 requirements 是否变化 ----
 echo "==> git pull"
-REQ_HASH_BEFORE="$(shasum "$BACKEND/requirements.txt" 2>/dev/null | awk '{print $1}' || true)"
+REQ_STAMP="$VENV/.qalab-requirements-hash"
 
 # 拉取封装：应对到 GitHub 的偶发 TLS 握手中断
 #   (gnutls_handshake() failed / TLS connection was non-properly terminated)
@@ -50,12 +50,13 @@ robust_git_pull() {
   return 1
 }
 robust_git_pull
-REQ_HASH_AFTER="$(shasum "$BACKEND/requirements.txt" 2>/dev/null | awk '{print $1}' || true)"
+REQ_HASH="$(git hash-object "$BACKEND/requirements.txt")"
 
 # ---- 2. 依赖变化才重装 ----
-if [ "$REQ_HASH_BEFORE" != "$REQ_HASH_AFTER" ]; then
-  echo "==> requirements.txt 有变化，重装依赖"
+if [ ! -r "$REQ_STAMP" ] || [ "$(cat "$REQ_STAMP")" != "$REQ_HASH" ]; then
+  echo "==> 同步当前版本的后端依赖"
   "$VENV/bin/pip" install -r "$BACKEND/requirements.txt"
+  echo "$REQ_HASH" > "$REQ_STAMP"
 else
   echo "==> requirements.txt 无变化，跳过装依赖"
 fi
