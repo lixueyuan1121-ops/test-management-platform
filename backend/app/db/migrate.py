@@ -15,6 +15,22 @@ def _columns(table: str) -> set[str]:
     return {c["name"] for c in insp.get_columns(table)}
 
 
+def ensure_signcheck_columns() -> None:
+    columns = _columns("sign_check")
+    if not columns:
+        return
+    additions = {
+        "platform": "VARCHAR(12) NOT NULL DEFAULT 'windows'",
+        "team_id": "VARCHAR(10) NULL",
+        "mac_output": "LONGTEXT NULL" if engine.dialect.name == "mysql" else "TEXT NULL",
+        "heartbeat_at": "DATETIME NULL",
+    }
+    with engine.begin() as conn:
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(text(f"ALTER TABLE sign_check ADD COLUMN {name} {ddl}"))
+
+
 def ensure_eval_multica_columns() -> None:
     columns = _columns("eval_run")
     if not columns:

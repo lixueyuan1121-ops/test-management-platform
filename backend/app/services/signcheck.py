@@ -144,7 +144,7 @@ def resync_verdicts(db) -> int:
     from app.models import SignCheck
 
     changed = 0
-    for r in db.query(SignCheck).filter(SignCheck.status == "completed").all():
+    for r in db.query(SignCheck).filter_by(platform="windows", status="completed").all():
         try:
             signatures = json.loads(r.signatures_json or "[]")
         except ValueError:

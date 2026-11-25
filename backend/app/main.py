@@ -43,6 +43,8 @@ def init_db() -> None:
     _SKIP_TABLES = {"integration", "api_token", "integration_event"}
     tables = [t for t in Base.metadata.sorted_tables if t.name not in _SKIP_TABLES]
     Base.metadata.create_all(bind=engine, tables=tables)
+    from app.db.migrate import ensure_signcheck_columns
+    ensure_signcheck_columns()
     ensure_testcase_precondition_column()
     ensure_record_session_table()
     from app.db.migrate import ensure_selector_reliability_columns

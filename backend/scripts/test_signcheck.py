@@ -3,6 +3,9 @@
 """
 import base64
 import hashlib
+import json
+from io import BytesIO
+from zipfile import ZipFile
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -325,6 +328,85 @@ def test_hook():
     assert client.post(url, params={"filename": "ci.exe"}, content=b"x", headers={**OCTET, "X-CI-Token": ""}).status_code == 403
 
 
+def test_mac_notary():
+    settings.SIGNCHECK_AGENT_TOKEN = "agent-secret"
+    settings.SIGNCHECK_MAC_AGENT_TOKEN = "mac-test"
+    mac_auth = {"Authorization": "Bearer mac-test"}
+    params = {"platform": "macos", "filename": "应用 1.zip", "team_id": "AB12345678"}
+    assert client.post("/api/signcheck", params={**params, "filename": "app.exe"}, content=b"x").status_code == 422
+    assert client.post("/api/signcheck", params={**params, "team_id": "invalid"}, content=b"x").status_code == 422
+    row = client.post("/api/signcheck", params=params, content=b"zip").json()["data"]
+    cid = row["id"]
+    assert row["team_id"] == params["team_id"] and row["platform"] == "macos"
+    assert client.get("/api/signcheck/agent/next", headers=AGENT).json()["data"] is None
+    assert client.get("/api/signcheck/status?platform=macos").json()["data"]["agent_online"] is False
+    assert client.get("/api/signcheck/agent/next?platform=macos", headers=AGENT).status_code == 401
+    job = client.get("/api/signcheck/agent/next?agent=shared&platform=macos", headers=mac_auth).json()["data"]
+    assert job["id"] == cid and job["platform"] == "macos" and job["team_id"] == params["team_id"]
+    assert client.get("/api/signcheck/agent/next?agent=shared", headers=AGENT).json()["data"] is None
+    assert client.post(f"/api/signcheck/agent/{cid}/heartbeat?agent=shared&platform=macos", headers=mac_auth).status_code == 200
+    assert client.get("/api/signcheck/status?platform=macos").json()["data"]["agents"] == ["shared"]
+    assert client.get("/api/signcheck?platform=macos").json()["data"]["total"] == 1
+    assert client.get(f"/api/signcheck/agent/{cid}/file", headers=AGENT).status_code == 404
+    assert client.get(f"/api/signcheck/agent/{cid}/file?agent=shared&platform=macos", headers=mac_auth).content == b"zip"
+    url = f"/api/signcheck/agent/{cid}/result?platform=macos"
+    report = {"target": "/private/tmp/test/" + row["filename"], "teamId": row["team_id"], "checked": 1,
+              "failed": 0, "warnings": [], "results": [{"path": "app/cli", "executable": True,
+              "ok": True, "problems": [], "notes": ["get-task-allow"], "authority": None, "team": row["team_id"]}]}
+    from app.services.mac_notary import summarize
+    def verdict(data, code):
+        return summarize(data, code, row["filename"], row["team_id"])[0]
+    assert verdict(report, 0) == "passed"
+    assert verdict({**report, "warnings": ["未覆盖"]}, 1) == "partial"
+    assert verdict({**report, "checked": 0, "results": []}, 1) == "partial"
+    assert verdict({**report, "target": "other.zip"}, 0) == "error"
+    assert verdict({**report, "failed": 1}, 1) == "error"
+    assert verdict(report, 1) == "error" and verdict(None, 2) == "error"
+    report["results"][0].update(ok=False, problems=["临时签名"])
+    report.update(warnings=["跳过内层"], failed=1)
+    body = {"agent": "shared", "exit_code": 1, "report": report,
+            "stdout_b64": base64.b64encode("执行日志".encode()).decode()}
+    assert client.post(url, headers=mac_auth, json={**body, "agent": "other"}).status_code == 409
+    assert client.post(url, headers=mac_auth, json=body).json()["data"]["verdict"] == "invalid"
+    detail = client.get(f"/api/signcheck/{cid}").json()["data"]
+    assert detail["report"] == report and detail["stdout"] == "执行日志"
+    assert not svc.file_path(cid).exists()
+
+
+def test_personal_mac_worker():
+    settings.SIGNCHECK_MAC_AGENT_TOKEN = ""
+    settings.SIGNCHECK_AGENT_TOKEN = "agent-secret"
+    downloaded = client.get("/api/signcheck/mac-agent.zip")
+    assert downloaded.status_code == 200 and "no-store" in downloaded.headers["cache-control"]
+    with ZipFile(BytesIO(downloaded.content)) as bundle:
+        assert bundle.testzip() is None
+        connection = json.loads(bundle.read("qalab-mac-notary/connection.json"))
+        assert connection["url"] == (settings.PLATFORM_BASE_URL or "https://qalab.claw.qihoo.net").rstrip("/")
+        assert bundle.getinfo("qalab-mac-notary/启动预检.command").external_attr >> 16 & 0o100
+    personal = {"Authorization": "Bearer " + connection["token"]}
+    params = {"platform": "macos", "filename": "my.zip"}
+    # An earlier package from someone else must remain available to its owner.
+    current.id = 2
+    other = client.post("/api/signcheck", params=params, content=b"other").json()["data"]["id"]
+    current.id = 1
+    own = client.post("/api/signcheck", params=params, content=b"own").json()["data"]["id"]
+    poll = "/api/signcheck/agent/next?platform=macos&agent=personal"
+    assert client.get(poll, headers=personal).json()["data"]["id"] == own
+    assert "personal" in client.get("/api/signcheck/status?platform=macos").json()["data"]["agents"]
+    current.id = 2
+    assert "personal" not in client.get("/api/signcheck/status?platform=macos").json()["data"]["agents"]
+    current.id = 1
+    assert "personal" not in client.get("/api/signcheck/status").json()["data"]["agents"]
+    assert client.get("/api/signcheck/agent/next", headers=personal).status_code == 401
+    prefix = f"/api/signcheck/agent/{other}"
+    assert client.get(prefix + "/file?platform=macos&agent=personal", headers=personal).status_code == 404
+    assert client.post(prefix + "/heartbeat?platform=macos&agent=personal", headers=personal).status_code == 409
+    assert client.post(prefix + "/result?platform=macos", json={}, headers=personal).status_code == 404
+    assert client.get("/api/signcheck/status?platform=macos").json()["data"]["enabled"]
+    client.delete(f"/api/signcheck/{own}")
+    client.delete(f"/api/signcheck/{other}")
+
+
 def main():
     test_parse()
     test_disabled()
@@ -334,6 +416,8 @@ def main():
     test_reap_and_delete(done_id)
     test_resume_after_agent_restart()
     test_resync_verdicts()
+    test_mac_notary()
+    test_personal_mac_worker()
     test_hook()
     print("OK test_signcheck")
 

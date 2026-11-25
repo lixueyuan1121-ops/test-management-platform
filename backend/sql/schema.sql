@@ -1078,6 +1078,10 @@ CREATE TABLE IF NOT EXISTS geelib_account (
 
 
 CREATE TABLE IF NOT EXISTS `sign_check` (
+  `platform` VARCHAR(12) NOT NULL DEFAULT 'windows',
+  `team_id` VARCHAR(10) DEFAULT NULL,
+  `mac_output` LONGTEXT,
+  `heartbeat_at` DATETIME DEFAULT NULL,
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `filename` VARCHAR(255) NOT NULL,
   `file_size` BIGINT NOT NULL DEFAULT 0,
@@ -1109,4 +1113,12 @@ CREATE TABLE IF NOT EXISTS `sign_check_agent` (
   `agent` VARCHAR(64) NOT NULL,
   `last_seen_at` DATETIME NOT NULL,
   PRIMARY KEY (`agent`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `mac_notary_agent` (
+  `owner_id` INT NOT NULL,
+  `agent` VARCHAR(64) NOT NULL,
+  `last_seen_at` DATETIME NOT NULL,
+  PRIMARY KEY (`owner_id`, `agent`),
+  KEY `ix_mac_notary_agent_last_seen_at` (`last_seen_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

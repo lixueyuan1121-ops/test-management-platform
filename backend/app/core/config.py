@@ -187,6 +187,7 @@ class Settings(BaseSettings):
     # tools/signcheck-agent 轮询平台执行。agent 用这个独立长期 token 鉴权（Bearer）。
     # 留空则签名校验整条关闭（页面提示未启用、上传返回 503）。
     SIGNCHECK_AGENT_TOKEN: str = ""
+    SIGNCHECK_MAC_AGENT_TOKEN: str = ""  # 可选，仅用于无人值守的共享执行机 / CI
     SIGNCHECK_MAX_MB: int = 2048              # 单文件上限（MB），与原桌面工具的 2 GB 一致
     SIGNCHECK_MAX_QUEUE: int = 20             # 同时排队/校验中的记录上限，防止上传堆满磁盘
     SIGNCHECK_PENDING_TTL_MINUTES: int = 30   # 排队超过这么久仍无校验机认领 → 判失败并清理文件

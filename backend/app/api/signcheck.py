@@ -1,4 +1,4 @@
-"""Windows 签名校验路由：平台上传文件 → Windows 校验机 agent 执行 360Base_test.exe → 回传结果。
+"""平台签名校验：按平台派发 Windows 签名校验或 macOS 公证预检任务。
 
 三类调用方、三种鉴权：
 - 平台用户（JWT）       /api/signcheck            上传、查结果、历史、删除
@@ -17,28 +17,34 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Literal
 from urllib.parse import unquote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, Response
 
 from app.api.hooks import require_hook_auth
 from app.core.config import settings
+from app.core.security import create_mac_agent_token, decode_token
 from app.core.deps import get_current_user
 from app.db.session import SessionLocal, get_db
-from app.models import SignCheck, SignCheckAgent, User
+from app.models import MacNotaryAgent, SignCheck, SignCheckAgent, User
 from app.schemas.common import ok
 from app.schemas.signcheck import SignCheckResultIn
-from app.services import signcheck as svc
+from app.services import mac_notary, signcheck as svc
+
+CheckPlatform = Literal["windows", "macos"]
 
 logger = logging.getLogger("test_platform")
 router = APIRouter(prefix="/api/signcheck", tags=["signcheck"])
@@ -46,8 +52,6 @@ hook_router = APIRouter(prefix="/api/hooks/signcheck", tags=["ci-hooks"])
 
 _bearer = HTTPBearer(auto_error=True)
 
-# 校验机心跳存 sign_check_agent 表（见模型注释：不能放进程内存）。agent 空闲时每 3 秒轮询一次，
-# 出错退避最长 30 秒；窗口取 90 秒，偶发一两次网络失败不至于在页面上闪成「离线」。
 _ONLINE_WINDOW = timedelta(seconds=90)
 # 认领后迟迟不回传（agent 断网/关机后一直没回来）→ 判 failed；agent 重启回来的情况见 agent_next 的孤儿重派，避免页面永久「校验中」。原程序硬超时 120s，这里留足余量。
 _RUNNING_TTL = timedelta(minutes=10)
@@ -77,6 +81,8 @@ def _to_out(db: Session, r: SignCheck, full: bool = False) -> dict:
         "filename": r.filename,
         "file_size": r.file_size,
         "sha256": r.sha256,
+        "platform": r.platform,
+        "team_id": r.team_id,
         "source": r.source,
         "status": r.status,
         "verdict": r.verdict,
@@ -94,38 +100,43 @@ def _to_out(db: Session, r: SignCheck, full: bool = False) -> dict:
         out["exit_code"] = r.exit_code
         out["stdout"] = r.stdout
         out["stderr"] = r.stderr
+        if r.platform == "macos" and r.mac_output:
+            out.update(json.loads(r.mac_output))
     return out
 
 
-def _online_agents(db: Session) -> list[str]:
-    """在线 = 最近轮询过，或手上正有一条校验在跑。
-
-    agent 是单线程的：下载大文件 + 跑校验程序期间不会来轮询，只看心跳会把「正在干活」
-    误判成离线（几百 MB 的文件一次就要几十秒到几分钟）。所以名下有未超时 running 记录的也算在线。
-    """
+def _online_agents(db: Session, platform: CheckPlatform, owner: int | None) -> list[str]:
     now = datetime.utcnow()
+    if platform == "macos":
+        rows = db.query(MacNotaryAgent.agent).filter(
+            MacNotaryAgent.last_seen_at >= now - _ONLINE_WINDOW,
+            MacNotaryAgent.owner_id.in_({0, owner or 0}),
+        ).distinct().all()
+        return sorted(name for (name,) in rows)
     seen = db.query(SignCheckAgent.agent).filter(SignCheckAgent.last_seen_at >= now - _ONLINE_WINDOW).all()
-    online = {a for (a,) in seen}
-    busy = (
-        db.query(SignCheck.agent)
-        .filter(SignCheck.status == "running", SignCheck.started_at >= now - _RUNNING_TTL)
-        .distinct().all()
-    )
-    online.update(a for (a,) in busy if a)
-    return sorted(online)
+    busy = db.query(SignCheck.agent).filter(
+        SignCheck.platform == "windows", SignCheck.status == "running",
+        SignCheck.started_at >= now - _RUNNING_TTL,
+    ).distinct().all()
+    return sorted({name for (name,) in seen + busy if name})
 
 
-def _touch(db: Session, agent: str) -> None:
-    """刷新校验机心跳（不存在则建）。"""
+def _touch(db: Session, agent: str, scope: "AgentScope") -> None:
     now = datetime.utcnow()
-    hit = db.execute(update(SignCheckAgent).where(SignCheckAgent.agent == agent).values(last_seen_at=now)).rowcount
-    if not hit:
+    model = MacNotaryAgent if scope.platform == "macos" else SignCheckAgent
+    key = {"agent": agent}
+    if scope.platform == "macos":
+        key["owner_id"] = scope.owner or 0
+    query = db.query(model).filter_by(**key)
+    if not query.update({"last_seen_at": now}):
         try:
-            db.add(SignCheckAgent(agent=agent, last_seen_at=now))
-            db.commit()
-            return
-        except IntegrityError:      # 同名校验机并发首次上报
+            db.add(model(**key, last_seen_at=now))
+            db.flush()
+        except IntegrityError:
             db.rollback()
+            query.update({"last_seen_at": now})
+        if scope.platform == "macos":
+            db.query(MacNotaryAgent).filter(MacNotaryAgent.last_seen_at < now - timedelta(days=1)).delete()
     db.commit()
 
 
@@ -140,23 +151,24 @@ def _fail(r: SignCheck, reason: str) -> None:
 def _reap(db: Session) -> None:
     """惰性收口卡住的记录（读接口顺带调用，不另起定时任务）。"""
     now = datetime.utcnow()
-    stale = (
-        db.query(SignCheck)
-        .filter(SignCheck.status == "running", SignCheck.started_at < now - _RUNNING_TTL)
-        .all()
+    expired = (
+        (SignCheck.status == "running",
+         func.coalesce(SignCheck.heartbeat_at, SignCheck.started_at) < now - _RUNNING_TTL,
+         "校验机认领后超时未回传结果，请重新上传校验。"),
+        (SignCheck.status == "pending",
+         SignCheck.created_at < now - timedelta(minutes=settings.SIGNCHECK_PENDING_TTL_MINUTES),
+         "长时间没有支持此任务的校验机认领（未在线），请启动校验机后重新上传。"),
     )
-    for r in stale:
-        _fail(r, "校验机认领后超时未回传结果，请重新上传校验。")
-    waiting = (
-        db.query(SignCheck)
-        .filter(SignCheck.status == "pending",
-                SignCheck.created_at < now - timedelta(minutes=settings.SIGNCHECK_PENDING_TTL_MINUTES))
-        .all()
-    )
-    for r in waiting:
-        _fail(r, "长时间没有校验机认领（Windows 校验机 agent 未在线），请启动校验机后重新上传。")
-    if stale or waiting:
-        db.commit()
+    for state, cutoff, reason in expired:
+        rows = db.query(SignCheck.id).filter(state, cutoff).all()
+        for (cid,) in rows:
+            # 领取、回传或心跳可能发生在读到过期记录之后。
+            changed = db.execute(update(SignCheck).where(SignCheck.id == cid, state, cutoff).values(
+                status="failed", verdict="error", error=reason, finished_at=now,
+            ).execution_options(synchronize_session=False)).rowcount
+            db.commit()
+            if changed:
+                svc.remove_file(cid)
 
 
 def _clean_filename(raw: str | None) -> str:
@@ -170,13 +182,19 @@ def _clean_filename(raw: str | None) -> str:
     return name
 
 
-async def _receive(request: Request, filename: str | None, source: str, user_id: int | None) -> int:
+async def _receive(request: Request, filename: str | None, source: str, user_id: int | None,
+                   platform: CheckPlatform, team_id: str | None) -> int:
     """把请求体流式写盘并建一条 pending 记录，返回记录 id。"""
-    if not settings.SIGNCHECK_AGENT_TOKEN:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="签名校验未启用（服务端未配置 SIGNCHECK_AGENT_TOKEN）")
+    if (platform == "windows" or user_id is None) and not _agent_token(platform):
+        raise HTTPException(503, detail="该平台校验未启用，请为校验机配置独立令牌。")
     # query 参数已由框架解码；请求头只能放 ASCII，所以约定为 URL 编码，这里解一次
     name = _clean_filename(filename or unquote(request.headers.get("x-file-name") or ""))
+    if platform == "macos" and len(name.encode("utf-8")) > 255:
+        raise HTTPException(422, detail="文件名过长，请缩短文件名后再上传。")
+    if platform == "macos" and not name.lower().endswith((".dmg", ".zip")):
+        raise HTTPException(422, detail="Mac 公证预检支持 DMG、ZIP；请先将 APP 或目录压缩为 ZIP。")
+    if team_id and platform != "macos":
+        raise HTTPException(422, detail="预期 Team ID 仅适用于 Mac 包。")
     max_bytes = settings.SIGNCHECK_MAX_MB * 1024 * 1024
     too_large = HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                               detail=f"单个文件不能超过 {settings.SIGNCHECK_MAX_MB} MB")
@@ -187,7 +205,7 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
     def _queue_full() -> bool:
         db = SessionLocal()
         try:
-            n = db.query(SignCheck).filter(SignCheck.status.in_(("pending", "running"))).count()
+            n = db.query(SignCheck).filter(SignCheck.platform == platform, SignCheck.status.in_(("pending", "running"))).count()
             return n >= settings.SIGNCHECK_MAX_QUEUE
         finally:
             db.close()
@@ -213,11 +231,17 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
             db = SessionLocal()
             try:
                 r = SignCheck(filename=name, file_size=size, sha256=digest.hexdigest(),
-                              source=source, status="pending", created_by=user_id)
+                              source=source, status="pending", created_by=user_id, platform=platform, team_id=team_id)
                 db.add(r)
-                db.commit()
-                os.replace(part, svc.file_path(r.id))
-                return r.id
+                db.flush()
+                cid = r.id
+                os.replace(part, svc.file_path(cid))
+                try:
+                    db.commit()
+                except BaseException:
+                    svc.remove_file(cid)
+                    raise
+                return cid
             finally:
                 db.close()
 
@@ -234,17 +258,27 @@ async def _receive(request: Request, filename: str | None, source: str, user_id:
 # ==================== 平台用户（JWT）====================
 
 @router.get("/status")
-def service_status(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def service_status(platform: CheckPlatform = "windows", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """页面顶部状态条：功能是否启用、有没有校验机在线、当前排队数。"""
     _reap(db)
-    agents = _online_agents(db)
-    queued = db.query(SignCheck).filter(SignCheck.status.in_(("pending", "running"))).count()
+    agents = _online_agents(db, platform, user.id)
+    queued = db.query(SignCheck).filter(SignCheck.platform == platform, SignCheck.status.in_(("pending", "running"))).count()
     return ok({
-        "enabled": bool(settings.SIGNCHECK_AGENT_TOKEN),
+        "enabled": platform == "macos" or bool(_agent_token(platform)),
         "agent_online": bool(agents),
         "agents": agents,
         "queued": queued,
         "max_mb": settings.SIGNCHECK_MAX_MB,
+        "pending_minutes": settings.SIGNCHECK_PENDING_TTL_MINUTES,
+    })
+
+
+@router.get("/mac-agent.zip")
+def download_mac_agent(user: User = Depends(get_current_user)):
+    archive = mac_notary.agent_archive(settings.PLATFORM_BASE_URL or "https://qalab.claw.qihoo.net", create_mac_agent_token(user.id))
+    return Response(archive, media_type="application/zip", headers={
+        "Content-Disposition": 'attachment; filename="qalab-mac-notary.zip"',
+        "Cache-Control": "private, no-store",
     })
 
 
@@ -266,10 +300,12 @@ def upload_user_id(creds: HTTPAuthorizationCredentials = Depends(_bearer)) -> in
 async def upload(
     request: Request,
     filename: str | None = Query(None, description="原文件名（也可放请求头 X-File-Name，URL 编码）"),
+    platform: CheckPlatform = "windows",
+    team_id: str | None = Query(None, pattern=r"^[A-Z0-9]{10}$"),
     user_id: int = Depends(upload_user_id),
 ):
     """上传一个待校验文件（请求体即文件原始字节）。返回 pending 记录，前端轮询 GET /{id} 取结果。"""
-    cid = await _receive(request, filename, "web", user_id)
+    cid = await _receive(request, filename, "web", user_id, platform, team_id)
 
     def _load() -> dict:
         db = SessionLocal()
@@ -283,6 +319,7 @@ async def upload(
 
 @router.get("")
 def list_checks(
+    platform: CheckPlatform = "windows",
     mine: bool = False,
     keyword: str | None = Query(None, max_length=100),
     verdict: str | None = Query(None, max_length=16),
@@ -293,7 +330,7 @@ def list_checks(
 ):
     """历史记录（全体登录用户可见，最新在前）。keyword 匹配文件名或 sha256 前缀。"""
     _reap(db)
-    q = db.query(SignCheck)
+    q = db.query(SignCheck).filter(SignCheck.platform == platform)
     if mine:
         q = q.filter(SignCheck.created_by == user.id)
     if keyword and keyword.strip():
@@ -309,17 +346,49 @@ def list_checks(
 # ==================== 校验机 agent（Bearer SIGNCHECK_AGENT_TOKEN）====================
 # 注意：/agent/* 这些固定路径必须注册在下方 /{cid} 之前。
 
-def require_agent(creds: HTTPAuthorizationCredentials = Depends(_bearer)) -> None:
-    """校验机鉴权：独立长期 token（与用户 JWT、runner token 分离）。未配置即整条通道关闭。"""
-    if not settings.SIGNCHECK_AGENT_TOKEN or creds.credentials != settings.SIGNCHECK_AGENT_TOKEN:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="无效的签名校验机令牌")
+def _agent_token(platform: CheckPlatform) -> str:
+    if platform == "macos":
+        token = settings.SIGNCHECK_MAC_AGENT_TOKEN
+        return token if token != settings.SIGNCHECK_AGENT_TOKEN else ""
+    return settings.SIGNCHECK_AGENT_TOKEN
+
+
+@dataclass(frozen=True)
+class AgentScope:
+    platform: CheckPlatform
+    owner: int | None = None
+
+    def jobs(self, db: Session):
+        query = db.query(SignCheck).filter(SignCheck.platform == self.platform)
+        return query if self.owner is None else query.filter(SignCheck.created_by == self.owner)
+
+
+def require_agent(platform: CheckPlatform = "windows", creds: HTTPAuthorizationCredentials = Depends(_bearer),
+                  db: Session = Depends(get_db)) -> AgentScope:
+    token = _agent_token(platform)
+    if token and secrets.compare_digest(creds.credentials.encode(), token.encode()):
+        return AgentScope(platform)
+    if platform == "macos":
+        claims = decode_token(creds.credentials)
+        if claims and claims.get("type") == "mac_notary_agent" and str(claims.get("sub")).isdigit():
+            user = db.get(User, int(claims["sub"]))
+            if user and user.status.value == "active":
+                return AgentScope(platform, user.id)
+    raise HTTPException(401, detail="校验机凭据无效或已过期")
+
+
+def _job(r: SignCheck) -> dict:
+    job = {"id": r.id, "filename": r.filename, "file_size": r.file_size, "sha256": r.sha256}
+    if r.platform == "macos":
+        job.update(platform="macos", team_id=r.team_id)
+    return job
 
 
 @router.get("/agent/next")
 def agent_next(
     agent: str = Query("win-signcheck", min_length=1, max_length=64),
     db: Session = Depends(get_db),
-    _: None = Depends(require_agent),
+    scope: AgentScope = Depends(require_agent),
 ):
     """agent 轮询：刷新心跳，并原子认领最早一条 pending。没有待办返回 data=null。
 
@@ -327,11 +396,11 @@ def agent_next(
     记录一定是孤儿（校验到一半 agent 被关掉/重启/断电），直接重新交给它，而不是让用户
     干等到超时判失败。
     """
-    _touch(db, agent)
+    _touch(db, agent, scope)
+    eligible = scope.jobs(db)
     _reap(db)
     orphans = (
-        db.query(SignCheck)
-        .filter(SignCheck.status == "running", SignCheck.agent == agent)
+        eligible.filter(SignCheck.status == "running", SignCheck.agent == agent)
         .order_by(SignCheck.id).all()
     )
     for r in orphans:
@@ -340,10 +409,11 @@ def agent_next(
             db.commit()
             continue
         r.started_at = datetime.utcnow()
+        r.heartbeat_at = None
         db.commit()
         logger.info("签名校验 #%s 上次被中断，重新交给校验机 %s", r.id, agent)
-        return ok({"id": r.id, "filename": r.filename, "file_size": r.file_size, "sha256": r.sha256})
-    for r in db.query(SignCheck).filter(SignCheck.status == "pending").order_by(SignCheck.id).limit(5).all():
+        return ok(_job(r))
+    for r in eligible.filter(SignCheck.status == "pending").order_by(SignCheck.id).limit(5).all():
         if not svc.file_path(r.id).is_file():
             _fail(r, "服务端找不到已上传的文件（可能被清理），请重新上传。")
             db.commit()
@@ -356,15 +426,30 @@ def agent_next(
         ).rowcount
         db.commit()
         if won:
-            return ok({"id": r.id, "filename": r.filename, "file_size": r.file_size, "sha256": r.sha256})
+            return ok(_job(r))
+    return ok(None)
+
+
+@router.post("/agent/{cid}/heartbeat")
+def agent_heartbeat(cid: int, agent: str = Query(min_length=1, max_length=64),
+                    db: Session = Depends(get_db), scope: AgentScope = Depends(require_agent)):
+    if scope.platform != "macos":
+        raise HTTPException(403, detail="此心跳仅用于 Mac 校验机")
+    now = datetime.utcnow()
+    active = scope.jobs(db).filter_by(id=cid, status="running", agent=agent).update({"heartbeat_at": now})
+    db.commit()
+    if not active:
+        raise HTTPException(409, detail="预检任务已结束或由其他校验机认领")
+    _touch(db, agent, scope)
     return ok(None)
 
 
 @router.get("/agent/{cid}/file")
-def agent_file(cid: int, db: Session = Depends(get_db), _: None = Depends(require_agent)):
-    r = db.get(SignCheck, cid)
+def agent_file(cid: int, agent: str | None = None, db: Session = Depends(get_db), scope: AgentScope = Depends(require_agent)):
+    r = scope.jobs(db).filter_by(id=cid).first()
     path = svc.file_path(cid)
-    if not r or r.status != "running" or not path.is_file():
+    if (not r or r.status != "running" or not path.is_file()
+            or (scope.platform == "macos" and r.agent != agent)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="该校验不在进行中或文件已清理")
     return FileResponse(path, media_type="application/octet-stream")
 
@@ -383,14 +468,27 @@ def agent_result(
     cid: int,
     body: SignCheckResultIn,
     db: Session = Depends(get_db),
-    _: None = Depends(require_agent),
+    scope: AgentScope = Depends(require_agent),
 ):
     """agent 回传原始输出；由后端解码、解析四项状态并落终态。回传后服务端删除上传文件。"""
-    r = db.get(SignCheck, cid)
+    r = scope.jobs(db).filter_by(id=cid).first()
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
     if r.status != "running":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="该校验不在进行中")
+    if r.platform == "macos":
+        if body.agent != r.agent:
+            raise HTTPException(409, detail="结果来自其他校验机")
+        stdout = _b64(body.stdout_b64).decode("utf-8", errors="replace")
+        stderr = _b64(body.stderr_b64).decode("utf-8", errors="replace")
+        verdict, reason = mac_notary.summarize(body.report, body.exit_code, r.filename, r.team_id)
+        r.verdict, r.error = ("error", body.error) if body.error else (verdict, reason)
+        r.mac_output = json.dumps({"report": body.report, "stdout": stdout, "stderr": stderr}, ensure_ascii=False)
+        r.status = "failed" if r.verdict == "error" else "completed"
+        r.exit_code, r.duration_ms, r.finished_at = body.exit_code, body.duration_ms, datetime.utcnow()
+        db.commit()
+        svc.remove_file(cid)
+        return ok({"id": cid, "status": r.status, "verdict": r.verdict})
     stdout = svc.decode_output(_b64(body.stdout_b64))
     stderr = svc.decode_output(_b64(body.stderr_b64))
     r.exit_code = body.exit_code
@@ -425,7 +523,7 @@ def get_check(cid: int, db: Session = Depends(get_db), _: User = Depends(get_cur
     if not r:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
     out = _to_out(db, r, full=True)
-    out["agent_online"] = bool(_online_agents(db))
+    out["agent_online"] = bool(_online_agents(db, r.platform, r.created_by))
     return ok(out)
 
 
@@ -458,6 +556,8 @@ def _hook_out(cid: int) -> dict | None:
 async def hook_upload(
     request: Request,
     filename: str | None = Query(None),
+    platform: CheckPlatform = "windows",
+    team_id: str | None = Query(None, pattern=r"^[A-Z0-9]{10}$"),
     wait: int = Query(0, ge=0, le=300, description="同步等待结果的最长秒数；0=立即返回，自行轮询"),
     _: None = Depends(require_hook_auth),
 ):
@@ -467,7 +567,7 @@ async def hook_upload(
           -H "X-CI-Token: $CI_HOOK_TOKEN" -H "Content-Type: application/octet-stream" \\
           --data-binary @setup.exe
     """
-    cid = await _receive(request, filename, "api", None)
+    cid = await _receive(request, filename, "api", None, platform, team_id)
 
     def _wait() -> dict:
         deadline = time.monotonic() + wait

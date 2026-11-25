@@ -89,6 +89,16 @@ curl -sS "$PLATFORM/api/hooks/signcheck/$ID" -H "X-CI-Token: $CI_HOOK_TOKEN"
 
 流水线门禁一般判断 `status == "completed" && verdict == "passed"`。文件名含中文或空格时请做 URL 编码。
 
+## 团队 Mac 按需公证预检
+
+平台「设备与工具 → 签名校验 → macOS 公证预检」可下载个人校验机启动包。登录用户在任意能访问平台的测试 Mac 上解压，双击 **启动预检.command**，保持终端打开。也可以在解压目录执行 `bash 启动预检.command`。Mac 需要 Node.js 18+，使用系统自带的 codesign、ditto、tar、hdiutil 和 sandbox-exec。无需安装 Codex 技能或 npm 依赖。
+
+看到校验机上线后，任选浏览器使用同一平台账号上传 DMG 或 ZIP。APP 或目录请先压成 ZIP。预期 Team ID 可留空。结束时按 Ctrl+C，当前任务结束后退出。启动包包含只可认领本人 Mac 预检任务的凭据，有效期为 12 小时，请勿转发；过期后从页面重新下载。在共享机器上使用完毕后可删除个人启动包及解压目录。
+
+启动包内置的地址由后端 `PLATFORM_BASE_URL` 决定，默认 `https://qalab.claw.qihoo.net`。个人启动包不需要管理员配置额外令牌。如果另有无人值守的 CI 共用机，才需要在服务端配置与 Windows 不同的 `SIGNCHECK_MAC_AGENT_TOKEN`，并在其 `connection.json` 中指定平台根地址 `url` 和该 `token`。CI 上传接口可传 `platform=macos` 和可选 `team_id`。CI 任务由共用机认领。
+
+Mac 按任务创建私有临时目录，校对下载包 SHA-256，对 DMG 只读挂载，对 ZIP 和嵌套归档解包。系统工具只在任务工作区写文件。平台保存原生文件明细、退出码和日志，并在任务结束时清理上传包。预检结果为通过、发现签名问题、检查不完整或执行异常。警告及 get-task-allow 风险可在详情中查看，支持下载 JSON 和日志。本地预检不等于 Apple 公证通过。
+
 ## 五、开发
 
 ```bash

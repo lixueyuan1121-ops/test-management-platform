@@ -422,13 +422,14 @@ export const getPerfPrompt = (id) => http.get(`/perf/runs/${id}/prompt`)
 export const signalPerfRun = (id) => http.post(`/perf/runs/${id}/signal`)
 export const cancelPerfRun = (id) => http.post(`/perf/runs/${id}/cancel`)
 // ===== Windows 签名校验（上传 → Windows 校验机执行 → 轮询结果）=====
-export const signCheckStatus = () => http.get('/signcheck/status', { silent: true })
+export const downloadMacAgent = () => http.get('/signcheck/mac-agent.zip', { responseType: 'blob' })
+export const signCheckStatus = (platform = 'windows') => http.get('/signcheck/status', { silent: true, params: { platform } })
 export const listSignChecks = (params) => http.get('/signcheck', { params })
 export const getSignCheck = (id, config) => http.get(`/signcheck/${id}`, config)
 export const deleteSignCheck = (id) => http.delete(`/signcheck/${id}`)
 // 请求体直接是文件原始字节（不走 multipart），文件名放 query；大文件不限时，进度走 onProgress
-export const uploadSignCheck = (file, { onProgress, signal } = {}) => http.post('/signcheck', file, {
-  params: { filename: file.name }, headers: { 'Content-Type': 'application/octet-stream' },
+export const uploadSignCheck = (file, { onProgress, signal, platform = 'windows', teamId } = {}) => http.post('/signcheck', file, {
+  params: { filename: file.name, platform, team_id: teamId || undefined }, headers: { 'Content-Type': 'application/octet-stream' },
   timeout: 0, onUploadProgress: onProgress, signal,
 })
 export const extractUrl = (url) => http.post('/ai/extract-url', { url }, { timeout: 180000 })

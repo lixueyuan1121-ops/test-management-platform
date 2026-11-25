@@ -10,6 +10,7 @@ class SignCheckResultIn(BaseModel):
     """
     agent: str | None = Field(None, max_length=64)
     exit_code: int | None = None
+    report: dict | None = None  # macOS 脚本的 JSON，与实际退出码一起判读
     stdout_b64: str | None = None
     stderr_b64: str | None = None
     duration_ms: int | None = None

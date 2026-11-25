@@ -1,4 +1,4 @@
-"""签名校验记录表 sign_check —— Windows 签名校验（360Base_test.exe）的排队单 + 结果载体。
+"""签名任务表：Windows 原生验签和 macOS 公证预检。
 
 链路：用户在平台上传文件(pending) → Windows 校验机 agent 轮询认领(running) → 下载文件、
 跑 360Base_test.exe → 回传原始输出 → 后端解析四项签名状态(completed/failed)。
@@ -12,11 +12,12 @@
 - signatures 用 Text 存 JSON 字符串（兼容生产 MySQL，不依赖原生 JSON 列）。
 - 时间戳统一由进程 datetime.utcnow() 写入（naive UTC），出参带 Z。
 - 上传的文件只在校验期间保留在 backend/storage/signcheck/，出结果即删，本表不存文件内容。
-- 新表，启动时 Base.metadata.create_all 自动建，无需 migrate。
+- 存量 Windows 记录由 ensure_signcheck_columns 填充平台默认值。
 """
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -26,6 +27,11 @@ class SignCheck(Base):
     __tablename__ = "sign_check"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(12), default="windows", server_default="windows")
+    team_id: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # 完整 JSON 和 UTF-8 日志仅在打开单条记录时加载。
+    mac_output: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True, deferred=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     filename: Mapped[str] = mapped_column(String(255))
     file_size: Mapped[int] = mapped_column(BigInteger, default=0)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -59,3 +65,12 @@ class SignCheckAgent(Base):
 
     agent: Mapped[str] = mapped_column(String(64), primary_key=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MacNotaryAgent(Base):
+    """个人启动包与无人值守 Mac 的心跳，同名机器按凭据归属隔离。"""
+    __tablename__ = "mac_notary_agent"
+
+    owner_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)  # 0 为共享机
+    agent: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

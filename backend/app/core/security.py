@@ -32,6 +32,10 @@ def create_access_token(sub: str) -> str:
     return _create_token(sub, "access", timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
 
 
+def create_mac_agent_token(user_id: int) -> str:
+    return _create_token(str(user_id), "mac_notary_agent", timedelta(hours=12))
+
+
 def create_refresh_token(sub: str) -> str:
     return _create_token(sub, "refresh", timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS))
 
