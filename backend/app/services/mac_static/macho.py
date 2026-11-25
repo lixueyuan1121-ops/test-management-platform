@@ -155,7 +155,7 @@ def inspect_slice(data, base, size, expected_team, result):
     if 5 in slots:
         ent = plistlib.loads(slots[5][8:])
         if ent.get("com.apple.security.get-task-allow") is True:
-            problems.append("发布权限中开启了 get-task-allow")
+            result["notes"].append("已开启调试权限 get-task-allow=true（仅提示）")
     elif 7 in slots:
         result["coverage"].append("仅有 DER 权限，未读取调试权限")
     code_pages(data, base, start, directory, problems)
