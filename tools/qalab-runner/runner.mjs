@@ -873,7 +873,10 @@ async function main() {
   if (!RUNNER_TOKEN) log("警告: 未设置 RUNNER_TOKEN");
   log(`perf 采集就绪 perfdog=${PERFDOG_DIR}`);
   if (mdTasks) {
-    log(`md 任务已启用 groups=${MD_GROUPS_DIR} runtime=${MD_RUNTIME_DIR}`);
+    // 把关键开关一次性打出来：排障时第一眼看这里，不用去翻 .env 猜哪个没生效
+    log(`md 任务已启用 groups=${MD_GROUPS_DIR} runtime=${MD_RUNTIME_DIR} `
+      + `direct=${MD_HOSTS_DIRECT ? 1 : 0} helper=${MD_HOSTS_DIRECT ? "-" : (IS_WIN ? MD_HOSTS_TASK : MD_HOSTS_HELPER || "默认路径")} `
+      + `agent=${MD_CODEX_BIN} timeout=${Math.round(MD_CODEX_TIMEOUT_MS / 1000)}s`);
     try { await mdTasks.heal(); } catch (e) { log("md 任务环境自愈失败:", e.message); }
     try {
       const pf = await mdTasks.preflight();
