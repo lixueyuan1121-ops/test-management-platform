@@ -53,7 +53,19 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName 
         if (res.token === token) return { code: res.ok ? 0 : -1, out: res.out || "", err: res.err || "" };
       } catch { /* helper 还没写完 */ }
     }
-    return { code: -1, out: "", err: "hosts helper 超时未返回" };
+    // 超时原因基本只有三种：任务没被拉起、脚本找不到（路径/账号不对）、脚本报错。
+    // helper 自己会写 runtime\qa-hosts-helper.log，把最后一行带出来就能区分。
+    let hint = "";
+    try {
+      const logFile = path.join(runtimeDir, "qa-hosts-helper.log");
+      if (fs.existsSync(logFile)) {
+        const tail = fs.readFileSync(logFile, "utf-8").trim().split(/\r?\n/).slice(-1)[0];
+        hint = tail ? `；helper 日志：${tail}` : "；helper 日志为空";
+      } else {
+        hint = `；helper 从未写入 ${path.join(runtimeDir, "qa-hosts-helper.log")}，多半是计划任务没指到脚本或跑在别的账号下`;
+      }
+    } catch { /* 读不到就算了，别把超时再包成另一个错 */ }
+    return { code: -1, out: "", err: `hosts helper 超时未返回${hint}` };
   }
 
   async function flushDns() {

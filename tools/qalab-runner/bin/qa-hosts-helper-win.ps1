@@ -10,6 +10,17 @@
 $ErrorActionPreference = 'Stop'
 
 $Runtime = if ($env:QA_RUNTIME) { $env:QA_RUNTIME } else { Join-Path $env:USERPROFILE 'qa-workspace\runtime' }
+
+# 运行日志：任务被拉起但没写结果时，靠它区分「没跑」「跑错目录」「脚本报错」。
+# 由计划任务运行，所以用绝对路径，不依赖调用方的工作目录。
+$LogFile = Join-Path $Runtime 'qa-hosts-helper.log'
+function Write-Log([string]$Message) {
+  try {
+    $line = "{0} pid={1} user={2} runtime={3} {4}" -f (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ'), $PID, $env:USERNAME, $Runtime, $Message
+    Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+  } catch { }
+}
+
 # job/结果文件默认在 runtime 根（runner 写这里）；兼容早期放在 runtime\hosts 的形态
 $JobPath = Join-Path $Runtime 'job.json'
 if (-not (Test-Path $JobPath)) {
@@ -24,7 +35,8 @@ function Write-Result($token, $ok, $out, $err) {
   Set-Content -Path $ResPath -Value $payload -Encoding UTF8
 }
 
-if (-not (Test-Path $JobPath)) { exit 1 }
+Write-Log "start runtime=$Runtime job=$JobPath"
+if (-not (Test-Path $JobPath)) { Write-Log "no job file, exit"; exit 1 }
 
 $job = Get-Content -Raw -Path $JobPath | ConvertFrom-Json
 $token = $job.token
@@ -38,6 +50,7 @@ try {
     'snapshot' {
       Copy-Item -LiteralPath $Hosts -Destination $arg -Force
       $acl = Get-Acl $arg
+      Write-Log "snapshot ok -> $arg"
       Write-Result $token $true "snapshot -> $arg" ""
     }
     'apply' {
@@ -65,6 +78,7 @@ try {
   }
 }
 catch {
+  Write-Log "error: $($_.Exception.Message)"
   Write-Result $token $false "" $_.Exception.Message
   exit 1
 }
