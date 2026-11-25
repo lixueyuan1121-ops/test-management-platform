@@ -60,8 +60,8 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName,
   }
 
   function sysHostsPath() {
-    // 与 runner 平台判断一致：Win 用系统 hosts；其它平台由 helper 的 sudo 分支处理
-    return IS_WIN ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts";
+    // 与 runner 平台判断一致；MD_HOSTS_PATH 可覆盖（非标准安装，或直写模式的测试）
+    return process.env.MD_HOSTS_PATH || (IS_WIN ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts");
   }
 
   async function viaHelper(action, file) {

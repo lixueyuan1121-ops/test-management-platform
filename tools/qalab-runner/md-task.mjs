@@ -165,9 +165,9 @@ export function makeMdTaskRunner({
   api, log, RUNNER_ID, runtimeDir,
   groupsDir, helperPath, helperTaskName,
   verifyDomains, verifyTimeoutSec,
-  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs,
+  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs, direct,
 }) {
-  const hosts = makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName: helperTaskName });
+  const hosts = makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName: helperTaskName, direct });
   let busy = false;
 
   async function execute(item) {
