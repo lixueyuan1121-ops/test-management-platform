@@ -130,7 +130,14 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName,
   }
 
   function groupFile(group) {
-    return path.join(groupsDir || "", `${group}.hosts`);
+    if (!group || /[\\/]/.test(group)) throw new Error("无效的 hosts 分组名");
+    const file = path.join(groupsDir || "", `${group}.hosts`);
+    const alias = { pre: "work-staging", test: "work-test", "work-staging": "pre", "work-test": "test" }[group];
+    if (!fs.existsSync(file) && typeof alias === "string") {
+      const aliasFile = path.join(groupsDir || "", `${alias}.hosts`);
+      if (fs.existsSync(aliasFile)) return aliasFile;
+    }
+    return file;
   }
 
   // 基础行：每个环境的 hosts 都要有的东西（localhost 等）。

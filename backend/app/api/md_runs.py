@@ -18,12 +18,14 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import assert_project_role, get_current_user, RunnerCtx, require_runner_ctx
 from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import MdRun, User
 from app.schemas.common import ok
-from app.schemas.md_run import MdRunCreate, MdRunReportIn, MdRunBugsIn
+from app.services import md_bug_skill
+from app.schemas.md_run import MdRunDocument, MdRunBatchCreate, MdRunCreate, MdRunReportIn, MdRunBugsIn
 
 router = APIRouter(prefix="/api/md-runs", tags=["md-runs"])
 
@@ -113,11 +115,11 @@ def queue_claim(
         raise HTTPException(404, "任务不存在")
     if r.runner != rid:
         raise HTTPException(403, "该任务未派给此执行机")
-    if r.status != "pending":
-        raise HTTPException(409, f"该任务不可认领（当前 {r.status}）")
-    r.status = "running"
-    r.started_at = datetime.utcnow()
-    r.heartbeat_at = r.started_at
+    now = datetime.utcnow()
+    claimed = db.query(MdRun).filter_by(id=run_id, runner=rid, status="pending").update(
+        {"status": "running", "started_at": now, "heartbeat_at": now}, synchronize_session=False)
+    if not claimed:
+        raise HTTPException(409, "该任务已被认领或已结束")
     db.commit()
     db.refresh(r)
     return ok(_to_out(r, full=True))
@@ -157,8 +159,8 @@ def queue_report(
         raise HTTPException(404, "任务不存在")
     if r.runner != rid:
         raise HTTPException(403, "该任务未派给此执行机")
-    # 已取消的任务不再被回写覆盖（取消是人的决定）；其余状态允许更新为终态（重跑语义靠新任务）
-    if r.status == "canceled":
+    # A retried runner callback must not erase references recorded after the first report.
+    if r.status in _TERMINAL:
         return ok(_to_out(r, full=True))
     r.verdict = body.verdict
     r.status = {"pass": "passed", "fail": "failed", "blocked": "blocked"}[body.verdict]
@@ -178,32 +180,33 @@ def queue_report(
 
 # ==================== 用户侧 ====================
 
-@router.post("")
-def create_run(
-    body: MdRunCreate,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """下发一份 md 任务。项目成员可操作；绑定项目才能后续上报极库云。"""
+def _dispatch(body: MdRunDocument, runners: list[str], db: Session, user: User) -> list[dict]:
     if body.project_id is not None:
         assert_project_role(db, user, body.project_id, _WRITE_ROLES)
-    r = MdRun(
-        project_id=body.project_id,
-        task_id=body.task_id,
-        req_no=(body.req_no or "").strip() or None,
-        title=body.title.strip(),
-        runner=body.runner.strip(),
-        env_group=body.env_group.strip(),
-        client_version=(body.client_version or "").strip() or None,
-        source=body.source.strip() or "page",
-        content=body.content,
-        status="pending",
-        enqueued_by=user.id,
-    )
-    db.add(r)
+    rows = [
+        MdRun(project_id=body.project_id, task_id=body.task_id,
+              req_no=(body.req_no or "").strip() or None, title=body.title.strip(),
+              runner=runner, env_group=body.env_group.strip(),
+              client_version=(body.client_version or "").strip() or None,
+              source=body.source.strip() or "page", content=body.content,
+              status="pending", enqueued_by=user.id)
+        for runner in dict.fromkeys(runners)
+    ]
+    db.add_all(rows)
+    db.flush()
+    created = [_to_out(row) for row in rows]
     db.commit()
-    db.refresh(r)
-    return ok(_to_out(r))
+    return created
+
+
+@router.post("")
+def create_run(body: MdRunCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return ok(_dispatch(body, [body.runner], db, user)[0])
+
+
+@router.post("/batch")
+def create_runs(body: MdRunBatchCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return ok(_dispatch(body, body.runners, db, user))
 
 
 @router.get("")
@@ -282,6 +285,31 @@ def delete_run(
     return ok({"deleted": run_id})
 
 
+def _update_finding(db: Session, run: MdRun, index: int, *, claim=False, outcome=None):
+    """Compare-and-swap the JSON column so concurrent reports preserve each other's references."""
+    while True:
+        db.refresh(run)
+        previous = run.findings
+        items = run.findings_list
+        if index >= len(items) or not isinstance(items[index], dict):
+            return None
+        item = items[index]
+        if claim:
+            if item.get("external_ref") or item.get("report_state"):
+                return item
+            updated = {**item, "report_state": "sending"}
+        else:
+            updated = {**item, **(outcome or {})}
+            if not outcome or "report_state" not in outcome:
+                updated.pop("report_state", None)
+        items[index] = updated
+        changed = db.query(MdRun).filter_by(id=run.id, findings=previous).update(
+            {"findings": _dump(items)}, synchronize_session=False)
+        db.commit()
+        if changed:
+            return item
+
+
 @router.post("/{run_id}/report-bugs")
 def report_bugs(
     run_id: int,
@@ -317,39 +345,36 @@ def report_bugs(
     except GeelibAccountError as e:
         raise HTTPException(400, f"极库云账号未授权：{e}")
 
-    items = r.findings_list
-    targets = range(len(items)) if body.indexes is None else [i for i in body.indexes if 0 <= i < len(items)]
-
+    if r.status not in _TERMINAL:
+        raise HTTPException(409, "任务结束后才能上报缺陷")
+    count = len(r.findings_list)
+    targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
+    executor = user.email or settings.GEELIB_DEFAULT_EXECUTOR
     results = []
-    for i in targets:
-        item = items[i]
-        if not isinstance(item, dict):
+    for index in targets:
+        item = _update_finding(db, r, index, claim=True)
+        if item is None:
             continue
         if item.get("external_ref"):
-            results.append({"index": i, "ok": True, "skipped": True, "external_ref": item["external_ref"]})
+            results.append({"index": index, "ok": True, "skipped": True, "external_ref": item["external_ref"]})
+            continue
+        if item.get("report_state"):
+            results.append({"index": index, "ok": False, "msg": "正在上报或等待核对极库云回执"})
             continue
         title = str(item.get("title") or "").strip() or f"{r.title} 执行失败"
         if r.req_no:
             title = f"[{r.req_no}] {title}"
         try:
-            res = geelib.report_defect(
-                sub_id,
-                title[:200],
-                description=str(item.get("detail") or item.get("description") or "") or None,
-                severity=item.get("severity"),
-                executor_mail=getattr(user, "email", None) or None,
-                app_token=app_token,
-            )
-            if not res.get("ok"):
-                results.append({"index": i, "ok": False, "msg": res.get("reason") or "极库云未接受该缺陷"})
-                continue
-            item["external_ref"] = res.get("ref")
-            results.append({"index": i, "ok": True, "external_ref": res.get("ref")})
-        except Exception as e:   # 单条失败不影响其他条目
-            results.append({"index": i, "ok": False, "msg": str(e)})
+            ref = md_bug_skill.create_case(sub_id, title[:200],
+                                           str(item.get("detail") or item.get("description") or ""),
+                                           item.get("severity"), executor, app_token)
+            outcome = {"external_ref": ref}
+            results.append({"index": index, "ok": True, **outcome})
+        except geelib.GeelibError as error:
+            outcome = {"report_state": "uncertain"} if isinstance(error, md_bug_skill.SubmissionUncertain) else {}
+            results.append({"index": index, "ok": False, "msg": str(error)})
+        _update_finding(db, r, index, outcome=outcome)
 
-    r.findings = _dump(items)
-    db.commit()
     db.refresh(r)
     reported = sum(1 for x in results if x.get("ok") and not x.get("skipped"))
     return ok({"results": results, "reported": reported, "run": _to_out(r, full=True)})

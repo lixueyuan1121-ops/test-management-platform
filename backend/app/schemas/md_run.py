@@ -1,10 +1,10 @@
 """md 任务模块入参 schema。"""
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 
-class MdRunCreate(BaseModel):
+class MdRunDocument(BaseModel):
     """前端下发：上传/粘贴一份提测 md，指定执行机与环境分组。
 
     content 是 md 原文（含 frontmatter 也行，后端不解析 frontmatter，
@@ -14,11 +14,22 @@ class MdRunCreate(BaseModel):
     task_id: int | None = None
     req_no: str | None = Field(None, max_length=64)
     title: str = Field(..., min_length=1, max_length=255)
-    runner: str = Field(..., min_length=1, max_length=64)
     env_group: str = Field(..., min_length=1, max_length=64)
     client_version: str | None = Field(None, max_length=64)
     content: str = Field(..., min_length=1, max_length=400_000)
     source: str = Field("page", max_length=8)
+
+
+RunnerId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+
+
+class MdRunCreate(MdRunDocument):
+    runner: RunnerId
+
+
+class MdRunBatchCreate(MdRunDocument):
+    runners: list[RunnerId] = Field(min_length=1)
+    env_group: Literal["online", "pre", "test"]
 
 
 class MdRunReportIn(BaseModel):

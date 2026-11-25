@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { runDomAudit } from './dom-audit.mjs';
 import { probeCdp, windowsClientStartScript, boundedDiagnostic } from './execution-diagnostics.mjs';
+import { stopPosixClient } from './client-processes.mjs';
 import { runInWorker } from "./execution-worker.mjs";
 import desktopLease from "./desktop-lease.cjs";
 import { createHash } from "node:crypto";
@@ -131,7 +132,7 @@ const guiCore = createGuiCore({ cdpUrl: `http://127.0.0.1:${CDP_PORT}` });
 
 // md 任务执行器：只在 MD_TASK_ENABLED=1 时构造并轮询，其余执行机完全不受影响。
 const mdTasks = MD_TASK_ENABLED ? makeMdTaskRunner({
-  api, log, RUNNER_ID,
+  api, log, RUNNER_ID, restartClient: restartDesktopClient,
   runtimeDir: MD_RUNTIME_DIR,
   groupsDir: MD_GROUPS_DIR,
   helperPath: MD_HOSTS_HELPER,
@@ -252,10 +253,8 @@ async function coldStartClient() {
     const startup = await psExec(windowsClientStartScript(NAMICLAW_EXE, CDP_PORT));
     log(`客户端启动: ${startup.trim()}`);
   } else {
-    // Mac/Linux:先杀旧实例(按可执行名),再 detached 冷启动带调试端口
-    const name = NAMICLAW_EXE.split("/").pop();
-    await new Promise((r) => execFile("pkill", ["-f", name], () => r()));
-    await sleep(2000);
+    await stopPosixClient(NAMICLAW_EXE);
+    if (await cdpAlive()) throw new Error(`目标客户端退出后 CDP 端口 ${CDP_PORT} 仍被占用`);
     // spawn 失败(路径不存在等)走异步 'error' 事件,不监听会以未捕获异常 crash 整个 runner
     // (try/catch 抓不到 EventEmitter 的 error)。这里转成 Promise,让上层 tick 的 catch 回写 fail。
     await new Promise((resolve, reject) => {
@@ -269,6 +268,11 @@ async function coldStartClient() {
 async function ensureNamiclaw() {
   if (await cdpAlive()) { log(`CDP 检查: ${JSON.stringify(lastCdpProbe)}`); return; }
   log(`客户端 CDP 未就绪,冷启动中… ${JSON.stringify(lastCdpProbe)}`);
+  await restartDesktopClient();
+}
+
+async function restartDesktopClient() {
+  await guiCore.close?.();
   await coldStartClient();
   for (let i = 0; i < 15; i++) {                   // 最多等 30s
     await sleep(2000);
@@ -737,19 +741,9 @@ async function executeItem(item, { localEvidenceDir = null } = {}) {
           let result;
           // 用例前硬复位(reload):清上一条遗留的选中/弹窗/输入残留等瞬态,保证从初始主界面开始。
           // 复位失败或复位后掉登录 → 记 blocked(fail_kind=selector,环境阻塞,不计功能失败率),不空跑脏态用例。
-          // restartClientFn 作为兜底注入:reload 复位全失败 / 多轮自愈后仍未回稳时,退出客户端重新启动再复位一次。
-          const restartClientFn = async () => {
-            await guiCore.close?.();       // 断开 CDP 连接,让 ensureNamiclaw 重建
-            await coldStartClient();       // 杀旧进程 + 重新启动带 CDP 参数
-            for (let i = 0; i < 15; i++) {
-              await sleep(2000);
-              if (await cdpAlive()) { log(`  客户端 CDP 就绪(${(i + 1) * 2}s)`); return; }
-            }
-            throw new Error(`重启后 CDP 超时,${CDP_PORT} 未就绪 (${lastCdpProbe?.error || lastCdpProbe?.status || 'unknown'})`);
-          };
           result = await executeGui({ payload: item.payload, log, engine: GUI_AI_ENGINE, measure: timer.measure,
             reset: async () => {
-              const reset = RESET_BETWEEN_CASES ? { ...await resetOrBlock(guiCore, log, { restartClientFn }), reset: true } : { ok: true, reset: false };
+              const reset = RESET_BETWEEN_CASES ? { ...await resetOrBlock(guiCore, log, { restartClientFn: restartDesktopClient }), reset: true } : { ok: true, reset: false };
               log(`复位结果: enabled=${reset.reset} ok=${reset.ok}`);
               return reset;
             },

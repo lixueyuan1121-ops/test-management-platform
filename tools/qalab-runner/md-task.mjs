@@ -8,7 +8,7 @@
 //
 // 注意：这里不用 codex-engine.mjs —— 那套是 `--ignore-user-config --sandbox read-only`
 // 且关掉 plugins/shell，用来做单条断言；md 任务需要 agent 能按文档自由操作、能调它
-// 自己配置的报缺陷 skill，所以走独立的调用方式（MD_CODEX_ARGS 可调）。
+// 自己配置的客户端操作工具，所以走独立的调用方式（MD_CODEX_ARGS 可调）。
 
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -72,8 +72,6 @@ export function resolveAgentBin(bin, windowsAppsDir = process.env.ProgramFiles ?
   throw new Error(`${pkgName} 包里没有 app\\resources\\codex.exe，可能这个版本不带 CLI`);
 }
 
-const IS_WIN = process.platform === "win32";
-
 // 拆分 MD_CODEX_ARGS：要能处理 -c approval_policy="never" 这种带引号的值，
 // 简单 split(/\s+/) 会把引号留在 token 里、或把值拆成两半。
 export function tokenizeArgs(text) {
@@ -93,7 +91,7 @@ export function tokenizeArgs(text) {
   return out;
 }
 
-function runCapture(cmd, args, { cwd, env, timeoutMs, control, logFile, shell = IS_WIN }) {
+function runCapture(cmd, args, { cwd, env, timeoutMs, control, logFile }) {
   return new Promise((resolve) => {
     const started = Date.now();
     let child;
@@ -101,7 +99,7 @@ function runCapture(cmd, args, { cwd, env, timeoutMs, control, logFile, shell = 
       // stdin 必须 ignore：`codex exec` 的规则是「stdin 有内容就追加到 prompt 之后」，
       // stdin 是打开的管道时它会一直等 EOF —— 表现为永远不返回、也没有任何输出。
       // 手动在终端跑没事，因为终端里的 stdin 不是管道。
-      child = spawn(cmd, args, { cwd, env, shell, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(cmd, args, { cwd, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
       return resolve({ code: -1, out: "", err: `无法启动 ${cmd}: ${e.message}`, timedOut: false, duration_ms: 0 });
     }
@@ -173,9 +171,9 @@ export function makeMdTaskRunner({
   api, log, RUNNER_ID, runtimeDir,
   groupsDir, helperPath, helperTaskName,
   verifyDomains, verifyTimeoutSec,
-  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs, direct,
+  codexBin, codexArgs, codexTimeoutMs, workRoot, addDirs, direct, restartClient,
+  hosts = makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName: helperTaskName, direct }),
 }) {
-  const hosts = makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName: helperTaskName, direct });
   let busy = false;
 
   async function execute(item) {
@@ -209,12 +207,22 @@ export function makeMdTaskRunner({
       envCheck = await hosts.apply(item.env_group, verifyDomains, verifyTimeoutSec);
       log(`环境就绪 group=${item.env_group} verify=${envCheck.verify.map((v) => `${v.domain}->${v.got}`).join(",")}`);
 
+      envCheck.client_restarted = false;
+      if (canceled) throw new Error("平台已取消");
+      try {
+        await restartClient();
+      } catch (error) {
+        throw new Error(`目标客户端重启失败：${error.message}`);
+      }
+      envCheck.client_restarted = true;
+      if (canceled) throw new Error("平台已取消");
+
       const prompt = [
         `请阅读并执行提测文档：${docPath}`,
         ``,
         `要求：`,
         `1. 按文档中的用例逐条在被测客户端上执行；客户端已安装、环境已配置好，不要改 hosts。`,
-        `2. 发现缺陷时按你配置的方式上报${item.req_no ? `，标题带上提测号 ${item.req_no}` : ""}。`,
+        `2. 将发现的问题记录为缺陷候选。由平台在人工确认后统一上报极库云，执行期间不要创建外部缺陷。`,
         `3. 执行结束后把结果写入 ${path.join(workDir, "result.md")}，格式：表格「| 用例 | 结论 | 说明 |」，`,
         `   失败用例的结论写 fail，并在文末用「## 缺陷」小节列出每条缺陷的标题与复现要点。`,
         `4. 这是无人值守执行：**不要向我提问、不要等待确认**。文档缺信息就按最合理的理解继续；`,
@@ -238,7 +246,6 @@ export function makeMdTaskRunner({
       fs.writeFileSync(liveLog, `# run_id=${item.run_id} bin=${cmd.command} args=${[...cmd.prefix, ...codexArgs].join(" ")}\n`);
       const r = await runCapture(cmd.command, [...cmd.prefix, ...codexArgs, ...extra, prompt], {
         cwd: workDir, env: process.env, timeoutMs: codexTimeoutMs, control,
-        shell: cmd.prefix.length ? false : IS_WIN,
         logFile: liveLog,
       });
       fs.appendFileSync(liveLog, `\n# exit=${r.code} timedOut=${r.timedOut} duration=${Date.now() - started}ms\n`);
@@ -281,7 +288,7 @@ export function makeMdTaskRunner({
     } catch (e) {
       // 环境/客户端类失败：归 blocked，不当成产品缺陷（与 exec 的 fail_kind=selector 同思路）
       if (e.envCheck) envCheck = e.envCheck;
-      if (/ENOENT|not recognized|不是内部或外部命令|CODEX_BIN/i.test(String(e.message))) {
+      if (envCheck?.client_restarted && /ENOENT|not recognized|不是内部或外部命令|CODEX_BIN/i.test(String(e.message))) {
         e.message = `找不到 agent 命令（MD_CODEX_BIN=${codexBin}）：${e.message}。` +
           `Windows 上桌面版 Codex 不把 CLI 放 PATH：建议 MD_CODEX_BIN=npm:codex（npm 全局安装），或指向 codex.exe / codex.cmd`;
       }

@@ -21,15 +21,35 @@ export async function probeCdp(port, request = fetch) {
 export function windowsClientStartScript(executable, port) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid CDP port');
   const quote = value => "'" + String(value).replaceAll("'", "''") + "'";
-  return `$ErrorActionPreference='Stop'\n` +
-    `$clientPath=(Get-Item -LiteralPath ${quote(executable)}).FullName\n` +
-    `$clientName=[IO.Path]::GetFileName($clientPath)\n` +
-    // Exact path prevents terminating another installation or similarly named app.
-    `$existing=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq $clientName -and $_.ExecutablePath -eq $clientPath })\n` +
-    `foreach($p in $existing){ Write-Output ('stopping client pid='+$p.ProcessId); Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }\n` +
-    `Start-Sleep -Seconds 2\n` +
-    `$child=Start-Process -FilePath $clientPath -ArgumentList '--remote-debugging-port=${port}' -WindowStyle Hidden -PassThru\n` +
-    `Write-Output ('started client pid='+$child.Id+' port=${port}')`;
+  return `$ErrorActionPreference='Stop'
+$clientPath=(Get-Item -LiteralPath ${quote(executable)}).FullName
+$clientName=[IO.Path]::GetFileName($clientPath)
+$all=@(Get-CimInstance Win32_Process)
+$existing=@($all | Where-Object { $_.Name -eq $clientName -and $_.ExecutablePath -eq $clientPath })
+$tree=[Collections.Generic.HashSet[uint32]]::new()
+foreach($p in $existing){ [void]$tree.Add($p.ProcessId) }
+do {
+  $before=$tree.Count
+  foreach($p in $all){ if($tree.Contains($p.ParentProcessId)){ [void]$tree.Add($p.ProcessId) } }
+} while($tree.Count -ne $before)
+foreach($p in $existing){
+  if(Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue){
+    & taskkill.exe /PID $p.ProcessId /T /F | Out-Null
+  }
+}
+$deadline=(Get-Date).AddSeconds(8)
+while(Get-CimInstance Win32_Process | Where-Object {
+  $tree.Contains($_.ProcessId) -or ($_.Name -eq $clientName -and $_.ExecutablePath -eq $clientPath)
+}){
+  if((Get-Date) -ge $deadline){ throw 'Client processes did not exit' }
+  Start-Sleep -Milliseconds 200
+}
+$listener=[Net.Sockets.TcpClient]::new()
+try { $listener.Connect('127.0.0.1',${port}) } catch [Net.Sockets.SocketException] {}
+finally { $occupied=$listener.Connected; $listener.Dispose() }
+if($occupied){ throw 'Client debugging port is still in use' }
+$child=Start-Process -FilePath $clientPath -ArgumentList '--remote-debugging-port=${port}' -WindowStyle Hidden -PassThru
+Write-Output ('started client pid='+$child.Id+' port=${port}')`;
 }
 
 export async function boundedDiagnostic(read, timeout = 2000) {

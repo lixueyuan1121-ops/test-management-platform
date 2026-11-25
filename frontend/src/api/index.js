@@ -632,6 +632,7 @@ export const cancelSelectorAudit = id => http.post(`/selector-audits/${id}/cance
 export const listMdRuns = (params) => http.get('/md-runs', { params })
 export const getMdRun = (id) => http.get(`/md-runs/${id}`)
 export const createMdRun = (data) => http.post('/md-runs', data)
+export const createMdRuns = (data) => http.post('/md-runs/batch', data)
 export const cancelMdRun = (id) => http.post(`/md-runs/${id}/cancel`)
 export const deleteMdRun = (id) => http.delete(`/md-runs/${id}`)
-export const reportMdRunBugs = (id, data = {}) => http.post(`/md-runs/${id}/report-bugs`, data)
+export const reportMdRunBugs = (id, data = {}) => http.post(`/md-runs/${id}/report-bugs`, data, { timeout: 0 })

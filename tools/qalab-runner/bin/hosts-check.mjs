@@ -2,7 +2,7 @@
 // hosts-check —— 验证本机 hosts 分组文件，不连平台、不跑 agent。
 //
 //   node bin/hosts-check.mjs                 列出所有分组及它们会写的映射
-//   node bin/hosts-check.mjs work-test       真的切一次：快照 → 写入 → 校验解析 → 还原，并核对还原是否一致
+//   node bin/hosts-check.mjs test       真的切一次：快照 → 写入 → 校验解析 → 还原，并核对还原是否一致
 //
 // 用来在发真任务之前把「文件名对不对 / IP 写没写错 / DNS 通不通 / 还原得回来吗」这几件事先验掉。
 // 读 .env 的方式与 runner 一致（同目录 .env），所以用的就是 runner 的真实配置。
@@ -77,7 +77,12 @@ function listGroups() {
 }
 
 async function check(group) {
-  const file = path.join(GROUPS_DIR, `${group}.hosts`);
+  const hosts = makeHostsEnv({
+    log: (...a) => console.log("  ", ...a),
+    runtimeDir: RUNTIME_DIR, groupsDir: GROUPS_DIR, direct: DIRECT,
+    helperPath: process.env.MD_HOSTS_HELPER, taskName: process.env.MD_HOSTS_TASK,
+  });
+  const file = hosts.groupFile(group);
   if (!fs.existsSync(file)) {
     console.error(`✗ 没有这个分组: ${file}`);
     const avail = fs.existsSync(GROUPS_DIR)
@@ -86,11 +91,6 @@ async function check(group) {
     console.error(`  可用: ${avail.join(", ") || "（无）"}`);
     process.exit(1);
   }
-  const hosts = makeHostsEnv({
-    log: (...a) => console.log("  ", ...a),
-    runtimeDir: RUNTIME_DIR, groupsDir: GROUPS_DIR, direct: DIRECT,
-    helperPath: process.env.MD_HOSTS_HELPER, taskName: process.env.MD_HOSTS_TASK,
-  });
 
   const before = sha(SYS_HOSTS);
   console.log(`组: ${group}`);

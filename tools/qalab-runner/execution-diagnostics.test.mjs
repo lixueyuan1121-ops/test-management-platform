@@ -18,6 +18,9 @@ test('Windows startup targets only the configured executable and safely quotes p
   assert.match(script, /O''Brien/); assert.match(script, /ExecutablePath -eq \$clientPath/);
   assert.match(script, /-WindowStyle Hidden/); assert.match(script, /remote-debugging-port=9333/);
   assert.doesNotMatch(script, /Get-Process namiclaw/);
+  assert.match(script, /taskkill\.exe \/PID \$p\.ProcessId \/T \/F/);
+  assert.match(script, /\$tree\.Contains\(\$_\.ProcessId\)/);
+  assert.ok(script.indexOf('Client processes did not exit') < script.indexOf('Start-Process -FilePath'));
   assert.throws(() => windowsClientStartScript('x', '9222; bad'));
 });
 test('frame diagnostics show shell miss and iframe match without clicking or changing scope', async () => {

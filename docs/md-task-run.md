@@ -23,7 +23,7 @@
 ## 流程
 
 ```
-前端「提测执行」页 ──POST /api/md-runs──► md_run(pending)
+前端「提测执行」页 ──POST /api/md-runs/batch──► 每台执行机一条 md_run(pending)
                                               │
 执行机 runner（MD_TASK_ENABLED=1）             │
   GET /api/md-runs/queue?runner=<id> ◄────────┘
@@ -31,7 +31,7 @@
   ① 快照系统 hosts
   ② 写本机分组 hosts-groups/<env_group>.hosts
   ③ 校验域名解析（期望值取自分组文件；不过就中止，不启动 agent）
-  ④ 调 agent 执行整份 md（默认 `codex exec`，参数可配）
+  ④ 完全退出并重启 NAMICLAW_EXE，等待 CDP 就绪后调 agent 执行整份 md（默认 `codex exec`，参数可配）
   ⑤ 读 agent 产出的 result.md → 抽失败用例与缺陷候选
   ⑥ 无论成败：还原 hosts
   ⑦ PATCH /queue/{id} 回写 verdict/result_md/findings/env_check
@@ -46,8 +46,8 @@
 ~/qa-workspace/hosts-groups/
 ├── _base.hosts          （可选）每个环境都要有的基础行，如 localhost
 ├── online.hosts         线上：只写注释，不放任何域名映射
-├── work-test.hosts      测试环境
-└── work-staging.hosts   预发环境
+├── test.hosts           测试环境
+└── pre.hosts            预发环境
 ```
 
 仓库里 `tools/qalab-runner/hosts-groups.example/` 有这四份的样例，拷一份改名即可。
@@ -65,7 +65,7 @@
 ```powershell
 cd D:\code\test-management-platform\tools\qalab-runner
 node bin\hosts-check.mjs                  # 列出每个分组的映射，检查文件名/IP 有没有写错
-node bin\hosts-check.mjs work-test        # 真切一次：快照 → 写入 → 校验解析 → 还原，并核对还原一致
+node bin\hosts-check.mjs test             # 真切一次：快照 → 写入 → 校验解析 → 还原，并核对还原一致
 ```
 
 它读同目录 `.env`，用的就是 runner 的真实配置，但不连平台、不跑 agent。
@@ -76,7 +76,7 @@ node bin\hosts-check.mjs work-test        # 真切一次：快照 → 写入 →
 所以线上任务不做解析校验（没有可比的期望值）——这是刻意的：
 线上没有"应该在哪个 IP"的先验，硬编一个反而会误判。
 
-环境改名、新增环境都只改这些文件，不用动代码。两台机器用同样的文件名，任务才能通用。
+页面可选择 online、pre、test。执行机优先读同名文件；尚未改名时，pre 和 test 分别兼容 work-staging.hosts 和 work-test.hosts。旧任务继续按原分组读取。
 
 ## 敏感内容在哪
 
@@ -90,7 +90,7 @@ node bin\hosts-check.mjs work-test        # 真切一次：快照 → 写入 →
 agent 执行完只产出**缺陷候选**（`findings`），不直接调缺陷系统。
 
 人在「提测执行」详情页复核后点「上报到极库云」→ `POST /api/md-runs/{id}/report-bugs`
-逐条调 `services/geelib.report_defect`，把 `external_ref` 回写到 findings 里。
+通过附件技能包的 `geelib-bug-report/scripts/create-case.mjs` 建单，使用当前报送人的个人 SSO 授权和任务的项目映射。服务端需要 Node.js 18+。每条成功回执单独保存为 `external_ref`，已上报项会跳过。明确被拒的可重试，回执不明的会提示人工核对。
 
 刻意不做自动上报：环境问题、偶发失败自动灌进缺陷库，会迅速让缺陷单失去可信度。
 要全自动可以复用 `GEELIB_AUTO_REPORT` 的开关思路再加，默认不写死。
@@ -176,7 +176,7 @@ exec --skip-git-repo-check --sandbox workspace-write -c approval_policy=never
 - `--sandbox workspace-write`：agent 要写 `result.md`，只读模式写不出来
 - `-c approval_policy=never`：非交互下不能停在等授权，否则表现为超时
 - **不要加 `--ignore-user-config`**：那会丢掉 `~/.codex/config.toml` 里的 MCP/skill 配置，
-  而 agent 正是靠这些去操作客户端、报缺陷
+  而 agent 正是靠这些去操作客户端
 
 另外 runner 会额外传 `-o <工作目录>/agent-last-message.md`：agent 忘了按约定写 `result.md` 时，
 用 CLI 落盘的最后一条回复兜底解析，不至于整轮白跑。
@@ -216,7 +216,7 @@ agent 要联网：代理必须给到 **runner 进程**（Windows 上实测 Clash
 ## 前端
 
 菜单：功能测试 → 提测执行（`/md-tasks`）。
-支持选文件或粘贴；选 md 时会把 frontmatter 里的 `env_group / client_version / req / title`
+支持同时选择多台执行机，每台独立认领和回写结果。支持选文件或粘贴；选 md 时会把 frontmatter 里的 `env_group / client_version / req / title`
 带进表单，省一次手填。
 
 ## 已知边界

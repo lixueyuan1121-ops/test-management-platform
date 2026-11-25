@@ -45,13 +45,14 @@
         <el-form-item label="标题" required><el-input v-model="form.title" placeholder="如：工作台消息列表改版" /></el-form-item>
         <el-form-item label="提测号"><el-input v-model="form.req_no" placeholder="可选，上报缺陷时用作标题前缀" style="width:220px" /></el-form-item>
         <el-form-item label="执行机" required>
-          <el-select v-model="form.runner" filterable allow-create default-first-option style="width:220px" placeholder="选 / 填 runner_id">
+          <el-select v-model="form.runners" multiple filterable allow-create default-first-option style="width:220px" placeholder="选择执行机，可多选">
             <el-option v-for="d in devices" :key="d.id" :label="`${d.name}（${d.runner_id}）`" :value="d.runner_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="环境分组" required>
-          <el-input v-model="form.env_group" placeholder="执行机本地 hosts 分组名，如 work-test" style="width:220px" />
-          <span class="hint">只填名字；真实 hosts 内容在执行机上，平台不存</span>
+          <el-select v-model="form.env_group" placeholder="选择环境分组" style="width:220px">
+            <el-option v-for="group in envGroups" :key="group" :label="group" :value="group" />
+          </el-select>
         </el-form-item>
         <el-form-item label="客户端版本"><el-input v-model="form.client_version" placeholder="可选，如 3.2.1.88" style="width:160px" /></el-form-item>
         <el-form-item label="文档" required>
@@ -91,12 +92,14 @@
             <el-table-column label="极库云" width="130">
               <template #default="{ row }">
                 <span v-if="row.external_ref">{{ row.external_ref }}</span>
+                <span v-else-if="row.report_state === 'sending'" class="hint">上报中</span>
+                <span v-else-if="row.report_state === 'uncertain'" class="hint">回执待核对</span>
                 <span v-else class="hint">未上报</span>
               </template>
             </el-table-column>
           </el-table>
           <div class="bug-actions">
-            <el-button size="small" type="primary" :loading="reporting" :disabled="!pid" @click="reportBugs(false)">上报未报的到极库云</el-button>
+            <el-button size="small" type="primary" :loading="reporting" :disabled="!detail.project_id" @click="reportBugs">上报未报的到极库云</el-button>
             <span class="hint">只有你确认是产品缺陷的才上报；环境/偶发问题点「取消」，别污染缺陷库</span>
           </div>
         </template>
@@ -122,7 +125,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { listMyDevices, listMdRuns, getMdRun, createMdRun, cancelMdRun, reportMdRunBugs } from '@/api'
+import { listMyDevices, listMdRuns, getMdRun, createMdRuns, cancelMdRun, reportMdRunBugs } from '@/api'
 
 const app = useAppStore()
 const projects = ref([])
@@ -135,7 +138,8 @@ const statuses = ['pending', 'running', 'passed', 'failed', 'blocked', 'canceled
 const dispatchVisible = ref(false)
 const submitting = ref(false)
 const fileEl = ref(null)
-const form = reactive({ title: '', req_no: '', runner: '', env_group: '', client_version: '', content: '' })
+const envGroups = ['online', 'pre', 'test']
+const form = reactive({ title: '', req_no: '', runners: [], env_group: '', client_version: '', content: '' })
 
 const detailVisible = ref(false)
 const detail = ref(null)
@@ -159,7 +163,7 @@ async function loadRuns() {
 const statusFilter = ref('')
 
 function openDispatch() {
-  Object.assign(form, { title: '', req_no: '', runner: devices.value[0]?.runner_id || '', env_group: '', client_version: '', content: '' })
+  Object.assign(form, { title: '', req_no: '', runners: devices.value[0]?.runner_id ? [devices.value[0].runner_id] : [], env_group: '', client_version: '', content: '' })
   dispatchVisible.value = true
 }
 
@@ -175,7 +179,10 @@ async function onFile(e) {
       const kv = line.match(/^\s*(env_group|client_version|req|title)\s*:\s*(.+?)\s*(#.*)?$/)
       if (!kv) continue
       const v = kv[2].replace(/^["']|["']$/g, '')
-      if (kv[1] === 'env_group' && !form.env_group) form.env_group = v
+      if (kv[1] === 'env_group' && !form.env_group) {
+        const group = { 'work-test': 'test', 'work-staging': 'pre' }[v] || v
+        if (envGroups.includes(group)) form.env_group = group
+      }
       if (kv[1] === 'client_version' && !form.client_version) form.client_version = v
       if (kv[1] === 'req' && !form.req_no) form.req_no = v
       if (kv[1] === 'title' && !form.title) form.title = v
@@ -185,23 +192,23 @@ async function onFile(e) {
 
 async function submit() {
   if (!form.title.trim()) return ElMessage.warning('请填写标题')
-  if (!form.runner.trim()) return ElMessage.warning('请选择执行机')
-  if (!form.env_group.trim()) return ElMessage.warning('请填写环境分组名')
+  if (!form.runners.length) return ElMessage.warning('请选择执行机')
+  if (!envGroups.includes(form.env_group)) return ElMessage.warning('请选择环境分组')
   if (!form.content.trim()) return ElMessage.warning('请选择或粘贴提测文档')
   submitting.value = true
   try {
-    await createMdRun({
+    const created = await createMdRuns({
       project_id: pid.value || null,
       title: form.title.trim(),
       req_no: form.req_no.trim() || null,
-      runner: form.runner.trim(),
+      runners: form.runners,
       env_group: form.env_group.trim(),
       client_version: form.client_version.trim() || null,
       content: form.content,
       source: 'page',
     })
     dispatchVisible.value = false
-    ElMessage.success('已下发，执行机下一轮轮询会取走')
+    ElMessage.success(`已向 ${created.length} 台执行机下发任务`)
     await loadRuns()
   } finally { submitting.value = false }
 }
