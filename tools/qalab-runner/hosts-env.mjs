@@ -27,12 +27,45 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName }) {
+export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName, direct = false }) {
   const hostsRuntime = path.join(runtimeDir, "hosts");
   const pendingFile = path.join(hostsRuntime, "pending-restore.json");
   fs.mkdirSync(hostsRuntime, { recursive: true });
 
+  // 直写模式：不经过提权助手，直接读写系统 hosts。
+  // 前提是运行 runner 的账号对 hosts 有写权限（一次性 icacls 授权即可）。
+  // 代价：agent 与 runner 同账号，理论上也能改 hosts —— 权限隔离没了，只剩切完校验 + 跑完还原。
+  // 换来的是整层计划任务/job 文件/账号匹配的故障面消失。专用测试机上值得。
+  function directOp(action, file) {
+    const sys = sysHostsPath();
+    try {
+      if (action === "snapshot") {
+        fs.copyFileSync(sys, file);
+      } else if (action === "apply" || action === "restore") {
+        const text = fs.readFileSync(file, "utf-8");
+        fs.writeFileSync(sys, text, "utf-8");
+      }
+      return { code: 0, out: "", err: "" };
+    } catch (e) {
+      const hint = e.code === "EPERM" || e.code === "EACCES" ? permHint(sys) : "";
+      return { code: -1, out: "", err: `${e.message}${hint}` };
+    }
+  }
+
+  // 权限提示按平台给，别在 Mac 上教人敲 icacls
+  function permHint(sys) {
+    return IS_WIN
+      ? `无写权限：先执行 icacls "${sys}" /grant "%USERNAME%:(M)"，然后重开 runner`
+      : `无写权限：Mac/Linux 请改用提权助手（不要开 MD_HOSTS_DIRECT），或 sudo chown 让该账号可写 ${sys}`;
+  }
+
+  function sysHostsPath() {
+    // 与 runner 平台判断一致：Win 用系统 hosts；其它平台由 helper 的 sudo 分支处理
+    return IS_WIN ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts";
+  }
+
   async function viaHelper(action, file) {
+    if (direct) return directOp(action, file);
     if (!IS_WIN) {
       const bin = helperPath || "/usr/local/bin/qa-hosts-helper";
       return run("sudo", ["-n", bin, action, file]);
@@ -166,6 +199,17 @@ export function makeHostsEnv({ log, runtimeDir, groupsDir, helperPath, taskName 
 
   /** 自检：能否以提权身份读到 hosts（只做快照，不改任何东西）。 */
   async function preflight() {
+    if (direct) {
+      const sys = sysHostsPath();
+      try {
+        const text = fs.readFileSync(sys, "utf-8");
+        fs.writeFileSync(sys, text, "utf-8");   // 内容不变，只验证权限
+        return { ok: true };
+      } catch (e) {
+        const hint = e.code === "EPERM" || e.code === "EACCES" ? `；${permHint(sys)}` : "";
+        return { ok: false, err: `${e.message}${hint}` };
+      }
+    }
     const f = path.join(runtimeDir, "hosts-preflight.hosts");
     try {
       const r = await viaHelper("snapshot", f);

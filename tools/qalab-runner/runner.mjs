@@ -100,6 +100,9 @@ const MD_GROUPS_DIR   = process.env.MD_GROUPS_DIR || join(__mdHome(), "hosts-gro
 const MD_RUNTIME_DIR  = process.env.MD_RUNTIME_DIR || join(__mdHome(), "runtime");
 const MD_HOSTS_HELPER = process.env.MD_HOSTS_HELPER || "";          // Mac: qa-hosts-helper 绝对路径
 const MD_HOSTS_TASK   = process.env.MD_HOSTS_TASK || "qa-hosts-helper"; // Win: 计划任务名
+// 直写模式：runner 账号对 hosts 有写权限时用，跳过提权助手（也就不需要计划任务）。
+// 代价是 agent 与 runner 同账号、理论上也能改 hosts；换来整层提权的故障面消失。
+const MD_HOSTS_DIRECT = (process.env.MD_HOSTS_DIRECT ?? "0") === "1";
 const MD_VERIFY_DOMAINS = (process.env.MD_VERIFY_DOMAINS || "").split(",").map((x) => x.trim()).filter(Boolean);
 const MD_VERIFY_TIMEOUT_SEC = Number(process.env.MD_VERIFY_TIMEOUT_SEC || 15);
 const MD_CODEX_BIN    = process.env.MD_CODEX_BIN || process.env.CODEX_BIN || "codex";
@@ -133,6 +136,7 @@ const mdTasks = MD_TASK_ENABLED ? makeMdTaskRunner({
   groupsDir: MD_GROUPS_DIR,
   helperPath: MD_HOSTS_HELPER,
   helperTaskName: MD_HOSTS_TASK,
+  direct: MD_HOSTS_DIRECT,
   verifyDomains: MD_VERIFY_DOMAINS,
   verifyTimeoutSec: MD_VERIFY_TIMEOUT_SEC,
   codexBin: MD_CODEX_BIN,
@@ -873,8 +877,10 @@ async function main() {
     try { await mdTasks.heal(); } catch (e) { log("md 任务环境自愈失败:", e.message); }
     try {
       const pf = await mdTasks.preflight();
-      if (pf.ok) log("hosts 提权助手可用");
-      else log(`!! hosts 提权助手不可用：${pf.err}（md 任务会在切环境时失败，检查 MD_HOSTS_HELPER / MD_HOSTS_TASK 与计划任务权限）`);
+      if (pf.ok) log(MD_HOSTS_DIRECT ? "hosts 直写模式可用" : "hosts 提权助手可用");
+      else log(MD_HOSTS_DIRECT
+        ? `!! hosts 直写失败：${pf.err}`
+        : `!! hosts 提权助手不可用：${pf.err}（检查 MD_HOSTS_HELPER / MD_HOSTS_TASK 与计划任务权限，或改用 MD_HOSTS_DIRECT=1）`);
     } catch (e) { log("hosts 自检异常:", e.message); }
   }
   const polling = createPollSchedule({ pollMs: POLL_MS, execPollMs: process.env.EXEC_POLL_MS });

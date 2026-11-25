@@ -81,6 +81,18 @@ agent 执行完只产出**缺陷候选**（`findings`），不直接调缺陷系
 
    runner 启动时会做一次自检（只读快照 hosts），失败会打
    `!! hosts 提权助手不可用` 并说明原因 —— 比等到切环境时才发现好。
+
+   **替代方案：直写模式。** 专用测试机上，直接给 runner 账号 hosts 写权限，跳过辅助层：
+
+   ```powershell
+   icacls "C:\Windows\System32\drivers\etc\hosts" /grant "%USERNAME%:(M)"
+   ```
+
+   然后 `.env` 设 `MD_HOSTS_DIRECT=1`，计划任务可以整个不要。
+
+   代价要说清楚：agent 与 runner 同账号，它理论上也能改 hosts，权限隔离没了；
+   剩下的是「切完校验解析 → 跑完还原 → 崩溃自愈」这三道。专用测试机上值得换来
+   计划任务/job 文件/账号匹配这一整层故障面的消失。
 4. 配置 `MD_VERIFY_DOMAINS`（需要校验解析的域名）与 `MD_CODEX_*`（agent 调用方式）。
 
 ### Windows：agent 命令在内置包目录里
