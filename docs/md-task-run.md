@@ -38,6 +38,34 @@
   期间每 60s POST /queue/{id}/heartbeat → 感知平台取消
 ```
 
+## 多环境怎么配
+
+一个环境一个文件，文件名就是任务里填的 `env_group`：
+
+```
+~/qa-workspace/hosts-groups/
+├── _base.hosts          （可选）每个环境都要有的基础行，如 localhost
+├── online.hosts         线上：只写注释，不放任何域名映射
+├── work-test.hosts      测试环境
+└── work-staging.hosts   预发环境
+```
+
+仓库里 `tools/qalab-runner/hosts-groups.example/` 有这四份的样例，拷一份改名即可。
+
+**写入内容 = 基础行 + 该环境的映射行。** 所以分组文件里只写业务域名，
+不必复制 localhost 那几行——SwitchHosts 导出来是什么样就放什么样。
+不建 `_base.hosts` 时用内置三行（`127.0.0.1 localhost`、`::1 localhost`、broadcasthost）。
+
+**"线上"不是"跳过切换"，而是一个真实的空分组。** 写进去会清掉此前所有托管映射。
+任务里必须显式写 `env_group: online`，不要留空——留空会跳过整个切换流程，
+而机器上若还残留上一轮测试的映射，你测的就是"假线上"。
+
+校验只看该分组文件里出现的域名。`online.hosts` 里没有 `api.n.cn`，
+所以线上任务不做解析校验（没有可比的期望值）——这是刻意的：
+线上没有"应该在哪个 IP"的先验，硬编一个反而会误判。
+
+环境改名、新增环境都只改这些文件，不用动代码。两台机器用同样的文件名，任务才能通用。
+
 ## 敏感内容在哪
 
 - **hosts 分组（真实 IP）只在执行机**：`MD_GROUPS_DIR` 下的 `<分组名>.hosts`。平台只存分组名。
