@@ -158,6 +158,8 @@ class DialogRunner {
   }
 
   async _handleWorkContinuation() {
+    // 多轮测评由题目指定后续提问，快答本身就是该轮答案。
+    if (this.multiTurn) return false;
     const ctx = this._ctx();
     const groups = ctx.locator(this.platform.answerGroupSelector || '.chat-group.assistant');
     const n = await groups.count();
@@ -184,8 +186,9 @@ class DialogRunner {
       }
     }
     if (!visible) { state.waitingSince = null; return false; }
-    const button = card.getByRole('button', { name: /^(继续工作|繼續工作|Continue work)$/i });
-    if (!await button.isEnabled().catch(() => false)) {
+    // 快答和工作模式共用卡片；按钮文字与 aria-label 都会随产品翻译更新。
+    const button = card.locator('.action').getByRole('button').filter({ visible: true });
+    if (await button.count() !== 1 || !await button.isEnabled({ timeout: 300 }).catch(() => false)) {
       // 产品在生成/请求中禁用续作按钮；已可点击时以卡片自身状态为准，
       // 不能让输入区尚未刷新的停止态（或旧配置误匹配发送箭头）阻塞续作。
       if (await this._probeGenerating()) {

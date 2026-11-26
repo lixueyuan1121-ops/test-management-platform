@@ -77,6 +77,69 @@ async function useRealCompose(page, r, state = 'send') {
   }, state);
 }
 
+test('multi-turn sends the next question in the same conversation without opening quick-answer cards', async t => {
+  const { page, r } = await fixture(t, { card: false, delay: 100 });
+  page.setDefaultTimeout(500);
+  r.execution.workContinuationStartTimeoutMs = 1000;
+  r.platform = { ...r.platform, inputSelector: '#input', sendBtnSelector: '#send' };
+  r._applyDialogOptions = async () => {};
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML('beforeend', '<div contenteditable="true" id="input"></div><button id="send">发送</button>');
+    window.sent = [];
+    document.querySelector('#send').onclick = () => {
+      const question = document.querySelector('#input').innerText;
+      window.sent.push(question);
+      window.appendAnswer('快答 ' + question, '1 算力豆', true);
+      const card = [...document.querySelectorAll('work-continuation-card')].pop().shadowRoot;
+      const button = card.querySelector('.action button');
+      button.textContent = '继续探索';
+      button.removeAttribute('aria-label');
+      button.disabled = window.sent.length === 2;
+      if (window.sent.length === 3) card.querySelector('[role=alert]').textContent = '续作暂不可用';
+    };
+  });
+  let opened = 0;
+  const desktop = Object.create(DesktopRunner.prototype);
+  Object.assign(desktop, {
+    dr: r, page, platform: r.platform, _fl: () => page, _focus: async () => {}, _log() {}, _warn() {},
+    _conversationKey: async () => 'same-session',
+    _isCleanConversation: async () => await page.locator('main .chat-group').count() === 0,
+    _openCleanConversation: async () => {
+      opened++;
+      await page.locator('main').evaluate(el => el.replaceChildren());
+      return true;
+    },
+    _extractCurrent: async () => ({ answer: (await r.extractLastAnswer()).text, beanCost: (await r.extractBeanCost()).value }),
+  });
+  const turns = [0, 1, 2].map(i => ({ turnIndex: i, caseId: 'T' + i, question: 'Q' + i }));
+  const sentAtCompletion = [];
+  const results = await desktop.runConversationTurns(turns, async () => {
+    sentAtCompletion.push(await page.evaluate(() => [...window.sent]));
+  });
+  assert.equal(await page.evaluate(() => window.clicks), 0);
+  assert.equal(opened, 1);
+  assert.deepEqual(sentAtCompletion, [['Q0'], ['Q0', 'Q1'], ['Q0', 'Q1', 'Q2']]);
+  assert.deepEqual(results.map(r => [r.success, r.answer, r.beanCost]),
+    turns.map(t => [true, '快答 ' + t.question, '1']));
+});
+
+test('continuation waits for a single visible action even when the card buttons have arbitrary names', async t => {
+  const { page, r } = await fixture(t);
+  page.setDefaultTimeout(400);
+  const action = page.locator('work-continuation-card .action');
+  await action.evaluate(el => {
+    const button = el.querySelector('button');
+    button.textContent = '下一阶段';
+    button.removeAttribute('aria-label');
+    el.append(button.cloneNode(true));
+  });
+  assert.equal(await r._dismissConfirmDialogs(), true);
+  assert.equal(r._workContinuation.count, 0, 'two visible actions are ambiguous');
+  await action.locator('button').last().evaluate(el => { el.hidden = true; });
+  assert.equal(await r._dismissConfirmDialogs(), true);
+  assert.equal(await page.evaluate(() => window.clicks), 1);
+});
+
 test('enabled send arrow must not prevent clicking Continue work or completing its final answer', async t => {
   const { page, r } = await fixture(t, { delay: 100 });
   await useRealCompose(page, r);
