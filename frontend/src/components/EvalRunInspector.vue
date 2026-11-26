@@ -20,10 +20,10 @@
             <h3>判定理由</h3>
             <div class="prose" v-html="renderMd(row.verdict_reason || row.reason || '暂无判定理由')"></div>
           </section>
-          <section v-if="row.verdict_dims" class="evidence-section">
+          <section v-if="visibleDimensions.length" class="evidence-section">
             <h3>分项判定</h3>
-            <div v-for="dim in dimensions.filter(d => row.verdict_dims[d.key])" :key="dim.key" class="dimension-result">
-              <div class="dimension-title"><el-icon :class="row.verdict_dims[dim.key].pass === true ? 'passed' : row.verdict_dims[dim.key].pass === false ? 'failed' : 'unknown'"><CircleCheck v-if="row.verdict_dims[dim.key].pass === true" /><CircleClose v-else-if="row.verdict_dims[dim.key].pass === false" /><QuestionFilled v-else /></el-icon><h4>{{ dim.label }}</h4><span v-if="row.verdict_dims[dim.key].pass == null">无法定论</span></div>
+            <div v-for="dim in visibleDimensions" :key="dim.key" class="dimension-result">
+              <div class="dimension-title"><el-icon :class="row.verdict_dims[dim.key].pass === true ? 'passed' : row.verdict_dims[dim.key].pass === false ? 'failed' : 'unknown'"><CircleCheck v-if="row.verdict_dims[dim.key].pass === true" /><CircleClose v-else-if="row.verdict_dims[dim.key].pass === false" /><QuestionFilled v-else /></el-icon><h4>{{ dim.label }}</h4><span v-if="row.verdict_dims[dim.key].pass == null">{{ row.verdict_dims[dim.key].applicable === false ? '不适用' : '证据不足' }}</span></div>
               <div class="prose" v-html="renderMd(row.verdict_dims[dim.key].note)"></div>
               <blockquote v-if="row.verdict_dims[dim.key].evidence_quote">{{ row.verdict_dims[dim.key].evidence_quote }}</blockquote>
             </div>
@@ -120,6 +120,7 @@
 <script setup>
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { Close, Link, CircleCheck, CircleClose, QuestionFilled } from '@element-plus/icons-vue'
+import { evalVerdictLabel } from '@/utils/evalVerdict'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import { listEvalRunAttempts, listEvalJudgments, downloadEvalArtifact } from '@/api'
@@ -202,10 +203,11 @@ const pretty = value => {
 }
 const engineLabel = computed(() => ({ namiwork: '纳米Work', workbuddy: 'WorkBuddy', qwork: 'QWork' }[props.row?.target_engine] || props.row?.target_engine || '未标注产品'))
 const qworkStatusLabel = computed(() => ({ completed: '已完成', failed: '失败', interrupted: '已中断', pending: '等待执行', running: '执行中' }[trace.value?.turn_status] || '未完成'))
-const verdictLabel = computed(() => ({ pass: '通过', fail: '不通过', error: '待复核' }[props.row?.verdict] || (props.row?.status === 'failed' ? '执行失败' : '未判定')))
+const verdictLabel = computed(() => (evalVerdictLabel(props.row) || (props.row?.status === 'failed' ? '执行失败' : '未判定')))
 const verdictType = computed(() => ({ pass: 'success', fail: 'danger', error: 'info' }[props.row?.verdict] || 'info'))
 const shareUrl = computed(() => /^https?:\/\//i.test(props.row?.share_link || '') ? props.row.share_link : null)
 const dimensions = [{ key: 'thinking_complete', label: '思考推理' }, { key: 'tools_ok', label: '工具 / MCP 调用' }, { key: 'artifact_expected', label: '产物 / 答案' }, { key: 'dimension_ok', label: '主考维度' }]
+const visibleDimensions = computed(() => dimensions.filter(d => props.row?.verdict_dims?.[d.key]))
 const conversation = computed(() => [{ label: '提问 Prompt', text: props.row?.payload?.prompt }, { label: '预期 Expected', text: props.row?.payload?.expected }, { label: '最终回答', text: props.row?.answer }])
 
 async function loadTrace() {

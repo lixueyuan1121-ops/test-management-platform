@@ -432,9 +432,9 @@
               <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ STATUS_LABEL[row.status] || row.status || '—' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="判定" width="88" align="center">
+          <el-table-column label="判定" min-width="122" align="center">
             <template #default="{ row }">
-              <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ VERDICT_LABEL[row.verdict] || row.verdict }}</el-tag>
+              <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ evalVerdictLabel(row) }}</el-tag>
               <span v-else class="muted">—</span>
               <el-tooltip v-if="row.review_mark" :content="REVIEW_LABEL[row.review_mark] + (row.review_note ? '：' + row.review_note : '')" placement="top">
                 <span class="review-flag" :class="'rf-' + row.review_mark">{{ REVIEW_ICON[row.review_mark] }}</span>
@@ -521,13 +521,13 @@ import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
 import { CHAT_MODES, THINKING_DEPTHS, MODEL_PLACEHOLDER, buildDialogOptions, fmtDialogOptions,
   parseModelNames, dialogCombinationCount, MAX_DIALOG_COMBINATIONS, MAX_MATRIX_RUNS } from '@/utils/dialogOptions'
 import { groupEvalRuns, compareEvalRuns } from '@/utils/evalRunGroups'
+import { evalVerdictLabel, VERDICT_LABEL } from '@/utils/evalVerdict'
 import { buildEvalReportHtml } from '@/utils/evalReportHtml'
 
 const TS_LABEL = { draft: '草稿', running: '执行中', done: '已完成', stopped: '已停止', archived: '已归档' }
 const TS_TYPE = { draft: 'info', running: 'warning', done: 'success', stopped: 'info', archived: 'info' }
 const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败', cancelled: '已取消' }
 const STATUS_TYPE = { pending: 'info', running: 'warning', done: 'primary', judging: 'warning', judged: 'success', failed: 'danger', cancelled: 'info' }
-const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '判定出错' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
 // 人工复核标记(只读展示;复核操作在「测评结果」页)
 const REVIEW_LABEL = { confirmed: '已认可判定', false_positive: '误报（实际通过）', false_negative: '漏报（实际有问题）' }

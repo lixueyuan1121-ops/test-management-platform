@@ -5,7 +5,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 from app.models.ai_eval import EvalExperiment, EvalRun
-from app.services.eval_snapshot import payload_of
+from app.services.eval_snapshot import JUDGE_RULES_VERSION, payload_of
 from app.services.eval_metrics import outcome_metrics
 
 
@@ -18,7 +18,7 @@ def freeze(db, project_id, batch_id, queries, run_ids, trial_count):
         dataset.append(p)
     digest = hashlib.sha256(json.dumps(dataset, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     runs = db.query(EvalRun).filter(EvalRun.id.in_(run_ids)).order_by(EvalRun.id).all()
-    manifest = {'schema_version': 1, 'rules_version': 'context-v2', 'trial_count': trial_count,
+    manifest = {'schema_version': 1, 'rules_version': JUDGE_RULES_VERSION, 'trial_count': trial_count,
         'dataset_hash': digest, 'dataset': dataset, 'planned_runs': [
             {'run_id': r.id, 'target_engine': r.target_engine, 'runner': r.runner,
              'target_device': r.target_device, 'payload': payload_of(r)} for r in runs]}

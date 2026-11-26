@@ -1485,6 +1485,11 @@ def build_eval_judge_prompt(trace: dict, expected: str, dimension: str | None = 
         if dim_key else ""
     )
     dim_json_line = '\n  "dimension_ok": {"pass": true/false/null, "note": "主考维度达标情况", "evidence_source": "answer/thinking/tool_calls/artifacts", "evidence_quote": "输入中的直接引文"},' if dim_key else ""
+    if dim_key == "multi_turn" and context.get("continuity") == "first":
+        focus_block = "\n本轮是多轮会话首轮，上下文延续不适用，由平台标记。请按本轮提问和期望评价三个核心维度，包括回答、格式、来源和必要的工具使用。\n"
+        dim_json_line = ""
+    elif dim_key == "multi_turn" and context.get("continuity") == "follow_up":
+        focus_block += "对照 previous_turns 的实际问答核验本轮沿用的对象、约束和用户修正。若判不通过，请在 note 指明前序约束，并在 evidence_quote 引用本轮可核对的偏差。\n"
 
     return f"""判定下面这次 AI 对话的质量。按维度各给 pass(true/false/null)与 note(简短理由),并给总体评分 score。
 
@@ -1580,7 +1585,8 @@ def parse_eval_verdict(raw: str) -> dict:
 
     def _norm_dim(v):
         _p = v.get("pass")
-        _pass = _p if isinstance(_p, bool) else (None if _p is None else str(_p).strip().lower() not in ("false", "0", "no", "", "none"))
+        _pass = {"true": True, "1": True, "yes": True, "false": False, "0": False,
+                 "no": False}.get(str(_p).strip().lower())
         result = {"pass": _pass, "note": str(v.get("note") or "").strip()}
         for key in ("evidence_source", "evidence_quote"):
             if key in v:

@@ -2,7 +2,7 @@
 import json
 import unittest
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -15,6 +15,8 @@ from app.core.enums import EvalRunStatus
 from app.api import eval_judge, eval_queue, eval_task
 from app.services import eval_judge as judge, claude_runner
 from app.services.eval_snapshot import context_of
+from app.services.eval_metrics import outcome_metrics
+from app.services.generators import anthropic_http_runner
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -57,6 +59,8 @@ class ReliabilityTests(unittest.TestCase):
         self.row(payload=payload(0), target_engine='workbuddy', answer='其他产品')
         self.row(payload=payload(0, trial_index=2), answer='其他尝试')
         self.row(payload=payload(0), batch_id='old', answer='旧批次')
+        self.row(payload=payload(0), target_device='other', answer='其他设备')
+        self.row(payload=payload(0, configuration_id='other'), answer='其他配置')
         self.row(payload=payload(2), answer='未来回答')
         current = self.row(payload=payload(1))
         context = context_of(self.db, current)
@@ -65,6 +69,120 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn('首轮限制100字', rendered)
         self.assertIn('结合上一轮继续', rendered)
         self.assertNotIn('其他尝试', rendered)
+
+    def test_first_turn_ballots_use_frozen_group_and_preserve_other_unknowns(self):
+        for title, focus, tools, expected in [('新闻首轮', None, None, 'error'),
+                                               ('咖啡首轮', None, True, 'pass'),
+                                               ('股价首轮', True, True, 'pass')]:
+            row = self.row(payload=json.dumps({'conversation_group': title, 'turn_index': 0,
+                'prompt': title, 'dimension': 'multi_turn', 'expected': '根据来源回答'}))
+            ballot = {'thinking_complete': {'pass': True}, 'tools_ok': {'pass': tools},
+                      'artifact_expected': {'pass': True}, 'dimension_ok': {'pass': focus}, 'score': 5}
+            with patch.object(judge.generators, 'get_provider') as provider:
+                provider.return_value.stream_generate.return_value = [{'type': 'result', 'text': json.dumps(ballot)}]
+                result = judge.judge_run(self.db, row)
+            self.assertEqual(result['verdict'], expected, title)
+            self.assertEqual(result['verdict_dims']['dimension_ok']['applicable'], False)
+            self.assertIs(result['verdict_dims']['tools_ok']['pass'], tools)
+            version = self.db.get(EvalJudgment, row.judgment_id)
+            self.assertIn('上下文延续不适用', json.loads(version.input_json)['prompt'])
+            self.assertEqual(json.loads(version.ballots)[0]['raw_output'], json.dumps(ballot))
+
+    def test_missing_history_blocks_judge_and_complete_history_can_fail(self):
+        def snapshot(index):
+            return json.dumps({'conversation_group': 'g', 'turn_index': index, 'dimension': 'multi_turn',
+                               'prompt': 'Q' + str(index), 'expected': '沿用上轮要求'})
+        self.row(payload=snapshot(0))
+        current = self.row(payload=snapshot(2), answer='选错对象')
+        other = self.row(payload=snapshot(1), batch_id='another')
+        with patch.object(judge.generators, 'get_provider') as provider:
+            result = judge.judge_run(self.db, current)
+            self.assertIn('判定输入缺失', result['reason'])
+            self.assertEqual(json.loads(current.verdict_dims)['judge_error'], 'missing_context')
+            self.assertEqual(outcome_metrics([current])['judge_input_errors'], 1)
+            provider.return_value.stream_generate.assert_not_called()
+        other.batch_id = current.batch_id
+        self.db.commit()
+        with patch.object(judge.generators, 'get_provider') as provider:
+            ballot = {k: {'pass': True} for k in claude_runner._JUDGE_DIM_KEYS}
+            ballot['dimension_ok'] = {'pass': False, 'evidence_source': 'answer', 'evidence_quote': '选错对象'}
+            provider.return_value.stream_generate.return_value = [{'type':'result', 'text':json.dumps(ballot)}]
+            self.assertEqual(judge.judge_run(self.db, current)['verdict'], 'fail')
+        self.assertEqual(len(self.db.query(EvalJudgment).filter_by(eval_run_id=current.id).all()), 2)
+
+    def test_empty_judge_text_retries_same_input_once_and_saves_both_attempts(self):
+        for success in (True, False):
+            row = self.row()
+            prompts = []
+            valid = json.dumps({k: {'pass': True} for k in claude_runner._JUDGE_DIM_KEYS})
+            def stream(_, *, prompt_builder, **kwargs):
+                prompts.append(prompt_builder())
+                text = valid if success and len(prompts) == 2 else '  '
+                return [{'type': 'result', 'text': text, 'request_id': 'request-' + str(len(prompts)),
+                         'stop_reason': 'end_turn'}]
+            with patch.object(judge.generators, 'get_provider') as p, patch.object(judge.time, 'sleep'):
+                p.return_value.stream_generate.side_effect = stream
+                result = judge.judge_run(self.db, row)
+            self.assertEqual(len(prompts), 2)
+            self.assertEqual(prompts[0], prompts[1])
+            self.assertEqual(result['verdict'], 'pass' if success else 'error')
+            version = self.db.get(EvalJudgment, row.judgment_id)
+            self.assertEqual(prompts[0], json.loads(version.input_json)['prompt'])
+            ballots = json.loads(version.ballots)
+            self.assertEqual(len(ballots), 1)
+            attempts = ballots[0]['attempts']
+            self.assertEqual([a['request_id'] for a in attempts], ['request-1', 'request-2'])
+            self.assertEqual(attempts[0]['stop_reason'], 'end_turn')
+            self.assertEqual(attempts[0]['text_chars'], 2)
+            if not success:
+                self.assertEqual(row.status, EvalRunStatus.done)
+                self.assertFalse(row.is_abnormal)
+                self.assertIsNone(row.score)
+                self.assertEqual(json.loads(row.verdict_dims)['judge_error'], 'empty_output')
+                self.assertIn('判定服务异常', row.verdict_reason)
+                metrics = outcome_metrics([row])
+                self.assertEqual((metrics['judged'], metrics['failed'], metrics['judge_service_errors']), (0, 0, 1))
+
+    def test_only_frozen_first_turn_can_skip_the_focus(self):
+        core = {k: {'pass': True} for k in claude_runner._JUDGE_DIM_KEYS}
+        for payload, focus in [
+            ({'turn_index': 0, 'dimension': 'multi_turn'}, {'pass': 'N/A', 'applicable': False}),
+            ({'conversation_group': 'g', 'turn_index': 0, 'dimension': 'context'}, {'pass': None}),
+            ({'conversation_group': 'g', 'turn_index': 0}, {'pass': None}),
+        ]:
+            self.query.dimension = 'multi_turn'
+            row = self.row(payload=json.dumps({**payload, 'prompt': 'Q', 'expected': 'A'}))
+            with patch.object(judge.generators, 'get_provider') as p:
+                p.return_value.stream_generate.return_value = [
+                    {'type': 'result', 'text': json.dumps({**core, 'dimension_ok': focus})}]
+                result = judge.judge_run(self.db, row)
+            self.assertEqual(result['verdict'], 'error')
+            self.assertNotIn('applicable', result['verdict_dims']['dimension_ok'])
+
+    def test_http_ballot_diagnostics_preserve_start_text_and_distinguish_refusal(self):
+        valid = json.dumps({k: {'pass': True} for k in claude_runner._JUDGE_DIM_KEYS})
+        for text, stop, expected_error in [(valid, 'end_turn', None), ('', 'refusal', '拒绝'),
+                                           ('bad json', 'end_turn', '无法解析')]:
+            events = [
+                {'type': 'content_block_start', 'content_block': {'type': 'text', 'text': text}},
+                {'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': ''}},
+                {'type': 'message_delta', 'delta': {'stop_reason': stop}},
+                {'type': 'message_stop'},
+            ]
+            response = Mock(status_code=200, headers={'x-request-id': 'fixture-id'})
+            response.iter_content.return_value = [
+                (''.join('data: ' + json.dumps(evt) + '\n\n' for evt in events)).encode()]
+            with patch.object(anthropic_http_runner, 'is_available', return_value=True), \
+                    patch.object(anthropic_http_runner.requests, 'post', return_value=response) as post:
+                dims, err = judge._judge_with_retry(anthropic_http_runner, {}, 'E', None)
+            post.assert_called_once()
+            attempt, = dims['_attempts']
+            self.assertEqual((attempt['stop_reason'], attempt['request_id']), (stop, 'fixture-id'))
+            self.assertEqual((attempt['text_events'], attempt['text_chars']), (1 + bool(text), len(text)))
+            if expected_error:
+                self.assertIn(expected_error, err)
+            else:
+                self.assertIsNone(err)
 
     def test_snapshot_context_survives_edit_and_deletion(self):
         row = self.row()

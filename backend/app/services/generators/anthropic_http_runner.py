@@ -149,7 +149,7 @@ def stream_generate(
     last_beat = t0
     in_thinking_block = False
     completed = False
-    stop_reason = None
+    diagnostics = {"request_id": None, "stop_reason": None, "text_events": 0}
 
     try:
         resp = requests.post(
@@ -159,9 +159,12 @@ def stream_generate(
             stream=True,
             timeout=(15, timeout),
         )
+        request_id = resp.headers.get("request-id") or resp.headers.get("x-request-id")
+        if isinstance(request_id, str):
+            diagnostics["request_id"] = request_id[:256]
         if resp.status_code != 200:
             detail = (resp.text or "")[:300]
-            yield {"type": "error", "msg": f"anthropic_http 端点返回 {resp.status_code}：{detail}"}
+            yield {**diagnostics, "type": "error", "msg": f"anthropic_http 端点返回 {resp.status_code}：{detail}"}
             return
 
         # 自己按字节做增量 UTF-8 解码 + 手动切 SSE 行。
@@ -175,7 +178,7 @@ def stream_generate(
         for chunk in resp.iter_content(chunk_size=8192):
             # 超时检查
             if time.monotonic() - t0 >= timeout:
-                yield {"type": "error", "msg": f"生成超时（>{timeout}s）", "timeout": True}
+                yield {**diagnostics, "type": "error", "msg": f"生成超时（>{timeout}s）", "timeout": True}
                 return
             if not chunk:
                 if time.monotonic() - last_beat > 3:
@@ -205,6 +208,10 @@ def stream_generate(
                 if etype == "content_block_start":
                     cb = evt.get("content_block", {})
                     in_thinking_block = cb.get("type") == "thinking"
+                    if cb.get("type") == "text" and cb.get("text"):
+                        diagnostics["text_events"] += 1
+                        raw += cb["text"]
+                        yield {"type": "delta", "text": cb["text"]}
 
                 elif etype == "content_block_stop":
                     in_thinking_block = False
@@ -215,16 +222,19 @@ def stream_generate(
                         if tc:
                             yield {"type": "thinking", "tokens": tc}
                     else:
-                        text = evt.get("delta", {}).get("text", "")
+                        delta = evt.get("delta") or {}
+                        text = delta.get("text", "")
+                        if delta.get("type") == "text_delta" or text:
+                            diagnostics["text_events"] += 1
                         if text:
                             raw += text
                             yield {"type": "delta", "text": text}
 
                 elif etype == "error":
-                    yield {"type": "error", "msg": "模型流返回错误：" + str(evt.get("error", {}).get("message") or "未知错误")[:300]}
+                    yield {**diagnostics, "type": "error", "msg": "模型流返回错误：" + str(evt.get("error", {}).get("message") or "未知错误")[:300]}
                     return
                 elif etype == "message_delta":
-                    stop_reason = evt.get("delta", {}).get("stop_reason")
+                    diagnostics["stop_reason"] = evt.get("delta", {}).get("stop_reason") or diagnostics["stop_reason"]
                 elif etype == "message_stop":
                     completed = True
                     break
@@ -238,20 +248,21 @@ def stream_generate(
                 break
 
     except UnicodeDecodeError:
-        yield {"type": "error", "msg": "模型返回包含损坏的 UTF-8 数据，未作为成功结果"}
+        yield {**diagnostics, "type": "error", "msg": "模型返回包含损坏的 UTF-8 数据，未作为成功结果"}
         return
     except requests.Timeout:
-        yield {"type": "error", "msg": f"生成超时（>{timeout}s）", "timeout": True}
+        yield {**diagnostics, "type": "error", "msg": f"生成超时（>{timeout}s）", "timeout": True}
         return
     except requests.RequestException as e:
         logger.exception("anthropic_http 请求失败")
-        yield {"type": "error", "msg": f"anthropic_http 请求失败：{e}"}
+        yield {**diagnostics, "type": "error", "msg": f"anthropic_http 请求失败：{e}"}
         return
     finally:
         if resp is not None:
             resp.close()
         _slots.release()
 
+    stop_reason = diagnostics["stop_reason"]
     if not completed or stop_reason in ("max_tokens", "refusal"):
         # 区分"被输出上限截断"与"连接中断",给出可操作指引:截断→调大 ANTHROPIC_HTTP_MAX_TOKENS 或缩小范围;
         # 中断→重试。附带已收到的部分正文(partial),让上层能保存已完成部分、按阶段续跑,而非整批丢弃重来。
@@ -263,10 +274,10 @@ def stream_generate(
             msg = "模型拒绝完成本次生成（可能触发内容策略），请调整输入后重试"
         else:
             msg = "模型未完整完成生成（连接中断或输出被截断），请重试或缩小生成范围"
-        yield {"type": "error", "msg": msg, "truncated": stop_reason == "max_tokens", "partial": raw}
+        yield {**diagnostics, "type": "error", "msg": msg, "truncated": stop_reason == "max_tokens", "partial": raw}
         return
     dur_ms = int((time.monotonic() - t0) * 1000)
-    yield {"type": "result", "text": raw, "duration_ms": dur_ms,
+    yield {**diagnostics, "type": "result", "text": raw, "duration_ms": dur_ms,
            "cost_usd": None, "output_tokens": None}
 
 

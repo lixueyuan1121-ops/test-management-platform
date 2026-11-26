@@ -286,7 +286,7 @@ class ConcurrencyTests(unittest.TestCase):
     def test_three_votes_retry_only_failed_vote_and_preserve_audit(self):
         ids = self.seed(1)
         with self.sf() as db:
-            batch = queue.enqueue_batch(db, 1, run_ids=ids, votes=3)
+            batch = queue.enqueue_batch(db, 1, run_ids=ids, votes=3, provider="claude")
         with patch.object(eval_judge.generators, "get_provider", return_value=Engine()), \
              patch.object(eval_judge, "_judge_once", side_effect=[(verdict(), None),
                  ({"_raw_output": ""}, API_ERROR), (verdict(), None), (verdict(), None)]) as once, \

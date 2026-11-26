@@ -23,6 +23,7 @@ logger = logging.getLogger("test_platform")
 _UPLOADS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "uploads")
 _UPLOADS_DIR = os.path.abspath(_UPLOADS_DIR)
+_EMPTY_OUTPUT = "判定服务异常：评委返回空正文，可重判。"
 
 
 def _load_trace(run: EvalRun) -> dict:
@@ -65,34 +66,57 @@ def _judge_once(engine, trace: dict, expected: str, dimension: str | None) -> tu
     """单次判定:调引擎累积输出并解析。返回 (dims, err);err 非空或 dims 带 error 即本次失败。"""
     raw = ""
     err = None
+    completed = False
+    diagnostic = {"request_id": None, "stop_reason": None, "text_events": 0}
     try:
         for evt in engine.stream_generate(
             expected or "判定",
-            prompt_builder=lambda: claude_runner.build_eval_judge_prompt(trace, expected, dimension),
+            prompt_builder=lambda: trace.get("_judge_prompt") or claude_runner.build_eval_judge_prompt(trace, expected, dimension),
             system_prompt=claude_runner.EVAL_JUDGE_SYSTEM_PROMPT,
             **({"images": trace["_judge_images"]} if trace.get("_judge_images") else {}),
         ):
             et = evt.get("type")
             if et == "delta":
                 raw += evt["text"]
-            elif et == "result":
+                diagnostic["text_events"] += 1
+            if et in ("result", "error"):
+                for key in diagnostic:
+                    if evt.get(key) is not None:
+                        diagnostic[key] = evt[key]
+                if not diagnostic["stop_reason"]:
+                    diagnostic["stop_reason"] = evt.get("finish_reason")
+            if et == "result":
                 if evt.get("is_error"):
                     # CLI 的错误 result.text 是报错文案，不是模型生成的判定正文。
                     err = evt.get("error") or evt.get("text") or "模型服务返回错误"
                     continue
-                if evt.get("text"):
+                completed = True
+                if evt.get("text") and (evt["text"].strip() or not raw.strip()):
                     raw = evt["text"]
+                if evt.get("complete") is False or diagnostic["stop_reason"] in ("length", "max_tokens", "refusal", "content_filter"):
+                    err = f"判定服务未完整返回结果（{diagnostic['stop_reason'] or '连接中断'}），可重判。"
             elif et == "error":
-                err = evt.get("msg")
+                err = _EMPTY_OUTPUT if evt.get("error_code") == "empty_output" else evt.get("msg") or "模型服务返回错误"
     except Exception as e:  # noqa: BLE001
         logger.exception("判定引擎调用异常")
         err = str(e)
-    dims = claude_runner.parse_eval_verdict(raw)
-    if not err and dims.get("error"):
-        err = "判定输出无法解析"
+    dims = {}
     if not err:
+        if raw.strip():
+            dims = claude_runner.parse_eval_verdict(raw)
+            if dims.get("error"):
+                err = "判定输出无法解析"
+        else:
+            err = _EMPTY_OUTPUT if completed else "判定服务未返回完整结果，可重判。"
+    if not err:
+        continuity = (trace.get("evaluation_context") or {}).get("continuity")
+        if dimension == "multi_turn" and continuity == "first":
+            dims["dimension_ok"] = {"pass": None, "applicable": False, "note": "首轮没有前文，上下文延续不适用。"}
+        elif dimension == "multi_turn" and continuity == "follow_up":
+            dims.setdefault("dimension_ok", {"pass": None, "note": "判定未给出上下文延续结论。"})
         _guard_missing_evidence(dims, trace)
     dims["_raw_output"] = raw
+    dims["_attempt"] = {**diagnostic, "text_chars": len(raw), "error": err}
     return dims, err
 
 
@@ -122,24 +146,32 @@ def _guard_missing_evidence(dims: dict, trace: dict) -> None:
 
 
 def _judge_with_retry(engine, trace, expected, dimension):
-    """API Error 按预算重试当前票；其他临时失败仅在无输出时重试。"""
+    """同一票的空正文可重试一次；其他临时错误继续使用配置的重试预算。"""
     from app.core.config import settings
     failures = []
+    attempts = []
+    retried_empty = False
     retries = max(0, min(2, settings.EVAL_JUDGE_TRANSIENT_RETRIES))
-    for attempt in range(retries + 1):
+    while True:
         dims, error = _judge_once(engine, trace, expected, dimension)
         dims = dims or {}
+        attempts.append(dims.pop("_attempt", {"error": error}))
         api_error = error and re.search(r"\bapi\s*error\b", error, re.I)
         transient = error and re.search(r"\b(?:429|502|503|529)\b|rate.?limit|overloaded|限流", error, re.I)
         retryable = api_error or (transient and not dims.get("_raw_output")
             and "已重试多次" not in error and "超时" not in error and "timeout" not in error.lower())
-        if attempt == retries or not retryable:
+        if error == _EMPTY_OUTPUT and not retried_empty:
+            retried_empty = True
+        elif retryable and retries > 0:
+            retries -= 1
+        else:
+            dims["_attempts"] = attempts
             if failures:
                 dims["_transient_failures"] = failures
             return dims, error
         failures.append(error)
-        delay = 5 * (2 ** attempt) + random.uniform(0, 1)
-        logger.warning("判定模型调用失败，%.1fs 后重试当前票 (%d/%d): %s", delay, attempt + 1, retries, error)
+        delay = 5 * (2 ** (len(failures) - 1)) + random.uniform(0, 1)
+        logger.warning("判定模型调用失败，%.1fs 后重试当前票（第 %d 次调用）: %s", delay, len(attempts) + 1, error)
         time.sleep(delay)
 
 
@@ -148,10 +180,11 @@ def _verdict_of(dims: dict) -> str:
     任一明确 false → fail;核心三维及已提供主考维全 true → pass;有 None 未判 → error。"""
     passes = [dims[k]["pass"] for k in ("thinking_complete", "tools_ok", "artifact_expected")]
     opt = dims.get("dimension_ok")
-    opt_pass = opt.get("pass") if isinstance(opt, dict) else None
-    if any(p is False for p in passes) or opt_pass is False:
+    if isinstance(opt, dict) and opt.get("applicable") is not False:
+        passes.append(opt.get("pass"))
+    if any(p is False for p in passes):
         return EvalVerdict.failed.value
-    if all(p is True for p in passes) and (not isinstance(opt, dict) or opt_pass is True):
+    if all(p is True for p in passes):
         return EvalVerdict.passed.value
     return EvalVerdict.error.value
 
@@ -214,11 +247,12 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     (平票/全 error → error 供复核,不猜);score 取有效均值。代价是 N 倍引擎调用时长,默认 1。
     """
     votes = max(1, min(5, int(votes or 1)))
-    from app.services.eval_snapshot import rubric_of, context_of
+    from app.services.eval_snapshot import JUDGE_RULES_VERSION, rubric_of, context_of
     expected, dimension = rubric_of(db, run)
     trace = _load_trace(run)
     trace.pop('_judge_images', None)  # visual input must come from verified uploads, never trace-supplied base64
     trace["evaluation_context"] = context_of(db, run)
+    missing_history = trace["evaluation_context"].get("continuity") == "missing_history"
     from app.services.eval_artifacts import verify_run
     verification = verify_run(db, run) if isinstance(run, EvalRun) else None
     if verification:
@@ -230,7 +264,7 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     if isinstance(run, EvalRun):
         from app.services.eval_artifacts import image_evidence
         images, visual = image_evidence(db, run)
-        if visual:
+        if visual and not missing_history:
             engine = generators.get_provider(provider_id)
             can_see = provider_id == 'claude' or getattr(engine, 'supports_images', lambda: False)()
             if images and can_see:
@@ -247,9 +281,10 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     elif provider_id == 'anthropic_http':
         from app.services.generators.anthropic_http_runner import _model
         requested_model = _model()
-    judgment_store.set_input(db, run, claude_runner.build_eval_judge_prompt(trace, expected, dimension),
+    trace["_judge_prompt"] = claude_runner.build_eval_judge_prompt(trace, expected, dimension)
+    judgment_store.set_input(db, run, trace["_judge_prompt"],
         claude_runner.EVAL_JUDGE_SYSTEM_PROMPT, {"provider": provider_id, "votes": votes,
-        "trace_url": getattr(run, "trace", None), "rules_version": "context-v3-images",
+        "trace_url": getattr(run, "trace", None), "rules_version": JUDGE_RULES_VERSION,
         "requested_model": requested_model or None, "observed_model": None,
         "execution_config": trace.get("execution_config"), "runtime": trace.get("runtime"),
         "input_files": trace.get("input_files")})
@@ -259,17 +294,19 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         trace.get("tool_calls") or trace.get("artifacts")
         or str(trace.get("answer") or "").strip() or str(trace.get("thinking") or "").strip()
     )
-    if not has_material:
+    if missing_history or not has_material:
         run.verdict = EvalVerdict.error.value
-        run.verdict_reason = "证据不足：无可用回答、思考、工具或产物记录；不能据此判任务失败，请补齐证据后重判。"
+        run.verdict_reason = ("判定输入缺失：无法取得本次多轮会话完整且唯一的前序问答，请核对分组、轮次和执行记录后重判。"
+                              if missing_history else "证据不足：无可用回答、思考、工具或产物记录；不能据此判任务失败，请补齐证据后重判。")
         run.score = None
-        run.verdict_dims = None
+        details = {"judge_error": "missing_context" if missing_history else "insufficient_evidence"}
         if verification:
-            run.verdict_dims = json.dumps({"artifact_verification": verification}, ensure_ascii=False)
+            details["artifact_verification"] = verification
+        run.verdict_dims = json.dumps(details, ensure_ascii=False)
         run.is_abnormal = False
         run.status = EvalRunStatus.done
         run.judged_by = provider_id
-        judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
+        judgment_store.complete(db, run, [])
         return {"verdict": "error", "reason": run.verdict_reason}
 
     engine = engine or generators.get_provider(provider_id)
@@ -279,11 +316,11 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         run.verdict = EvalVerdict.error.value
         run.verdict_reason = f"判定引擎「{provider_id}」不可用"
         run.score = None
-        run.verdict_dims = None
+        run.verdict_dims = json.dumps({"judge_error": "provider_error"})
         run.is_abnormal = False
         run.status = EvalRunStatus.done
         run.judged_by = provider_id
-        judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
+        judgment_store.complete(db, run, [])
         return {"verdict": "error", "reason": run.verdict_reason}
 
     run.status = EvalRunStatus.judging
@@ -308,8 +345,9 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
             dims_i["artifact_verification"] = verification
         raw_i = dims_i.pop("_raw_output", None) if isinstance(dims_i, dict) else None
         transient_failures = dims_i.pop("_transient_failures", [])
+        attempts = dims_i.pop("_attempts", [])
         audit_ballots.append({"dims": copy.deepcopy(dims_i), "error": err_i, "raw_output": raw_i,
-                              "transient_failures": transient_failures})
+                              "transient_failures": transient_failures, "attempts": attempts})
         if err_i:
             ballots.append((EvalVerdict.error.value, None))
             fail_reasons.append(err_i)
@@ -323,10 +361,11 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
         run.verdict = EvalVerdict.error.value
         run.verdict_reason = (fail_reasons[0] if fail_reasons else "判定失败")[:2000]
         run.score = None
-        run.verdict_dims = None
+        code = "empty_output" if all(e == _EMPTY_OUTPUT for e in fail_reasons) else "provider_error"
+        run.verdict_dims = json.dumps({"judge_error": code})
         run.is_abnormal = False
         run.judged_by = provider_id
-        judgment_store.complete(db, run, audit_ballots if "audit_ballots" in locals() else [])
+        judgment_store.complete(db, run, audit_ballots)
         return {"verdict": "error", "reason": run.verdict_reason}
 
     n_pass = sum(1 for v, _ in valid if v == EvalVerdict.passed.value)
@@ -347,6 +386,8 @@ def _judge_run(db: Session, run: EvalRun, provider: str | None = None, votes: in
     if verdict == EvalVerdict.error.value:
         score = None
         dims["score"] = None
+        if len(valid) == len(ballots) and not n_pass and not n_fail:
+            dims["judge_error"] = "insufficient_evidence"
     reason = dims.get("summary") or ""
     if verdict == EvalVerdict.error.value:
         reason = "无法定论（证据不足或有效票未过半）：" + reason

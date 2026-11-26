@@ -16,11 +16,13 @@ def outcome_metrics(rows):
                         str(r.reason or "").startswith("[CONFIG_ERROR]") for r in rows)
     evidence_missing = sum(r.verdict == "error" and any(word in str(getattr(r, "verdict_reason", "") or "")
         for word in ("证据不足", "无法定论", "未采集", "未取得")) for r in rows)
+    input_missing = sum(r.verdict == "error" and str(getattr(r, "verdict_reason", "") or "").startswith("判定输入缺失") for r in rows)
     return {"total": total, "judged": judged, "passed": passed, "failed": failed,
         "pass_rate": rate(passed, judged), "coverage_rate": rate(judged, total),
         "confirmed_success_rate": rate(passed, total), "completion_rate": rate(completed, total),
         "completed": completed, "judge_errors": verdicts["error"],
-        "insufficient_evidence": evidence_missing, "judge_service_errors": verdicts["error"] - evidence_missing,
+        "insufficient_evidence": evidence_missing, "judge_input_errors": input_missing,
+        "judge_service_errors": verdicts["error"] - evidence_missing - input_missing,
         "config_errors": config_errors, "execution_errors": states["failed"] - config_errors,
         "cancelled": states["cancelled"], "pending": states["pending"], "running": states["running"],
         "missing": states["missing"],

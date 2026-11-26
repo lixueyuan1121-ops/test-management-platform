@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func
 
 from app.models.ai_eval import EvalJudgment, EvalJudgmentReview, EvalRun, EvalRunHistory
+from app.services.eval_snapshot import JUDGE_RULES_VERSION
 
 RESULT_FIELDS = ("verdict", "score", "verdict_dims", "verdict_reason", "judged_by", "is_abnormal")
 
@@ -33,7 +34,8 @@ def attempt_of(db, run):
 
 def begin(db, run, provider):
     ensure_legacy(db, run)
-    row = EvalJudgment(eval_run_id=run.id, attempt=attempt_of(db, run), provider=provider)
+    row = EvalJudgment(eval_run_id=run.id, attempt=attempt_of(db, run), provider=provider,
+                       rules_version=JUDGE_RULES_VERSION)
     db.add(row)
     db.flush()
     run.judgment_id = row.id

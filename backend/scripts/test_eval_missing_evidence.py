@@ -50,7 +50,7 @@ class MissingEvidenceTests(unittest.TestCase):
         provider.assert_not_called()
         self.assertEqual(result["verdict"], "error")
         self.assertIsNone(run.score)
-        self.assertIsNone(run.verdict_dims)
+        self.assertEqual(json.loads(run.verdict_dims), {"judge_error": "insufficient_evidence"})
         self.assertFalse(run.is_abnormal)
 
     def test_missing_evidence_failure_is_unknown(self):

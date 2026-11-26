@@ -170,7 +170,7 @@
                   <el-table-column prop="run_id" label="执行ID" width="80" />
                   <el-table-column label="提问" min-width="200"><template #default="{ row: turn }"><button class="case-link" @click="openInspector(turn)">{{ turn.payload?.prompt || queryTitle(turn) }}</button></template></el-table-column>
                   <el-table-column label="回答摘要" min-width="220"><template #default="{ row: turn }"><div class="text-preview">{{ turn.answer || turn.reason || '暂无回答' }}</div></template></el-table-column>
-                  <el-table-column label="判定" min-width="160"><template #default="{ row: turn }"><el-tag :type="VERDICT_TYPE[turn.verdict] || 'info'" size="small">{{ VERDICT_LABEL[turn.verdict] || STATUS_LABEL[turn.status] }}</el-tag><div class="text-preview">{{ turn.verdict_reason || '—' }}</div></template></el-table-column>
+                  <el-table-column label="判定" min-width="160"><template #default="{ row: turn }"><el-tag :type="VERDICT_TYPE[turn.verdict] || 'info'" size="small">{{ evalVerdictLabel(turn) || STATUS_LABEL[turn.status] }}</el-tag><div class="text-preview">{{ turn.verdict_reason || '—' }}</div></template></el-table-column>
                   <el-table-column label="Multica" width="90"><template #default="{ row: turn }">{{ turn.pushed_multica ? '已推送' : '未推送' }}</template></el-table-column>
                   <el-table-column label="详情" width="66" fixed="right"><template #default="{ row: turn }"><el-tooltip content="查看结果详情"><el-button text :icon="Document" :aria-label="`查看执行 ${turn.run_id} 详情`" @click="openInspector(turn)" /></el-tooltip></template></el-table-column>
                 </el-table>
@@ -178,8 +178,8 @@
               <div v-else-if="row.status === 'failed'" class="no-dims">
                 <el-text type="danger">执行失败：{{ row.reason || '（执行机未回写失败原因）' }}</el-text>
               </div>
-              <div v-else-if="!row.verdict_dims" class="no-dims">
-                <el-text type="info">尚未判定或无三维结果。点右侧「判定」触发。</el-text>
+              <div v-else-if="!rowDims(row).length" class="no-dims">
+                <el-text type="info">{{ row.verdict_reason || '尚未判定。点右侧「判定」触发。' }}</el-text>
               </div>
               <template v-else>
                 <div class="dims">
@@ -189,6 +189,7 @@
                       <el-icon v-else-if="dimPass(row, d.k) === false" class="ng"><CircleClose /></el-icon>
                       <el-icon v-else class="unk"><QuestionFilled /></el-icon>
                       <span class="dim-label">{{ d.label }}</span>
+                      <span v-if="dimPass(row, d.k) == null">{{ row.verdict_dims[d.k].applicable === false ? '不适用' : '证据不足' }}</span>
                     </div>
                     <div class="dim-note" v-html="renderMd(dimNote(row, d.k))"></div>
                   </div>
@@ -255,9 +256,9 @@
             <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ STATUS_LABEL[row.status] || row.status || '—' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="判定" width="96" align="center">
+        <el-table-column label="判定" min-width="122" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ VERDICT_LABEL[row.verdict] || row.verdict }}</el-tag>
+            <el-tag v-if="row.verdict" :type="VERDICT_TYPE[row.verdict] || 'info'" size="small">{{ evalVerdictLabel(row) }}</el-tag>
             <span v-else class="dim-muted">—</span>
             <el-tooltip v-if="row.review_mark" :content="REVIEW_LABEL[row.review_mark] + (row.review_note ? '：' + row.review_note : '')" placement="top">
               <span class="review-flag" :class="'rf-' + row.review_mark">{{ REVIEW_ICON[row.review_mark] }}</span>
@@ -360,7 +361,7 @@
             <div class="ab-hd">
               <span class="ab-tag" :class="side === 'a' ? 'ab-tag-a' : 'ab-tag-b'">{{ side === 'a' ? 'A' : 'B' }}</span>
               <span class="ab-opts">{{ abOpts(abPair[side]) }}</span>
-              <span class="ab-verdict">{{ abPair[side]?.verdict ? VERDICT_LABEL[abPair[side].verdict] : '未判定' }}</span>
+              <span class="ab-verdict">{{ abPair[side]?.verdict ? evalVerdictLabel(abPair[side]) : '未判定' }}</span>
             </div>
             <div class="ab-body">
               <div class="ab-sec">回答</div>
@@ -388,7 +389,7 @@
             <span class="ab-tag ab-tag-a">{{ ENGINE_LABEL[r.target_engine] || r.target_engine }}</span>
             <span class="ab-opts">{{ engineModel(r) }}</span>
             <span v-if="r.payload?.configuration_label" class="ab-opts">{{ r.payload.configuration_label }}</span>
-            <span class="ab-verdict">{{ r.verdict ? VERDICT_LABEL[r.verdict] : '未判定' }}</span>
+            <span class="ab-verdict">{{ r.verdict ? evalVerdictLabel(r) : '未判定' }}</span>
           </div>
           <div class="ab-body">
             <div class="ab-sec">回答</div>
@@ -416,6 +417,7 @@ import { withChartTheme, themeColor, useChartTheme } from '@/utils/theme'
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DataAnalysis, Upload, Promotion, CircleCheck, CircleClose, QuestionFilled, Search, Document, Filter } from '@element-plus/icons-vue'
+import { evalVerdictLabel, VERDICT_LABEL } from '@/utils/evalVerdict'
 import EvalRunInspector from '@/components/EvalRunInspector.vue'
 import { listEvalRuns, judgeEvalRun, judgeEvalBatch, notifyEvalJudgeBatchDone, pollAiJobs, exportEvalFeishu, pushEvalMultica, evalMulticaPending, evalDimensionStats, listEvalDimensions, evalBatchTrend, reviewEvalRun, evalJudgeQuality, retryEvalRunAny, retryFailedEvalRuns } from '@/api'
 import { useAppStore } from '@/store/app'
@@ -439,7 +441,7 @@ const DIMS = [
 ]
 // 行内展示的判定维度：核心三维 + 该行有 dimension_ok 时补一格「主考维度」
 const rowDims = (row) => {
-  const base = [...DIMS]
+  const base = DIMS.filter(d => row.verdict_dims?.[d.k])
   if (row.verdict_dims?.dimension_ok) {
     base.push({ k: 'dimension_ok', label: `主考维度${row.dimension ? '·' + dimLabel(row.dimension) : ''}` })
   }
@@ -463,7 +465,6 @@ const DIM_TAG_TYPE = {
 const STATUS_LABEL = { pending: '待执行', running: '执行中', done: '待判定', judging: '判定中', judged: '已判定', failed: '执行失败', cancelled: '已停止' }
 const STATUS_TYPE = { pending: 'info', running: 'primary', done: 'primary', judging: 'primary', judged: 'info', failed: 'danger', cancelled: 'info' }
 // 总判定（EvalVerdict 值 pass/fail/error）：pass 绿 / fail 红 / error 灰
-const VERDICT_LABEL = { pass: '通过', fail: '不通过', error: '待复核' }
 const VERDICT_TYPE = { pass: 'success', fail: 'danger', error: 'info' }
 // 人工复核标记(失败收敛)
 const REVIEW_LABEL = { confirmed: '已认可判定', false_positive: '误报（实际通过）', false_negative: '漏报（实际有问题）' }
@@ -791,7 +792,8 @@ function groupTurnSummary(row) {
   const parts = []
   const pass = n((t) => t.verdict === 'pass'); if (pass) parts.push(`${pass} 通过`)
   const fail = n((t) => t.verdict === 'fail'); if (fail) parts.push(`${fail} 不通过`)
-  const err = n((t) => t.verdict === 'error'); if (err) parts.push(`${err} 判定出错`)
+  const errors = turns.filter(turn => turn.verdict === 'error').map(evalVerdictLabel)
+  for (const label of new Set(errors)) parts.push(`${errors.filter(value => value === label).length} ${label}`)
   const failedExec = n((t) => t.status === 'failed'); if (failedExec) parts.push(`${failedExec} 执行失败`)
   const stopped = n((t) => t.status === 'cancelled'); if (stopped) parts.push(`${stopped} 已停止`)
   const waiting = n((t) => !t.verdict && !['failed', 'cancelled'].includes(t.status)); if (waiting) parts.push(`${waiting} 待判定/待执行`)

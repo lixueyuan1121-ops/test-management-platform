@@ -9,7 +9,7 @@ from app.core.enums import EvalDeviceKind, EvalRunStatus, EvalTaskStatus
 from app.models import EvalQuery, EvalRun, Project
 from app.models.ai_eval import EvalTask, EvalExperiment
 from app.services.eval_engines import DEFAULT_ENGINE, EVAL_ENGINES, validate_dialog_options
-from app.services.eval_snapshot import payload_of
+from app.services.eval_snapshot import JUDGE_RULES_VERSION, payload_of
 from app.services.multica import push_time
 
 
@@ -135,7 +135,7 @@ def create_retest(db, body, user_id):
     # The manifest must also use frozen inputs, not the current (possibly edited/deleted) query library.
     dataset = [payload_of(r) for r in created]
     digest = hashlib.sha256(json.dumps(dataset, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    manifest = {'schema_version': 1, 'rules_version': 'context-v2', 'trial_count': max(p.get('trial_count') or 1 for p in dataset),
+    manifest = {'schema_version': 1, 'rules_version': JUDGE_RULES_VERSION, 'trial_count': max(p.get('trial_count') or 1 for p in dataset),
         'dataset_hash': digest, 'dataset': dataset, 'planned_runs': [
             {'run_id': r.id, 'target_engine': r.target_engine, 'runner': r.runner,
              'target_device': r.target_device, 'payload': payload_of(r)} for r in created]}

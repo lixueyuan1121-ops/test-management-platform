@@ -90,7 +90,9 @@ class MessageStream:
             if not self.started or self.reason not in ('end_turn', 'stop_sequence', 'max_tokens'):
                 raise ResponseError('模型响应未正常完成，已保留收到的内容')
             if not self.raw.strip():
-                raise ResponseError('模型没有返回正文')
+                self.done = True
+                return {'type': 'error', 'msg': '模型没有返回正文', 'stop_reason': self.reason,
+                        'error_code': 'truncated' if self.reason == 'max_tokens' else 'empty_output'}
             self.done = True
             return {'type': 'result', 'text': self.raw, 'complete': True,
                     'finish_reason': 'length' if self.reason == 'max_tokens' else 'stop',
@@ -133,6 +135,8 @@ async def _receive(body, publish, timeout):
                             raise ResponseError('模型流式响应格式错误')
                         output = state.feed(event)
                         if output:
+                            if output['type'] in ('result', 'error'):
+                                output.update(request_id=request_id, stop_reason=state.reason)
                             if first and output['type'] == 'delta':
                                 first = False
                                 trace.emit('model_first_text', first_output_ms=int((time.monotonic()-started)*1000))

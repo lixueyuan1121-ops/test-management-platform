@@ -67,6 +67,15 @@ const assert = require('node:assert/strict');
     await page.getByText('独立票据（1 票）',{exact:true}).click();
     await page.waitForTimeout(350);
     await page.screenshot({path:'/tmp/eval-reliability-history.png',fullPage:true});
+    for (const [code, label] of [['empty_output', '判定服务异常'], ['missing_context', '判定输入缺失']]) {
+      Object.assign(run, { status: 'done', verdict: 'error', verdict_dims: { judge_error: code } });
+      await page.reload();
+      await page.locator('.el-table').getByText(label, { exact: true }).waitFor();
+      await page.locator('.case-link').first().click();
+      const inspector = page.locator('.run-inspector');
+      await inspector.getByText(label, { exact: true }).waitFor();
+      assert.equal(await inspector.getByRole('heading', { name: '分项判定' }).count(), 0);
+    }
     assert.deepEqual(errors,[]);
     console.log('PASS: trial count dispatch, coverage, task-balanced stability, artifact rules, versioned judgments, raw ballots');
   } finally { await browser.close(); }
