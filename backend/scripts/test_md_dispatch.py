@@ -5,6 +5,7 @@ import tempfile
 import subprocess
 import threading
 import unittest
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from email import policy
 from email.parser import BytesParser
@@ -78,7 +79,12 @@ class MdDispatchTests(unittest.TestCase):
         return response.json()['data']
 
     def test_multi_runner_validation_and_queue_isolation(self):
-        rows = self.post('/batch', **self.document, runners=[' a ', 'b', 'a'])
+        created = datetime(2026, 11, 27, 2, 32, 52, tzinfo=timezone.utc)
+        with patch.object(md_runs, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = created
+            rows = self.post('/batch', **self.document, runners=[' a ', 'b', 'a'])
+            clock.now.assert_called_once_with(timezone.utc)
+        self.assertEqual([row['created_at'] for row in rows], ['2026-11-27T02:32:52'] * 2)
         self.assertEqual([r['runner'] for r in rows], ['a', 'b'])
         for invalid in (dict(runners=[]), dict(runners=['  ']), dict(runners=['x'], env_group='custom')):
             self.assertEqual(self.client.post('/api/md-runs/batch', json={**self.document, **invalid}).status_code, 422)

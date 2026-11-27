@@ -18,7 +18,7 @@ import time
 import uuid
 import re
 from urllib.parse import quote
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, File, Form, UploadFile, Response
 from sqlalchemy.orm import Session
@@ -311,13 +311,14 @@ def queue_report(
 def _dispatch(body: MdRunDocument, runners: list[str], db: Session, user: User) -> list[dict]:
     if body.project_id is not None:
         assert_project_role(db, user, body.project_id, _WRITE_ROLES)
+    created_at = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = [
         MdRun(project_id=body.project_id, task_id=body.task_id,
               req_no=(body.req_no or "").strip() or None, title=body.title.strip(),
               runner=runner, env_group=body.env_group.strip(),
               client_version=(body.client_version or "").strip() or None,
               source=body.source.strip() or "page", content=body.content,
-              status="pending", enqueued_by=user.id)
+              status="pending", enqueued_by=user.id, created_at=created_at)
         for runner in dict.fromkeys(runners)
     ]
     db.add_all(rows)

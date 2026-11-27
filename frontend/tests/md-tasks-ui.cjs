@@ -4,11 +4,12 @@ const assert = require('node:assert/strict');
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, timezoneId: process.env.UI_TIMEZONE || 'America/Los_Angeles' });
     const errors = [], payloads = [];
     const reports = [];
     const logFile = { id: 2, name: '客户端.log', kind: 'log', size: 100, case: 'C-002' };
     const run = { evidence: [logFile], evidence_summary: { expected: 1, notes: [] }, id: 5, project_id: 1, title: '冒烟用例', status: 'failed', verdict: 'fail',
+      created_at: '2026-11-26T02:00:00', started_at: '2026-11-26T15:59:00', finished_at: '2026-11-26T16:00:01.123456Z',
       findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' },
         { title: '保存失败', external_ref: 'geelib#731', evidence_target: { sub_id: 7087, matter_id: 731 },
           evidence: [{ ...logFile, state: 'failed', message: '连接失败' }],
@@ -21,7 +22,10 @@ const assert = require('node:assert/strict');
       if (pathname.endsWith('/auth/me')) data = { user: { id: 1, name: '测试' }, is_platform_admin: true, memberships: [] };
       if (pathname.endsWith('/projects')) data = [{ id: 1, name: 'QA' }];
       if (pathname.endsWith('/devices')) data = [{ id: 1, name: '甲', runner_id: 'mac' }, { id: 2, name: '乙', runner_id: 'win' }];
-      if (pathname.endsWith('/md-runs')) data = [run];
+      if (pathname.endsWith('/md-runs')) data = [run,
+        { id: 6, title: '运行中的提测', status: 'running', started_at: '2026-11-27T02:32:52', created_at: '2026-11-26T18:00:00' },
+        { id: 7, title: '待执行的提测', status: 'pending', created_at: '2026-11-27T10:01:02+08:00' },
+        { id: 8, title: '缺少时间的提测', status: 'pending' }];
       if (pathname.endsWith('/md-runs/5')) data = run;
       if (pathname.endsWith('/md-runs/5/evidence/2')) {
         assert.match(req.headers().authorization, /^Bearer /);
@@ -51,6 +55,15 @@ const assert = require('node:assert/strict');
     await page.goto((process.env.UI_BASE_URL || 'http://127.0.0.1:5173') + '/md-tasks');
     const icon = page.getByRole('menuitem', { name: '提测执行', exact: true }).locator('svg');
     await icon.waitFor();
+    const taskRow = title => page.getByRole('row').filter({ has: page.getByRole('cell', { name: title, exact: true }) });
+    for (const [title, time] of [['运行中的提测', '2026/11/27 10:32:52'], ['冒烟用例', '2026/11/27 00:00:01'],
+      ['待执行的提测', '2026/11/27 10:01:02']]) {
+      await taskRow(title).getByRole('cell', { name: time, exact: true }).waitFor({ timeout: 4000 });
+    }
+    const timeColumn = await page.getByRole('columnheader').allTextContents();
+    const timeIndex = timeColumn.findIndex(text => text.includes('北京时间'));
+    assert.notEqual(timeIndex, -1);
+    assert.equal((await taskRow('缺少时间的提测').getByRole('cell').nth(timeIndex).innerText()).trim(), '—');
     await page.getByRole('button', { name: '下发提测文档' }).click();
     const dialog = page.getByRole('dialog');
     const formItem = label => dialog.locator('.el-form-item').filter({ has: page.locator('label').getByText(label, { exact: true }) });
@@ -70,7 +83,7 @@ const assert = require('node:assert/strict');
     assert.equal(payloads.length, 1);
     assert.deepEqual(payloads[0].runners, ['mac', 'win']);
     assert.equal(payloads[0].env_group, 'pre');
-    await page.getByRole('button', { name: '查看', exact: true }).click();
+    await taskRow('冒烟用例').getByRole('button', { name: '查看', exact: true }).click();
     await page.getByText('极库云提 Bug 技能 · P1').waitFor();
     assert.equal(await page.getByRole('link', { name: 'geelib#731' }).getAttribute('href'),
       'https://geelib.qihoo.net/geelib/project/matterType/21732?subId=7087&matterId=731&typeId=21732');

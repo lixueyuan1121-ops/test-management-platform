@@ -27,8 +27,8 @@
         <el-table-column label="缺陷" width="60">
           <template #default="{ row }">{{ row.verdict ? row.findings.length : '—' }}</template>
         </el-table-column>
-        <el-table-column label="时间" width="160">
-          <template #default="{ row }">{{ fmtTime(row.finished_at || row.started_at || row.created_at) }}</template>
+        <el-table-column label="北京时间" width="160">
+          <template #default="{ row }">{{ formatBeijingTime(row.finished_at || row.started_at || row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="130">
           <template #default="{ row }">
@@ -192,7 +192,16 @@ const receipt = ref(null)
 const selectedMatter = ref(null)
 
 const statusType = (s) => ({ pending: 'info', running: 'warning', passed: 'success', failed: 'danger', blocked: 'warning', canceled: 'info' }[s] || 'info')
-function fmtTime(iso) { if (!iso) return '—'; const d = new Date(iso); return isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false }) }
+const beijingTime = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai', hourCycle: 'h23',
+  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+})
+function formatBeijingTime(iso) {
+  if (!iso) return '—'
+  // 历史提测记录的 ISO 字符串省略了 UTC 时区标记。
+  const timestamp = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : iso + 'Z')
+  return Number.isNaN(timestamp) ? '—' : beijingTime.format(timestamp)
+}
 
 function remember() { if (pid.value) setLastProjectId(pid.value) }
 
