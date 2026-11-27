@@ -13,7 +13,8 @@ const assert = require('node:assert/strict');
       findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' },
         { title: '保存失败', external_ref: 'geelib#731', evidence_target: { sub_id: 7087, matter_id: 731 },
           evidence: [{ ...logFile, state: 'failed', message: '连接失败' }],
-          report_receipt: { skill: 'jikuyun-bug-report', priority: 'P1', sub_id: 7087, type_id: 21732 } }] };
+          report_receipt: { skill: 'jikuyun-bug-report', priority: 'P1', sub_id: 7087, type_id: 21732 } },
+        { title: '刷新失败', severity: 'minor' }] };
     page.on('pageerror', err => errors.push(err.message));
     await page.addInitScript(() => localStorage.setItem('tp_token', 'local-ui-fixture'));
     await page.route('**/api/**', async route => {
@@ -34,6 +35,10 @@ const assert = require('node:assert/strict');
       if (pathname.endsWith('/md-runs/5/report-bugs')) {
         const payload = req.postDataJSON();
         reports.push(payload);
+        if (!payload.receipt_action) {
+          run.findings[2].external_ref = 'geelib#890';
+          return route.fulfill({ status: 503, json: { code: 503, msg: '平台数据库连接中断', data: null } });
+        }
         let result = { index: 0, ok: false, status: 'review', review_key: 'review-5',
           matches: [{ id: 729, status: '新建', created_at: '2026-11-25 18:56:02', description: '已记录按钮无响应' }] };
         if (payload.receipt_action === 'link') {
@@ -97,8 +102,13 @@ const assert = require('node:assert/strict');
     await review.getByText('已记录按钮无响应').waitFor();
     await review.getByRole('button', { name: '关联所选工单' }).click();
     await page.getByText('geelib#729', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '上报未报的到极库云' }).click();
+    await page.getByRole('dialog', { name: '确认上报' }).getByRole('button', { name: /确定|确认|OK/i }).click();
+    await page.getByText('geelib#890', { exact: true }).waitFor();
+    await page.getByText('上报中断，已刷新工单状态。回执待确认的缺陷请核对回执。', { exact: true }).waitFor();
+    assert.equal(await page.getByText(/页面异常/).count(), 0);
     assert.deepEqual(reports, [{ indexes: [1], receipt_action: 'attachments' }, { indexes: [0], receipt_action: 'check' },
-      { indexes: [0], receipt_action: 'link', review_key: 'review-5', matter_id: 729 }]);
+      { indexes: [0], receipt_action: 'link', review_key: 'review-5', matter_id: 729 }, {}]);
     assert.deepEqual(errors, []);
     console.log('PASS dispatch, receipt lookup and explicit link to existing defect');
   } finally { await browser.close(); }

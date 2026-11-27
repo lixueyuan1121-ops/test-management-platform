@@ -9,11 +9,13 @@ import requests
 from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import undefer
 
 from app.models.md_run import MdRunEvidence, MdEvidenceDelivery
 from app.services import md_bug_skill, md_attachment_skill
 from app.services.geelib import GeelibError
 from app.services.md_result import linked_cases, case_keys
+from app.services.md_report_db import report_db_step
 
 MAX_FILE = 3 * 1024 * 1024
 MAX_FILES = 32
@@ -95,29 +97,63 @@ def _reconcile(sub_id, matter_id, name, token):
     raise ValueError('attachment list unavailable')
 
 
-def deliver(db, row, sub_id, matter_id, token):
-    key = (row.id, sub_id, matter_id)
-    claim = uuid.uuid4().hex
-    now = int(time.time())
-    entry = db.get(MdEvidenceDelivery, key)
-    prior = entry.state if entry else None
-    previous_start = entry.started if entry else now
+@report_db_step
+def _delivery_entry(db, key):
+    return db.get(MdEvidenceDelivery, key)
+
+
+@report_db_step
+def _claim_delivery(db, key, entry, claim, now):
+    evidence_id, sub_id, matter_id = key
     if entry:
-        if prior == 'sent' or (prior == 'sending' and now - entry.started < 120):
-            return prior
-        changed = db.query(MdEvidenceDelivery).filter_by(evidence_id=row.id, sub_id=sub_id, matter_id=matter_id,
-                    attempt=entry.attempt, state=prior).update({'attempt': claim, 'started': now, 'state': 'sending'})
+        changed = db.query(MdEvidenceDelivery).filter_by(evidence_id=evidence_id, sub_id=sub_id, matter_id=matter_id,
+                    attempt=entry.attempt, state=entry.state).update({'attempt': claim, 'started': now, 'state': 'sending'})
         db.commit()
-        if not changed:
-            return 'sending'
+        if changed:
+            return True
     else:
-        db.add(MdEvidenceDelivery(evidence_id=row.id, sub_id=sub_id, matter_id=matter_id, state='sending',
+        db.add(MdEvidenceDelivery(evidence_id=evidence_id, sub_id=sub_id, matter_id=matter_id, state='sending',
                                   attempt=claim, started=now))
         try:
             db.commit()
+            return True
         except IntegrityError:
             db.rollback()
-            return 'sending'
+    current = db.get(MdEvidenceDelivery, key)
+    return bool(current and current.attempt == claim and current.state == 'sending')
+
+
+@report_db_step
+def _file_for_upload(db, evidence_id):
+    row = db.get(MdRunEvidence, evidence_id, options=[undefer(MdRunEvidence.content)])
+    if row is None:
+        raise HTTPException(404, '附件不存在')
+    return row
+
+
+@report_db_step
+def _finish_delivery(db, key, claim, values):
+    evidence_id, sub_id, matter_id = key
+    changed = db.query(MdEvidenceDelivery).filter_by(evidence_id=evidence_id, sub_id=sub_id, matter_id=matter_id,
+            attempt=claim).update(values)
+    db.commit()
+    if changed:
+        return values['state']
+    current = db.get(MdEvidenceDelivery, key)
+    return current.state if current else 'uncertain'
+
+
+def deliver(bind, row, sub_id, matter_id, token):
+    key = (row.id, sub_id, matter_id)
+    claim = uuid.uuid4().hex
+    now = int(time.time())
+    entry = _delivery_entry(bind, key)
+    prior = entry.state if entry else None
+    previous_start = entry.started if entry else now
+    if prior == 'sent' or (prior == 'sending' and now - previous_start < 120):
+        return prior
+    if not _claim_delivery(bind, key, entry, claim, now):
+        return 'sending'
     name = f'QALab-{row.run_id}-{row.id}-{row.fingerprint[:10]}-{row.name}'
     remote_id, message = None, None
     last_upload = previous_start
@@ -128,14 +164,12 @@ def deliver(db, row, sub_id, matter_id, token):
                 raise ValueError('等待极库云回执同步')
         if not remote_id:
             last_upload = now
-            remote_id = _upload(row, sub_id, matter_id, name, token)
+            remote_id = _upload(_file_for_upload(bind, row.id), sub_id, matter_id, name, token)
         state = 'sent'
     except GeelibError as exc:
         state = 'uncertain' if prior in ('sending', 'uncertain') else 'failed'
         message = str(exc)[:200]
     except (requests.RequestException, ValueError, TypeError):
         state, message = 'uncertain', '附件回执未确认，重试时会先核对工单附件列表'
-    db.query(MdEvidenceDelivery).filter_by(evidence_id=row.id, sub_id=sub_id, matter_id=matter_id,
-            attempt=claim).update({'state': state, 'remote_id': remote_id, 'message': message, 'started': last_upload})
-    db.commit()
-    return state
+    return _finish_delivery(bind, key, claim,
+                            {'state': state, 'remote_id': remote_id, 'message': message, 'started': last_upload})

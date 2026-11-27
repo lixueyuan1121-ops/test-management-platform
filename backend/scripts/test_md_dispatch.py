@@ -14,8 +14,10 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 
 from app.api import md_runs
 from app.core.config import settings
@@ -462,6 +464,110 @@ class MdDispatchTests(unittest.TestCase):
             self.assertEqual(result['status'], 'failed')
             self.assertIn('未完整安装', result['msg'])
             create.assert_not_called()
+
+    def test_batch_releases_connections_and_retries_only_database_receipts(self):
+        from app.services import md_evidence, geelib_account
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            run = db.get(MdRun, rid)
+            run.findings = json.dumps([{'title': f'问题 {i}'} for i in range(6)])
+            md_evidence.save(db, run, '任务时段客户端.log', '', b'example')
+        engine = self.sessions.kw['bind']
+        checked_out = set()
+        fault = 'from md_run '
+        faults = []
+        def checkout(conn, record, proxy):
+            checked_out.add(record)
+        def checkin(conn, record):
+            checked_out.discard(record)
+        def disconnect(conn, cursor, sql, params, context, many):
+            nonlocal fault
+            if fault and fault in sql.lower():
+                faults.append(fault)
+                fault = None
+                raise OperationalError(sql, {}, Exception(2013, 'Lost connection during query'))
+        for name, callback in [('checkout', checkout), ('checkin', checkin), ('before_cursor_execute', disconnect)]:
+            event.listen(engine, name, callback)
+            self.addCleanup(event.remove, engine, name, callback)
+        def prepare(sub, title, facts, token):
+            self.assertFalse(checked_out, '等待查重/生成缺陷描述期间借用了数据库连接')
+            return '描述', 'P2', []
+        def create(sub, title, description, priority, executor, token):
+            nonlocal fault
+            self.assertFalse(checked_out)
+            fault = 'from md_run ' if title.endswith('0') else None
+            return {'external_ref': 'geelib#10' + title[-1]}
+        def upload(sub, matter, name, content, mime, token):
+            nonlocal fault
+            self.assertEqual(content, b'example')
+            self.assertFalse(checked_out, '附件上传期间借用了数据库连接')
+            fault = 'update md_evidence_delivery' if matter == 100 else None
+            return [{'id': matter, 'file_name': name}]
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch.object(geelib_account, 'get_user_app_token', return_value='personal'), \
+             patch.object(md_bug_skill, 'prepare_case', side_effect=prepare), \
+             patch.object(md_bug_skill, 'create_case', side_effect=create) as submit, \
+             patch.object(md_evidence.md_attachment_skill, 'upload', side_effect=upload) as attach:
+            result = self.post(f'/{rid}/report-bugs')
+            self.assertEqual(result['reported'], 6)
+            self.assertEqual([r['attachments_sent'] for r in result['results']], [1] * 6)
+            self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 0)
+            self.post(f'/{rid}/report-bugs', indexes=[0], receipt_action='attachments')
+            self.assertEqual((submit.call_count, attach.call_count), (6, 6))
+            self.assertEqual(faults, ['from md_run ', 'from md_run ', 'update md_evidence_delivery'])
+
+    def test_database_commit_ack_lost_does_not_repeat_external_writes(self):
+        from app.services import md_evidence, geelib_account
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            md_evidence.save(db, db.get(MdRun, rid), 'client.log', '', b'test')
+        commits = 0
+        def lose_ack(db):
+            nonlocal commits
+            commits += 1
+            # First successful commit for the finding claim, receipt, file claim and file receipt.
+            if commits <= 4:
+                raise OperationalError(None, None, Exception(2013, 'commit acknowledged late'))
+        event.listen(Session, 'after_commit', lose_ack)
+        self.addCleanup(event.remove, Session, 'after_commit', lose_ack)
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch.object(geelib_account, 'get_user_app_token', return_value='personal'), \
+             patch.object(md_bug_skill, 'create_case', return_value={'external_ref': 'geelib#101'}) as create, \
+             patch.object(md_evidence, '_upload', return_value='201') as upload:
+            result = self.post(f'/{rid}/report-bugs')
+            self.assertEqual((result['reported'], result['results'][0]['attachments_sent']), (1, 1))
+            self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 0)
+            create.assert_called_once()
+            upload.assert_called_once()
+
+    def test_prolonged_disconnect_preserves_partial_batch_for_receipt_review(self):
+        from app.services import geelib_account
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            db.get(MdRun, rid).findings = json.dumps([{'title': '首条'}, {'title': '次条'}])
+        unavailable = False
+        def disconnect(conn, cursor, sql, params, context, many):
+            if unavailable and 'from md_run ' in sql.lower():
+                raise OperationalError(sql, {}, Exception(2013, 'connection lost'))
+        engine = self.sessions.kw['bind']
+        event.listen(engine, 'before_cursor_execute', disconnect)
+        self.addCleanup(event.remove, engine, 'before_cursor_execute', disconnect)
+        def create(sub, title, *args):
+            nonlocal unavailable
+            unavailable = title.endswith('次条')
+            return {'external_ref': 'geelib#102' if unavailable else 'geelib#101'}
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch.object(geelib_account, 'get_user_app_token', return_value='personal'), \
+             patch.object(md_bug_skill, 'create_case', side_effect=create) as submit:
+            response = self.client.post(f'/api/md-runs/{rid}/report-bugs', json={})
+            self.assertEqual(response.status_code, 503)
+            self.assertNotIn('SELECT', response.text)
+            unavailable = False
+            result = self.post(f'/{rid}/report-bugs')
+            first, second = result['run']['findings']
+            self.assertEqual(first['external_ref'], 'geelib#101')
+            self.assertEqual(second['report_state'], 'sending')
+            self.assertEqual((result['reported'], submit.call_count), (0, 2))
 
     def test_skill_duplicate_review_can_link_without_submitting(self):
         self.prepare.stop()

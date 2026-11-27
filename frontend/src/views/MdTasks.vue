@@ -345,7 +345,23 @@ async function submitReports(payload) {
     if (failed.length) ElMessage.warning(`${failed.length} 条上报失败：${failed[0].msg}`)
     const checkError = res.results.find(r => r.status === 'check_failed')
     if (checkError) ElMessage.warning(checkError.msg)
-    await loadRuns()
+    await loadRuns().catch(() => {}) // 列表刷新失败由请求拦截器提示，工单回执已显示。
+  } catch (error) {
+    if (detail.value?.id !== runId || !detailVisible.value) return
+    if (error.response && error.response.status < 500) {
+      ElMessage.error(error.response.data?.msg || '上报请求未完成，请检查授权和候选状态')
+      return
+    }
+    // 请求可能在远端建单后中断，只读取已保存的结果。
+    const latest = await getMdRun(runId, { silent: true }).catch(() => null)
+    if (detail.value?.id !== runId || !detailVisible.value) return
+    if (latest) {
+      detail.value = latest
+      reviewVisible.value = false
+      ElMessage.warning('上报中断，已刷新工单状态。回执待确认的缺陷请核对回执。')
+    } else {
+      ElMessage.warning('上报中断，暂时无法读取工单状态。请稍后刷新任务详情。')
+    }
   } finally { reporting.value = false }
 }
 

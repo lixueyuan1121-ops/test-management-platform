@@ -21,6 +21,7 @@ from urllib.parse import quote
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, File, Form, UploadFile, Response
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -31,6 +32,7 @@ from app.models import MdRun, User
 from app.models.md_run import MdRunEvidence, MdEvidenceDelivery
 from app.schemas.common import ok
 from app.services import md_bug_skill, md_evidence
+from app.services.md_report_db import database_unavailable, is_disconnect, report_db_step
 from app.services.md_result import analyze_result
 from app.schemas.md_run import MdRunDocument, MdRunBatchCreate, MdRunCreate, MdRunReportIn, MdRunBugsIn
 
@@ -418,14 +420,21 @@ def delete_run(
     return ok({"deleted": run_id})
 
 
-def _save_finding(db: Session, run: MdRun, index: int, expected: dict, updated: dict) -> bool:
+@report_db_step
+def _save_finding(db: Session, run_id: int, index: int, expected: dict, updated: dict) -> bool:
     """Retry unrelated JSON changes, but never overwrite a newer attempt on this finding."""
     while True:
-        db.refresh(run)
+        run = db.get(MdRun, run_id, populate_existing=True)
+        if run is None:
+            raise HTTPException(404, "任务不存在")
         previous = run.findings
         items = run.findings_list
         reason, review = _review_findings(run)
-        if index >= len(review) or review[index][1] != expected:
+        if index >= len(review):
+            return False
+        if review[index][1] == updated:
+            return True  # 上次提交已生效，仅数据库回执丢失。
+        if review[index][1] != expected:
             return False
         storage_index = review[index][0]
         if storage_index is None:
@@ -439,26 +448,31 @@ def _save_finding(db: Session, run: MdRun, index: int, expected: dict, updated: 
             return True
 
 
-def _send_evidence(db, run, item, sub_id, token, result):
+@report_db_step
+def _related_evidence(db, run_id, item, count):
+    rows = db.query(MdRunEvidence).filter_by(run_id=run_id).order_by(MdRunEvidence.id).all()
+    return md_evidence.related(rows, item, count)
+
+
+def _send_evidence(bind, run, item, sub_id, token, result):
     target = item.get("evidence_target") or {}
     if target.get("sub_id") != sub_id or item.get("external_ref") != f"geelib#{target.get('matter_id')}":
         return result
-    rows = db.query(MdRunEvidence).filter_by(run_id=run.id).order_by(MdRunEvidence.id).all()
-    files = md_evidence.related(rows, item, len(_review_findings(run)[1]))
+    files = _related_evidence(bind, run.id, item, len(_review_findings(run)[1]))
     if files:
-        states = [md_evidence.deliver(db, row, sub_id, target["matter_id"], token) for row in files]
+        states = [md_evidence.deliver(bind, row, sub_id, target["matter_id"], token) for row in files]
         result["attachment_count"] = len(states)
         result["attachments_sent"] = states.count("sent")
     return result
 
 
-def _report_one(db, run, index, item, body, sub_id, executor, token):
+def _report_one(bind, run, index, item, body, sub_id, executor, token):
     from app.services.geelib import GeelibError
 
     if item.get("external_ref"):
         result = {"ok": True, "skipped": True, "external_ref": item["external_ref"]}
         if body.receipt_action == "attachments":
-            return _send_evidence(db, run, item, sub_id, token, result)
+            return _send_evidence(bind, run, item, sub_id, token, result)
         return result
     if body.receipt_action == "attachments":
         return {"ok": False, "status": "changed", "msg": "请先完成工单上报"}
@@ -469,7 +483,7 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
         started = item.get("report_started_at")
         if started is None:
             # Old workers did not record a start time. Allow one full request window.
-            _save_finding(db, run, index, item, {**item, "report_started_at": now})
+            _save_finding(bind, run.id, index, item, {**item, "report_started_at": now})
         if started is None or now - started < 90:
             return {"ok": False, "status": "sending", "msg": "上报请求正在处理，请稍后刷新"}
     title = str(item.get("title") or "").strip() or f"{run.title} 执行失败"
@@ -487,9 +501,9 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
                 raise HTTPException(409, "请选择当前项目中已核对的缺陷")
             ref = f"geelib#{body.matter_id}"
             linked = {**clean, "external_ref": ref, "evidence_target": {"sub_id": sub_id, "matter_id": body.matter_id}}
-            if not _save_finding(db, run, index, item, linked):
+            if not _save_finding(bind, run.id, index, item, linked):
                 return changed
-            return _send_evidence(db, run, linked, sub_id, token,
+            return _send_evidence(bind, run, linked, sub_id, token,
                                   {"ok": True, "skipped": True, "status": "linked", "external_ref": ref})
         return None
 
@@ -522,7 +536,7 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
             return decision
 
     claimed = {**clean, "report_state": "sending", "report_attempt": uuid.uuid4().hex, "report_started_at": time.time()}
-    if not _save_finding(db, run, index, item, claimed):
+    if not _save_finding(bind, run.id, index, item, claimed):
         return changed
     try:
         report = md_bug_skill.create_case(sub_id, title, description, priority, executor, token)
@@ -535,23 +549,21 @@ def _report_one(db, run, index, item, body, sub_id, executor, token):
     except GeelibError as exc:
         updated = clean
         result = {"ok": False, "status": "failed", "msg": str(exc)}
-    if not _save_finding(db, run, index, claimed, updated):
+    if not _save_finding(bind, run.id, index, claimed, updated):
         return changed
-    return _send_evidence(db, run, updated, sub_id, token, result) if result["ok"] else result
+    return _send_evidence(bind, run, updated, sub_id, token, result) if result["ok"] else result
 
 
-@router.post("/{run_id}/report-bugs")
-def report_bugs(
-    run_id: int,
-    body: MdRunBugsIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """把 findings 上报极库云（人工确认后触发，不自动报）。
+@report_db_step
+def _report_details(db, run_id):
+    run = db.get(MdRun, run_id)
+    if run is None:
+        raise HTTPException(404, "任务不存在")
+    return _to_out(run, full=True, db=db)
 
-    自动上报容易把环境问题、偶发失败灌进缺陷库，所以这里坚持"人点一次"。
-    已上报过的条目（有 external_ref）会跳过；单条失败不影响其他条目，返回逐条结果。
-    """
+
+@report_db_step
+def _report_inputs(db, run_id, body, user):
     r = db.get(MdRun, run_id)
     if not r:
         raise HTTPException(404, "任务不存在")
@@ -567,32 +579,54 @@ def report_bugs(
     count = len(indexed)
     targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
     if not targets:
-        return ok({"results": [], "reported": 0, "run": _to_out(r, full=True, db=db)})
+        return r, indexed, targets, None
 
     from app.services import geelib
     if not geelib.is_enabled():
         raise HTTPException(400, "极库云未启用（GEELIB 相关配置缺失）")
     from app.models import Project
-    from app.services.geelib_account import get_user_app_token, GeelibAccountError
 
     proj = db.get(Project, r.project_id)
     sub_id = geelib.resolve_sub_id(proj.code if proj else None, getattr(proj, "geelib_sub_id", None))
     if not sub_id:
         raise HTTPException(400, "该项目未映射极库云项目（project.geelib_sub_id 未配置）")
+    return r, indexed, targets, sub_id
 
-    try:
-        app_token = get_user_app_token(db, user.id)
-    except GeelibAccountError as e:
-        raise HTTPException(400, f"极库云账号未授权：{e}")
+
+@router.post("/{run_id}/report-bugs")
+def report_bugs(
+    run_id: int,
+    body: MdRunBugsIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """人工上报确认的缺陷，跳过已有工单，逐条返回结果。"""
+    from app.services.geelib_account import get_user_app_token, GeelibAccountError
 
     executor = user.email or settings.GEELIB_DEFAULT_EXECUTOR
+    user_id = user.id
+    bind = db.get_bind()
+    # Release the authentication dependency's connection before the external work.
+    db.close()
+    r, indexed, targets, sub_id = _report_inputs(bind, run_id, body, user)
+    if not targets:
+        return ok({"results": [], "reported": 0, "run": _report_details(bind, run_id)})
+    try:
+        with Session(bind) as auth_db:
+            app_token = get_user_app_token(auth_db, user_id)
+    except GeelibAccountError as e:
+        raise HTTPException(400, f"极库云账号未授权：{e}")
+    except DBAPIError as error:
+        if is_disconnect(error):
+            raise database_unavailable() from error
+        raise
+
     results = []
     for index in targets:
         item = indexed[index][1]
         if isinstance(item, dict):
-            result = _report_one(db, r, index, item, body, sub_id, executor, app_token)
+            result = _report_one(bind, r, index, item, body, sub_id, executor, app_token)
             results.append({"index": index, **result})
 
-    db.refresh(r)
     reported = sum(1 for x in results if x.get("ok") and not x.get("skipped"))
-    return ok({"results": results, "reported": reported, "run": _to_out(r, full=True, db=db)})
+    return ok({"results": results, "reported": reported, "run": _report_details(bind, run_id)})
