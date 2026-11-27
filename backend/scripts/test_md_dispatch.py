@@ -159,6 +159,38 @@ class MdDispatchTests(unittest.TestCase):
         second = self.post(path, external_ref='geelib#730', previous_run_id=0)
         self.assertEqual(self.client.get(f"/api/md-runs/{second['run_id']}").json()['data']['client_version'], '1.0')
 
+    def test_retest_can_change_runner_and_environment_independently(self):
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            source = db.get(MdRun, rid)
+            source.env_group = 'work-test'
+            source.findings = json.dumps([{**source.findings_list[0], 'external_ref': 'geelib#731'}])
+        path = f'/{rid}/retests'
+        body = {'external_ref': 'geelib#731', 'previous_run_id': 0}
+        for invalid in ({'runner': '  '}, {'runner': 'x' * 65}, {'env_group': 'typo'}):
+            self.assertEqual(self.client.post('/api/md-runs' + path, json={**body, **invalid}).status_code, 422)
+        for overrides, runner, group in [
+            ({'runner': ' b ', 'env_group': 'online'}, 'b', 'online'),
+            ({'runner': 'b'}, 'b', 'work-test'),
+            ({'env_group': 'pre'}, 'a', 'pre'),
+            ({}, 'a', 'work-test'),
+        ]:
+            result = self.post(path, **body, **overrides)
+            child = result['run_id']
+            self.assertTrue(result['created'])
+            replay = self.post(path, **body, runner='another', env_group='test')
+            self.assertEqual(replay, {'run_id': child, 'created': False})
+            item, = self.client.get('/api/md-runs/queue', params={'runner': runner}).json()['data']
+            self.assertEqual((item['id'], item['runner'], item['env_group']), (child, runner, group))
+            other = 'a' if runner == 'b' else 'b'
+            self.assertEqual(self.client.get('/api/md-runs/queue', params={'runner': other}).json()['data'], [])
+            self.assertEqual(self.client.post(f'/api/md-runs/queue/{child}/claim?runner={other}').status_code, 403)
+            self.post(f'/queue/{child}/claim?runner={runner}')
+            self.post(f'/{child}/cancel')
+            body['previous_run_id'] = child
+        original = self.client.get(f'/api/md-runs/{rid}').json()['data']
+        self.assertEqual((original['runner'], original['env_group']), ('a', 'work-test'))
+
     def test_retest_requires_reported_defect_and_project_write_access(self):
         rid = self.finished_run()
         url = f'/api/md-runs/{rid}/retests'

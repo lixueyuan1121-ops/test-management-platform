@@ -21,6 +21,7 @@ class MdRunDocument(BaseModel):
 
 
 RunnerId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+EnvGroup = Literal["online", "pre", "test"]
 
 
 class MdRunCreate(MdRunDocument):
@@ -29,7 +30,7 @@ class MdRunCreate(MdRunDocument):
 
 class MdRunBatchCreate(MdRunDocument):
     runners: list[RunnerId] = Field(min_length=1)
-    env_group: Literal["online", "pre", "test"]
+    env_group: EnvGroup
 
 
 class MdEvidenceSummary(BaseModel):
@@ -55,6 +56,8 @@ class MdRunReportIn(BaseModel):
 class MdRunRetestIn(BaseModel):
     external_ref: str = Field(pattern=r"^geelib#[1-9][0-9]*$", max_length=64)
     previous_run_id: int = Field(ge=0)  # 0 for the first verification
+    runner: RunnerId | None = None
+    env_group: EnvGroup | None = None
     client_version: str | None = Field(None, max_length=64)
 
 

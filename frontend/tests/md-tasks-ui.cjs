@@ -38,7 +38,8 @@ const assert = require('node:assert/strict');
       }
       if (pathname.endsWith('/md-runs/12')) {
         run.findings[1].retests[0].status = 'failed';
-        data = { ...run, id: 12, title: '修复验证 geelib#731', client_version: '2.0',
+        const target = retests[0];
+        data = { ...run, id: 12, title: '修复验证 geelib#731', runner: target.runner, env_group: target.env_group, client_version: target.client_version,
           retest: { source_run_id: 5, external_ref: 'geelib#731' }, findings: [{ title: '仍未修复' }] };
       }
       if (pathname.endsWith('/md-runs/5/report-executors')) {
@@ -152,19 +153,27 @@ const assert = require('node:assert/strict');
     const finding = taskRow('保存失败');
     await finding.getByRole('button', { name: '下发复验' }).click();
     const retest = page.getByRole('dialog', { name: '下发缺陷复验' });
+    const retestSelect = label => retest.locator('.el-select__wrapper').filter({ has: page.getByRole('combobox', { name: label }) });
     await retest.getByText('geelib#731 · 保存失败').waitFor();
-    await retest.getByText('执行机 win · 环境 test').waitFor();
+    await retest.getByText('乙（win）', { exact: true }).waitFor();
+    await retestSelect('执行机').click();
+    await page.getByRole('option', { name: '甲（mac）', exact: true }).click();
+    await retest.getByText('test', { exact: true }).waitFor();
+    await retestSelect('环境分组').click();
+    await page.getByRole('option', { name: 'pre', exact: true }).click();
     await retest.getByLabel('修复版本').fill('2.0');
     await retest.getByRole('button', { name: '确认下发' }).click();
     await finding.getByRole('button', { name: '复验 #12 · 待执行' }).waitFor();
     assert.equal(await finding.getByRole('button', { name: '下发复验' }).isEnabled(), false);
     await finding.getByRole('button', { name: '复验 #12 · 待执行' }).click();
     await page.getByText('复验工单 geelib#731').waitFor();
+    await page.getByText('执行机 mac', { exact: true }).waitFor();
+    await page.getByText('环境 pre', { exact: true }).waitFor();
     assert.equal(await taskRow('仍未修复').getByRole('button', { name: '上报缺陷' }).count(), 0);
     await page.getByRole('button', { name: '原提测任务 #5' }).click();
     await finding.getByRole('button', { name: '复验 #12 · 失败' }).waitFor();
     assert.equal(await finding.getByRole('button', { name: '下发复验' }).isEnabled(), true);
-    assert.deepEqual(retests, [{ external_ref: 'geelib#731', previous_run_id: 0, client_version: '2.0' }]);
+    assert.deepEqual(retests, [{ external_ref: 'geelib#731', previous_run_id: 0, client_version: '2.0', runner: 'mac', env_group: 'pre' }]);
     assert.deepEqual(errors, []);
     console.log('PASS dispatch, defect reporting, retest dispatch and history');
   } finally { await browser.close(); }

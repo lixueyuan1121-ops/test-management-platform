@@ -152,8 +152,19 @@
     </el-drawer>
     <el-dialog v-model="retestVisible" title="下发缺陷复验" width="480px" :close-on-click-modal="!retesting" :close-on-press-escape="!retesting" :show-close="!retesting">
       <p>{{ retestForm.ref }} · {{ retestForm.title }}</p>
-      <p>执行机 {{ detail?.runner }} · 环境 {{ detail?.env_group }}</p>
-      <el-form label-position="top">
+      <el-form label-position="top" :disabled="retesting">
+        <el-form-item label="执行机" required>
+          <el-select v-model="retestForm.runner" filterable allow-create default-first-option placeholder="选择执行机或输入执行机 ID">
+            <el-option v-if="detail?.runner && !devices.some(d => d.runner_id === detail.runner)" :label="detail.runner" :value="detail.runner" />
+            <el-option v-for="d in devices" :key="d.id" :label="`${d.name}（${d.runner_id}）`" :value="d.runner_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="环境分组" required>
+          <el-select v-model="retestForm.env_group" placeholder="选择环境分组">
+            <el-option v-if="detail?.env_group && !envGroups.includes(detail.env_group)" :label="detail.env_group" :value="detail.env_group" />
+            <el-option v-for="group in envGroups" :key="group" :label="group" :value="group" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="修复版本"><el-input v-model="retestForm.version" maxlength="64" placeholder="留空验证当前安装版本" /></el-form-item>
       </el-form>
       <div v-if="retestForm.error" role="alert">{{ retestForm.error }}</div>
@@ -328,6 +339,7 @@ async function openDetail(row) {
 
 function openRetest(row) {
   retestForm.value = { runId: detail.value.id, ref: row.external_ref, title: row.title, previous: row.retests?.[0]?.id || 0,
+    runner: detail.value.runner, env_group: detail.value.env_group,
     version: row.retests?.[0]?.client_version ?? detail.value.client_version ?? '', error: '' }
   retestVisible.value = true
 }
@@ -335,9 +347,16 @@ function openRetest(row) {
 async function submitRetest() {
   if (retesting.value) return
   const form = retestForm.value
+  const runner = form.runner?.trim()
+  if (!runner || runner.length > 64) return ElMessage.warning('请选择执行机或输入不超过 64 个字符的执行机 ID')
+  if (!form.env_group) return ElMessage.warning('请选择环境分组')
   retesting.value = true
   try {
-    const result = await createMdRetest(form.runId, { external_ref: form.ref, previous_run_id: form.previous, client_version: form.version.trim() })
+    const result = await createMdRetest(form.runId, {
+      external_ref: form.ref, previous_run_id: form.previous, client_version: form.version.trim(), runner,
+      // 历史自定义环境由服务端从原任务继承。
+      env_group: envGroups.includes(form.env_group) ? form.env_group : undefined,
+    })
     retestVisible.value = false
     if (result.created) ElMessage.success(`已下发复验任务 #${result.run_id}`)
     else ElMessage.info(`已有复验任务 #${result.run_id}，请查看最新结果`)
