@@ -6,6 +6,7 @@ import subprocess
 import threading
 import unittest
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from email import policy
 from email.parser import BytesParser
@@ -107,6 +108,94 @@ class MdDispatchTests(unittest.TestCase):
         self.callback = f'/api/md-runs/queue/{rid}?runner=a'
         self.assertEqual(self.client.patch(self.callback, json=self.results).status_code, 200)
         return rid
+
+    def test_reported_defect_retest_uses_runner_queue_and_preserves_report(self):
+        rid = self.finished_run()
+        with self.sessions.begin() as db:
+            original = db.get(MdRun, rid)
+            original.client_version = '1.0'
+            findings = [{**original.findings_list[0], 'external_ref': 'geelib#729'},
+                        {'title': '独立缺陷', 'external_ref': 'geelib#730'}]
+            original.findings = json.dumps(findings)
+        path = f'/{rid}/retests'
+        request = dict(external_ref='geelib#729', previous_run_id=0, client_version='2.0')
+        result = self.post(path, **request)
+        child = result['run_id']
+        self.assertTrue(result['created'])
+        self.assertEqual(self.post(path, **request), {'run_id': child, 'created': False})
+        queued, = self.client.get('/api/md-runs/queue?runner=a').json()['data']
+        self.assertEqual((queued['id'], queued['project_id'], queued['req_no'], queued['env_group'], queued['client_version']),
+                         (child, 1, '42', 'pre', '2.0'))
+        self.assertIn('点 <确认>', queued['content'])
+        self.assertIn('2.0', queued['content'])
+        self.assertIn('# 文档', queued['content'])
+        self.assertNotIn('独立缺陷', queued['content'])
+        self.assertEqual(self.client.get('/api/md-runs/queue?runner=b').json()['data'], [])
+        self.post(f'/queue/{child}/claim?runner=a')
+        again = {**request, 'previous_run_id': child}
+        self.assertFalse(self.post(path, **again)['created'])
+        callback = f'/api/md-runs/queue/{child}?runner=a'
+        upload = self.client.post(f'/api/md-runs/queue/{child}/evidence?runner=a',
+                                  files={'file': ('retest.log', b'fresh evidence', 'text/plain')})
+        self.assertEqual(upload.status_code, 200)
+        self.assertEqual(self.client.patch(callback, json=self.results).json()['data']['status'], 'failed')
+        self.assertFalse(self.post(path, **request)['created'])  # lost response for a run that already finished
+        child_detail = self.client.get(f'/api/md-runs/{child}').json()['data']
+        self.assertEqual(child_detail['retest'], {'source_run_id': rid, 'external_ref': 'geelib#729'})
+        self.assertEqual([f['name'] for f in child_detail['evidence']], ['retest.log'])
+        self.assertEqual(self.client.post(f'/api/md-runs/{child}/report-bugs', json={}).status_code, 409)
+        next_run = self.post(path, **again)['run_id']
+        self.assertNotEqual(child, next_run)
+        self.post(f'/queue/{next_run}/claim?runner=a')
+        response = self.client.patch(f'/api/md-runs/queue/{next_run}?runner=a', json={
+            'verdict': 'completed', 'result_md': '| 用例 | 结论 | 说明 |\n| --- | --- | --- |\n| 确认按钮 | pass | 已恢复 |'})
+        self.assertEqual(response.json()['data']['status'], 'passed')
+        old = self.client.get(f'/api/md-runs/{rid}').json()['data']
+        self.assertEqual((old['status'], old['client_version'], old['evidence']), ('failed', '1.0', []))
+        self.assertEqual(old['findings'][0]['external_ref'], 'geelib#729')
+        self.assertEqual([(r['id'], r['status']) for r in old['findings'][0]['retests']],
+                         [(next_run, 'passed'), (child, 'failed')])
+        self.assertEqual(old['findings'][1]['retests'], [])
+        second = self.post(path, external_ref='geelib#730', previous_run_id=0)
+        self.assertEqual(self.client.get(f"/api/md-runs/{second['run_id']}").json()['data']['client_version'], '1.0')
+
+    def test_retest_requires_reported_defect_and_project_write_access(self):
+        rid = self.finished_run()
+        url = f'/api/md-runs/{rid}/retests'
+        body = {'external_ref': 'geelib#731', 'previous_run_id': 0}
+        self.assertEqual(self.client.post(url, json=body).status_code, 409)
+        self.assertEqual(self.client.post(url, json={**body, 'external_ref': 'external'}).status_code, 422)
+        self.user.is_platform_admin = False
+        self.assertEqual(self.client.post(url, json=body).status_code, 403)
+        self.user.is_platform_admin = True
+        with self.sessions() as db:
+            self.assertEqual(db.query(MdRun).count(), 1)
+
+    def test_concurrent_retest_dispatch_enqueues_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = create_engine('sqlite:///' + str(Path(directory) / 'retests.db'))
+            try:
+                Base.metadata.create_all(engine)
+                sessions = sessionmaker(engine)
+                with sessions.begin() as db:
+                    db.add(Project(id=1, name='QA', code='qa'))
+                    db.add(MdRun(id=1, project_id=1, title='冒烟', runner='win', env_group='pre', content='# 文档',
+                                 status='failed', findings=json.dumps([{'title': '保存失败', 'external_ref': 'geelib#731'}])))
+                barrier = threading.Barrier(2, timeout=5)
+                def dispatch():
+                    with sessions() as db:
+                        body = md_runs.MdRunRetestIn(external_ref='geelib#731', previous_run_id=0)
+                        barrier.wait()
+                        return md_runs.create_retest(1, body, db, self.user)['data']
+                with ThreadPoolExecutor(max_workers=2) as workers:
+                    futures = [workers.submit(dispatch) for _ in range(2)]
+                    results = [f.result(timeout=10) for f in futures]
+                self.assertEqual(sorted(r['created'] for r in results), [False, True])
+                self.assertEqual(len({r['run_id'] for r in results}), 1)
+                with sessions() as db:
+                    self.assertEqual(db.query(MdRun).filter_by(status='pending').count(), 1)
+            finally:
+                engine.dispose()
 
     def test_negative_smoke_run_from_new_and_old_runners(self):
         for callback in (dict(verdict='completed'), dict(verdict='fail', findings=[]),

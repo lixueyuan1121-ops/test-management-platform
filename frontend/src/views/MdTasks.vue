@@ -80,10 +80,14 @@
           <span>客户端 {{ detail.client_version || '—' }}</span>
           <span>执行机 {{ detail.runner }}</span>
           <span v-if="detail.duration_ms != null">{{ Math.round(detail.duration_ms / 1000) }}s</span>
+          <template v-if="detail.retest">
+            <span>复验工单 {{ detail.retest.external_ref }}</span>
+            <el-button v-if="detail.retest.source_run_id" link type="primary" @click="openDetail({ id: detail.retest.source_run_id })">原提测任务 #{{ detail.retest.source_run_id }}</el-button>
+          </template>
         </div>
         <el-alert v-if="detail.reason" :title="detail.reason" type="info" :closable="false" class="block" />
 
-        <h3 v-if="detail.verdict">缺陷候选（{{ detail.findings.length }}）</h3>
+        <h3 v-if="detail.verdict">{{ detail.retest ? '复验发现' : '缺陷候选' }}（{{ detail.findings.length }}）</h3>
         <template v-if="detail.findings?.length">
           <el-table :data="detail.findings" size="small">
             <el-table-column type="index" width="50" />
@@ -100,13 +104,19 @@
                   link type="primary" :disabled="reporting" @click="submitReports({ indexes: [$index], receipt_action: 'attachments' })">补传附件</el-button>
               </template>
             </el-table-column>
-            <el-table-column label="极库云" width="180">
+            <el-table-column v-if="!detail.retest" label="极库云" width="180">
               <template #default="{ row, $index }">
                 <template v-if="row.external_ref">
                   <a v-if="caseLink(row)" :href="caseLink(row)" target="_blank" rel="noopener noreferrer">{{ row.external_ref }}</a>
                   <span v-else>{{ row.external_ref }}</span>
                   <div v-if="row.report_receipt?.skill" class="hint">极库云提 Bug 技能 · {{ row.report_receipt.priority }}</div>
                   <div v-if="row.report_receipt?.assignee" class="hint">执行人 {{ row.report_receipt.assignee }}</div>
+                  <div v-for="run in row.retests" :key="run.id">
+                    <el-button link type="primary" @click="openDetail(run)">复验 #{{ run.id }} · {{ retestStatus[run.status] || run.status }}</el-button>
+                    <span v-if="run.client_version" class="hint">{{ run.client_version }}</span>
+                  </div>
+                  <el-button v-if="['admin', 'member'].includes(auth.roleIn(detail.project_id))"
+                    link type="primary" :disabled="['pending', 'running'].includes(row.retests?.[0]?.status)" @click="openRetest(row)">下发复验</el-button>
                 </template>
                 <template v-else-if="row.report_state">
                   <span>{{ row.report_state === 'sending' ? '上报中' : '回执待核对' }}</span>
@@ -116,7 +126,7 @@
               </template>
             </el-table-column>
           </el-table>
-          <div class="bug-actions">
+          <div v-if="!detail.retest" class="bug-actions">
             <el-button size="small" type="primary" :loading="reporting" :disabled="!detail.project_id || !detail.findings.some(f => !f.external_ref && !f.report_state)" @click="openAssignment({})">上报未报的到极库云</el-button>
             <span class="hint">只有你确认是产品缺陷的才上报；环境/偶发问题点「取消」，别污染缺陷库</span>
           </div>
@@ -140,6 +150,18 @@
         <pre class="md">{{ detail.content }}</pre>
       </div>
     </el-drawer>
+    <el-dialog v-model="retestVisible" title="下发缺陷复验" width="480px" :close-on-click-modal="!retesting" :close-on-press-escape="!retesting" :show-close="!retesting">
+      <p>{{ retestForm.ref }} · {{ retestForm.title }}</p>
+      <p>执行机 {{ detail?.runner }} · 环境 {{ detail?.env_group }}</p>
+      <el-form label-position="top">
+        <el-form-item label="修复版本"><el-input v-model="retestForm.version" maxlength="64" placeholder="留空验证当前安装版本" /></el-form-item>
+      </el-form>
+      <div v-if="retestForm.error" role="alert">{{ retestForm.error }}</div>
+      <template #footer>
+        <el-button :disabled="retesting" @click="retestVisible = false">取消</el-button>
+        <el-button type="primary" :loading="retesting" @click="submitRetest">确认下发</el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="reviewVisible" title="核对极库云回执" width="560px">
       <template v-if="receipt">
         <p>任务 #{{ receipt.runId }} · {{ receipt.title }}</p>
@@ -191,10 +213,12 @@ import '@/styles/workspace-overlays.css'
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
+import { useAuthStore } from '@/store/auth'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { listMyDevices, listMdRuns, getMdRun, getMdReportExecutors, createMdRuns, cancelMdRun, reportMdRunBugs, downloadMdEvidence } from '@/api'
+import { listMyDevices, listMdRuns, getMdRun, getMdReportExecutors, createMdRuns, createMdRetest, cancelMdRun, reportMdRunBugs, downloadMdEvidence } from '@/api'
 
 const app = useAppStore()
+const auth = useAuthStore()
 const projects = ref([])
 const pid = ref(null)
 const devices = ref([])
@@ -212,6 +236,10 @@ const detailVisible = ref(false)
 const detail = ref(null)
 const reporting = ref(false)
 const assignment = ref(null)
+const retestVisible = ref(false)
+const retesting = ref(false)
+const retestForm = ref({})
+const retestStatus = { pending: '待执行', running: '执行中', passed: '通过', failed: '失败', blocked: '阻塞', canceled: '已取消' }
 const reviewVisible = ref(false)
 const receipt = ref(null)
 const selectedMatter = ref(null)
@@ -296,6 +324,29 @@ async function submit() {
 async function openDetail(row) {
   detail.value = await getMdRun(row.id)
   detailVisible.value = true
+}
+
+function openRetest(row) {
+  retestForm.value = { runId: detail.value.id, ref: row.external_ref, title: row.title, previous: row.retests?.[0]?.id || 0,
+    version: row.retests?.[0]?.client_version ?? detail.value.client_version ?? '', error: '' }
+  retestVisible.value = true
+}
+
+async function submitRetest() {
+  if (retesting.value) return
+  const form = retestForm.value
+  retesting.value = true
+  try {
+    const result = await createMdRetest(form.runId, { external_ref: form.ref, previous_run_id: form.previous, client_version: form.version.trim() })
+    retestVisible.value = false
+    if (result.created) ElMessage.success(`已下发复验任务 #${result.run_id}`)
+    else ElMessage.info(`已有复验任务 #${result.run_id}，请查看最新结果`)
+    const updated = await getMdRun(form.runId, { silent: true }).catch(() => null)
+    if (updated && detail.value?.id === form.runId) detail.value = updated
+    await loadRuns().catch(() => {})
+  } catch (error) {
+    form.error = error.response?.data?.msg || '未收到下发回执，可重试以核对复验任务'
+  } finally { retesting.value = false }
 }
 
 async function onCancel(row) {

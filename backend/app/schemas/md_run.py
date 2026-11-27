@@ -52,6 +52,12 @@ class MdRunReportIn(BaseModel):
     env_check: dict[str, Any] | None = None
 
 
+class MdRunRetestIn(BaseModel):
+    external_ref: str = Field(pattern=r"^geelib#[1-9][0-9]*$", max_length=64)
+    previous_run_id: int = Field(ge=0)  # 0 for the first verification
+    client_version: str | None = Field(None, max_length=64)
+
+
 class MdRunBugsIn(BaseModel):
     """人工确认后把 findings 上报极库云。
 

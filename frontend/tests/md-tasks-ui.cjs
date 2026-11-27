@@ -7,9 +7,11 @@ const assert = require('node:assert/strict');
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, timezoneId: process.env.UI_TIMEZONE || 'America/Los_Angeles' });
     const errors = [], payloads = [];
     const reports = [];
+    const retests = [];
     let executorQueries = 0;
     const logFile = { id: 2, name: '客户端.log', kind: 'log', size: 100, case: 'C-002' };
     const run = { evidence: [logFile], evidence_summary: { expected: 1, notes: [] }, id: 5, project_id: 1, title: '冒烟用例', status: 'failed', verdict: 'fail',
+      runner: 'win', env_group: 'test', client_version: '1.0',
       created_at: '2026-11-26T02:00:00', started_at: '2026-11-26T15:59:00', finished_at: '2026-11-26T16:00:01.123456Z',
       findings: [{ title: '按钮无响应', severity: 'major', report_state: 'uncertain' },
         { title: '保存失败', external_ref: 'geelib#731', evidence_target: { sub_id: 7087, matter_id: 731 },
@@ -29,6 +31,16 @@ const assert = require('node:assert/strict');
         { id: 7, title: '待执行的提测', status: 'pending', created_at: '2026-11-27T10:01:02+08:00' },
         { id: 8, title: '缺少时间的提测', status: 'pending' }];
       if (pathname.endsWith('/md-runs/5')) data = run;
+      if (pathname.endsWith('/md-runs/5/retests')) {
+        retests.push(req.postDataJSON());
+        run.findings[1].retests = [{ id: 12, status: 'pending', client_version: '2.0' }];
+        data = { run_id: 12, created: true };
+      }
+      if (pathname.endsWith('/md-runs/12')) {
+        run.findings[1].retests[0].status = 'failed';
+        data = { ...run, id: 12, title: '修复验证 geelib#731', client_version: '2.0',
+          retest: { source_run_id: 5, external_ref: 'geelib#731' }, findings: [{ title: '仍未修复' }] };
+      }
       if (pathname.endsWith('/md-runs/5/report-executors')) {
         if (++executorQueries === 1) return route.fulfill({ status: 502, json: { msg: '无法读取执行人列表' } });
         data = { default_email: 'qa@example.test', members: [
@@ -137,7 +149,23 @@ const assert = require('node:assert/strict');
     assert.deepEqual(reports, [{ indexes: [1], receipt_action: 'attachments' }, { indexes: [0], receipt_action: 'check' },
       { indexes: [0], receipt_action: 'link', review_key: 'review-5', matter_id: 729 },
       { indexes: [3], executor_email: 'dev2@example.test' }, { executor_email: 'dev@example.test' }]);
+    const finding = taskRow('保存失败');
+    await finding.getByRole('button', { name: '下发复验' }).click();
+    const retest = page.getByRole('dialog', { name: '下发缺陷复验' });
+    await retest.getByText('geelib#731 · 保存失败').waitFor();
+    await retest.getByText('执行机 win · 环境 test').waitFor();
+    await retest.getByLabel('修复版本').fill('2.0');
+    await retest.getByRole('button', { name: '确认下发' }).click();
+    await finding.getByRole('button', { name: '复验 #12 · 待执行' }).waitFor();
+    assert.equal(await finding.getByRole('button', { name: '下发复验' }).isEnabled(), false);
+    await finding.getByRole('button', { name: '复验 #12 · 待执行' }).click();
+    await page.getByText('复验工单 geelib#731').waitFor();
+    assert.equal(await taskRow('仍未修复').getByRole('button', { name: '上报缺陷' }).count(), 0);
+    await page.getByRole('button', { name: '原提测任务 #5' }).click();
+    await finding.getByRole('button', { name: '复验 #12 · 失败' }).waitFor();
+    assert.equal(await finding.getByRole('button', { name: '下发复验' }).isEnabled(), true);
+    assert.deepEqual(retests, [{ external_ref: 'geelib#731', previous_run_id: 0, client_version: '2.0' }]);
     assert.deepEqual(errors, []);
-    console.log('PASS dispatch, receipt review, single and batch assignment, and disconnect recovery');
+    console.log('PASS dispatch, defect reporting, retest dispatch and history');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

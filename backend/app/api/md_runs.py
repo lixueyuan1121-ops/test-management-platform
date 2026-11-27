@@ -29,12 +29,12 @@ from app.core.deps import assert_project_role, get_current_user, RunnerCtx, requ
 from app.core.enums import ProjectRole
 from app.db.session import get_db
 from app.models import MdRun, User
-from app.models.md_run import MdRunEvidence, MdEvidenceDelivery
+from app.models.md_run import MdRunEvidence, MdEvidenceDelivery, MdRunRetest
 from app.schemas.common import ok
-from app.services import md_bug_skill, md_evidence
+from app.services import md_bug_skill, md_evidence, md_retest
 from app.services.md_report_db import database_unavailable, is_disconnect, report_db_step
 from app.services.md_result import analyze_result
-from app.schemas.md_run import MdRunDocument, MdRunBatchCreate, MdRunCreate, MdRunReportIn, MdRunBugsIn
+from app.schemas.md_run import MdRunDocument, MdRunBatchCreate, MdRunCreate, MdRunReportIn, MdRunBugsIn, MdRunRetestIn
 
 router = APIRouter(prefix="/api/md-runs", tags=["md-runs"])
 
@@ -121,6 +121,7 @@ def _to_out(r: MdRun, full: bool = False, db: Session | None = None) -> dict:
         out["content"] = r.content
         out["result_md"] = r.result_md
         if db is not None:
+            md_retest.add_history(db, r.id, out)
             rows = db.query(MdRunEvidence).filter_by(run_id=r.id).order_by(MdRunEvidence.id).all()
             out["evidence"] = [md_evidence.metadata(row) for row in rows]
             out["evidence_summary"] = summary
@@ -399,6 +400,20 @@ def cancel_run(
     return ok(_to_out(r))
 
 
+@router.post("/{run_id}/retests")
+def create_retest(run_id: int, body: MdRunRetestIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    source = db.query(MdRun).filter_by(id=run_id).with_for_update().first()
+    if not source:
+        raise HTTPException(404, "任务不存在")
+    if source.project_id is None:
+        raise HTTPException(409, "复验需要关联项目")
+    assert_project_role(db, user, source.project_id, _WRITE_ROLES)
+    if source.status not in _TERMINAL or db.get(MdRunRetest, run_id):
+        raise HTTPException(409, "请从已结束的原提测任务下发复验")
+    _, findings = _review_findings(source)
+    return ok(md_retest.dispatch(db, source, findings, body, user.id))
+
+
 @router.delete("/{run_id}")
 def delete_run(
     run_id: int,
@@ -415,6 +430,8 @@ def delete_run(
     files = db.query(MdRunEvidence.id).filter_by(run_id=r.id)
     db.query(MdEvidenceDelivery).filter(MdEvidenceDelivery.evidence_id.in_(files)).delete(synchronize_session=False)
     db.query(MdRunEvidence).filter_by(run_id=r.id).delete(synchronize_session=False)
+    db.query(MdRunRetest).filter_by(source_run_id=r.id).update({"source_run_id": None}, synchronize_session=False)
+    db.query(MdRunRetest).filter_by(run_id=r.id).delete(synchronize_session=False)
     db.delete(r)
     db.commit()
     return ok({"deleted": run_id})
@@ -573,6 +590,8 @@ def _reportable_run(db, run_id, user):
 
     if r.status not in _TERMINAL:
         raise HTTPException(409, "任务结束后才能上报缺陷")
+    if db.get(MdRunRetest, run_id):
+        raise HTTPException(409, "修复验证已关联原缺陷，请在原工单查看或跟进")
     return r
 
 

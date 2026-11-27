@@ -76,6 +76,17 @@ class MdRun(Base):
         return data if isinstance(data, list) else []
 
 
+class MdRunRetest(Base):
+    """An independent run verifying one previously reported defect."""
+    __tablename__ = "md_run_retest"
+    __table_args__ = (UniqueConstraint("source_run_id", "external_ref", "previous_run_id"),)
+
+    run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    source_run_id: Mapped[int | None] = mapped_column(BigInteger)
+    external_ref: Mapped[str] = mapped_column(String(64))
+    previous_run_id: Mapped[int] = mapped_column(BigInteger)
+
+
 class MdRunEvidence(Base):
     """Binary evidence is loaded only for an authorized download or attachment upload."""
     __tablename__ = 'md_run_evidence'

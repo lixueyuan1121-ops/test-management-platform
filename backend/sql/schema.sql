@@ -1160,6 +1160,14 @@ CREATE TABLE `md_run` (
   KEY `idx_mdrun_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE md_run_retest (
+  run_id BIGINT NOT NULL PRIMARY KEY,
+  source_run_id BIGINT DEFAULT NULL,
+  external_ref VARCHAR(64) NOT NULL,
+  previous_run_id BIGINT NOT NULL,
+  UNIQUE KEY uq_md_run_retest (source_run_id, external_ref, previous_run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE md_run_evidence (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   run_id BIGINT NOT NULL,
