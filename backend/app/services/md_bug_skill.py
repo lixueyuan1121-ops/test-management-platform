@@ -84,6 +84,25 @@ def _read_tracker(method, endpoint, payload, token):
         raise GeelibError('查询极库云失败，请稍后重试') from None
 
 
+def list_executors(sub_id, token):
+    fields = _read_tracker('POST', 'getMatterTypeCustomAttributeList',
+                           {'sub_id': sub_id, 'type_id': settings.GEELIB_DEFECT_TYPE}, token)
+    try:
+        field = next(row['matterCustomAttribute'] for row in fields
+                     if (row.get('matterCustomAttribute') or {}).get('cf_key') == 'executor')
+        options = json.loads(field['type_options'])
+        if not isinstance(options, list):
+            raise ValueError()
+        members = {}
+        for option in options:
+            email = (option.get('mail') or '').strip()
+            if email:
+                members.setdefault(email.casefold(), {'name': option.get('text') or email, 'email': email})
+        return list(members.values())
+    except (StopIteration, AttributeError, KeyError, TypeError, ValueError):
+        raise GeelibError('无法读取极库云缺陷的执行人列表') from None
+
+
 def _search(sub_id, title, token, *, exact):
     matches, seen = [], set()
     page = 1

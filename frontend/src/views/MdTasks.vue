@@ -106,17 +106,18 @@
                   <a v-if="caseLink(row)" :href="caseLink(row)" target="_blank" rel="noopener noreferrer">{{ row.external_ref }}</a>
                   <span v-else>{{ row.external_ref }}</span>
                   <div v-if="row.report_receipt?.skill" class="hint">极库云提 Bug 技能 · {{ row.report_receipt.priority }}</div>
+                  <div v-if="row.report_receipt?.assignee" class="hint">执行人 {{ row.report_receipt.assignee }}</div>
                 </template>
                 <template v-else-if="row.report_state">
                   <span>{{ row.report_state === 'sending' ? '上报中' : '回执待核对' }}</span>
                   <el-button link type="primary" :disabled="reporting" @click="submitReports({ indexes: [$index], receipt_action: 'check' })">核对回执</el-button>
                 </template>
-                <span v-else class="hint">未上报</span>
+                <el-button v-else link type="primary" :disabled="reporting || !detail.project_id" @click="openAssignment({ indexes: [$index] })">上报缺陷</el-button>
               </template>
             </el-table-column>
           </el-table>
           <div class="bug-actions">
-            <el-button size="small" type="primary" :loading="reporting" :disabled="!detail.project_id" @click="reportBugs">上报未报的到极库云</el-button>
+            <el-button size="small" type="primary" :loading="reporting" :disabled="!detail.project_id || !detail.findings.some(f => !f.external_ref && !f.report_state)" @click="openAssignment({})">上报未报的到极库云</el-button>
             <span class="hint">只有你确认是产品缺陷的才上报；环境/偶发问题点「取消」，别污染缺陷库</span>
           </div>
         </template>
@@ -157,6 +158,29 @@
         <el-button v-if="receipt?.matches.length" type="primary" :disabled="reporting || !selectedMatter" @click="resolveReceipt('link')">关联所选工单{{ detail?.findings[receipt.index]?.evidence?.length ? '并提交附件' : '' }}</el-button>
       </template>
     </el-dialog>
+    <el-dialog :model-value="!!assignment" @update:model-value="visible => { if (!visible) assignment = null }"
+      :title="assignment?.payload.receipt_action === 'retry' ? '确认重新建单' : '确认上报'" width="480px">
+      <template v-if="assignment">
+        <p v-if="assignment.payload.receipt_action === 'retry'">请确认极库云中没有可关联的工单，再重新建单。</p>
+        <p v-else-if="assignment.payload.indexes">{{ detail?.findings[assignment.payload.indexes[0]]?.title }}</p>
+        <p v-else>本次新建的缺陷将指派给同一位执行人。</p>
+        <el-form label-position="top">
+          <el-form-item label="执行人" required>
+            <el-select v-model="assignment.email" filterable :loading="assignment.loading"
+              placeholder="搜索姓名或邮箱" no-data-text="该项目暂无可指派的执行人">
+              <el-option v-for="m in assignment.members" :key="m.email" :label="m.name + '（' + m.email + '）'" :value="m.email" />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <div v-if="assignment.error" role="alert">{{ assignment.error }}
+          <el-button link type="primary" @click="loadExecutors(assignment)">重新加载</el-button>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="assignment = null">取消</el-button>
+        <el-button type="primary" :disabled="!assignment?.email || assignment.loading || reporting" @click="confirmAssignment">确认上报</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -168,7 +192,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/store/app'
 import { pickDefaultProjectId, setLastProjectId } from '@/utils/lastProject'
-import { listMyDevices, listMdRuns, getMdRun, createMdRuns, cancelMdRun, reportMdRunBugs, downloadMdEvidence } from '@/api'
+import { listMyDevices, listMdRuns, getMdRun, getMdReportExecutors, createMdRuns, cancelMdRun, reportMdRunBugs, downloadMdEvidence } from '@/api'
 
 const app = useAppStore()
 const projects = ref([])
@@ -187,6 +211,7 @@ const form = reactive({ title: '', req_no: '', runners: [], env_group: '', clien
 const detailVisible = ref(false)
 const detail = ref(null)
 const reporting = ref(false)
+const assignment = ref(null)
 const reviewVisible = ref(false)
 const receipt = ref(null)
 const selectedMatter = ref(null)
@@ -299,19 +324,39 @@ function caseLink(row) {
   return `https://geelib.qihoo.net/geelib/project/matterType/${receipt.type_id}?subId=${receipt.sub_id}&matterId=${id}&typeId=${receipt.type_id}`
 }
 
-async function reportBugs() {
-  if (!detail.value) return
-  await ElMessageBox.confirm('把尚未上报的缺陷候选上报到极库云？请先确认它们都是产品缺陷。', '确认上报', { type: 'warning' })
-  await submitReports({})
+function openAssignment(payload, preferred = '') {
+  if (reporting.value || !detail.value) return
+  assignment.value = { runId: detail.value.id, payload, preferred, members: [], email: '', loading: true, error: '' }
+  loadExecutors(assignment.value)
+}
+
+async function loadExecutors(form) {
+  form.loading = true
+  form.error = ''
+  try {
+    const { members, default_email } = await getMdReportExecutors(form.runId)
+    form.members = members
+    const email = (form.preferred || default_email || '').toLowerCase()
+    form.email = members.find(m => m.email.toLowerCase() === email)?.email || ''
+    if (!members.length) form.error = '该极库云项目暂无可指派的执行人'
+  } catch (error) {
+    form.error = error.response?.data?.msg || '无法加载极库云项目执行人'
+  } finally { form.loading = false }
+}
+
+function confirmAssignment() {
+  const form = assignment.value
+  if (!form?.email || form.loading || form.runId !== detail.value?.id || !detailVisible.value) return
+  assignment.value = null
+  return submitReports({ ...form.payload, executor_email: form.email })
 }
 
 async function resolveReceipt(action) {
   const item = receipt.value
   if (!item || item.runId !== detail.value?.id) return
-  if (action === 'retry') {
-    await ElMessageBox.confirm('请确认极库云里没有可关联的工单。继续将创建一张新缺陷单。', '确认重新建单', { type: 'warning' })
-  }
-  await submitReports({ indexes: [item.index], receipt_action: action, review_key: item.review_key, matter_id: selectedMatter.value })
+  const payload = { indexes: [item.index], receipt_action: action, review_key: item.review_key }
+  if (action === 'retry') return openAssignment(payload, item.executor)
+  await submitReports({ ...payload, matter_id: selectedMatter.value })
 }
 
 async function submitReports(payload) {
@@ -324,7 +369,8 @@ async function submitReports(payload) {
     detail.value = res.run
     const review = res.results.find(r => r.status === 'review')
     if (review) {
-      receipt.value = { ...review, runId, title: res.run.findings[review.index]?.title }
+      const finding = res.run.findings[review.index]
+      receipt.value = { ...review, runId, title: finding?.title, executor: payload.executor_email || finding?.report_executor }
       selectedMatter.value = review.matches.length === 1 ? review.matches[0].id : null
       reviewVisible.value = true
     } else {

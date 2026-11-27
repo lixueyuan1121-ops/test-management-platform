@@ -256,7 +256,7 @@ class MdDispatchTests(unittest.TestCase):
                 if self.path.endswith('/getList'):
                     data = {'matterList': [], 'total': 0}
                 elif self.path.endswith('/getMatterTypeCustomAttributeList'):
-                    opts = [{'text': '测试员', 'mail': 'qa@example.test'}]
+                    opts = [{'text': '测试员', 'mail': 'qa@example.test'}, {'text': '开发', 'mail': 'dev@example.test'}]
                     data = [{'matterCustomAttribute': {'cf_key': 'executor', 'type_options': json.dumps(opts)}}]
                 elif self.path.endswith('/add'):
                     if failure == 'lost':
@@ -306,7 +306,13 @@ class MdDispatchTests(unittest.TestCase):
              patch.object(md_bug_skill.subprocess, 'run', side_effect=without_fetch), \
              patch('app.services.geelib_account.get_user_app_token', return_value='local-test-token'):
             engine.return_value.stream_generate.side_effect = draft
-            report = self.post(f'/{rid}/report-bugs')
+            options = self.client.get(f'/api/md-runs/{rid}/report-executors')
+            self.assertEqual(options.status_code, 200, options.text)
+            self.assertEqual(options.json()['data'], {'default_email': 'qa@example.test', 'members': [
+                {'name': '测试员', 'email': 'qa@example.test'}, {'name': '开发', 'email': 'dev@example.test'}]})
+            self.assertEqual(calls.pop(), ('/openapi/Matter/getMatterTypeCustomAttributeList', 'Bearer local-test-token',
+                                          {'sub_id': 81, 'type_id': settings.GEELIB_DEFECT_TYPE}))
+            report = self.post(f'/{rid}/report-bugs', executor_email='dev@example.test')
             self.assertEqual(report['reported'], 1, report['results'])
             self.client.patch(self.callback, json=self.results)
             self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 0)
@@ -331,11 +337,12 @@ class MdDispatchTests(unittest.TestCase):
         self.assertEqual((body['sub_id'], body['title']), (81, '[42] 按钮无响应'))
         self.assertIn('&lt;确认&gt;</p><p>', body['content'])
         self.assertEqual({f['cf_name']: f['cf_value'] for f in body['data']},
-                         {'执行人': 'qa@example.test', '优先级': 'high', '状态': '新建'})
+                         {'执行人': 'dev@example.test', '优先级': 'high', '状态': '新建'})
         self.assertFalse({'user_mail', 'sign', 't'}.intersection(body))
         saved = self.client.get(f'/api/md-runs/{rid}').json()['data']['findings'][0]
         self.assertEqual(saved['external_ref'], 'geelib#729')
         self.assertEqual(saved['report_receipt']['skill'], 'jikuyun-bug-report')
+        self.assertEqual(saved['report_receipt']['assignee'], 'dev@example.test')
         self.assertTrue(saved['report_receipt']['detail_verified'])
         self.assertEqual(saved['report_receipt']['type_id'], 218)
         self.assertEqual(saved['report_receipt']['attachments'], [
@@ -454,6 +461,23 @@ class MdDispatchTests(unittest.TestCase):
         self.assertEqual(seen, [(md_attachment_skill.ENDPOINT, 'Bearer personal', ['file', 'id', 'sub_id', 'type'],
                                  'matter', '81', '729', name, b'client evidence')])
 
+    def test_executor_selection_validation_and_project_access(self):
+        rid = self.finished_run()
+        path = f'/api/md-runs/{rid}'
+        self.assertEqual(self.client.post(path + '/report-bugs', json={'executor_email': '同名成员'}).status_code, 422)
+        with patch.object(settings, 'GEELIB_ENABLED', True), \
+             patch('app.services.geelib_account.get_user_app_token', return_value='personal') as token, \
+             patch.object(md_bug_skill, '_read_tracker') as read:
+            self.user.is_platform_admin = False
+            self.assertEqual(self.client.get(path + '/report-executors').status_code, 403)
+            token.assert_not_called()
+            read.assert_not_called()
+            self.user.is_platform_admin = True
+            read.return_value = [{'matterCustomAttribute': {'cf_key': 'executor', 'type_options': '[]'}}]
+            self.assertEqual(self.client.get(path + '/report-executors').json()['data']['members'], [])
+            read.return_value = []
+            self.assertEqual(self.client.get(path + '/report-executors').status_code, 502)
+
     def test_missing_skill_does_not_attempt_to_report(self):
         self.prepare.stop()
         rid = self.finished_run()
@@ -495,6 +519,7 @@ class MdDispatchTests(unittest.TestCase):
         def create(sub, title, description, priority, executor, token):
             nonlocal fault
             self.assertFalse(checked_out)
+            self.assertEqual((executor, token), ('dev@example.test', 'personal'))
             fault = 'from md_run ' if title.endswith('0') else None
             return {'external_ref': 'geelib#10' + title[-1]}
         def upload(sub, matter, name, content, mime, token):
@@ -508,7 +533,7 @@ class MdDispatchTests(unittest.TestCase):
              patch.object(md_bug_skill, 'prepare_case', side_effect=prepare), \
              patch.object(md_bug_skill, 'create_case', side_effect=create) as submit, \
              patch.object(md_evidence.md_attachment_skill, 'upload', side_effect=upload) as attach:
-            result = self.post(f'/{rid}/report-bugs')
+            result = self.post(f'/{rid}/report-bugs', executor_email='dev@example.test')
             self.assertEqual(result['reported'], 6)
             self.assertEqual([r['attachments_sent'] for r in result['results']], [1] * 6)
             self.assertEqual(self.post(f'/{rid}/report-bugs')['reported'], 0)
@@ -630,9 +655,11 @@ class MdDispatchTests(unittest.TestCase):
              patch.object(md_bug_skill, 'find_title_matches', return_value=[]) as lookup, \
              patch.object(md_bug_skill, 'create_case', side_effect=[md_bug_skill.SubmissionUncertain('超时'),
                           md_bug_skill.SubmissionUncertain('再次超时'), {'external_ref': 'geelib#730'}]) as submit:
-            self.assertEqual(self.post(path)['results'][0]['status'], 'uncertain')
+            first = self.post(path, executor_email='dev@example.test')
+            self.assertEqual(first['results'][0]['status'], 'uncertain')
+            self.assertEqual(first['run']['findings'][0]['report_executor'], 'dev@example.test')
             def retry(key):
-                return self.post(path, indexes=[0], receipt_action='retry', review_key=key)
+                return self.post(path, indexes=[0], receipt_action='retry', review_key=key, executor_email='second@example.test')
             key = self.post(path)['results'][0]['review_key']
             self.assertEqual(retry('stale')['results'][0]['status'], 'review')
             self.assertEqual(retry(key)['results'][0]['status'], 'uncertain')
@@ -642,6 +669,8 @@ class MdDispatchTests(unittest.TestCase):
             self.assertEqual(retry(review['review_key'])['reported'], 1)
             self.assertEqual(retry(review['review_key'])['reported'], 0)
             self.assertEqual(submit.call_count, 3)
+            self.assertEqual([c.args[-2] for c in submit.call_args_list],
+                             ['dev@example.test', 'second@example.test', 'second@example.test'])
 
             with self.sessions.begin() as db:
                 row = db.get(MdRun, rid)

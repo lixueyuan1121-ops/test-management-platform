@@ -489,7 +489,7 @@ def _report_one(bind, run, index, item, body, sub_id, executor, token):
     title = str(item.get("title") or "").strip() or f"{run.title} 执行失败"
     title = (f"[{run.req_no}] {title}" if run.req_no else title)[:200]
     clean = {k: v for k, v in item.items() if k not in
-             ("report_state", "report_started_at", "report_attempt", "report_error")}
+             ("report_state", "report_started_at", "report_attempt", "report_error", "report_executor")}
 
     def review(matches, stage, message):
         snapshot = [stage, run.id, index, sub_id, title, item.get("report_attempt"), sorted(m["id"] for m in matches)]
@@ -535,7 +535,8 @@ def _report_one(bind, run, index, item, body, sub_id, executor, token):
         if decision:
             return decision
 
-    claimed = {**clean, "report_state": "sending", "report_attempt": uuid.uuid4().hex, "report_started_at": time.time()}
+    claimed = {**clean, "report_state": "sending", "report_attempt": uuid.uuid4().hex,
+               "report_started_at": time.time(), "report_executor": executor}
     if not _save_finding(bind, run.id, index, item, claimed):
         return changed
     try:
@@ -562,8 +563,7 @@ def _report_details(db, run_id):
     return _to_out(run, full=True, db=db)
 
 
-@report_db_step
-def _report_inputs(db, run_id, body, user):
+def _reportable_run(db, run_id, user):
     r = db.get(MdRun, run_id)
     if not r:
         raise HTTPException(404, "任务不存在")
@@ -573,24 +573,65 @@ def _report_inputs(db, run_id, body, user):
 
     if r.status not in _TERMINAL:
         raise HTTPException(409, "任务结束后才能上报缺陷")
-    if body.receipt_action and (body.indexes is None or len(body.indexes) != 1):
-        raise HTTPException(422, "核对回执时须指定一条缺陷候选")
-    _, indexed = _review_findings(r)
-    count = len(indexed)
-    targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
-    if not targets:
-        return r, indexed, targets, None
+    return r
 
+
+def _report_sub_id(db, project_id):
     from app.services import geelib
     if not geelib.is_enabled():
         raise HTTPException(400, "极库云未启用（GEELIB 相关配置缺失）")
     from app.models import Project
 
-    proj = db.get(Project, r.project_id)
+    proj = db.get(Project, project_id)
     sub_id = geelib.resolve_sub_id(proj.code if proj else None, getattr(proj, "geelib_sub_id", None))
     if not sub_id:
         raise HTTPException(400, "该项目未映射极库云项目（project.geelib_sub_id 未配置）")
-    return r, indexed, targets, sub_id
+    return sub_id
+
+
+@report_db_step
+def _report_inputs(db, run_id, body, user):
+    r = _reportable_run(db, run_id, user)
+    if body.receipt_action and (body.indexes is None or len(body.indexes) != 1):
+        raise HTTPException(422, "核对回执时须指定一条缺陷候选")
+    _, indexed = _review_findings(r)
+    count = len(indexed)
+    targets = range(count) if body.indexes is None else dict.fromkeys(i for i in body.indexes if 0 <= i < count)
+    return r, indexed, targets, _report_sub_id(db, r.project_id) if targets else None
+
+
+def _report_token(bind, user_id):
+    from app.services.geelib_account import get_user_app_token, GeelibAccountError
+
+    try:
+        with Session(bind) as auth_db:
+            return get_user_app_token(auth_db, user_id)
+    except GeelibAccountError as e:
+        raise HTTPException(400, f"极库云账号未授权：{e}")
+    except DBAPIError as error:
+        if is_disconnect(error):
+            raise database_unavailable() from error
+        raise
+
+
+@report_db_step
+def _executor_project(db, run_id, user):
+    return _report_sub_id(db, _reportable_run(db, run_id, user).project_id)
+
+
+@router.get("/{run_id}/report-executors")
+def report_executors(run_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.geelib import GeelibError
+
+    bind = db.get_bind()
+    db.close()
+    sub_id = _executor_project(bind, run_id, user)
+    token = _report_token(bind, user.id)
+    try:
+        members = md_bug_skill.list_executors(sub_id, token)
+    except GeelibError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return ok({"members": members, "default_email": user.email or settings.GEELIB_DEFAULT_EXECUTOR})
 
 
 @router.post("/{run_id}/report-bugs")
@@ -601,25 +642,13 @@ def report_bugs(
     user: User = Depends(get_current_user),
 ):
     """人工上报确认的缺陷，跳过已有工单，逐条返回结果。"""
-    from app.services.geelib_account import get_user_app_token, GeelibAccountError
-
-    executor = user.email or settings.GEELIB_DEFAULT_EXECUTOR
-    user_id = user.id
+    executor = body.executor_email or user.email or settings.GEELIB_DEFAULT_EXECUTOR
     bind = db.get_bind()
-    # Release the authentication dependency's connection before the external work.
     db.close()
     r, indexed, targets, sub_id = _report_inputs(bind, run_id, body, user)
     if not targets:
         return ok({"results": [], "reported": 0, "run": _report_details(bind, run_id)})
-    try:
-        with Session(bind) as auth_db:
-            app_token = get_user_app_token(auth_db, user_id)
-    except GeelibAccountError as e:
-        raise HTTPException(400, f"极库云账号未授权：{e}")
-    except DBAPIError as error:
-        if is_disconnect(error):
-            raise database_unavailable() from error
-        raise
+    app_token = _report_token(bind, user.id)
 
     results = []
     for index in targets:
